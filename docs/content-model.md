@@ -1,0 +1,260 @@
+# Workspace and Guide Content Model
+
+Status: schema v1 design baseline
+Last updated: 2026-09-05
+
+## Principles
+
+- Files are understandable and editable without Rehow.
+- Stable IDs, not paths/titles, define identity and references.
+- Active content is friendly to Git diffs and merge tools.
+- Schema versions are explicit. A newer major version is never written by an older app.
+- Unknown valid mapping keys are retained through ordinary edits.
+- Paths are relative, normalized UTF-8, and confined; managed content never follows symlinks.
+- Timestamps are RFC 3339 UTC instants written with `Z`; UI display uses locale-aware formatting.
+
+## Version 1 directory structure
+
+```text
+my-rehow-workspace/
+├── rehow.yaml
+├── categories/
+│   ├── linux-system--b6ba3a5551/
+│   │   ├── category.yaml
+│   │   ├── install-tarball--36c5735e10.md
+│   │   └── create-desktop-launcher--08b7bed660.md
+│   └── archived--9d704a23b8/
+│       └── category.yaml
+├── attachments/
+│   └── 0199a1d7-7b0d-7d8e-a38d-f936c5735e10/
+│       └── example.desktop
+└── .rehow/
+    ├── trash/             # recoverable removals
+    └── backups/           # migration snapshots
+```
+
+The short ID suffix in human paths is the final 10 hexadecimal UUID characters (40 random bits for UUIDv7). It is a collision-resistant hint only; the full in-file ID is authoritative. Path components use lowercase ASCII kebab slugs, capped at 80 bytes before the suffix. Collisions add a deterministic numeric suffix. Editing a Category name or Guide title changes metadata only. An explicit `tidy path` operation may rename the human path without changing identity.
+
+Runtime locks, recovery journals, and before-images live outside the Workspace under `$XDG_RUNTIME_DIR`/`$XDG_STATE_HOME`; search/index cache lives under `$XDG_CACHE_HOME/rehow/workspaces/<workspace-id>-<root-hash>/` and is disposable. `.rehow/` contains only recoverable trash and portable migration/bulk-operation backups. Rehow never edits an existing `.gitignore` silently; initialization of a new empty Workspace offers a generated ignore file as part of the explicit plan.
+
+Category directories are exactly one level below `categories/`. A Category descriptor is exactly `<category-dir>/category.yaml`. Active/archived Guides are direct `.md` children of that directory; nested Guide directories are invalid in schema v1. The containing descriptor's `id` must equal the Guide's `category_id`; mismatch isolates the Guide with `INVALID_GUIDE`. `change category` is one journaled operation that moves the file and updates `category_id`. There is no ambiguous generic Guide move. `tidy path` changes only the filename; title edit changes only frontmatter.
+
+## Workspace manifest
+
+`rehow.yaml`:
+
+```yaml
+schema_version: 1
+workspace_id: 0199a19f-4d15-7ca7-a645-e75311caa710
+name: Hichem's Rehow
+created_at: "2026-09-05T10:00:00Z"
+updated_at: "2026-09-05T10:00:00Z"
+settings:
+  default_category_id: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5551
+```
+
+Required keys: `schema_version`, `workspace_id`, `name`, `created_at`, `updated_at`. `settings` is optional. Paths are fixed by schema v1 rather than configurable, reducing traversal and interoperability ambiguity. Unknown top-level/settings keys are preserved.
+
+Compatibility:
+
+- `schema_version == 1`: current and writable after validation.
+- supported older positive integer: inspect as `older_supported`; open read-only until the user accepts a migration plan and verified backup.
+- greater than the application's maximum: `newer_unsupported`, read-only inspection only.
+- missing, non-integer, non-positive, duplicate, or structurally invalid version: malformed.
+
+The parser rejects YAML aliases/anchors, duplicate mapping keys, custom tags, and resource-exhausting nesting/size. Numeric limits are defined below and return errors rather than truncating canonical content.
+
+## Category descriptor
+
+`categories/<slug>--<short-id>/category.yaml`:
+
+```yaml
+schema_version: 1
+id: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5551
+name: Linux System
+summary: Host configuration, boot, devices, and desktop integration.
+order: 1000
+status: active
+created_at: "2026-09-05T10:01:00Z"
+updated_at: "2026-09-05T10:01:00Z"
+```
+
+`status` is `active` or `archived`. Ordering uses signed 64-bit integer sort keys. Reordering may renumber all Category sort keys in one journaled action; it requires a Workspace inventory token. `settings.default_category_id`, when present, must reference an active Category. Archiving/removing that Category must atomically replace or clear the default under the expected manifest revision; otherwise the plan is refused. Removing a Category requires no active/archived Guides and moves the descriptor/directory to trash. Nonempty removal returns a plan with blocking Guide IDs; it never cascades silently.
+
+## Guide Markdown
+
+Guide files are UTF-8 Markdown with YAML frontmatter delimited by exactly `---` lines followed by one blank line and CommonMark/GFM body content.
+
+````markdown
+---
+schema_version: 1
+id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10
+title: Install a Downloaded Tarball
+summary: Extract a release archive under ~/Programs and add a stable launcher.
+category_id: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5551
+tags:
+  - linux
+  - installation
+aliases:
+  - install tar.gz
+  - manual app install
+status: tested
+created_at: "2026-09-05T10:03:00Z"
+updated_at: "2026-09-05T10:20:00Z"
+last_verified_at: "2026-09-05T10:20:00Z"
+verified_content_hash: verify:v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+applies_to:
+  - platform: Arch Linux
+    versions: rolling
+prerequisites:
+  - The archive has a trusted source and checksum.
+warnings:
+  - Inspect archive paths before extraction.
+files_affected:
+  - ~/Programs/example
+related_guide_ids:
+  - 0199a1ef-f149-718a-b2a7-2208b7bed660
+references:
+  - title: Upstream installation notes
+    url: https://example.invalid/install
+attachments:
+  - id: 0199a264-ef5f-73b4-a238-a71ba1509898
+    path: attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/example.desktop
+    title: Example desktop entry
+    media_type: application/x-desktop
+    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+---
+
+## Steps
+
+1. Inspect the archive before extracting it.
+
+   ```bash
+   tar --list --file example.tar.gz
+   ```
+
+2. Extract it into `~/Programs`.
+
+## Verification
+
+Confirm the application reports the expected version.
+
+## Rollback
+
+Remove only the directory created by these steps.
+
+## Troubleshooting
+
+### “Permission denied” when launching
+
+Check the executable bit and mount options.
+````
+
+### Required frontmatter
+
+- `schema_version`: integer `1`.
+- `id`: lowercase canonical UUIDv7.
+- `title`: trimmed text, 1–200 Unicode scalar values.
+- `summary`: trimmed text, 1–500 values.
+- `category_id`: existing Category UUID.
+- `tags`, `aliases`: arrays of unique display strings after Unicode case-fold comparison.
+- `status`: `draft | tested | stale | archived`.
+- `created_at`, `updated_at`: RFC 3339 UTC.
+
+### Optional frontmatter
+
+- `last_verified_at`, `verified_content_hash`: written by the core together when a Guide is explicitly marked tested. `last_verified_at` cannot be later than the same operation's `updated_at`. They remain on `stale` to show what was last verified.
+- `archived_from_status`, `archived_at`: written together when status becomes `archived`, enabling an exact restore to `draft`, `tested`, or `stale`.
+- `applies_to`: objects with required `platform`, optional free-text `versions`/`notes`.
+- `prerequisites`, `warnings`, `files_affected`: ordered strings.
+- `related_guide_ids`: unique Guide UUIDs; missing targets are warnings, not parser failure.
+- `references`: `{title, url}` where URL scheme passes policy.
+- `attachments`: `{id, path, title, media_type?, sha256, size_bytes?}`. Path must match this Guide's managed Attachment directory.
+
+Unknown keys are retained as concrete-syntax nodes within depth/size/type limits. Reserved keys with invalid values are errors, not treated as unknown.
+
+Timestamp ownership is per document: the core supplies `created_at` and updates that document's `updated_at` only when it changes. Child edits do not rewrite the Workspace manifest timestamp. Import may retain valid source timestamps as provenance only; newly managed timestamps are core-generated. `archived` requires `archived_from_status` and `archived_at`; every other status forbids both. `tested` requires a matching verification hash; `stale` may retain one; `draft` has neither unless an explicit migration preserves legacy verification as an extension.
+
+### Body sections
+
+`## Steps` is required and nonempty for `tested`; draft Guides may temporarily omit it with an actionable validation warning. `## Verification`, `## Rollback`, and `## Troubleshooting` are strongly recommended and required by the UI's “ready to mark tested” check. Duplicate reserved H2 sections are validation errors because programmatic edits would be ambiguous. Other headings/sections are preserved.
+
+Commands are fenced code blocks, optionally with a language such as `bash`, `sh`, `fish`, `ini`, or `text`. They are indexed and copyable but never executable. Error messages are indexed from headings/paragraphs under Troubleshooting plus quoted/inline/fenced content recognized by deterministic extraction.
+
+## Status transitions
+
+| From | To | Rule |
+| --- | --- | --- |
+| draft | tested | Native user approval only; readiness validation passes; core sets `last_verified_at` and `verified_content_hash`. |
+| draft | stale | Allowed when known outdated. |
+| tested | stale | Explicit action or compatibility signal accepted by user; retain last verification. |
+| stale | tested | Native user approval after trying the Guide; core updates verification time/hash. |
+| any active | archived | Explicit reversible action; write prior state to `archived_from_status` and set `archived_at`. |
+| archived | prior status | Restore from `archived_from_status` if Category/filename constraints remain valid; clear archive fields. |
+
+All create/import/adoption paths produce `draft`, including MCP; creation cannot set `tested`. A separate status operation is the only route to `tested`. Any change to body, title, summary, applicability, prerequisites, warnings, files affected, related Guides, references, Attachment metadata, or unknown metadata automatically changes a tested Guide to `stale` while retaining its prior verification fields. Category, Tags, aliases, path tidying, and archive/restore are organizational and do not invalidate verification.
+
+`verified_content_hash` is `verify:v1:<hex>`, BLAKE3 over a domain separator plus length-framed exact body bytes and deterministic JSON encodings of all verification-relevant known/unknown frontmatter fields; organization/status/timestamp/verification fields are excluded. The exact ordered field set and fixed vectors are versioned tests before Phase 3. If an externally edited file says `tested` but the stored hash does not match, the core reports effective status `stale` and a diagnostic without silently rewriting the file.
+
+## Revisions and mutation
+
+A document/Attachment revision is `rev:v1:<hex>`. The digest is BLAKE3 of ASCII `rehow-document-revision-v1`, one NUL byte, then `frame(normalized_relative_path_utf8)` and `frame(exact_file_bytes)`. `frame(x)` is an unsigned 64-bit big-endian byte length followed by `x`. Managed relative paths use `/`, ASCII schema directory/file slugs, no `.`/`..`, and NFC UTF-8 Attachment filenames. Fixed vectors make this language-independent. Including the path means an external rename invalidates an open draft.
+
+A full inventory is `snapshot:v1:<hex>`. It covers the manifest and every regular-file candidate in the fixed Category/Guide/Attachment roots, including archived, malformed, duplicate-ID, and orphan candidates. Valid records use their stable ID; otherwise `stable_id` is empty and the confined relative path identifies the diagnostic record. Each record is `(kind, stable_id, normalized_relative_path, rev:v1)`; records sort lexicographically by the UTF-8 bytes of those fields and are encoded as a domain separator, count, and length-framed fields. Unsafe symlink/special/hardlink candidates disable broad mutation and appear in separate bounded diagnostics because they cannot be safely hashed as canonical content. Trash, backups, XDG state, derived cache, and Git metadata are excluded. Operation plans additionally bind a capability identity plus the exact affected record set; Git uses a separate token covering HEAD, index, managed/unrelated worktree facts, and operation scope.
+
+- Update/rename/move/status/archive/delete require the current document revision.
+- Category reorder and broad operations require a current full inventory or narrower operation-specific effect-set token as documented by that operation.
+- Create requires an expected absence marker and collision check.
+- Metadata and body are parsed from the current bytes immediately before applying a patch.
+- Body-only edits preserve frontmatter bytes exactly. Metadata edits use a concrete-syntax tree: untouched known/unknown nodes, comments, key order, scalar quoting, BOM, line-ending style, and final-newline presence remain byte-identical; only the selected known value span and core-owned timestamps/status fields may change. If comments occur inside a replaced collection/value and cannot be retained, or the concrete parser cannot prove a safe edit, mutation fails with `UNSAFE_ROUND_TRIP` and leaves every byte unchanged. Anchors, aliases, custom tags, and duplicate keys are invalid at read time. Golden aftermath fixtures cover comments, ordering, quoting, Unicode, BOM, CRLF/LF, missing final newline, and unsupported edits.
+
+## Attachments
+
+- Rehow copies regular files into `attachments/<guide-id>/`; it never stores arbitrary external absolute references.
+- Source selection may be outside the Workspace only through a native-owned dialog that returns an opaque source capability. The source is opened read-only, bounded, and copied; its original path is not persisted by default.
+- Symlinks, devices, FIFOs, sockets, directories, and any existing managed file with link count other than 1 are rejected. Import always creates a fresh destination inode with mode `0600`; executable source mode is never copied.
+- Destination names are normalized display names plus collision-safe suffixes. Metadata path is authoritative and confined.
+- SHA-256 verifies bytes and supports duplicate detection; it does not assert trust.
+- Removal is a journaled move to trash paired with Guide metadata update.
+- Rehow never passes an Attachment file itself to an external opener. It can render bounded decoded raster images, show inert text, export through a native-selected destination, or reveal the containing folder. `.desktop`, script, executable-bit, unknown, and active document types are text-only/reveal-only. Stored `media_type` is an untrusted hint; behavior derives from bounded byte sniffing and allowlists, with `nosniff` on any served bytes.
+
+Phase 3 freezes product-facing import, rendering MIME, decoded-pixel, and lower usability limits. Those limits may be stricter than the Phase 1 scan hard caps below, but may not exceed them without Architect and Security Reviewer approval.
+
+## Phase 1 parser and scan limits
+
+These are hard v1 defaults, enforced on byte streams before unbounded allocation; changing them requires Architect/Security review:
+
+- manifest or Category descriptor: 256 KiB each;
+- Guide file: 2 MiB total; frontmatter: 256 KiB within that total;
+- YAML nesting depth: 16; mapping entries: 256 per map; sequence entries: 2,048; total YAML nodes: 20,000; generic scalar: 64 KiB (tighter field limits still apply);
+- Markdown AST: 100,000 nodes and heading depth per CommonMark; parser input remains capped at 2 MiB;
+- managed path: 1,024 UTF-8 bytes; one filename: 255 bytes; only documented directory depths;
+- Workspace: 1,000 Categories, 10,000 Guides, and 2 GiB total managed Markdown/YAML bytes during a bounded scan;
+- Attachment inventory: 10,000 regular-file candidates, 64 MiB per candidate, and 4 GiB aggregate candidate bytes. Enumeration counts candidates before content hashing, hashes through a bounded stream, and never allocates a whole Attachment from its declared size.
+
+An oversized manifest makes inspection `malformed`; an oversized Category/Guide is isolated with `FILE_TOO_LARGE`. An Attachment over the per-file cap is isolated with `FILE_TOO_LARGE`, makes the full inventory incomplete, and disables broad mutation while unrelated revision-scoped reads remain available. Exceeding any Workspace or Attachment count/aggregate scan limit stops before the next allocation and opens the Workspace read-only with `WORKSPACE_LIMIT_EXCEEDED`; Rehow never silently ignores the remainder. Phase 3 must add MIME, decoded-pixel, and import limits before Attachment content can be displayed or copied.
+
+## Adoption and import
+
+### Copy import (v1 required)
+
+Scan a user-selected ordinary collection without following symlinks, show included/excluded/malformed/oversize files, choose/create a destination Workspace and Category mapping, then copy each Markdown file into a new draft Guide. Original files are untouched. Imported source frontmatter/body is preserved where safe; a provenance note contains a relative display path, not a trusted executable link.
+
+### In-place adoption (decision deferred)
+
+Would add a manifest/Category descriptors and modify/move Markdown. It must produce an exact dry-run, backup, collision list, schema round-trip warning, and explicit confirmation. If any file cannot round-trip safely, offer copy import only. Never offer adoption for an unrelated nonempty folder without suitable Markdown.
+
+## Migration rules
+
+- Every migration has source/target versions, preconditions, deterministic transform, fixture tests, backup verification, journaled steps, post-validation, and documented rollback by backup restore.
+- Migrations do not cross unsupported versions implicitly.
+- Unknown metadata survives unless an ADR explicitly deprecates a conflicting key and the migration preserves it under a namespaced extension.
+- Newer schema is never “best effort” writable.
+
+## Validation severity
+
+- **error:** unsafe/unparseable/identity/schema condition; excludes the item from mutation and normal index.
+- **warning:** readable but incomplete/dangling/stale condition; remains usable with UI explanation.
+- **info:** recommendation such as missing rollback section.
+
+Diagnostics have stable code, relative file (when safe), JSON-pointer-like field, message, recovery action, and optional source span. They never echo secrets or entire Guide bodies.

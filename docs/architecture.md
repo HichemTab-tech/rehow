@@ -1,0 +1,237 @@
+# Rehow Architecture
+
+Status: proposed baseline; ADRs govern conflicts
+Last updated: 2026-09-05
+
+## Goals and quality attributes
+
+Rehow optimizes for content durability, local trust, retrieval speed, recoverable mutation, desktop usability, and a single behavioral contract across desktop and MCP. Convenience must not widen filesystem or command-execution authority.
+
+Priority order:
+
+1. No silent content loss or workspace escape.
+2. Human-readable, Git-friendly source files.
+3. Fast keyboard retrieval and stable behavior under malformed/external changes.
+4. A small auditable privileged surface.
+5. Testable adapters and replaceable derived systems.
+
+## System context
+
+```text
+React/Vite UI ── typed Tauri IPC ─┐
+                                  ├─ rehow-core ── Workspace files
+Local MCP client ── stdio ─ MCP ──┤             ├─ derived search cache
+                                  │             └─ fixed-argv Git process
+External editor / Git ────────────┘                     │
+                                           SSH agent / credential helper
+```
+
+The user chooses a Workspace root through a native-owned dialog. The adapter retains the selected parent/root descriptor and returns an opaque, unguessable inspection capability; the renderer never receives authority merely by sending a path. Opening yields an opaque session handle. MCP launches with named root capabilities and tools use launch-scoped handles, not portable Workspace IDs as authority.
+
+## Repository and package boundaries
+
+```text
+apps/
+  desktop/                 React/Vite UI
+    src-tauri/             Tauri binary and thin command/event adapter
+crates/
+  rehow-core/              domain/protocol/markdown/storage/search/git/application modules
+  rehow-mcp/               stdio MCP protocol adapter; no desktop dependency
+packages/
+  contracts/               generated TS IPC contracts and UI view types
+docs/                      specifications, ADRs, operations, task packets
+```
+
+This is the Phase 1A topology. `apps/desktop/src-tauri` depends on `rehow-core`; there is no separate `rehow-tauri` crate. Core modules may later become crates only through an accepted ADR—Workers must not invent that split.
+
+### React UI
+
+Owns view state, keyboard interaction, editor buffers, accessible rendering, and presentation. It does not receive ambient filesystem or generic shell access. It treats all Workspace content as untrusted and maps the Rust safe AST to fixed React components; it never renders an HTML string.
+
+### Tauri adapter
+
+Owns window lifecycle, dialogs, application preferences, IPC serialization, and event forwarding. Capabilities allow only named Rehow commands for the main window. It delegates filesystem/search/Git behavior to `rehow-core`; it does not duplicate policy.
+
+### `rehow-core`
+
+Owns Workspace classification, compatibility, schemas, parsing/serialization, unknown metadata preservation, identifiers, constrained paths, atomic/revisioned mutation, recovery, watching, search/index lifecycle, Git discovery/status/actions, diagnostics, and audit-safe change summaries. It has no Tauri or MCP dependency.
+
+### MCP adapter
+
+Owns MCP schema/transport mapping, configured Workspace selection, confirmation semantics, response-size limits, and tool descriptions resistant to prompt-injected content. It delegates all domain work to the core and never exposes generic file or process primitives.
+
+### Contracts
+
+Rust request/response schemas are authoritative. Generate TypeScript definitions during development and fail CI if checked-in contracts are stale. Do not hand-maintain duplicate enum/string contracts.
+
+## Runtime data flow
+
+### Open and inspect
+
+1. A native `workspace_choose_location` command opens the folder dialog itself and retains a descriptor-bound selection record. For a nonexistent target it retains the canonical parent descriptor, selected basename, and parent/absence state.
+2. The core inspects only that retained capability using descriptor-relative metadata, ownership/writability probes, ancestor Git discovery, and a bounded scan without following managed-path symlinks.
+3. It returns a classification, compatibility facts, Git relationship, warnings, and allowed next actions. Inspection never writes.
+4. Opening a compatible Workspace canonicalizes the root, validates the manifest, establishes a capability, recovers/explains interrupted writes, scans canonical sources, and starts watching.
+
+### Read and edit
+
+1. The core returns a Guide view plus `rev:v1:<hex>`, where the digest is BLAKE3 over the domain separator, length-framed normalized relative path, and exact canonical bytes as specified in `docs/content-model.md`.
+2. The UI edits a buffer. Watch events are invalidation hints and are debounced.
+3. Save sends the stable Guide ID, intended patch/full content, and expected revision.
+4. The core re-reads, checks revision and schema, preserves unknown metadata, writes atomically, updates/rebuilds the index entry, and emits a change event.
+5. A mismatch returns `REVISION_CONFLICT` with current metadata and comparison material; it never silently overwrites. The Linux exchange-based preservation algorithm and residual same-user limitation are specified in ADR 0009.
+
+### Search
+
+1. Query parsing normalizes Unicode/case, recognizes quoted phrases/path-like/command-like/error-like tokens, and retains literal intent.
+2. The field-aware index retrieves candidates.
+3. Deterministic boosts rank exact normalized title, alias, command, path, and error matches deliberately; status/staleness and token coverage act as secondary signals.
+4. Results include matched fields/excerpts and diagnostics. Malformed files remain isolated.
+
+### Git
+
+1. The core discovers Git from the GUI-safe process environment and returns `unavailable` rather than failing Workspace use.
+2. Read operations run fixed `git` argument arrays with bounded output/time and parse machine formats.
+3. Mutation stages are proposed, not approved by the read-only Git decision. Each requires a separate accepted ADR, an operation-specific Git state token, and malicious-repository evidence before its commands exist.
+4. Authentication and conflicts return structured states; Rehow does not collect credentials or guess conflict resolution.
+
+## Tauri command surface
+
+Names are stable internal API candidates; schemas are generated before UI implementation.
+
+### Workspace/session
+
+- `workspace_choose_location(intent)` — native dialog; returns an opaque descriptor-bound `selection_handle` plus read-only inspection. The request contains no path.
+- `workspace_reinspect(selection_handle)` — refreshes classification and invalidates the handle if parent/root identity changed.
+- `workspace_initialize(selection_handle, request, expected_inspection)` — creates only in the still-empty/nonexistent retained target.
+- `workspace_adoption_plan(selection_handle, options)` / `workspace_apply_adoption(plan_token)` — never implicit.
+- `workspace_migration_plan(workspace_handle)` / `workspace_apply_migration(plan_token)` — backup required.
+- `workspace_open(selection_handle, mode)` or `workspace_open_recent(recent_workspace_id, mode)` → opaque handle, epoch/generation/snapshot, diagnostics. Recent IDs resolve only in native-owned preferences.
+- `workspace_close(handle)` and `workspace_refresh(handle)`.
+
+### Category/Guide/search
+
+- `category_list/create/update/reorder/archive/restore/remove_plan/remove`.
+- `guide_list/read/create/update_title/tidy_path/change_category/status/archive/restore/delete_plan/delete/validate`.
+- `import_choose_source`, `attachment_choose_source` — native dialogs returning bounded source-selection tokens.
+- `attachment_add_plan/add/remove_plan/remove/view_text/view_raster/reveal_parent` — no external open/execute operation.
+- `search_query`, `search_rebuild`, `related_guides`, `duplicate_candidates`.
+
+Every mutation accepts `expected_revision`, a full inventory snapshot, or an operation-specific effect-set token. Broad/destructive calls accept a plan-bound confirmation token plus out-of-band native approval. The native desktop UI or separately installed native approval companion is the only route that can complete a pending `tested` approval.
+
+### Git
+
+- Accepted read surface: `git_capabilities`, `git_status`.
+- Proposed gated surface: `git_init_plan/init`, `git_clone_choose_destination/plan/apply`, `git_remote_plan/apply`, `git_commit_plan/commit`, `git_sync_plan/sync`. A command does not exist until its operation ADR/security gate is accepted.
+
+There is no generic `read_file`, `write_file`, `open_path`, or `run_command` command.
+
+### Events
+
+- `rehow://workspace-invalidated/v1` — handle, workspace epoch, monotonic catalog generation, IDs/kinds only; consumers refetch.
+- `rehow://workspace-health/v1` — handle/epoch/generation plus root unavailable, watch degraded, or recovery code.
+- `rehow://index-progress/v1` — handle/epoch, index generation, counts/status suitable for a polite live region.
+- `rehow://git-invalidated/v1` — handle/epoch and Git-state generation/token invalidation.
+
+Events are advisory; snapshots carry the same epoch/generations. A gap, older generation, or epoch change forces a fresh snapshot. Every action verifies current state.
+
+## Workspace storage
+
+See `docs/content-model.md`. Canonical content is `rehow.yaml`, one-level `categories/*/category.yaml`, direct-child `categories/*/*.md`, and managed Attachments. `.rehow/trash/` and migration backups are recovery data, not active content. Runtime locks/journals/before-images and derived indexes live under XDG runtime/state/cache, outside the Workspace.
+
+### Atomic writes
+
+- Resolve beneath an already opened directory capability; reject `..`, absolute components, hostile encodings, and all managed-path symlinks.
+- Refuse multiply linked managed targets. Store exact before-images and a prepared operation journal under mode-0700 XDG state, then `fsync` them before touching the target.
+- Create a same-directory temp file with exclusive/no-follow semantics, restrictive mode, full new bytes, validation, flush, and `fsync`.
+- Recheck expected identity/revision. Creation uses atomic no-replace. Linux replacement uses atomic exchange when supported so any racing external bytes are displaced into a retained file rather than discarded.
+- Verify the displaced revision after exchange. If it differs, preserve both versions, attempt only the specified safe exchange-back path, return `RECOVERY_REQUIRED`, and never report silent success.
+- `fsync` parent directories and advance the durable journal after every step. Multi-file operations store every before/new object and ordered step.
+- On reopen, validate the outside-Workspace journal and object hashes, classify every target as old/new/neither, and idempotently finish only unambiguous accepted work; any `neither` state opens read-only recovery.
+
+Exact format, fsync order, fallback limitations, retention, and restore behavior are normative in ADR 0009.
+
+### Backups and migrations
+
+Before any migration, create a timestamped snapshot under `.rehow/backups/` with a complete per-file/mode/digest inventory and completion marker, excluding `.rehow/backups` itself. Flush files/inventory/directories and re-read/verify before mutation. Never auto-migrate a newer schema or unsupported old schema. Default restore writes a newly selected empty sibling/target; in-place restore is separately planned, revision-checked, and first backs up current content.
+
+### External changes and concurrency
+
+`notify` events are coalesced and followed by targeted stat/read validation; polling/manual refresh remains available for unreliable filesystems. Revisions use normalized path plus exact bytes, not timestamps. Cooperating desktop/MCP writers serialize and compare revisions; uncooperative same-user writers cannot be locked universally, so the exchange/recovery protocol preserves displaced bytes and surfaces races. An open dirty editor whose revision changes enters conflict state.
+
+## Search/index design
+
+The index is versioned by application/index schema and stored beneath `$XDG_CACHE_HOME/rehow/workspaces/<workspace-id>-<root-hash>/search/<format-version>/` or held in memory. It contains no irreplaceable data and can be deleted/rebuilt.
+
+Indexed fields and initial relative boosts:
+
+| Field/match | Intent |
+| --- | ---: |
+| Exact title | 100 |
+| Exact alias | 95 |
+| Title prefix/token | 70/55 |
+| Exact command token/phrase | 75 |
+| Exact affected path | 75 |
+| Exact error phrase | 75 |
+| Tag / Category | 45 / 40 |
+| Summary | 35 |
+| Heading / body | 25 / 10 |
+
+Scores are an explicit policy layered over engine relevance, not engine defaults. Tested status may break otherwise close ties but cannot bury exact stale matches. Archived Guides are excluded by default but searchable by scope. Ranking fixtures lock expected order; corpus benchmarks enforce `docs/product-spec.md` budgets.
+
+## Markdown rendering
+
+- Parse CommonMark/GFM in Rust to the versioned safe AST; React renders only fixed known nodes and never uses `dangerouslySetInnerHTML`.
+- Emit embedded raw-HTML source as escaped literal/unsupported nodes. There is no HAST/HTML-string sanitization path.
+- Allow only `http`, `https`, and `mailto` external links, plus validated managed Attachment references. Block `javascript`, `data`, `file`, custom command schemes, control characters, and deceptive malformed URLs.
+- External links show destination context; a native confirmation dialog names the scheme/host before an allowlisted opener call, because renderer events alone do not prove user intent.
+- Images load only managed Attachments by default; no remote tracking pixels.
+- Copy copies literal command text only. No Run button or executable terminal integration.
+
+## Git process policy
+
+- Resolve a known `git` executable explicitly; GUI apps may not inherit shell startup `PATH`.
+- Spawn directly with an argv vector and Workspace cwd; never use a shell.
+- Read operations prepend `--no-pager`, `--literal-pathspecs`, and explicit disabling config for hooks/fsmonitor/external diff/textconv where applicable; they sanitize dangerous `GIT_*`, editor/pager/askpass/SSH-command variables and bound time/output.
+- Repository/worktree config is untrusted and cannot select executable helpers. Later network operations may use the normal SSH agent or a helper resolved from an explicitly trusted system/user configuration outside repository context, but the exact provenance/isolation belongs to the required operation ADR.
+- Respect Git ownership and `safe.directory`; never set a wildcard exception.
+- Parse porcelain v2 `-z`. Never run user aliases, hooks, submodule commands, repository-selected helpers, difftools, mergetools, or arbitrary refspecs.
+- Read discovery/status is the only accepted baseline. Commit/sync/clone/init remain proposed until separate ADRs define exact config isolation, Git-state CAS, index preservation, managed path scope, incoming-tree validation, journaled materialization, credentials, and conflict behavior.
+
+## MCP architecture
+
+The server is a separate executable using stdio by default. Stdout is protocol-only; diagnostics go to stderr with redaction. Each launch entry has a unique alias, canonical non-overlapping root, and per-Workspace read/write/destructive/Git capability. Duplicate aliases, roots, nested roots, and ambiguous portable Workspace IDs are rejected/reported. Tools use a random launch-scoped handle; `workspace_id` remains metadata, never authority.
+
+All tools use JSON-schema-compatible request/response types and the shared `ErrorDto` in `docs/error-contract.md`. Read payloads are bounded/paginated. Mutations require expected revisions; broad/destructive operations require capability plus dry-run and a short-lived token bound to launch handle/root identity, operation, effect set, and revisions. MCP can request, but cannot itself complete, a `tested` transition. See `docs/mcp-spec.md`.
+
+## Preferences and local state
+
+Recent Workspace paths, window state, theme preference, and opt-in sync schedules are application-local configuration, not portable Workspace content. Store no secrets. Losing preferences must not lose content. Validate restored window geometry against current displays and do not depend on Wayland global positioning.
+
+## Dependency and platform policy
+
+- Pin major versions and commit lockfiles. Review generated shadcn source.
+- Use Node 24 LTS for development/CI, pnpm 11, React 19, Vite 8, Vitest 5, Tailwind 4, and Tauri 2 major lines at bootstrap; exact versions are captured by lockfiles.
+- Use Rust stable pinned in `rust-toolchain.toml` once the oldest supported Tauri/plugin floor is validated.
+- Linux uses WebKitGTK 4.1. Avoid essential UI that depends on bleeding-edge CSS or WebGL. Test oldest supported distro plus GNOME/KDE/wlroots Wayland and X11.
+- Normal decorated/resizable windows only in v1; Wayland does not provide reliable global window coordinates or all always-on-top/effect behavior.
+
+Primary platform references are recorded in `docs/development.md` and relevant ADRs.
+
+## Observability and privacy
+
+Local logs contain operation kind, durations, IDs, relative redacted paths when necessary, and structured error codes. They exclude Guide bodies, command text, secrets, Attachment bytes, credential URLs, and environment dumps. A user can copy a sanitized diagnostic bundle; nothing is uploaded automatically.
+
+## Failure behavior
+
+- Newer schema: read-only inspection and upgrade guidance, never a downgrade write.
+- Malformed manifest: no Workspace open; diagnostic and raw-folder location remain available.
+- Malformed Guide: quarantine only that entry from normal mutation/search, expose validation error and open-underlying-file action.
+- Root missing/unmounted: retain session metadata, stop writes/watch, offer retry or choose another Workspace.
+- Index corrupt: remove only derived index after explicit classification, rebuild, keep content available.
+- Git missing/auth/conflict: content features remain fully usable.
+- Partial transaction: recover idempotently or stop read-only with exact evidence; never guess after conflicting external edits.
+
+## Architectural review triggers
+
+Require Architect plus Security Reviewer approval for changes to Workspace paths/schema/migrations, atomicity/revisions, Markdown/link policy, Git process policy, MCP mutation/confirmation, Attachment access, logging/redaction, or Tauri capabilities. Major navigation/state-model changes also require Design Reviewer approval.
