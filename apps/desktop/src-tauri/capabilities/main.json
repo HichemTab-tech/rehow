@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Empty capability for the inert main window.",
+  "windows": ["main"],
+  "permissions": []
+}

@@ -1,0 +1,9 @@
+node_modules/
+target/
+apps/desktop/dist/
+apps/desktop/coverage/
+apps/desktop/.vite/
+.DS_Store
+*.swp
+.idea/
+.vscode/
