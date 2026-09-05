@@ -9,11 +9,11 @@ Phase 1 — Core foundation and format proof.
 
 ## Current task
 
-Provision the pinned user-level Node/pnpm toolchain, then delegate the approved Phase 1A scaffold packet to Worker/low.
+Checkpoint the user-approved host-toolchain amendment, then delegate the Phase 1A scaffold packet to Worker/low.
 
 ## Overall status
 
-In progress. Phase 0 is complete in a clean, signed, independently reviewed checkpoint. The Phase 1A monorepo-scaffold packet is complete and independently approved for Worker/low. The host has `mise` and exact Rust 1.98.0, but needs user-level Node 24.20.0 and pnpm 11.25.0 before implementation.
+In progress. Phase 0 is complete in a clean, signed, independently reviewed checkpoint. The Phase 1A monorepo-scaffold packet is complete and independently approved for Worker/low. The user explicitly directed Rehow to use the machine's already installed Node 26.2.0 and pnpm 11.20.0; no runtime installation or switch is permitted. Rust 1.98.0 is also available.
 
 ## Completed work
 
@@ -34,7 +34,7 @@ In progress. Phase 0 is complete in a clean, signed, independently reviewed chec
 
 ## Work in progress
 
-- Orchestrator is checkpointing the approved packet and progress record, then must provision the exact user-level Node/pnpm versions before Worker handoff.
+- Orchestrator is reconciling the explicit host-toolchain override into the approved packet before Worker handoff.
 
 ## Remaining work
 
@@ -70,7 +70,7 @@ No human blocker. Writing `.codex/` required and received a scoped environment p
 
 ## Latest verified commit
 
-`da646a9760f349074838151e0b66f78f5196fe6b` — signed Phase 0 planning foundation. This progress update follows that commit and is intentionally uncommitted until the Phase 1A packet is reviewed.
+`c0a2d4d5cbb92b7127a4dba82f3a8094229068d9` — signed, verified Phase 1A packet checkpoint. The host-toolchain amendment in the current worktree follows it.
 
 ## Tests last run and results
 
@@ -84,6 +84,8 @@ No human blocker. Writing `.codex/` required and received a scoped environment p
 - 2026-09-05: post-commit `python3 scripts/check_bootstrap.py`: pass; Git worktree was clean before this progress-only update.
 - 2026-09-06: host prerequisite check: `mise 2026.8.14` available; Rust 1.98.0 exact; active Node 26.2.0 and pnpm 11.20.0 do not satisfy the approved packet.
 - 2026-09-06: Reviewer/high Phase 1A packet gate: pass — implementation-ready for Worker/low with no blocker/high/medium finding.
+- 2026-09-06: `git verify-commit c0a2d4d5cbb92b7127a4dba82f3a8094229068d9`: pass — good signature from the configured project user key.
+- 2026-09-06: user toolchain decision: use installed Node 26.2.0 and pnpm 11.20.0; do not install or switch runtimes. The interrupted `mise install` produced no active tool change.
 - 2026-09-05: tool/version and repository inspection: pass; expected no-commit `git log` failure observed.
 - No application tests exist yet.
 
@@ -101,15 +103,15 @@ None. Required application/test infrastructure is not implemented and is not cou
 - `docs/installation.md`, `docs/development.md`, `docs/implementation-plan.md`, `docs/orchestration.md`
 - `docs/error-contract.md`, `docs/adr/0001` through `0010`, `docs/task-packets/TEMPLATE.md`
 - `scripts/check_bootstrap.py`
-- `docs/task-packets/phase-1a-scaffold.md` and this progress update follow the Phase 0 commit.
+- `docs/task-packets/phase-1a-scaffold.md` was checkpointed at `c0a2d4d`; its toolchain pins plus `docs/architecture.md`, `docs/development.md`, and this ledger are amended in the current worktree by explicit user direction.
 
 ## Next recommended action
 
-Commit the approved packet/progress update, install Node 24.20.0 and pnpm 11.25.0 through user-level `mise` with permission, then delegate the packet to Worker/low.
+Validate and checkpoint the user-approved host-toolchain amendment, then delegate the exact packet to Worker/low without installing runtimes.
 
 ## Recommended agent role and reasoning effort
 
-Orchestrator — `gpt-5.6-sol`, high, for toolchain provisioning and handoff; Worker — `gpt-5.6-sol`, low, for the approved packet.
+Orchestrator — `gpt-5.6-sol`, high, for the toolchain amendment and handoff; Worker — `gpt-5.6-sol`, low, for the approved packet.
 
 ## Explicit restart instructions
 
@@ -118,4 +120,4 @@ Orchestrator — `gpt-5.6-sol`, high, for toolchain provisioning and handoff; Wo
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
 4. Confirm the Phase 0 commit/signature and reconcile any unexpected worktree changes.
 5. Read the independently approved `docs/task-packets/phase-1a-scaffold.md` and obey its exclusive file list/version pins.
-6. Confirm or provision Node 24.20.0 and pnpm 11.25.0, then delegate the exact packet to Worker/low; inspect its actual diff and run every gate before integration.
+6. Confirm active Node 26.2.0 and pnpm 11.20.0 without installing either, then delegate the exact packet to Worker/low; inspect its actual diff and run every gate before integration.

@@ -6,8 +6,8 @@ Last updated: 2026-09-05
 ## Prerequisites
 
 - Git 2.x.
-- Node 24 LTS. Node recommends LTS for production; current stack floors are lower but CI/development standardize on 24.
-- pnpm 11.x, pinned through root `packageManager` and lockfile.
+- Node 26.2.0, using the version already available on the project host by explicit user direction.
+- pnpm 11.20.0, using the version already available on the project host and pinned through root `packageManager` and lockfile.
 - Current stable Rust toolchain pinned by `rust-toolchain.toml` once scaffolded. Available bootstrap host: Cargo/Rust 1.98.0.
 - Linux Tauri/WebKitGTK build dependencies for the distribution.
 
