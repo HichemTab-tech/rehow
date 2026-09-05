@@ -1,19 +1,19 @@
 # Rehow Progress
 
-Last updated: 2026-09-05
+Last updated: 2026-09-06
 State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 0 — Bootstrap foundation.
+Phase 1 — Core foundation and format proof.
 
 ## Current task
 
-Review, validate, and commit the planning foundation; then create the Phase 1A scaffold packet.
+Provision the pinned user-level Node/pnpm toolchain, then delegate the approved Phase 1A scaffold packet to Worker/low.
 
 ## Overall status
 
-In progress. The repository began empty with no commits. The required planning/specification set, ten-ADR baseline, public error contract, project-local design skill, project-scoped Codex roles, and bootstrap checker exist in the working tree. Architect/xhigh, Reviewer/high, Design Reviewer/high, and Security Reviewer/xhigh gates pass after two correction rounds. The content is ready to stage; the first checkpoint commit has not yet occurred.
+In progress. Phase 0 is complete in a clean, signed, independently reviewed checkpoint. The Phase 1A monorepo-scaffold packet is complete and independently approved for Worker/low. The host has `mise` and exact Rust 1.98.0, but needs user-level Node 24.20.0 and pnpm 11.25.0 before implementation.
 
 ## Completed work
 
@@ -28,16 +28,18 @@ In progress. The repository began empty with no commits. The required planning/s
 - Parsed all 9 project TOML config files successfully with Python `tomllib`.
 - Ran Architect/xhigh, Reviewer/high, Design Reviewer/high, and Security Reviewer/xhigh planning reviews. Corrected renderer authority, revision/inventory semantics, recovery placement and crash state machine, category/path behavior, tested-state authority, safe Git staging/sync, MCP capability/approval behavior, Attachment handling, parser/scan limits, and public error parity.
 - Added canonical CBOR journal generations, strict primitive-dependent write refusal, fixed Attachment inventory caps, actual approval-helper descriptor confinement, and CommonMark-compatible fence validation in response to the second review round.
+- Created signed Phase 0 checkpoint `da646a9760f349074838151e0b66f78f5196fe6b`; its configured GPG signature verifies successfully.
+- Planner/medium created `docs/task-packets/phase-1a-scaffold.md` with frozen dependencies, exclusive paths, inert Tauri/MCP boundaries, generated-contract workflow, tests, commands, non-goals, and escalation conditions.
+- Reviewer/high approved the Phase 1A packet for Worker/low with no blocker, high, or medium finding.
 
 ## Work in progress
 
-- Stage and inspect the exact Phase 0 tree.
-- Create the signed planning checkpoint commit.
+- Orchestrator is checkpointing the approved packet and progress record, then must provision the exact user-level Node/pnpm versions before Worker handoff.
 
 ## Remaining work
 
-- Phase 0: obtain clean closure verdicts, inspect/stage the exact tree, commit, and produce a ready Phase 1A packet.
-- Phase 1: scaffold and prove content format/confinement/revision/atomic recovery.
+- Phase 1A: review the scaffold packet, delegate it to Worker/low, inspect implementation, run every packet check, obtain independent review, and commit the coherent scaffold.
+- Phase 1B onward: prove content format/confinement/revision/atomic recovery.
 - Phase 2: native shell and safe Workspace onboarding/import/migration.
 - Phase 3: Category/Guide/Attachment lifecycle and edit conflicts.
 - Phase 4: search/ranking/index performance.
@@ -68,7 +70,7 @@ No human blocker. Writing `.codex/` required and received a scoped environment p
 
 ## Latest verified commit
 
-None — repository has no commits yet. Current claims apply to a dirty, uncommitted planning tree.
+`da646a9760f349074838151e0b66f78f5196fe6b` — signed Phase 0 planning foundation. This progress update follows that commit and is intentionally uncommitted until the Phase 1A packet is reviewed.
 
 ## Tests last run and results
 
@@ -77,6 +79,11 @@ None — repository has no commits yet. Current claims apply to a dirty, uncommi
 - 2026-09-05: Architect/xhigh closure review: pass — no blocker/high architecture finding.
 - 2026-09-05: Reviewer/high Phase 0 content gate: pass — no blocker/high/medium finding.
 - 2026-09-05: Security Reviewer/xhigh closure review: pass — no blocker/high/medium security finding.
+- 2026-09-05: `git diff --cached --check` before Phase 0 commit: pass; exact 36-file staged snapshot inspected.
+- 2026-09-05: `git verify-commit da646a9760f349074838151e0b66f78f5196fe6b`: pass — good signature from the configured project user key.
+- 2026-09-05: post-commit `python3 scripts/check_bootstrap.py`: pass; Git worktree was clean before this progress-only update.
+- 2026-09-06: host prerequisite check: `mise 2026.8.14` available; Rust 1.98.0 exact; active Node 26.2.0 and pnpm 11.20.0 do not satisfy the approved packet.
+- 2026-09-06: Reviewer/high Phase 1A packet gate: pass — implementation-ready for Worker/low with no blocker/high/medium finding.
 - 2026-09-05: tool/version and repository inspection: pass; expected no-commit `git log` failure observed.
 - No application tests exist yet.
 
@@ -94,20 +101,21 @@ None. Required application/test infrastructure is not implemented and is not cou
 - `docs/installation.md`, `docs/development.md`, `docs/implementation-plan.md`, `docs/orchestration.md`
 - `docs/error-contract.md`, `docs/adr/0001` through `0010`, `docs/task-packets/TEMPLATE.md`
 - `scripts/check_bootstrap.py`
+- `docs/task-packets/phase-1a-scaffold.md` and this progress update follow the Phase 0 commit.
 
 ## Next recommended action
 
-Validate links/TOML/model pins once more, inspect the staged diff, and create the signed Phase 0 checkpoint commit. Then have Planner create `docs/task-packets/phase-1a-scaffold.md`.
+Commit the approved packet/progress update, install Node 24.20.0 and pnpm 11.25.0 through user-level `mise` with permission, then delegate the packet to Worker/low.
 
 ## Recommended agent role and reasoning effort
 
-Orchestrator — `gpt-5.6-sol`, high; create the checkpoint, then delegate Phase 1A packet creation to Planner/medium.
+Orchestrator — `gpt-5.6-sol`, high, for toolchain provisioning and handoff; Worker — `gpt-5.6-sol`, low, for the approved packet.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read `docs/product-spec.md`, `docs/architecture.md`, `docs/implementation-plan.md`, `docs/threat-model.md`, `docs/error-contract.md`, and ADRs 0001–0010.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Inspect the actual planning diff; do not assume Phase 0 is committed.
-5. Treat the recorded closure reviews as passed unless the actual tree differs from this record.
-6. Commit only when Phase 0 gate is satisfied; update this file with the real commit/tests and proceed to the Phase 1A packet.
+4. Confirm the Phase 0 commit/signature and reconcile any unexpected worktree changes.
+5. Read the independently approved `docs/task-packets/phase-1a-scaffold.md` and obey its exclusive file list/version pins.
+6. Confirm or provision Node 24.20.0 and pnpm 11.25.0, then delegate the exact packet to Worker/low; inspect its actual diff and run every gate before integration.
