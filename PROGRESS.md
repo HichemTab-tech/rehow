@@ -34,7 +34,7 @@ In progress. Phase 0 is complete in a clean, signed, independently reviewed chec
 
 ## Work in progress
 
-- Orchestrator is reconciling the explicit host-toolchain override into the approved packet before Worker handoff.
+- Worker/low created the Phase 1A scaffold and lockfiles within scope. Required checks stopped because Tauri codegen 2.6.3 requires `apps/desktop/src-tauri/icons/icon.png`, which the original allowlist omitted. The Orchestrator added one exact transparent compile-placeholder exception; Worker must resume validation without broadening scope.
 
 ## Remaining work
 
@@ -86,6 +86,7 @@ No human blocker. Writing `.codex/` required and received a scoped environment p
 - 2026-09-06: Reviewer/high Phase 1A packet gate: pass — implementation-ready for Worker/low with no blocker/high/medium finding.
 - 2026-09-06: `git verify-commit c0a2d4d5cbb92b7127a4dba82f3a8094229068d9`: pass — good signature from the configured project user key.
 - 2026-09-06: user toolchain decision: use installed Node 26.2.0 and pnpm 11.20.0; do not install or switch runtimes. The interrupted `mise install` produced no active tool change.
+- 2026-09-06: initial Worker/low run: frozen pnpm install, contract generation, `pnpm check`, and desktop Vitest 1/1 passed. Rust/Tauri compilation stopped at the missing default Unix icon; no out-of-scope file was added.
 - 2026-09-05: tool/version and repository inspection: pass; expected no-commit `git log` failure observed.
 - No application tests exist yet.
 
