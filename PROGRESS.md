@@ -9,11 +9,11 @@ Phase 1 — Core foundation and format proof.
 
 ## Current task
 
-Create the signed protocol/YAML decision checkpoint, then complete a separate Architect/xhigh Phase 1B construction/dependency decision before asking Planner/medium for a Worker packet.
+Complete the Architect/xhigh Phase 1B construction/dependency decision before asking Planner/medium for a Worker packet.
 
 ## Overall status
 
-In progress. Phase 0 and Phase 1A are complete in signed, independently reviewed checkpoints. Planner/medium correctly blocked Phase 1B instead of inventing public schema choices. The reviewed protocol/YAML baseline narrows Phase 1B to protocol primitives and directly constructed parser-neutral values, while product aggregate schemas are gated for Phase 1D. ADR 0011 is accepted after Architect, Reviewer, and Security Reviewer closure. No domain implementation has begun, and a separate Architect decision must still freeze Phase 1B construction semantics and dependencies before planning.
+In progress. Phase 0, Phase 1A, and the accepted protocol/YAML decision are complete in signed, independently reviewed checkpoints. Planner/medium correctly blocked Phase 1B instead of inventing public schema choices. The reviewed baseline narrows Phase 1B to protocol primitives and directly constructed parser-neutral values, while product aggregate schemas are gated for Phase 1D. No domain implementation has begun; Architect/xhigh must now freeze Phase 1B construction semantics and dependencies before planning.
 
 ## Completed work
 
@@ -38,10 +38,11 @@ In progress. Phase 0 and Phase 1A are complete in signed, independently reviewed
 - Xhigh architecture analysis selected code-correlated error variants, 32-item exact-count bounded lists, decimal-string JSON for 64-bit values, separate storage/protocol types, a parser-neutral YAML 1.2 semantic tree, and a dual bounded-semantic/lossless-span parser design.
 - Independent review narrowed Phase 1B away from underspecified Workspace/Category/Guide/Attachment aggregates and moved typed known-field binding/mutation authority behind a Phase 1D Architect gate.
 - Accepted ADR 0011 with exact pinned dual-parser boundaries, generic-versus-typed authority separation, source/decoded scalar reconciliation, implicit-empty handling, non-bypassable semantic construction, algorithm-independent numeric charging, deterministic semantic-key work, and lossless span-edit/refusal requirements.
+- Created signed protocol/YAML decision checkpoint `a0a5a0b4a782167368298025887f3642bd580633`; its configured GPG signature verifies successfully.
 
 ## Work in progress
 
-- Create and verify the signed documentation checkpoint for the accepted protocol/content/error baseline and ADR 0011.
+- Architect/xhigh is the next writer for a separate Phase 1B construction/dependency ADR or equivalent normative decision; it must not implement code or broaden Phase 1B.
 
 ## Remaining work
 
@@ -81,7 +82,7 @@ None known in the Phase 1A scaffold. The shell is intentionally inert and is not
 
 ## Latest verified commit
 
-`98f4bc391b4b11f9997e8bd17509177bf954c005` — signed Phase 1A verification ledger over the verified scaffold. The accepted protocol/parser specification work follows it and is staged for its signed decision checkpoint.
+`a0a5a0b4a782167368298025887f3642bd580633` — signed, independently reviewed protocol/YAML decision checkpoint containing accepted ADR 0011 and aligned specifications. This progress ledger update follows it.
 
 ## Tests last run and results
 
@@ -116,6 +117,7 @@ None known in the Phase 1A scaffold. The shell is intentionally inert and is not
 - 2026-09-06: final protocol/YAML decision gate: Architect/xhigh, Reviewer/high, and Security Reviewer/xhigh pass with no blocker/high/medium finding after exact parser-source, construction-visibility, phase-authority, PlanToken, numeric-work, and semantic-work corrections.
 - 2026-09-06: final checkpoint validation: `git diff --check`, bootstrap validation, `cargo fmt --all --check`, and `cargo test --workspace --all-features` pass. `git add` then failed before staging because `.git/index.lock` cannot be created in the read-only Git metadata mount.
 - 2026-09-06: resumed unrestricted session: installed Node 26.2.0 and pnpm 11.20.0 confirmed without installation or switching; full `pnpm check`, `git diff --check`, bootstrap validation, Cargo formatting, and all-feature Workspace tests pass. Git metadata write access is restored.
+- 2026-09-06: `git verify-commit a0a5a0b4a782167368298025887f3642bd580633`: pass — good signature from the configured project key; the post-commit worktree was clean before this progress-only ledger update.
 - 2026-09-05: tool/version and repository inspection: pass; expected no-commit `git log` failure observed.
 - No application tests exist yet.
 
@@ -135,15 +137,15 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `scripts/check_bootstrap.py`
 - `docs/task-packets/phase-1a-scaffold.md` was approved at `c0a2d4d`, amended for the user-selected host toolchain at `d06d17a`, and amended for Tauri's compile icon at `9300ccd`; its final pnpm 11 setting placement and this ledger follow `b8410d9` in the current worktree.
 - Phase 1A code/config: root pnpm/Cargo/toolchain/lock files, `apps/desktop/`, `crates/rehow-core/`, `crates/rehow-mcp/`, `packages/contracts/`, and contract scripts; checkpointed at `b8410d9`.
-- Current staged specification work: `docs/error-contract.md`, `docs/content-model.md`, `docs/architecture.md`, `docs/testing-strategy.md`, `docs/implementation-plan.md`, and accepted `docs/adr/0011-bounded-yaml-semantics-and-lossless-span-edits.md`.
+- Protocol/content/parser decision work is checkpointed at `a0a5a0b`; the current worktree contains only this progress ledger update.
 
 ## Next recommended action
 
-Stage only the seven documented decision files, inspect the cached diff, create/verify the signed protocol/YAML decision checkpoint, and confirm a clean tree. Then have Architect/xhigh freeze the separate Phase 1B construction/dependency decision; only after that passes should Planner/medium produce the narrower Worker packet.
+Have Architect/xhigh freeze the separate Phase 1B construction/dependency decision: exact dependency/manual choices, timestamp validation/canonicalization, identifier parse/generation visibility, clock/entropy injection, canonical token handling, safe-display/token constructors, and the fixed public message/recovery catalog. Independently review and checkpoint that decision; only then ask Planner/medium for the narrower Worker packet.
 
 ## Recommended agent role and reasoning effort
 
-Orchestrator — `gpt-5.6-sol`, high, to create and verify the signed checkpoint; then Architect/xhigh for the Phase 1B construction/dependency decision.
+Architect — `gpt-5.6-sol`, xhigh, for the Phase 1B construction/dependency decision; then Reviewer/high and Security Reviewer/xhigh before Planner/medium.
 
 ## Explicit restart instructions
 
@@ -151,6 +153,5 @@ Orchestrator — `gpt-5.6-sol`, high, to create and verify the signed checkpoint
 2. Read `docs/product-spec.md`, `docs/architecture.md`, `docs/implementation-plan.md`, `docs/threat-model.md`, `docs/error-contract.md`, and ADRs 0001–0010.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
 4. Confirm the Phase 0 commit/signature and reconcile any unexpected worktree changes.
-5. Verify `98f4bc3` and treat Phase 1A as accepted unless the actual tree/tests differ from this record.
-6. Stage only `PROGRESS.md`, `docs/architecture.md`, `docs/content-model.md`, `docs/error-contract.md`, `docs/implementation-plan.md`, `docs/testing-strategy.md`, and `docs/adr/0011-bounded-yaml-semantics-and-lossless-span-edits.md`; inspect `git diff --cached`, commit with configured signing, and verify the signature.
-7. Do not begin Phase 1B code from the decision docs alone. Complete a separate Architect/xhigh decision for Phase 1B dependencies, timestamp/identifier/token construction, public/private constructors, and fixed public text before asking Planner/medium for a precise Worker packet.
+5. Verify `a0a5a0b` and read accepted ADR 0011; treat the protocol/YAML baseline as accepted unless the actual tree/tests differ from this record.
+6. Do not begin Phase 1B code from the decision docs alone. Complete a separate Architect/xhigh decision for Phase 1B dependencies, timestamp/identifier/token construction, public/private constructors, and fixed public text before asking Planner/medium for a precise Worker packet.
