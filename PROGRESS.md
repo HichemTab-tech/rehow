@@ -9,11 +9,11 @@ Phase 1 — Core foundation and format proof.
 
 ## Current task
 
-Create and independently review the exact Phase 1B Worker packet from accepted ADRs 0011 and 0012.
+Implement the signed, independently reviewed Phase 1B protocol/domain packet with Worker/low, then inspect and verify the actual diff.
 
 ## Overall status
 
-In progress. Phase 0, Phase 1A, and the protocol/YAML baseline are complete in signed, independently reviewed checkpoints. Accepted ADR 0012 now freezes Phase 1B construction, dependencies, exhaustive protocol/TypeScript behavior, and the parser-neutral unknown-YAML builder. No Phase 1B code has begun; the next gate is a Planner/medium packet followed by Reviewer/high approval.
+In progress. Phase 0, Phase 1A, and the protocol/YAML baseline are complete in signed, independently reviewed checkpoints. Accepted ADR 0012 freezes Phase 1B construction, dependencies, exhaustive protocol/TypeScript behavior, and the parser-neutral unknown-YAML builder. The Planner/medium packet is signed and independently approved at `c3e3109`; no Phase 1B code has begun, and Worker/low implementation is now ready.
 
 ## Completed work
 
@@ -41,10 +41,11 @@ In progress. Phase 0, Phase 1A, and the protocol/YAML baseline are complete in s
 - Created signed protocol/YAML decision checkpoint `a0a5a0b4a782167368298025887f3642bd580633`; its configured GPG signature verifies successfully.
 - Accepted ADR 0012 after Architect/xhigh, Reviewer/high, and Security Reviewer/xhigh review. It freezes the exact Phase 1B dependency edges; parse-only UUIDv7, timestamp, decimal, digest, and plan-token values; safe-display validation; all 36 correlated errors and generated TypeScript declarations; producer-versus-consumer text authority; and the only bounded parser-neutral unknown-YAML construction API.
 - Corrected review findings covering `INDEX_NOT_READY` retryability, error-copy compatibility, deterministic bounded-list prefixes, nested Serde object rejection, exact TypeScript alias/union shape, unknown-YAML finish/error/accessor semantics, complete-root typed binding, IPv4-mapped IPv6 spelling, factory visibility/lint policy, and Cargo feature-unification evidence.
+- Planner/medium created `docs/task-packets/phase-1b-protocol-domain.md`; Reviewer/high corrected impossible nominal TypeScript assertions, test-harness filesystem wording, construction-error visibility, dependency lock-resolution steps, and dirty-tree dispatch semantics, then passed the packet with no blocker/high/medium finding. Security Reviewer/xhigh passed the correction delta.
 
 ## Work in progress
 
-- No implementation is in progress. Planner/medium is the next writer and may create only the Phase 1B task packet.
+- No implementation is in progress. Worker/low is the next writer and has exclusive ownership only of the paths named by the signed Phase 1B packet.
 
 ## Remaining work
 
@@ -85,7 +86,7 @@ None known in the Phase 1A scaffold. The shell is intentionally inert and is not
 
 ## Latest verified commit
 
-`f35302db57d43db4c45ea7af56a57134b5995d03` — signed, independently reviewed Phase 1B construction/dependency decision containing accepted ADR 0012 and aligned specifications. This progress ledger update follows it.
+`c3e3109351a98043485955732ed30a85e5cb01f3` — signed, independently reviewed Phase 1B implementation packet plus the lint-safe construction-error visibility clarification. This progress ledger update follows it.
 
 ## Tests last run and results
 
@@ -127,6 +128,9 @@ None known in the Phase 1A scaffold. The shell is intentionally inert and is not
 - 2026-09-06: current `python3 scripts/check_bootstrap.py`: pass — 17 required files, 12 ADRs, 8 pinned agents; `git diff --check`: pass. Installed runtime checks remain Node 26.2.0 and pnpm 11.20.0; neither was installed or switched by this work.
 - 2026-09-06: Phase 1B decision checkpoint validation: `pnpm check`, `cargo fmt --all --check`, `cargo test --workspace --all-features --locked` (3/3), bootstrap validation, and staged whitespace check pass.
 - 2026-09-06: `git verify-commit f35302db57d43db4c45ea7af56a57134b5995d03`: pass — good signature from the configured project key.
+- 2026-09-06: Planner/medium Phase 1B packet: complete — all required template fields, exact allowed paths/behavior/tests/commands/non-goals/escalations, no implementation changes.
+- 2026-09-06: Reviewer/high Phase 1B packet closure and Security Reviewer/xhigh correction-delta review: pass — no blocker/high/medium finding.
+- 2026-09-06: `git verify-commit c3e3109351a98043485955732ed30a85e5cb01f3`: pass — good signature from the configured project key; bootstrap and staged whitespace checks passed before commit.
 - 2026-09-05: tool/version and repository inspection: pass; expected no-commit `git log` failure observed.
 - No application tests exist yet.
 
@@ -147,14 +151,15 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `docs/task-packets/phase-1a-scaffold.md` was approved at `c0a2d4d`, amended for the user-selected host toolchain at `d06d17a`, and amended for Tauri's compile icon at `9300ccd`; its final pnpm 11 setting placement and this ledger follow `b8410d9` in the current worktree.
 - Phase 1A code/config: root pnpm/Cargo/toolchain/lock files, `apps/desktop/`, `crates/rehow-core/`, `crates/rehow-mcp/`, `packages/contracts/`, and contract scripts; checkpointed at `b8410d9`.
 - Protocol/content/parser decisions through accepted ADR 0012 and aligned content/error-contract corrections are checkpointed at `f35302d`.
+- `docs/task-packets/phase-1b-protocol-domain.md` and its narrow ADR 0012 visibility clarification are checkpointed at `c3e3109`.
 
 ## Next recommended action
 
-Have Planner/medium create `docs/task-packets/phase-1b-protocol-domain.md` from accepted ADRs 0011 and 0012. Reviewer/high must approve the packet before Worker/low implementation begins.
+Delegate signed `docs/task-packets/phase-1b-protocol-domain.md` to Worker/low. On return, inspect every changed file and lockfile package, run the packet's full gate, and request corrections before independent implementation reviews.
 
 ## Recommended agent role and reasoning effort
 
-Planner — `gpt-5.6-sol`, medium, for the exact Phase 1B Worker packet; then Reviewer/high before Worker/low.
+Worker — `gpt-5.6-sol`, low, for only the signed Phase 1B packet; then Orchestrator inspection, Reviewer/high, and Security Reviewer/xhigh.
 
 ## Explicit restart instructions
 
@@ -162,5 +167,5 @@ Planner — `gpt-5.6-sol`, medium, for the exact Phase 1B Worker packet; then Re
 2. Read `docs/product-spec.md`, `docs/architecture.md`, `docs/implementation-plan.md`, `docs/threat-model.md`, `docs/error-contract.md`, and accepted ADRs 0011–0012.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
 4. Confirm the Phase 0 commit/signature and reconcile any unexpected worktree changes.
-5. Verify `a0a5a0b` and read accepted ADR 0011; treat the protocol/YAML baseline as accepted unless the actual tree/tests differ from this record.
-6. Do not begin Phase 1B code from the decision docs alone. Create and independently approve `docs/task-packets/phase-1b-protocol-domain.md`, then delegate only that packet to Worker/low.
+5. Verify `c3e3109`, then read accepted ADRs 0011–0012 and `docs/task-packets/phase-1b-protocol-domain.md`.
+6. Delegate only the signed packet to Worker/low. Preserve and exclude untracked `x`; after the Worker returns, inspect the actual diff and run the full packet gate before review or commit.
