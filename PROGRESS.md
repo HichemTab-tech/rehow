@@ -85,7 +85,7 @@ None known in the Phase 1A scaffold. The shell is intentionally inert and is not
 
 ## Latest verified commit
 
-`a0a5a0b4a782167368298025887f3642bd580633` — signed, independently reviewed protocol/YAML decision checkpoint containing accepted ADR 0011 and aligned specifications. This progress ledger update follows it.
+`f35302db57d43db4c45ea7af56a57134b5995d03` — signed, independently reviewed Phase 1B construction/dependency decision containing accepted ADR 0012 and aligned specifications. This progress ledger update follows it.
 
 ## Tests last run and results
 
@@ -125,6 +125,8 @@ None known in the Phase 1A scaffold. The shell is intentionally inert and is not
 - 2026-09-06: Phase 1B Security Reviewer/xhigh full and post-correction delta reviews: pass — no blocker/high/medium finding.
 - 2026-09-06: Phase 1B Reviewer/high closure after protocol, TypeScript, retryability, Serde, feature-unification, and builder-semantic corrections: pass — no blocker/high/medium finding.
 - 2026-09-06: current `python3 scripts/check_bootstrap.py`: pass — 17 required files, 12 ADRs, 8 pinned agents; `git diff --check`: pass. Installed runtime checks remain Node 26.2.0 and pnpm 11.20.0; neither was installed or switched by this work.
+- 2026-09-06: Phase 1B decision checkpoint validation: `pnpm check`, `cargo fmt --all --check`, `cargo test --workspace --all-features --locked` (3/3), bootstrap validation, and staged whitespace check pass.
+- 2026-09-06: `git verify-commit f35302db57d43db4c45ea7af56a57134b5995d03`: pass — good signature from the configured project key.
 - 2026-09-05: tool/version and repository inspection: pass; expected no-commit `git log` failure observed.
 - No application tests exist yet.
 
@@ -144,11 +146,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `scripts/check_bootstrap.py`
 - `docs/task-packets/phase-1a-scaffold.md` was approved at `c0a2d4d`, amended for the user-selected host toolchain at `d06d17a`, and amended for Tauri's compile icon at `9300ccd`; its final pnpm 11 setting placement and this ledger follow `b8410d9` in the current worktree.
 - Phase 1A code/config: root pnpm/Cargo/toolchain/lock files, `apps/desktop/`, `crates/rehow-core/`, `crates/rehow-mcp/`, `packages/contracts/`, and contract scripts; checkpointed at `b8410d9`.
-- Protocol/content/parser decision work through ADR 0011 is checkpointed at `a0a5a0b`; accepted ADR 0012 and its companion content/error-contract corrections are the current deliberate documentation change.
+- Protocol/content/parser decisions through accepted ADR 0012 and aligned content/error-contract corrections are checkpointed at `f35302d`.
 
 ## Next recommended action
 
-Checkpoint accepted ADR 0012 and its aligned specifications, then have Planner/medium create `docs/task-packets/phase-1b-protocol-domain.md`. Reviewer/high must approve the packet before Worker/low implementation begins.
+Have Planner/medium create `docs/task-packets/phase-1b-protocol-domain.md` from accepted ADRs 0011 and 0012. Reviewer/high must approve the packet before Worker/low implementation begins.
 
 ## Recommended agent role and reasoning effort
 
