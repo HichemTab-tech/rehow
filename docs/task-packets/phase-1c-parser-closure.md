@@ -31,13 +31,17 @@
     intentional uncommitted continuation after it.
   - Before Integrator dispatch, this closure packet must itself have a later
     reviewed signed packet checkpoint, followed by a separate signed
-    `PROGRESS.md` recovery-ledger checkpoint. `PROGRESS.md` records both exact
-    hashes and names this packet/Integrator-medium closure as the next action.
-    The Integrator verifies both signatures and requires the recovery-ledger
-    commit to be current `HEAD`. That future post-ledger `HEAD`, not `b083ceb`,
-    is the Git comparison base for implementation-diff scope and final staging;
-    the hashes below independently freeze the rejected implementation content
-    that remains dirty across the documentation-only checkpoints.
+    `PROGRESS.md` recovery-ledger checkpoint. `PROGRESS.md` records the exact
+    closure-packet hash and names this packet/Integrator-medium closure as the
+    next action. A commit cannot contain its own hash; instead, the Integrator
+    verifies the packet signature, verifies current `HEAD`'s signature,
+    confirms `HEAD^` is the packet checkpoint, confirms the ledger commit
+    changes only `PROGRESS.md`, and confirms both `PROGRESS.md` and this packet
+    match signed `HEAD` in the index and worktree.
+    That verified post-ledger `HEAD`, not `b083ceb`, is the Git comparison base
+    for implementation-diff scope and final staging; the hashes below
+    independently freeze the rejected implementation content that remains
+    dirty across the documentation-only checkpoints.
   - The original packet's pre-edit release measurement, six baseline trees,
     single `cargo fetch`, A/B/C supply-chain audit, Security Reviewer approval,
     and first changed-graph command
@@ -495,8 +499,11 @@
      git verify-commit f39d7ab
      git verify-commit c98ab13
      git verify-commit <reviewed-closure-packet-checkpoint-from-PROGRESS>
-     git verify-commit <post-packet-recovery-ledger-HEAD-from-PROGRESS>
-     test "$(git rev-parse HEAD)" = "<post-packet-recovery-ledger-HEAD-from-PROGRESS>"
+     git verify-commit HEAD
+     test "$(git rev-parse HEAD^)" = "<reviewed-closure-packet-checkpoint-from-PROGRESS>"
+     test "$(git diff-tree --no-commit-id --name-only -r HEAD)" = "PROGRESS.md"
+     git diff --cached --quiet HEAD -- PROGRESS.md docs/task-packets/phase-1c-parser-closure.md
+     git diff --quiet -- PROGRESS.md docs/task-packets/phase-1c-parser-closure.md
      sha256sum Cargo.lock crates/rehow-core/Cargo.toml crates/rehow-core/src/lib.rs crates/rehow-core/src/domain.rs crates/rehow-core/src/domain/yaml_value.rs crates/rehow-core/src/parsing/mod.rs crates/rehow-core/src/parsing/source.rs crates/rehow-core/src/parsing/presentation.rs crates/rehow-core/src/parsing/semantic.rs crates/rehow-core/src/parsing/scalar.rs crates/rehow-core/src/parsing/reconcile.rs crates/rehow-core/tests/public_api.rs docs/evidence/phase-1c-dependencies.md docs/evidence/phase-1c-parser-matrix.md
      find crates/rehow-core/src/parsing/tests crates/rehow-core/tests/ui -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum
      cargo check -p rehow-core --locked
@@ -621,9 +628,13 @@
   - The frozen dependency pins/lock remain byte-identical, final Cargo trees
     match the audited post-resolution graph, generated TypeScript remains at
     its frozen hash, and only allowed Phase 1C implementation files differ from
-    the signed post-packet recovery-ledger `HEAD` recorded in `PROGRESS.md` at
-    dispatch. The listed hashes and aggregate recipe prove that the rejected
-    implementation content was unchanged while the packet and ledger
+    the signed post-packet recovery-ledger `HEAD` verified directly at
+    dispatch. `PROGRESS.md` records the signed packet parent; the ledger is
+    proved as current `HEAD`, a signed direct child that changes only the clean
+    `PROGRESS.md`, while both that file and the closure packet are proved clean
+    against signed `HEAD` in the index and worktree. The listed hashes and
+    aggregate recipe prove that the
+    rejected implementation content was unchanged while the packet and ledger
     checkpoints were added; `b083ceb` is provenance for that dirty content,
     not the final diff/staging comparison base.
   - Both entries obey exact envelope/source precedence; Guide body is UTF-8
@@ -667,9 +678,11 @@
 - **Conditions requiring escalation:** Stop without guessing if any frozen
   hash/signature/base differs; the reviewed closure-packet checkpoint or its
   separate recovery-ledger checkpoint is absent or unsigned, `PROGRESS.md`
-  does not name both exact hashes, dispatch `HEAD` is not that ledger commit,
-  or the dirty implementation differs from the recorded hash recipes; another
-  writer overlaps an allowed path; the
+  does not name the exact packet hash, dispatch `HEAD` is not a signed direct
+  child of that packet commit changing only `PROGRESS.md`, either that ledger
+  file or this packet differs from signed `HEAD` in the index or worktree, or
+  the dirty implementation differs from the recorded hash recipes; another writer
+  overlaps an allowed path; the
   accepted dependency graph drifts; a pin/feature/API/event/`SyntaxKind` differs
   from audited source; ADR 0013 conflicts internally or proves infeasible; the
   exact source/pending/tail/scalar/reconciliation/comment algorithm cannot be
