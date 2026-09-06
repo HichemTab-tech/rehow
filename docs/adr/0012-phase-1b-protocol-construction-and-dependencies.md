@@ -455,9 +455,12 @@ can safely produce; they may not expose arbitrary catalog/value construction.
 Path- and Git-bearing factories remain inaccessible outside the protocol module
 until their provenance gates pass. No broader lint allowance is permitted.
 
-Every factory returns `Result<ErrorDto, ErrorConstructionError>`; the private
-fixed error exposes no supplied value. Construction and deserialization enforce
-these additional correlations: schema minimum and maximum are positive with
+Every factory returns `Result<ErrorDto, ErrorConstructionError>`.
+`ErrorConstructionError` is `pub(super)` so the factory signatures pass the
+`private_interfaces` lint, but it is an opaque braced struct with a private unit
+field, no public constructor, and no supplied value; it remains inaccessible
+outside `protocol`. Construction and deserialization enforce these additional
+correlations: schema minimum and maximum are positive with
 minimum no greater than maximum and `foundVersion` is outside that inclusive
 range; limit-exceeded observations are strictly greater than their limits;
 duplicate-ID total count is at least two; expected and actual conflict tokens
