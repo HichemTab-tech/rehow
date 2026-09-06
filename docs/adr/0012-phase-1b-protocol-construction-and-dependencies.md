@@ -318,9 +318,17 @@ uppercase byte escapes. Neither type exposes decoded bytes in 1B.
 `SafeHost::parse_wire` accepts exactly `unknown`, the DNS/IPv4/IPv6 forms in
 `docs/error-contract.md`, and no trailing dot. It parses IP literals with
 `std::net`, reformats them, and requires exact equality; DNS is preflighted
-label-by-label. Unicode, uppercase, userinfo, brackets, zone IDs, port, path,
-query, and fragment syntax are rejected. None of these wrappers is ever passed
-to a filesystem or subprocess. IPv4-mapped IPv6 uses the Rust 1.98 canonical
+label-by-label. Before DNS fallback, an entire candidate whose dot-separated
+components each match ASCII `[0-9]+` or `0x[0-9a-f]+` is reserved as
+IPv4-shaped; only a value that parses and reformats as canonical dotted-decimal
+IPv4 is accepted. This rejects legacy decimal, octal, hexadecimal, mixed-base,
+and shortened IPv4 aliases such as `2130706433`, `017700000001`,
+`0x7f000001`, `0x7f.1`, and `127.1`. Numeric-only DNS names are deferred until
+the Git host-extraction and resolver boundary is frozen. Unicode, uppercase,
+userinfo, brackets,
+zone IDs, port, path, query, and fragment syntax are rejected. None of these
+wrappers is ever passed to a filesystem or subprocess. IPv4-mapped IPv6 uses
+the Rust 1.98 canonical
 `Ipv6Addr::to_string()` spelling: for example, `::ffff:192.0.2.128` is accepted
 and the equivalent hexadecimal-tail spelling `::ffff:c000:280` is rejected.
 
@@ -875,7 +883,11 @@ The implementation packet must require all of the following:
 - Safe display exact/one-over bounds, all prohibited scalar classes,
   noncharacters, invalid UTF-8 byte escapes, raw/lowercase/noncanonical `%`
   escapes, encoded slash/dot traversal, empty segments, DNS label/host limits,
-  canonical IPv4/IPv6, and URL/userinfo/port/zone rejection.
+  canonical IPv4 acceptance at `0.0.0.0` and `255.255.255.255`, rejection of
+  numeric-only DNS and legacy aliases including `123`, `123.456`, `127.1`,
+  `2130706433`, `017700000001`, `0x7f000001`, and `0x7f.1`, rejection of
+  `127.00.0.1`, `256.0.0.1`, empty labels, and a trailing dot, canonical IPv6,
+  and URL/userinfo/port/zone rejection.
 - One golden JSON fixture for each of the 36 error codes; exact seven top-level
   keys; every required/optional detail; omitted-versus-null behavior; all five
   retryable cases and code/details/retryability mismatch rejection; producer
