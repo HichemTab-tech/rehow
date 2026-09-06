@@ -9,11 +9,11 @@ Phase 1 — Core foundation and format proof.
 
 ## Current task
 
-Correct the independently rejected ADR 0013 Phase 1C parser/reconciliation proposal, then repeat its Reviewer/high and Security Reviewer/xhigh decision gates. Only an accepted decision may proceed to Planner/medium.
+Create and independently review an exact Phase 1C parser/reconciliation task packet from accepted ADR 0013. Implementation remains blocked until the packet gate passes.
 
 ## Overall status
 
-In progress. Phase 0, Phase 1A, and Phase 1B are complete in signed, independently reviewed checkpoints. Phase 1B is accepted at `df067b2`. The first ADR 0013 decision gate found one high and multiple medium correctness/security/feasibility defects; Architect/xhigh is correcting the uncommitted proposal. No Phase 1C task packet or code is approved.
+In progress. Phase 0, Phase 1A, and Phase 1B are complete in signed, independently reviewed checkpoints. Phase 1B is accepted at `df067b2`. Phase 1C's parser/reconciliation architecture is accepted at signed checkpoint `f39d7ab` after iterative Architect/xhigh correction and fresh Reviewer/high, Security Reviewer/xhigh, and feasibility passes. No Phase 1C task packet or code is approved yet.
 
 ## Completed work
 
@@ -47,7 +47,7 @@ In progress. Phase 0, Phase 1A, and Phase 1B are complete in signed, independent
 
 ## Work in progress
 
-- Architect/xhigh is the sole writer correcting untracked ADR 0013 after independent Reviewer/high, Security Reviewer/xhigh, and Integrator/medium rejection. Required corrections cover exact artifact APIs, failure reachability/precedence, tag differentials, bounded comment ownership, post-mismatch correspondence, test seams, lint policy, and exhaustive dependency-kind handling.
+- Planner/medium is next to translate accepted ADR 0013 into one exact worker-ready Phase 1C packet. The Orchestrator must inspect it and obtain independent Reviewer/high and Security Reviewer/xhigh packet passes before dispatch.
 
 ## Remaining work
 
@@ -63,7 +63,7 @@ In progress. Phase 0, Phase 1A, and Phase 1B are complete in signed, independent
 
 None known in accepted Phase 1A or Phase 1B. The shell remains intentionally inert and is not yet product functionality.
 
-The unaccepted ADR 0013 proposal has known decision defects recorded under Work in progress; they are not accepted product behavior.
+No known defect remains in accepted ADR 0013; its rejected draft findings remain recorded historically below.
 
 ## Design and accessibility findings
 
@@ -82,7 +82,7 @@ The unaccepted ADR 0013 proposal has known decision defects recorded under Work 
 - Phase 1B decision Security Reviewer/xhigh passes the full decision and the correction delta with no blocker/high/medium finding. Construction remains parse/validation-only, output text is provenance-controlled, path/Git factories stay protocol-private, and the unknown-YAML builder is bounded and poisoning.
 - The initial Phase 1B implementation security rejection was fully corrected. Final Security Reviewer/xhigh review passes with no blocker/high/medium finding; no filesystem, Git, Markdown rendering, Tauri command, or MCP mutation authority was added.
 - SafeHost v1 rejects legacy decimal/octal/hexadecimal/shortened IPv4 aliases before DNS fallback. Architect/xhigh, Reviewer/high, and Security Reviewer/xhigh approved and verified the implemented classifier and adversarial vectors.
-- ADR 0013 security gate is rejected pending a linear-time comment/correspondence algorithm, unambiguous source-versus-decoded tag/merge precedence, reachable exhaustive fault evidence, and non-forged entry/comment ownership after structural disagreement.
+- ADR 0013 final Security Reviewer/xhigh closure passes. It freezes bounded source/event traces, symmetric tag/merge guards, fail-closed borrowed-text exhaustion, linear comment/correspondence work, non-forged proven-prefix ownership, sanitized failures, and test-build-only fault seams.
 
 ## Blockers and human checkpoints
 
@@ -92,7 +92,7 @@ The unaccepted ADR 0013 proposal has known decision defects recorded under Work 
 
 ## Latest verified commit
 
-`43212be` — signed Phase 1B acceptance/recovery ledger; `git verify-commit 43212be` passes with the configured project key. This progress update follows it; latest accepted implementation remains `df067b2`.
+`f39d7ab` — signed, independently reviewed Phase 1C parser/reconciliation architecture decision; `git verify-commit f39d7ab` passes with the configured project key. This progress update follows it; latest accepted implementation remains `df067b2`.
 
 ## Tests last run and results
 
@@ -150,6 +150,10 @@ The unaccepted ADR 0013 proposal has known decision defects recorded under Work 
 - 2026-09-06: initial ADR 0013 Reviewer/high gate: changes required — one high and four medium findings; the required failure/fixture matrix is partly unreachable, Saphyr precedence lacks a bounded algorithm, tag behavior after structural disagreement conflicts, authority-bearing APIs are underspecified, and invalid-UTF-8 positioning is ambiguous.
 - 2026-09-06: initial ADR 0013 Security Reviewer/xhigh gate: changes required — one high and three medium findings; comment correspondence lacks a linear-work bound, source/decoded checks conflict, fault seams are incomplete, and post-disagreement IDs could fabricate correspondence.
 - 2026-09-06: ADR 0013 Integrator/medium feasibility gate: changes required — two high and four medium findings, including inaccessible builder-meter test controls, undefined entry retention after disagreement, missing dead-code policy, incomplete no-wildcard `SyntaxKind` matching, positioned-error ordering, and implicit trait/accessor surfaces. Pinned dependency APIs/MSRVs/revisions were verified feasible from local sources.
+- 2026-09-06: final ADR 0013 Reviewer/high closure at semantic SHA `b58eb3c3935f8cae6f7e19f7faaaca0d219135553893e9b83b44979a6c11768c`: pass — no blocker/high/medium finding.
+- 2026-09-06: final ADR 0013 Security Reviewer/xhigh closure at the same semantic SHA: pass — no blocker/high/medium finding; symmetric source/event merge guards and borrowed-text terminal behavior are fail-closed and bounded.
+- 2026-09-06: final ADR 0013 feasibility closure: pass — no blocker/high/medium finding; exact APIs, dependency calls, counters, `cfg(test)` bridge, tail descriptors, and evidence plan are implementable against Phase 1B.
+- 2026-09-06: ADR 0013 whitespace, 48-fence balance, bootstrap validation, exact one-file staged inspection, signed commit, and `git verify-commit f39d7ab`: pass. The post-commit worktree contains only unrelated untracked `x`.
 - 2026-09-05: tool/version and repository inspection: pass; expected no-commit `git log` failure observed.
 - The current desktop/MCP shells have smoke tests; product workflow tests begin with the applicable implementation phases.
 
@@ -172,21 +176,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - Protocol/content/parser decisions through accepted ADR 0012 and aligned content/error-contract corrections are checkpointed at `f35302d`.
 - `docs/task-packets/phase-1b-protocol-domain.md` and its narrow ADR 0012 visibility clarification are checkpointed at `c3e3109`.
 - Phase 1B implementation and evidence are checkpointed at signed commit `df067b2`.
-- `docs/adr/0013-phase-1c-parser-and-reconciliation-contract.md` is an untracked proposal under review; it is not yet accepted or committed.
+- `docs/adr/0013-phase-1c-parser-and-reconciliation-contract.md` is accepted and checkpointed at signed commit `f39d7ab`.
 
 ## Next recommended action
 
-Inspect Architect/xhigh's corrected ADR 0013, repeat independent Reviewer/high and Security Reviewer/xhigh gates, and commit it only after both pass. Then ask Planner/medium for an exact Phase 1C task packet.
+Have Planner/medium create the exact Phase 1C packet from `docs/task-packets/TEMPLATE.md` and accepted ADR 0013, then inspect and independently review it before any implementation dispatch.
 
 ## Recommended agent role and reasoning effort
 
-Architect — `gpt-5.6-sol`, xhigh, for the active correction; then Reviewer/high and Security Reviewer/xhigh for fresh gates.
+Planner — `gpt-5.6-sol`, medium, then Reviewer/high and Security Reviewer/xhigh for the packet gate.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read `docs/product-spec.md`, `docs/architecture.md`, `docs/implementation-plan.md`, `docs/threat-model.md`, `docs/error-contract.md`, and accepted ADRs 0011–0012.
+2. Read `docs/product-spec.md`, `docs/architecture.md`, `docs/implementation-plan.md`, `docs/threat-model.md`, `docs/error-contract.md`, and accepted ADRs 0011–0013.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
 4. Verify signed Phase 1B checkpoint `df067b2` and reconcile any unexpected worktree changes.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Inspect the corrected untracked ADR 0013, compare it with the recorded rejection findings, and repeat independent correctness/security gates. Do not create a Phase 1C packet or implementation until the ADR is accepted.
+6. Read accepted ADR 0013 at `f39d7ab`; create or review the Phase 1C task packet. Do not dispatch implementation until the packet has independent correctness and security passes.
