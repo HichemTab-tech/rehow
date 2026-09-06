@@ -1,7 +1,7 @@
 # Rehow Architecture
 
 Status: proposed baseline; ADRs govern conflicts
-Last updated: 2026-09-05
+Last updated: 2026-09-06
 
 ## Goals and quality attributes
 
@@ -54,7 +54,7 @@ Owns window lifecycle, dialogs, application preferences, IPC serialization, and 
 
 ### `rehow-core`
 
-Owns Workspace classification, compatibility, schemas, parsing/serialization, unknown metadata preservation, identifiers, constrained paths, atomic/revisioned mutation, recovery, watching, search/index lifecycle, Git discovery/status/actions, diagnostics, and audit-safe change summaries. It has no Tauri or MCP dependency.
+Owns Workspace classification, compatibility, schemas, parsing/serialization, unknown metadata preservation, identifiers, constrained paths, atomic/revisioned mutation, recovery, watching, search/index lifecycle, Git discovery/status/actions, diagnostics, and audit-safe change summaries. Its parser-neutral YAML 1.2 semantic values are separate from the private presentation/span artifact and exact source bytes; semantic values alone are never a write source. It has no Tauri or MCP dependency.
 
 ### MCP adapter
 
@@ -63,6 +63,10 @@ Owns MCP schema/transport mapping, configured Workspace selection, confirmation 
 ### Contracts
 
 Rust request/response schemas are authoritative. Generate TypeScript definitions during development and fail CI if checked-in contracts are stale. Do not hand-maintain duplicate enum/string contracts.
+
+Portable storage/domain records and JSON protocol DTOs are deliberately distinct mapped types. This prevents serializer-dependent ambiguity and keeps YAML-specific unknown values out of an accidental JSON-shaped model. Category `order`, for example, is domain `i64` and a YAML integer, while its JSON DTO is a validated canonical decimal string generated to TypeScript as `string`; JSON numbers and JavaScript `bigint` are not the wire form. `ErrorDto` uses a code-correlated discriminated Rust enum with private constructors rather than an open details map. Exact shapes and bounded lists are in `docs/error-contract.md`.
+
+Accepted ADR 0011 owns the dual semantic/presentation YAML strategy. Phase 1C may implement only its generic parser/reconciliation artifact; Phase 1D alone binds product known fields and creates typed metadata-edit authority.
 
 ## Runtime data flow
 
@@ -79,7 +83,7 @@ Rust request/response schemas are authoritative. Generate TypeScript definitions
 2. The UI edits a buffer. Watch events are invalidation hints and are debounced.
 3. Save sends the stable Guide ID, intended patch/full content, and expected revision.
 4. The core re-reads, checks revision and schema, preserves unknown metadata, writes atomically, updates/rebuilds the index entry, and emits a change event.
-5. A mismatch returns `REVISION_CONFLICT` with current metadata and comparison material; it never silently overwrites. The Linux exchange-based preservation algorithm and residual same-user limitation are specified in ADR 0009.
+5. A mismatch returns the exact `REVISION_CONFLICT` identifiers/revisions in `docs/error-contract.md`; it never silently overwrites or embeds content/comparison material in the error. The UI may explicitly re-read the current Guide through the normal read use case before offering a comparison view. The Linux exchange-based preservation algorithm and residual same-user limitation are specified in ADR 0009.
 
 ### Search
 
@@ -220,7 +224,7 @@ Primary platform references are recorded in `docs/development.md` and relevant A
 
 ## Observability and privacy
 
-Local logs contain operation kind, durations, IDs, relative redacted paths when necessary, and structured error codes. They exclude Guide bodies, command text, secrets, Attachment bytes, credential URLs, and environment dumps. A user can copy a sanitized diagnostic bundle; nothing is uploaded automatically.
+Local logs contain only fixed operation/telemetry labels, durations, request/incident IDs, and structured error codes. They never serialize `ErrorDto` text/details, entity IDs/paths, Guide bodies, command text, secrets, Attachment bytes, credential URLs, or environment values. A future user-exported diagnostic bundle requires a separate reviewed, explicit sanitization flow; nothing is uploaded automatically.
 
 ## Failure behavior
 

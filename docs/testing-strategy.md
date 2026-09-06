@@ -1,7 +1,7 @@
 # Testing Strategy
 
 Status: bootstrap baseline
-Last updated: 2026-09-05
+Last updated: 2026-09-06
 
 ## Principles
 
@@ -50,6 +50,14 @@ Mock at the generated IPC client boundary, not individual internal hooks, so tes
 - Snapshot Workspace/Category/Guide JSON/YAML compatibility fixtures and public error details.
 - Run the same application-use-case fixtures through Tauri adapter tests and MCP handler tests.
 - Verify older clients receive stable fields/codes or an explicit version incompatibility.
+- Cover every `ErrorDto` code with exact keys/types, required-property rejection, optional omission, code/retryability mismatch rejection, forbidden-control/display-value validation, and adapter parity. Phase 1B does not claim raw filesystem/Git redaction tests; those are mandatory when their reviewed constructors are introduced. `BoundedList` vectors cover exact 2/2, truncated 40/32, 33/32, 32/32, 0/0, more than 32 items, and every inconsistent count/flag combination.
+- Cover Category order at `i64` minimum/maximum, zero, JavaScript's safe-integer boundary and one beyond; reject JSON numbers, `+1`, `01`, `-0`, whitespace, and overflow strings while YAML remains an integer.
+
+### YAML semantic and presentation tests
+
+ADR 0011's parser gate includes exact-limit and one-over byte/depth/map/sequence/node/scalar inputs; invalid UTF-8 and BOM locations; LF/CRLF/bare-CR/mixed newline envelopes; missing/extra delimiters and separators; multiple documents; every anchor/alias/merge/custom-tag form; accepted explicit core tags; and semantic duplicate keys across alternate scalar spellings, nesting, flow/block collections, complex keys, and comments.
+
+Unknown-value fixtures cover null, Boolean, string, arbitrary-size integers within the scalar cap, lossless finite floats, infinities/NaN/negative zero, ordered nested maps/sequences, and complex keys. Presentation fixtures prove no-op body-save identity, trusted deterministic emitter output, and safe/refused edits over comments, unknown descendants, key order, quoting, Unicode, BOM, newline style, and final-newline absence. Property/fuzz tests assert bounded termination/work, no panic, reparsing, exact declared semantic change, and byte identity outside authorized spans.
 
 ### MCP transport tests
 

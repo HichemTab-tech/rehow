@@ -1,7 +1,7 @@
 # Gated Implementation Plan
 
 Status: approved bootstrap sequence
-Last updated: 2026-09-05
+Last updated: 2026-09-06
 
 ## Gate rules
 
@@ -30,10 +30,11 @@ Objective: prove the riskiest content-durability and confinement choices before 
 Milestones:
 
 1. Scaffold minimal pnpm + Cargo workspace, pinned toolchains, checks, and generated-contract workflow.
-2. Implement domain IDs, DTO/error baseline, Workspace manifest and Category/Guide schemas.
-3. Implement bounded YAML/frontmatter parse and deterministic/round-trip-safe write strategy.
-4. Implement capability-confined regular-file reads, symlink/hardlink rejection, exact revision/inventory vectors, the fixed Markdown/YAML and Attachment count/per-file/aggregate scan limits in `docs/content-model.md`, atomic no-replace/exchange single-file writes, and the full ADR 0009 recovery journal/object state machine.
-5. Add isolated malicious/round-trip/crash/concurrency fixtures and a minimal CLI/test harness.
+2. **Phase 1B:** implement domain/protocol identifiers, decimal/revision/token/text primitives, the exhaustive DTO/error baseline, and bounded parser-neutral unknown-YAML semantic values over directly constructed inputs. Phase 1B does not implement Workspace Manifest, Category, Guide, or Attachment aggregate records; YAML/Markdown/CST parsing or serialization; filesystem/Git conversion; TypeScript representations for unknown YAML; or storage I/O.
+3. **Phase 1C:** after ADR 0011 receives Architect and Security Reviewer approval, introduce its exact pinned dependencies and implement the bounded source/envelope, semantic, and presentation parsers plus their immutable generic reconciliation artifact. This phase proves semantic acceptance, limits, complete byte coverage, and read-only versus non-round-trippable classification without identifying product known fields, creating mutation authority, defining product aggregate validation, or writing Workspace files.
+4. **Phase 1D:** after an Architect freezes exact Manifest/Category/Guide/Attachment field validation—including every collection cardinality, text normalization/length rule, comparison algorithm/version, member format, and cross-field invariant—implement the product aggregate records and bind validated known fields to the generic reconciliation artifact. Only this typed binder may derive the known-field edit index and insertion/removal authority used by the deterministic fixed-schema emitter, typed span-edit planner, and complete semantic-effect/refusal proof from ADR 0011.
+5. **Phase 1E:** implement capability-confined regular-file reads, symlink/hardlink rejection, exact revision/inventory vectors, the fixed Markdown/YAML and Attachment count/per-file/aggregate scan limits in `docs/content-model.md`, atomic no-replace/exchange single-file writes, and the full ADR 0009 recovery journal/object state machine.
+6. Add isolated malicious/round-trip/crash/concurrency fixtures and a minimal CLI/test harness.
 
 Gate:
 

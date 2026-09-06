@@ -9,11 +9,11 @@ Phase 1 — Core foundation and format proof.
 
 ## Current task
 
-Checkpoint the final Phase 1A ledger amendment, then plan the Phase 1B domain/schema slice.
+Create the signed protocol/YAML decision checkpoint, then complete a separate Architect/xhigh Phase 1B construction/dependency decision before asking Planner/medium for a Worker packet.
 
 ## Overall status
 
-In progress. Phase 0 and Phase 1A are complete in signed, independently reviewed checkpoints. The monorepo scaffold builds natively with the user-approved installed Node 26.2.0, pnpm 11.20.0, and Rust 1.98.0. Phase 1B domain/schema planning is next; the current dirty tree contains only the final packet correction and this ledger update.
+In progress. Phase 0 and Phase 1A are complete in signed, independently reviewed checkpoints. Planner/medium correctly blocked Phase 1B instead of inventing public schema choices. The reviewed protocol/YAML baseline narrows Phase 1B to protocol primitives and directly constructed parser-neutral values, while product aggregate schemas are gated for Phase 1D. ADR 0011 is accepted after Architect, Reviewer, and Security Reviewer closure. No domain implementation has begun, and a separate Architect decision must still freeze Phase 1B construction semantics and dependencies before planning.
 
 ## Completed work
 
@@ -34,15 +34,20 @@ In progress. Phase 0 and Phase 1A are complete in signed, independently reviewed
 - Implemented the exact pnpm/Cargo topology, pinned manifests and lockfiles, deterministic Rust-to-TypeScript contract generation, inert React/Tailwind/Vite shell, empty standalone MCP boundary, and zero-command Tauri shell.
 - Corrected the required Tauri compile placeholder, native dev-script path, pnpm 11 fail-on-switch configuration placement, and Biome preset syntax; both implementation closure reviews pass.
 - Created signed Phase 1A implementation checkpoint `b8410d9afee5865b696df074955a9efe78cabc64`; its configured GPG signature verifies successfully.
+- Planner/medium escalated rather than guessing Error detail types, bounded-list counts, signed 64-bit JSON transport, unknown YAML semantics, or Category requiredness.
+- Xhigh architecture analysis selected code-correlated error variants, 32-item exact-count bounded lists, decimal-string JSON for 64-bit values, separate storage/protocol types, a parser-neutral YAML 1.2 semantic tree, and a dual bounded-semantic/lossless-span parser design.
+- Independent review narrowed Phase 1B away from underspecified Workspace/Category/Guide/Attachment aggregates and moved typed known-field binding/mutation authority behind a Phase 1D Architect gate.
+- Accepted ADR 0011 with exact pinned dual-parser boundaries, generic-versus-typed authority separation, source/decoded scalar reconciliation, implicit-empty handling, non-bypassable semantic construction, algorithm-independent numeric charging, deterministic semantic-key work, and lossless span-edit/refusal requirements.
 
 ## Work in progress
 
-- Finalize and commit the Phase 1A packet/ledger correction that records pnpm 11's workspace-level configuration.
+- Create and verify the signed documentation checkpoint for the accepted protocol/content/error baseline and ADR 0011.
 
 ## Remaining work
 
-- Phase 1B: implement domain IDs, shared `ErrorDto`, and bounded Workspace/Category/Guide schema parsing without mutation.
-- Phase 1C onward: prove concrete-syntax preservation, confinement/revisions, and atomic recovery.
+- Phase 1B prerequisites: Architect/xhigh must freeze exact dependencies/manual implementations, primitive construction/visibility, timestamp rules, identifier parsing/generation, canonical token validation, and the fixed public message/recovery catalog.
+- Phase 1B: implement the accepted protocol/domain value types and validation over directly constructed semantic values only; no Workspace files, YAML, Markdown, or CST parsing.
+- Phase 1C: implement the accepted bounded generic YAML/presentation parser and reconciliation artifact; Phase 1D binds typed aggregate fields and mutation authority; Phase 1E proves confinement/revisions and atomic recovery.
 - Phase 2: native shell and safe Workspace onboarding/import/migration.
 - Phase 3: Category/Guide/Attachment lifecycle and edit conflicts.
 - Phase 4: search/ranking/index performance.
@@ -71,11 +76,12 @@ None known in the Phase 1A scaffold. The shell is intentionally inert and is not
 
 ## Blockers and human checkpoints
 
-No human blocker. Writing `.codex/` required and received a scoped environment permission; no global Codex configuration was changed.
+- No active human blocker. The prior read-only `.git` session ended without staging or changing the index; the current session restores repository write access.
+- Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 
 ## Latest verified commit
 
-`b8410d9afee5865b696df074955a9efe78cabc64` — signed, verified Phase 1A monorepo scaffold. The final packet/ledger wording in the current worktree follows it.
+`98f4bc391b4b11f9997e8bd17509177bf954c005` — signed Phase 1A verification ledger over the verified scaffold. The accepted protocol/parser specification work follows it and is staged for its signed decision checkpoint.
 
 ## Tests last run and results
 
@@ -100,6 +106,16 @@ No human blocker. Writing `.codex/` required and received a scoped environment p
 - 2026-09-06: Security Reviewer/xhigh closure: pass — no blocker/high/medium security finding.
 - 2026-09-06: Orchestrator full gate: `pnpm install --frozen-lockfile`, contracts check, `pnpm check`, `pnpm test` (Vitest 1/1; Rust smoke tests 3/3), `pnpm test:integration`, `pnpm build`, Cargo fmt/Clippy/tests, `pnpm tauri:build`, alternate-CWD contracts check, bootstrap validator, and MCP stdout `0` bytes: pass.
 - 2026-09-06: `git verify-commit b8410d9afee5865b696df074955a9efe78cabc64`: pass — good signature from the configured project user key.
+- 2026-09-06: `git verify-commit 98f4bc391b4b11f9997e8bd17509177bf954c005`: pass; post-commit bootstrap and `pnpm check` pass on a clean tree.
+- 2026-09-06: Planner/medium Phase 1B attempt: safely blocked with no file written because five public schema choices were not normative.
+- 2026-09-06: Contract Architect/xhigh and Parser Architect/xhigh: completed read-only recommendations; proposed spec/ADR changes are not yet accepted.
+- 2026-09-06: decision Reviewer/high closure after scope/numeric corrections: pass — no blocker/high/medium finding.
+- 2026-09-06: current `git diff --check`, untracked ADR whitespace check, and `python3 scripts/check_bootstrap.py`: pass — 17 required files, 11 ADRs, 8 pinned agents.
+- 2026-09-06: current `cargo test --workspace --all-features`: pass — 3 smoke tests. Direct `pnpm exec biome check .`, both package type checks, and `pnpm contracts:check`: pass.
+- 2026-09-06: aggregate `pnpm check` cannot complete in the resumed managed sandbox because its Node engine-check subprocess receives `spawnSync pnpm EPERM`; direct `node --version` and `pnpm --version` remain the approved 26.2.0/11.20.0. This is an environment restriction, not a changed dependency or product-test failure.
+- 2026-09-06: final protocol/YAML decision gate: Architect/xhigh, Reviewer/high, and Security Reviewer/xhigh pass with no blocker/high/medium finding after exact parser-source, construction-visibility, phase-authority, PlanToken, numeric-work, and semantic-work corrections.
+- 2026-09-06: final checkpoint validation: `git diff --check`, bootstrap validation, `cargo fmt --all --check`, and `cargo test --workspace --all-features` pass. `git add` then failed before staging because `.git/index.lock` cannot be created in the read-only Git metadata mount.
+- 2026-09-06: resumed unrestricted session: installed Node 26.2.0 and pnpm 11.20.0 confirmed without installation or switching; full `pnpm check`, `git diff --check`, bootstrap validation, Cargo formatting, and all-feature Workspace tests pass. Git metadata write access is restored.
 - 2026-09-05: tool/version and repository inspection: pass; expected no-commit `git log` failure observed.
 - No application tests exist yet.
 
@@ -119,14 +135,15 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `scripts/check_bootstrap.py`
 - `docs/task-packets/phase-1a-scaffold.md` was approved at `c0a2d4d`, amended for the user-selected host toolchain at `d06d17a`, and amended for Tauri's compile icon at `9300ccd`; its final pnpm 11 setting placement and this ledger follow `b8410d9` in the current worktree.
 - Phase 1A code/config: root pnpm/Cargo/toolchain/lock files, `apps/desktop/`, `crates/rehow-core/`, `crates/rehow-mcp/`, `packages/contracts/`, and contract scripts; checkpointed at `b8410d9`.
+- Current staged specification work: `docs/error-contract.md`, `docs/content-model.md`, `docs/architecture.md`, `docs/testing-strategy.md`, `docs/implementation-plan.md`, and accepted `docs/adr/0011-bounded-yaml-semantics-and-lossless-span-edits.md`.
 
 ## Next recommended action
 
-Commit the final Phase 1A packet/ledger wording, then have Planner/medium produce the exact Phase 1B domain/schema packet.
+Stage only the seven documented decision files, inspect the cached diff, create/verify the signed protocol/YAML decision checkpoint, and confirm a clean tree. Then have Architect/xhigh freeze the separate Phase 1B construction/dependency decision; only after that passes should Planner/medium produce the narrower Worker packet.
 
 ## Recommended agent role and reasoning effort
 
-Planner — `gpt-5.6-sol`, medium, for Phase 1B packet creation; then Orchestrator/high readiness review.
+Orchestrator — `gpt-5.6-sol`, high, to create and verify the signed checkpoint; then Architect/xhigh for the Phase 1B construction/dependency decision.
 
 ## Explicit restart instructions
 
@@ -134,5 +151,6 @@ Planner — `gpt-5.6-sol`, medium, for Phase 1B packet creation; then Orchestrat
 2. Read `docs/product-spec.md`, `docs/architecture.md`, `docs/implementation-plan.md`, `docs/threat-model.md`, `docs/error-contract.md`, and ADRs 0001–0010.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
 4. Confirm the Phase 0 commit/signature and reconcile any unexpected worktree changes.
-5. Verify `b8410d9` and treat Phase 1A as accepted unless the actual tree/tests differ from this record.
-6. Create/review `docs/task-packets/phase-1b-domain-schema.md`; do not assign Worker/low until every schema/parser/error dependency and test fixture is frozen.
+5. Verify `98f4bc3` and treat Phase 1A as accepted unless the actual tree/tests differ from this record.
+6. Stage only `PROGRESS.md`, `docs/architecture.md`, `docs/content-model.md`, `docs/error-contract.md`, `docs/implementation-plan.md`, `docs/testing-strategy.md`, and `docs/adr/0011-bounded-yaml-semantics-and-lossless-span-edits.md`; inspect `git diff --cached`, commit with configured signing, and verify the signature.
+7. Do not begin Phase 1B code from the decision docs alone. Complete a separate Architect/xhigh decision for Phase 1B dependencies, timestamp/identifier/token construction, public/private constructors, and fixed public text before asking Planner/medium for a precise Worker packet.
