@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "code": "GIT_FAILED",
+  "message": "Git could not complete the operation.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "operation": "git_sync",
+    "exitKind": "timeout",
+    "sanitizedReason": "Git did not finish before the timeout."
+  },
+  "recovery": "Correct the reported Git condition and retry."
+}

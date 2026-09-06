@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "code": "WORKSPACE_READ_ONLY",
+  "message": "The Workspace is read-only for this operation.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "reason": "workspace_not_writable",
+    "requiredCapability": "write"
+  },
+  "recovery": "Reopen it with the required capability or choose a writable Workspace."
+}

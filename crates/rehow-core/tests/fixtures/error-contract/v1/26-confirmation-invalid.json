@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "code": "CONFIRMATION_INVALID",
+  "message": "The confirmation is invalid or no longer usable.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "operation": "guide_delete",
+    "reason": "plan_expired"
+  },
+  "recovery": "Refresh the Workspace and request a new confirmation."
+}

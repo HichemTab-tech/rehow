@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "code": "MIGRATION_REQUIRED",
+  "message": "The Workspace must be migrated before it can be changed.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "foundVersion": 1,
+    "targetVersion": 2
+  },
+  "recovery": "Review the migration plan and verified backup before continuing."
+}

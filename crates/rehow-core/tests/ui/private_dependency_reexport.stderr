@@ -1,0 +1,28 @@
+error[E0425]: cannot find type `OffsetDateTime` in module `rehow_core::protocol`
+ --> tests/ui/private_dependency_reexport.rs:3:34
+  |
+3 |     let _: rehow_core::protocol::OffsetDateTime;
+  |                                  ^^^^^^^^^^^^^^ not found in `rehow_core::protocol`
+
+error[E0425]: cannot find type `GeneralPurpose` in module `rehow_core::protocol`
+ --> tests/ui/private_dependency_reexport.rs:4:34
+  |
+4 |     let _: rehow_core::protocol::GeneralPurpose;
+  |                                  ^^^^^^^^^^^^^^ not found in `rehow_core::protocol`
+
+error[E0603]: struct `Uuid` is private
+ --> tests/ui/private_dependency_reexport.rs:2:34
+  |
+2 |     let _: rehow_core::protocol::Uuid;
+  |                                  ^^^^ private struct
+  |
+note: the struct `Uuid` is defined here
+ --> src/protocol.rs
+  |
+  | use uuid::{Uuid, Variant, Version};
+  |            ^^^^
+help: import `Uuid` directly
+  |
+2 -     let _: rehow_core::protocol::Uuid;
+2 +     let _: uuid::Uuid;
+  |

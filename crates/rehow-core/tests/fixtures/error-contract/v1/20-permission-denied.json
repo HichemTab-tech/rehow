@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "code": "PERMISSION_DENIED",
+  "message": "The operation was denied by filesystem permissions.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "operation": "workspace_open",
+    "relativePath": "guides/a.md"
+  },
+  "recovery": "Restore the required permission or choose another Workspace."
+}

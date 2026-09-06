@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "code": "PLAN_STALE",
+  "message": "The operation plan is stale.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "operation": "guide_update",
+    "changedEntityIds": {
+      "items": [],
+      "totalCount": 0,
+      "truncated": false
+    }
+  },
+  "recovery": "Refresh the Workspace and create a new plan."
+}

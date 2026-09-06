@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "code": "CONFIRMATION_REQUIRED",
+  "message": "This operation requires confirmation.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "operation": "guide_delete",
+    "planToken": "plan:v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "expiresAt": "2026-09-06T00:00:00Z"
+  },
+  "recovery": "Review the exact plan in the native confirmation dialog."
+}

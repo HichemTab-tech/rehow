@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "code": "FILE_TOO_LARGE",
+  "message": "The file exceeds the safety limit.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "relativePath": "guides/a.md",
+    "limitBytes": "1",
+    "observedAtLeastBytes": "2"
+  },
+  "recovery": "Reduce the file size before retrying."
+}

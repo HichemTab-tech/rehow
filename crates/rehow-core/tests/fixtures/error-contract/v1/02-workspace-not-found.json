@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "code": "WORKSPACE_NOT_FOUND",
+  "message": "The recent Workspace could not be found.",
+  "retryable": true,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "recentWorkspaceId": "recent:v1:0199a1d7-7b0d-7d8e-a38d-f936c5735e10"
+  },
+  "recovery": "Choose the Workspace again or remove it from recent Workspaces."
+}

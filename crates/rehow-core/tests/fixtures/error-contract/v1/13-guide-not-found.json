@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "code": "GUIDE_NOT_FOUND",
+  "message": "The Guide could not be found.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "guideId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10"
+  },
+  "recovery": "Refresh the Workspace and choose an existing Guide."
+}

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "code": "INTERNAL",
+  "message": "Rehow encountered an internal error.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "incidentId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10"
+  },
+  "recovery": "Retry once; if it happens again, report the incident identifier."
+}

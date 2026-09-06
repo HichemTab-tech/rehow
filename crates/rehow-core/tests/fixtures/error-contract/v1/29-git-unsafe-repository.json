@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "code": "GIT_UNSAFE_REPOSITORY",
+  "message": "Rehow cannot use this Git repository safely.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "reason": "repository_owner_untrusted"
+  },
+  "recovery": "Correct the reported repository condition or use Git outside Rehow."
+}

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "code": "SYMLINK_DENIED",
+  "message": "A managed path contains a symbolic link.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "relativePath": "guides/a.md"
+  },
+  "recovery": "Replace the symbolic link with a confined regular file and refresh."
+}

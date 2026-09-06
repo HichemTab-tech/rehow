@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "code": "DUPLICATE_ID",
+  "message": "More than one item uses the same identifier.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "entityKind": "guide",
+    "entityId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+    "relativePaths": {
+      "items": ["guides/a.md", "guides/b.md"],
+      "totalCount": 2,
+      "truncated": false
+    }
+  },
+  "recovery": "Give each reported item a distinct identifier before retrying."
+}

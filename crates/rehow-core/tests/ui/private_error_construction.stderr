@@ -1,0 +1,26 @@
+error[E0603]: tuple struct constructor `SchemaFieldPath` is private
+ --> tests/ui/private_error_construction.rs:2:35
+  |
+2 |     let _ = rehow_core::protocol::SchemaFieldPath("/title".into());
+  |                                   ^^^^^^^^^^^^^^^ private tuple struct constructor
+  |
+ ::: src/protocol.rs
+  |
+  |         pub struct $name(String);
+  |                          ------ a constructor is private if any of the fields is private
+  |
+note: the tuple struct constructor `SchemaFieldPath` is defined here
+ --> src/protocol.rs
+  |
+  |         pub struct $name(String);
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+  | token!(SchemaFieldPath, |v: &str| SCHEMA_PATHS.contains(&v));
+  | ------------------------------------------------------------ in this macro invocation
+  = note: this error originates in the macro `token` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cannot construct `ErrorDto` with struct literal syntax due to private fields
+ --> tests/ui/private_error_construction.rs:3:13
+  |
+3 |     let _ = rehow_core::protocol::ErrorDto {};
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

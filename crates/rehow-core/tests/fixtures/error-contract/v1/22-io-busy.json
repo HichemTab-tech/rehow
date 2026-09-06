@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "code": "IO_BUSY",
+  "message": "The operation could not finish while the resource was busy.",
+  "retryable": true,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "operation": "workspace_open",
+    "timeoutMs": 1
+  },
+  "recovery": "Wait for the other operation to finish and retry."
+}

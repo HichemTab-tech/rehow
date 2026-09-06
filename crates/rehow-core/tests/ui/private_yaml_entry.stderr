@@ -1,0 +1,9 @@
+error[E0451]: fields `key` and `value` of struct `UnknownMetadataEntry` are private
+  --> tests/ui/private_yaml_entry.rs:12:9
+   |
+11 |     let _ = UnknownMetadataEntry {
+   |             -------------------- in this type
+12 |         key: "key".into(),
+   |         ^^^ private field
+13 |         value,
+   |         ^^^^^ private field

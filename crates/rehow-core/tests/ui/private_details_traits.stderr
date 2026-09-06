@@ -1,0 +1,62 @@
+error[E0277]: the trait bound `CategoryNotFoundDetails: Clone` is not satisfied
+ --> tests/ui/private_details_traits.rs:5:19
+  |
+5 |     needs_clone::<rehow_core::protocol::CategoryNotFoundDetails>();
+  |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Clone` is not implemented for `CategoryNotFoundDetails`
+  |
+note: required by a bound in `needs_clone`
+ --> tests/ui/private_details_traits.rs:1:19
+  |
+1 | fn needs_clone<T: Clone>() {}
+  |                   ^^^^^ required by this bound in `needs_clone`
+
+error[E0277]: the trait bound `CategoryNotFoundDetails: serde::Serialize` is not satisfied
+ --> tests/ui/private_details_traits.rs:6:23
+  |
+6 |     needs_serialize::<rehow_core::protocol::CategoryNotFoundDetails>();
+  |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Serialize` is not implemented for `CategoryNotFoundDetails`
+  |
+  = note: for local types consider adding `#[derive(serde::Serialize)]` to your `CategoryNotFoundDetails` type
+  = note: for types from other crates check whether the crate offers a `serde` feature flag
+  = help: the following other types implement trait `Serialize`:
+            &'a T
+            &'a mut T
+            ()
+            (T,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+          and $N others
+note: required by a bound in `needs_serialize`
+ --> tests/ui/private_details_traits.rs:2:23
+  |
+2 | fn needs_serialize<T: serde::Serialize>() {}
+  |                       ^^^^^^^^^^^^^^^^ required by this bound in `needs_serialize`
+
+error[E0277]: the trait bound `CategoryNotFoundDetails: serde::Deserialize<'de>` is not satisfied
+ --> tests/ui/private_details_traits.rs:8:9
+  |
+8 |         serde_json::from_str(r#"{"categoryId":"0199a1d7-7b0d-7d8e-a38d-f936c5735e10"}"#)
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Deserialize<'_>` is not implemented for `CategoryNotFoundDetails`
+  |
+  = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `CategoryNotFoundDetails` type
+  = note: for types from other crates check whether the crate offers a `serde` feature flag
+  = help: the following other types implement trait `Deserialize<'de>`:
+            &'a Path
+            &'a [u8]
+            &'a str
+            ()
+            (T,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+          and $N others
+note: required by a bound in `serde_json::from_str`
+ --> $CARGO/serde_json-$VERSION/src/de.rs
+  |
+  | pub fn from_str<'a, T>(s: &'a str) -> Result<T>
+  |        -------- required by a bound in this function
+  | where
+  |     T: de::Deserialize<'a>,
+  |        ^^^^^^^^^^^^^^^^^^^ required by this bound in `from_str`

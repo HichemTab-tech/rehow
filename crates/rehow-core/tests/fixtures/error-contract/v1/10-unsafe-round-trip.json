@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "code": "UNSAFE_ROUND_TRIP",
+  "message": "Rehow cannot prove that this edit preserves the document.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "relativePath": "guides/a.md",
+    "reason": "round_trip_unproven",
+    "field": "/title"
+  },
+  "recovery": "Edit the file externally or simplify the reported field, then refresh."
+}

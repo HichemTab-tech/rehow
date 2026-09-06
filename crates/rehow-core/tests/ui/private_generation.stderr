@@ -1,0 +1,23 @@
+error[E0599]: no associated function or constant named `new_v7` found for struct `WorkspaceId` in the current scope
+ --> tests/ui/private_generation.rs:2:48
+  |
+2 |     let _ = rehow_core::protocol::WorkspaceId::new_v7();
+  |                                                ^^^^^^ associated function or constant not found in `WorkspaceId`
+
+error[E0599]: no associated function or constant named `now_utc` found for struct `Timestamp` in the current scope
+ --> tests/ui/private_generation.rs:3:46
+  |
+3 |     let _ = rehow_core::protocol::Timestamp::now_utc();
+  |                                              ^^^^^^^ associated function or constant not found in `Timestamp`
+
+error[E0599]: no associated function or constant named `generate` found for struct `PlanToken` in the current scope
+ --> tests/ui/private_generation.rs:4:46
+  |
+4 |     let _ = rehow_core::protocol::PlanToken::generate();
+  |                                              ^^^^^^^^ associated function or constant not found in `PlanToken`
+
+error[E0599]: no associated function or constant named `from_digest` found for struct `Revision` in the current scope
+ --> tests/ui/private_generation.rs:5:45
+  |
+5 |     let _ = rehow_core::protocol::Revision::from_digest([0_u8; 32]);
+  |                                             ^^^^^^^^^^^ associated function or constant not found in `Revision`

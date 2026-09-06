@@ -1,0 +1,36 @@
+error[E0277]: the trait bound `PublicText: Ord` is not satisfied
+ --> tests/ui/private_public_text_traits.rs:6:17
+  |
+6 |     needs_ord::<rehow_core::protocol::PublicText>();
+  |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Ord` is not implemented for `PublicText`
+  |
+note: required by a bound in `needs_ord`
+ --> tests/ui/private_public_text_traits.rs:1:17
+  |
+1 | fn needs_ord<T: Ord>() {}
+  |                 ^^^ required by this bound in `needs_ord`
+
+error[E0277]: can't compare `PublicText` with `PublicText`
+ --> tests/ui/private_public_text_traits.rs:7:25
+  |
+7 |     needs_partial_ord::<rehow_core::protocol::PublicText>();
+  |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no implementation for `PublicText < PublicText` and `PublicText > PublicText`
+  |
+  = help: the trait `PartialOrd` is not implemented for `PublicText`
+note: required by a bound in `needs_partial_ord`
+ --> tests/ui/private_public_text_traits.rs:2:25
+  |
+2 | fn needs_partial_ord<T: PartialOrd>() {}
+  |                         ^^^^^^^^^^ required by this bound in `needs_partial_ord`
+
+error[E0277]: the trait bound `PublicText: Hash` is not satisfied
+ --> tests/ui/private_public_text_traits.rs:8:18
+  |
+8 |     needs_hash::<rehow_core::protocol::PublicText>();
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Hash` is not implemented for `PublicText`
+  |
+note: required by a bound in `needs_hash`
+ --> tests/ui/private_public_text_traits.rs:3:18
+  |
+3 | fn needs_hash<T: std::hash::Hash>() {}
+  |                  ^^^^^^^^^^^^^^^ required by this bound in `needs_hash`

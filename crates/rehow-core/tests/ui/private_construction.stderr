@@ -1,0 +1,13 @@
+error[E0603]: module `construction` is private
+ --> tests/ui/private_construction.rs:1:39
+  |
+1 | fn main(){let _=rehow_core::protocol::construction::ErrorConstructionError{_private:()};}
+  |                                       ^^^^^^^^^^^^  ---------------------- struct `ErrorConstructionError` is not publicly re-exported
+  |                                       |
+  |                                       private module
+  |
+note: the module `construction` is defined here
+ --> src/protocol.rs
+  |
+  | mod construction;
+  | ^^^^^^^^^^^^^^^^

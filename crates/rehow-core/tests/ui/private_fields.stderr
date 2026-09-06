@@ -1,0 +1,16 @@
+error[E0603]: tuple struct constructor `PublicText` is private
+ --> tests/ui/private_fields.rs:1:39
+  |
+1 | fn main(){let _=rehow_core::protocol::PublicText(String::new());}
+  |                                       ^^^^^^^^^^ private tuple struct constructor
+  |
+ ::: src/protocol.rs
+  |
+  | pub struct PublicText(String);
+  |                       ------ a constructor is private if any of the fields is private
+  |
+note: the tuple struct constructor `PublicText` is defined here
+ --> src/protocol.rs
+  |
+  | pub struct PublicText(String);
+  | ^^^^^^^^^^^^^^^^^^^^^

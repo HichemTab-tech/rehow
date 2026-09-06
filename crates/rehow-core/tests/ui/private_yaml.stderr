@@ -1,0 +1,13 @@
+error[E0603]: module `yaml_value` is private
+ --> tests/ui/private_yaml.rs:1:37
+  |
+1 | fn main(){let _=rehow_core::domain::yaml_value::MAX_DEPTH;}
+  |                                     ^^^^^^^^^^  --------- constant `MAX_DEPTH` is not publicly re-exported
+  |                                     |
+  |                                     private module
+  |
+note: the module `yaml_value` is defined here
+ --> src/domain.rs
+  |
+  | mod yaml_value;
+  | ^^^^^^^^^^^^^^

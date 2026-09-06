@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "code": "WORKSPACE_UNAVAILABLE",
+  "message": "The Workspace is temporarily unavailable.",
+  "retryable": true,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "reason": "workspace_root_missing"
+  },
+  "recovery": "Restore access to the Workspace and retry."
+}

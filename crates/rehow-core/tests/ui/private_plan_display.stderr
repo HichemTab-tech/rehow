@@ -1,0 +1,8 @@
+error[E0277]: `PlanToken` doesn't implement `std::fmt::Display`
+ --> tests/ui/private_plan_display.rs:2:137
+  |
+2 | ...AAAAAAAAAA").unwrap();println!("{value}");}
+  |                                    ^^^^^^^ `PlanToken` cannot be formatted with the default formatter
+  |
+  = help: the trait `std::fmt::Display` is not implemented for `PlanToken`
+  = note: in format strings you may be able to use `{:?}` (or {:#?} for pretty-print) instead

@@ -1,0 +1,5 @@
+error[E0277]: the trait bound `UnknownYamlDocumentBuilder: Default` is not satisfied
+ --> tests/ui/private_default_builder.rs:1:64
+  |
+1 | fn main(){let _:rehow_core::domain::UnknownYamlDocumentBuilder=Default::default();}
+  |                                                                ^^^^^^^^^^^^^^^^^^ the trait `Default` is not implemented for `UnknownYamlDocumentBuilder`

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "code": "INDEX_NOT_READY",
+  "message": "The search index is not ready.",
+  "retryable": true,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "indexGeneration": "1",
+    "progressCompleted": 1,
+    "progressTotal": 1
+  },
+  "recovery": "Wait for indexing to finish or rebuild the index."
+}

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "code": "REVISION_CONFLICT",
+  "message": "The item changed since it was opened.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "entityKind": "guide",
+    "entityId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+    "expectedRevision": "rev:v1:0000000000000000000000000000000000000000000000000000000000000000",
+    "actualRevision": "rev:v1:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "recovery": "Read it again, compare changes, and retry with its new revision."
+}

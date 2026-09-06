@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "code": "GIT_AUTH_REQUIRED",
+  "message": "Git authentication is required.",
+  "retryable": true,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "remoteName": "origin",
+    "host": "example.com",
+    "credentialKind": "sshAgent"
+  },
+  "recovery": "Restore the reported credential source and retry."
+}

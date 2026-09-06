@@ -1,0 +1,17 @@
+error[E0599]: no method named `clone` found for enum `UnknownYamlEvent` in the current scope
+ --> tests/ui/private_yaml_construction.rs:5:19
+  |
+5 |     let _ = event.clone();
+  |                   ^^^^^ method not found in `UnknownYamlEvent`
+
+error[E0599]: no method named `set_limits` found for struct `UnknownYamlDocumentBuilder` in the current scope
+ --> tests/ui/private_yaml_construction.rs:7:13
+  |
+7 |     builder.set_limits(1, 1, 1);
+  |             ^^^^^^^^^^ method not found in `UnknownYamlDocumentBuilder`
+
+error[E0599]: no method named `partial` found for struct `UnknownYamlDocumentBuilder` in the current scope
+ --> tests/ui/private_yaml_construction.rs:8:21
+  |
+8 |     let _ = builder.partial();
+  |                     ^^^^^^^ method not found in `UnknownYamlDocumentBuilder`

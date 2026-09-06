@@ -1,0 +1,5 @@
+error[E0451]: field `entries` of struct `UnknownMetadataDocument` is private
+ --> tests/ui/private_yaml_document.rs:4:39
+  |
+4 |     let _ = UnknownMetadataDocument { entries: Vec::new() };
+  |                                       ^^^^^^^ private field

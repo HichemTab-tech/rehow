@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "code": "TEST_APPROVAL_REQUIRED",
+  "message": "Marking a Guide tested requires native user approval.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "guideId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+    "guideRevision": "rev:v1:0000000000000000000000000000000000000000000000000000000000000000",
+    "approvalRequestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10"
+  },
+  "recovery": "Try the exact Guide revision and approve it in the native app."
+}

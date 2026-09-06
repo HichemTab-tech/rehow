@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "code": "SCHEMA_UNSUPPORTED",
+  "message": "This Workspace schema version is not supported.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "foundVersion": 9,
+    "minimumVersion": 1,
+    "maximumVersion": 2
+  },
+  "recovery": "Open it read-only or use a Rehow version that supports this schema."
+}

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "code": "SNAPSHOT_CONFLICT",
+  "message": "The Workspace changed after the operation was planned.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "expectedSnapshot": "snapshot:v1:0000000000000000000000000000000000000000000000000000000000000000",
+    "actualSnapshot": "snapshot:v1:1111111111111111111111111111111111111111111111111111111111111111",
+    "changedEntityIds": {
+      "items": [],
+      "totalCount": 0,
+      "truncated": false
+    }
+  },
+  "recovery": "Refresh the Workspace, review the changes, and create a new plan."
+}

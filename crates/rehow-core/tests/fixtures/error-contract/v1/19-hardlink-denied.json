@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "code": "HARDLINK_DENIED",
+  "message": "A managed file has more than one hard link.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "relativePath": "guides/a.md",
+    "linkCount": "2"
+  },
+  "recovery": "Copy it to a new regular file with one link and refresh."
+}

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "code": "PATH_ESCAPE",
+  "message": "A managed path would leave the Workspace.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "reason": "path_outside_workspace",
+    "relativePath": "guides/a.md"
+  },
+  "recovery": "Correct the path and keep it within the opened Workspace."
+}

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "code": "INVALID_ARGUMENT",
+  "message": "The request contains an invalid value.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "field": "/title",
+    "reason": "required"
+  },
+  "recovery": "Correct the named field and try again."
+}

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "code": "INVALID_GUIDE",
+  "message": "The Guide is invalid.",
+  "retryable": false,
+  "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+  "details": {
+    "relativePath": "guides/a.md",
+    "diagnosticCode": "invalid_field_value",
+    "guideId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10"
+  },
+  "recovery": "Correct the reported Guide field and refresh the Workspace."
+}
