@@ -12,16 +12,16 @@ Tauri and MCP expose the same Rust-owned `ErrorDto`:
 {
   "version": 1,
   "code": "REVISION_CONFLICT",
-  "message": "The Guide changed since it was opened.",
+  "message": "The item changed since it was opened.",
   "retryable": false,
   "requestId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
   "details": {
     "entityKind": "guide",
     "entityId": "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
-    "expectedRevision": "rev:v1:…",
-    "actualRevision": "rev:v1:…"
+    "expectedRevision": "rev:v1:0000000000000000000000000000000000000000000000000000000000000000",
+    "actualRevision": "rev:v1:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
   },
-  "recovery": "Read the Guide again, compare changes, and retry with its new revision."
+  "recovery": "Read it again, compare changes, and retry with its new revision."
 }
 ```
 
@@ -34,14 +34,14 @@ All seven top-level keys are required and non-null. `version` is the JSON intege
 - ID fields are lowercase canonical UUIDv7 strings with distinct Workspace, Category, Guide, Attachment, request, approval, operation, and incident Rust newtypes.
 - `PortableEntityId` is `{ "kind": "workspace" | "category" | "guide" | "attachment", "id": <the matching typed UUIDv7> }`; mismatched kind/ID variants cannot be constructed.
 - `Revision` is `rev:v1:` plus exactly 64 lowercase hexadecimal BLAKE3 characters; `Snapshot` is `snapshot:v1:` plus exactly 64 lowercase hexadecimal BLAKE3 characters; and `VerificationHash` is `verify:v1:` plus exactly 64 lowercase hexadecimal BLAKE3 characters.
-- `PlanToken` is `plan:v1:` plus the canonical unpadded URL-safe Base64 encoding of exactly 32 random process-local bytes. The payload has exactly 43 characters matching `[A-Za-z0-9_-]{43}`; because a 32-byte payload leaves two padding bits, its final character must be one of `[AEIMQUYcgkosw048]`. Validation decodes exactly 32 bytes and requires re-encoding to reproduce the original 43 characters byte-for-byte, rejecting nonzero padding bits and alternate encodings. It is single-use and resolves server-side to the bound plan/effect set; its text never contains that state. Generation and its entropy dependency are deferred to the separate Phase 1B construction/dependency decision. `RecentWorkspaceId` is `recent:v1:` plus one lowercase canonical UUIDv7 generated for a native-preference record. Callers compare/pass these opaque identifiers but do not construct authority from them.
+- `PlanToken` is `plan:v1:` plus the canonical unpadded URL-safe Base64 encoding of exactly 32 random process-local bytes. The payload has exactly 43 characters matching `[A-Za-z0-9_-]{43}`; because a 32-byte payload leaves two padding bits, its final character must be one of `[AEIMQUYcgkosw048]`. Validation decodes exactly 32 bytes and requires re-encoding to reproduce the original 43 characters byte-for-byte, rejecting nonzero padding bits and alternate encodings. It is single-use and resolves server-side to the bound plan/effect set; its text never contains that state. Phase 1B is parse-only; generation, entropy, binding, and single-use enforcement are deferred to the owning approval/plan service. `RecentWorkspaceId` is `recent:v1:` plus one lowercase canonical UUIDv7 for a native-preference record; its generation is likewise deferred to the owning native-preference phase. Callers compare/pass these opaque identifiers but do not construct authority from them.
 - `U64Decimal` is a quoted canonical unsigned decimal string matching `0|[1-9][0-9]*` and bounded to `u64`. JSON numbers are rejected for these fields.
 - `SignedInt64Decimal` is a quoted canonical signed decimal string matching the full grammar `0|-?[1-9][0-9]*`, bounded to `i64`; `-0`, a leading `+`, whitespace, and leading zeroes are invalid.
 - `u32` means a JSON integer from `0` through `4294967295`.
 - `SchemaFieldPath` is a core-owned JSON Pointer naming a documented schema field. It is never copied from an untrusted unknown key.
 - `ReasonCode` and `DiagnosticCode` are lowercase ASCII snake-case tokens of 1–64 bytes, not raw parser/Git/OS messages.
 - `SafeRelativePath` is a display-only value separately constructed by the core from an already-confined internal relative path; it is never used as filesystem authority. `/` is the only displayed segment separator. C0 (`U+0000..U+001F`), DEL/C1 (`U+007F..U+009F`), `U+061C`, `U+200E`, `U+200F`, `U+2028..U+202E`, `U+2066..U+2069`, `U+FEFF`, Unicode noncharacters, invalid UTF-8 bytes, and literal `%` are rendered as uppercase `%HH` sequences over their UTF-8/raw bytes. The 1,024-byte internal managed-path cap therefore produces at most 3,072 public Unicode scalar values without truncation. A wire validator accepts only nonempty relative slash-separated display paths within that bound, no empty/`.`/`..` segment, no raw prohibited scalar, and only complete uppercase `%HH` escapes. It is safe before either Tauri or MCP serialization; each consumer still renders it as text, never markup. It is never an ambient absolute path.
-- `PublicText` is nonempty core-owned text of at most 256 Unicode scalar values. It rejects C0/C1, DEL, `U+061C`, `U+200E`, `U+200F`, `U+2028..U+202E`, `U+2066..U+2069`, `U+FEFF`, and Unicode noncharacters. In Phase 1B it can be constructed only from the fixed message/recovery/reason catalog, never raw or interpolated external input. A later sanitizer requires its own reviewed constructor and adversarial tests before converting Git/OS/parser text to `PublicText`.
+- `PublicText` is nonempty core-owned text of at most 256 Unicode scalar values. It rejects C0/C1, DEL, `U+061C`, `U+200E`, `U+200F`, `U+2028..U+202E`, `U+2066..U+2069`, `U+FEFF`, and Unicode noncharacters. Phase 1B producers can construct it only from the fixed message/recovery/reason catalog, never raw or interpolated external input. The private `ErrorDto` consumer path may validate and preserve different safe text from a compatible producer because human copy may improve within protocol v1; that path grants no producer construction authority. A later sanitizer requires its own reviewed constructor and adversarial tests before converting Git/OS/parser text to `PublicText`.
 - `Timestamp` is an RFC 3339 UTC string written with `Z`.
 - `SafeGitDisplay` is nonempty display text derived only from one parsed Git remote-name or symbolic-ref field—not a remote URL, command, arbitrary stdout/stderr blob, or URL-bearing config value. Its wire form is at most 768 Unicode scalar values, uses the same exact prohibited-scalar/invalid-byte/`%` encoding as `SafeRelativePath`, and contains no `/` structural meaning. `SafeHost` is exactly one of: `unknown`; a lowercase ASCII DNS name of at most 253 bytes whose 1–63-byte labels start/end alphanumeric and otherwise contain only alphanumeric/hyphen; canonical dotted-decimal IPv4 with four 0–255 components and no leading zero; or lowercase RFC 5952 IPv6 without brackets or zone identifier. It contains no userinfo, port, query, or fragment. Neither display value is passed back to a subprocess.
 - Phase 1B implements validation/serialization only for already-constructed `SafeRelativePath`, `SafeGitDisplay`, and `SafeHost` wire values. It has no raw filesystem or Git constructor. The confinement phase must freeze and test raw-path-to-display conversion before emitting a path; the Git phase must freeze exact argument-vector output parsing, URL/credential redaction, host extraction, and raw-name-to-display conversion before constructing any Git error. Until those gates pass, the corresponding application error constructors remain crate-private/unreachable outside protocol fixtures.
@@ -59,7 +59,7 @@ Every error-detail collection uses:
 }
 ```
 
-`BoundedList<T>` contains at most 32 items and an exact `u32` `totalCount`. `truncated` is `false` exactly when `totalCount == items.length`; it is `true` exactly when `totalCount > items.length`. Item order is deterministic for the error code. If a safe exact total is unavailable because scanning stopped at a resource limit, the core returns `WORKSPACE_LIMIT_EXCEEDED` with `observedAtLeast` instead of fabricating a list count. Constructors reject inconsistent count/flag combinations.
+`BoundedList<T>` contains the deterministic retained prefix, at most 32 items, and an exact `u32` `totalCount`. Its retained length is exactly `min(totalCount, 32)`: producers may not omit known items inside that bound. `truncated` is `false` exactly when `totalCount == items.length`; it is `true` exactly when `totalCount > items.length`. Item order is deterministic for the error code. If a safe exact total is unavailable because scanning stopped at a resource limit, the core returns `WORKSPACE_LIMIT_EXCEEDED` with `observedAtLeast` instead of fabricating a list count. Constructors reject inconsistent count/flag combinations or a shorter-than-available retained prefix.
 
 ## Codes and exact details
 
