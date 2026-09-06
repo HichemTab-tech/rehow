@@ -9,11 +9,11 @@ Phase 1 — Core foundation and format proof.
 
 ## Current task
 
-Create and independently review an exact Phase 1C parser/reconciliation task packet from accepted ADR 0013. Implementation remains blocked until the packet gate passes.
+Dispatch and verify the approved Phase 1C bounded YAML parser/reconciliation implementation packet.
 
 ## Overall status
 
-In progress. Phase 0, Phase 1A, and Phase 1B are complete in signed, independently reviewed checkpoints. Phase 1B is accepted at `df067b2`. Phase 1C's parser/reconciliation architecture is accepted at signed checkpoint `f39d7ab` after iterative Architect/xhigh correction and fresh Reviewer/high, Security Reviewer/xhigh, and feasibility passes. No Phase 1C task packet or code is approved yet.
+In progress. Phase 0, Phase 1A, and Phase 1B are complete in signed, independently reviewed checkpoints. Phase 1B is accepted at `df067b2`. Phase 1C's parser/reconciliation architecture is accepted at signed checkpoint `f39d7ab`. Its exact Worker/low implementation packet is approved at signed checkpoint `c98ab13` after iterative Planner/medium correction and fresh Reviewer/high and Security Reviewer/xhigh passes. Phase 1C code has not started yet.
 
 ## Completed work
 
@@ -47,7 +47,7 @@ In progress. Phase 0, Phase 1A, and Phase 1B are complete in signed, independent
 
 ## Work in progress
 
-- Planner/medium is next to translate accepted ADR 0013 into one exact worker-ready Phase 1C packet. The Orchestrator must inspect it and obtain independent Reviewer/high and Security Reviewer/xhigh packet passes before dispatch.
+- The Orchestrator is dispatching `docs/task-packets/phase-1c-parser-reconciliation.md` to Worker/low. Its pre-edit baseline measurements and six dependency-tree snapshots must be captured before the manifest changes; no changed dependency graph may compile until the packet's A/B/C source and security audit passes.
 
 ## Remaining work
 
@@ -83,6 +83,7 @@ No known defect remains in accepted ADR 0013; its rejected draft findings remain
 - The initial Phase 1B implementation security rejection was fully corrected. Final Security Reviewer/xhigh review passes with no blocker/high/medium finding; no filesystem, Git, Markdown rendering, Tauri command, or MCP mutation authority was added.
 - SafeHost v1 rejects legacy decimal/octal/hexadecimal/shortened IPv4 aliases before DNS fallback. Architect/xhigh, Reviewer/high, and Security Reviewer/xhigh approved and verified the implemented classifier and adversarial vectors.
 - ADR 0013 final Security Reviewer/xhigh closure passes. It freezes bounded source/event traces, symmetric tag/merge guards, fail-closed borrowed-text exhaustion, linear comment/correspondence work, non-forged proven-prefix ownership, sanitized failures, and test-build-only fault seams.
+- The Phase 1C packet Security Reviewer/xhigh closure passes at SHA `10525ef529832a69e4b9a50ad27efd797c800f235c3e55e7d5e8198241a518b5`. Its precompile supply-chain gate audits newly locked identities, already-locked newly reachable identities, and already-locked feature-changed identities before executing the changed graph.
 
 ## Blockers and human checkpoints
 
@@ -92,7 +93,7 @@ No known defect remains in accepted ADR 0013; its rejected draft findings remain
 
 ## Latest verified commit
 
-`f39d7ab` — signed, independently reviewed Phase 1C parser/reconciliation architecture decision; `git verify-commit f39d7ab` passes with the configured project key. This progress update follows it; latest accepted implementation remains `df067b2`.
+`c98ab13` — signed, independently reviewed Phase 1C implementation packet; `git verify-commit c98ab13` passes with the configured project key. This progress update follows it; latest accepted implementation remains `df067b2`.
 
 ## Tests last run and results
 
@@ -154,6 +155,9 @@ No known defect remains in accepted ADR 0013; its rejected draft findings remain
 - 2026-09-06: final ADR 0013 Security Reviewer/xhigh closure at the same semantic SHA: pass — no blocker/high/medium finding; symmetric source/event merge guards and borrowed-text terminal behavior are fail-closed and bounded.
 - 2026-09-06: final ADR 0013 feasibility closure: pass — no blocker/high/medium finding; exact APIs, dependency calls, counters, `cfg(test)` bridge, tail descriptors, and evidence plan are implementable against Phase 1B.
 - 2026-09-06: ADR 0013 whitespace, 48-fence balance, bootstrap validation, exact one-file staged inspection, signed commit, and `git verify-commit f39d7ab`: pass. The post-commit worktree contains only unrelated untracked `x`.
+- 2026-09-06: Planner/medium created the integrated Phase 1C parser/reconciliation packet. Reviewer/high and Security Reviewer/xhigh rejected early drafts for incomplete artifact, reachability, comment-region, layout, accepted-source, disagreement, and dependency-audit wording; Planner/medium corrected each finding without implementation changes.
+- 2026-09-06: final Phase 1C packet SHA `10525ef529832a69e4b9a50ad27efd797c800f235c3e55e7d5e8198241a518b5`; Reviewer/high and Security Reviewer/xhigh pass with no blocker/high/medium finding. Six baseline/post Cargo graph pairs and the exact A/B/C changed-graph audit union close cache and feature-unification gaps.
+- 2026-09-06: packet whitespace check, bootstrap validation (17 required files, 13 ADRs, 8 pinned agents), prerequisite signatures, exact one-file staged inspection, signed commit, and `git verify-commit c98ab13`: pass. Post-commit worktree contains only unrelated untracked `x` before this progress ledger update.
 - 2026-09-05: tool/version and repository inspection: pass; expected no-commit `git log` failure observed.
 - The current desktop/MCP shells have smoke tests; product workflow tests begin with the applicable implementation phases.
 
@@ -177,20 +181,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `docs/task-packets/phase-1b-protocol-domain.md` and its narrow ADR 0012 visibility clarification are checkpointed at `c3e3109`.
 - Phase 1B implementation and evidence are checkpointed at signed commit `df067b2`.
 - `docs/adr/0013-phase-1c-parser-and-reconciliation-contract.md` is accepted and checkpointed at signed commit `f39d7ab`.
+- `docs/task-packets/phase-1c-parser-reconciliation.md` is approved and checkpointed at signed commit `c98ab13`.
 
 ## Next recommended action
 
-Have Planner/medium create the exact Phase 1C packet from `docs/task-packets/TEMPLATE.md` and accepted ADR 0013, then inspect and independently review it before any implementation dispatch.
+Dispatch the signed Phase 1C packet to Worker/low. The Worker first records the unchanged baseline, then resolves without compiling and stops at the A/B/C dependency security gate until its evidence is reviewed clean; afterward it implements the exact crate-private parser and tests.
 
 ## Recommended agent role and reasoning effort
 
-Planner — `gpt-5.6-sol`, medium, then Reviewer/high and Security Reviewer/xhigh for the packet gate.
+Worker — `gpt-5.6-sol`, low, followed by Orchestrator/high inspection and independent Reviewer/high plus Security Reviewer/xhigh implementation gates.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read `docs/product-spec.md`, `docs/architecture.md`, `docs/implementation-plan.md`, `docs/threat-model.md`, `docs/error-contract.md`, and accepted ADRs 0011–0013.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed Phase 1B checkpoint `df067b2` and reconcile any unexpected worktree changes.
+4. Verify signed Phase 1B checkpoint `df067b2`, accepted ADR checkpoint `f39d7ab`, and packet checkpoint `c98ab13`; reconcile any unexpected worktree changes.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Read accepted ADR 0013 at `f39d7ab`; create or review the Phase 1C task packet. Do not dispatch implementation until the packet has independent correctness and security passes.
+6. Read accepted ADR 0013 at `f39d7ab` and approved `docs/task-packets/phase-1c-parser-reconciliation.md` at `c98ab13`. Resume its exact Worker/low implementation; do not compile the changed dependency graph until the packet's A/B/C audit evidence passes.
