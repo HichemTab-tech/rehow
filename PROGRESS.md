@@ -9,11 +9,11 @@ Phase 1 — Core foundation and format proof.
 
 ## Current task
 
-Implement the signed, independently reviewed Phase 1B protocol/domain packet with Worker/low, then inspect and verify the actual diff.
+Correct the independently rejected Phase 1B protocol/domain implementation, then repeat the full correctness and security gates.
 
 ## Overall status
 
-In progress. Phase 0, Phase 1A, and the protocol/YAML baseline are complete in signed, independently reviewed checkpoints. Accepted ADR 0012 freezes Phase 1B construction, dependencies, exhaustive protocol/TypeScript behavior, and the parser-neutral unknown-YAML builder. The Planner/medium packet is signed and independently approved at `c3e3109`; no Phase 1B code has begun, and Worker/low implementation is now ready.
+In progress. Phase 0, Phase 1A, and the protocol/YAML baseline are complete in signed, independently reviewed checkpoints. The Phase 1B packet is signed and approved at `c3e3109`. Its current uncommitted implementation compiles and passes its present tests, but Orchestrator, Reviewer/high, and Security Reviewer/xhigh audits found contract, canonicalization, allocation-bound, YAML-precedence, generated-contract, trait-surface, and evidence defects. It is rejected pending correction and fresh review.
 
 ## Completed work
 
@@ -45,7 +45,7 @@ In progress. Phase 0, Phase 1A, and the protocol/YAML baseline are complete in s
 
 ## Work in progress
 
-- No implementation is in progress. Worker/low is the next writer and has exclusive ownership only of the paths named by the signed Phase 1B packet.
+- Architect/xhigh completed a decision-complete correction design. Integrator/medium is the sole writer for the signed packet paths and is applying it; the Orchestrator must inspect the actual diff and obtain fresh independent correctness and security passes.
 
 ## Remaining work
 
@@ -60,7 +60,7 @@ In progress. Phase 0, Phase 1A, and the protocol/YAML baseline are complete in s
 
 ## Known bugs
 
-None known in the Phase 1A scaffold. The shell is intentionally inert and is not yet product functionality.
+None known in the accepted Phase 1A scaffold. The shell is intentionally inert and is not yet product functionality. The rejected Phase 1B diff accepts noncanonical timestamps and signed decimals, rejects valid mixed escaped display values and numeric DNS names, omits a file-size correlation, exposes detail construction through Serde, buffers hostile unknown detail/list input, has two YAML error-precedence defects, uses unapproved traits/handwritten TypeScript shapes, and lacks mandatory adversarial evidence.
 
 ## Design and accessibility findings
 
@@ -77,6 +77,8 @@ None known in the Phase 1A scaffold. The shell is intentionally inert and is not
 - Both security review rounds found specification gaps. All reported gaps are corrected; the Security Reviewer/xhigh closure pass reports no blocker, high, or medium finding.
 - Phase 1A Security Reviewer/xhigh passes the actual implementation: exact dependencies/lockfiles, empty command manifest, one zero-permission capability, restrictive CSP, deterministic contract scripts, and zero-output MCP boundary.
 - Phase 1B decision Security Reviewer/xhigh passes the full decision and the correction delta with no blocker/high/medium finding. Construction remains parse/validation-only, output text is provenance-controlled, path/Git factories stay protocol-private, and the unknown-YAML builder is bounded and poisoning.
+- Phase 1B implementation Security Reviewer/xhigh blocks acceptance: hostile ErrorDto/list/display input is not bounded before retention; public detail Serde bypasses the construction boundary; canonical timestamp/decimal/display behavior is incorrect; file-size and YAML-precedence checks are incomplete; and adversarial evidence is materially incomplete.
+- SafeHost v1 now rejects legacy decimal/octal/hexadecimal/shortened IPv4 aliases before DNS fallback. Architect/xhigh, Reviewer/high, and Security Reviewer/xhigh approved the documented classifier and adversarial vectors; implementation remains part of the active correction.
 
 ## Blockers and human checkpoints
 
@@ -86,7 +88,7 @@ None known in the Phase 1A scaffold. The shell is intentionally inert and is not
 
 ## Latest verified commit
 
-`c3e3109351a98043485955732ed30a85e5cb01f3` — signed, independently reviewed Phase 1B implementation packet plus the lint-safe construction-error visibility clarification. This progress ledger update follows it.
+`bd84fd63b8010964568b8e9abf16ff43295f87b7` — signed, independently reviewed SafeHost numeric-form clarification. This progress ledger update follows it.
 
 ## Tests last run and results
 
@@ -131,6 +133,12 @@ None known in the Phase 1A scaffold. The shell is intentionally inert and is not
 - 2026-09-06: Planner/medium Phase 1B packet: complete — all required template fields, exact allowed paths/behavior/tests/commands/non-goals/escalations, no implementation changes.
 - 2026-09-06: Reviewer/high Phase 1B packet closure and Security Reviewer/xhigh correction-delta review: pass — no blocker/high/medium finding.
 - 2026-09-06: `git verify-commit c3e3109351a98043485955732ed30a85e5cb01f3`: pass — good signature from the configured project key; bootstrap and staged whitespace checks passed before commit.
+- 2026-09-06: Worker/low partial Phase 1B checks passed: `cargo test -p rehow-core --locked` (5 tests), Cargo formatting, core Clippy with warnings denied, contract generation/check, `pnpm check`, and `git diff --check`. These checks do not accept the implementation because the Worker reported the mandatory gaps now assigned to Integrator/medium.
+- 2026-09-06: Integrator/medium reported a green current gate for the completed Phase 1B diff, including 30 core tests, contract determinism, all pnpm/Cargo checks, release build, bootstrap validation, and whitespace checks. The Orchestrator's source audit and independent Reviewer/high and Security Reviewer/xhigh reviews rejected acceptance because required behavior and evidence remain missing despite the green commands.
+- 2026-09-06: Reviewer/high Phase 1B implementation gate: blocked by ten high findings and one medium trait-surface finding covering public detail Serde, timestamp/decimal/display canonicality, unknown-detail retention, file-size correlation, YAML precedence/meters, handwritten TypeScript schemas, and incomplete tests/evidence.
+- 2026-09-06: Security Reviewer/xhigh Phase 1B implementation gate: blocked by four high and four medium findings; no Phase 1B filesystem, Git, Tauri, Markdown, or MCP execution authority was introduced.
+- 2026-09-06: Architect/xhigh Phase 1B correction design: complete — exact private runtime/public TS marker split, bounded typed ErrorDto visitors, BoundedList visitor, primitive fixes, YAML precedence and natural-meter vectors, and evidence matrix supplied without editing files.
+- 2026-09-06: SafeHost decision delta: Architect/xhigh, Reviewer/high, and Security Reviewer/xhigh pass after numeric-only DNS was deferred and legacy Linux IPv4 aliases were reserved/rejected; `git verify-commit bd84fd63b8010964568b8e9abf16ff43295f87b7` passes with the configured project key.
 - 2026-09-05: tool/version and repository inspection: pass; expected no-commit `git log` failure observed.
 - No application tests exist yet.
 
@@ -155,11 +163,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 
 ## Next recommended action
 
-Delegate signed `docs/task-packets/phase-1b-protocol-domain.md` to Worker/low. On return, inspect every changed file and lockfile package, run the packet's full gate, and request corrections before independent implementation reviews.
+Wait for Integrator/medium to finish the decision-complete Phase 1B repair, then inspect and run the full signed packet gate before fresh Reviewer/high and Security Reviewer/xhigh reviews.
 
 ## Recommended agent role and reasoning effort
 
-Worker — `gpt-5.6-sol`, low, for only the signed Phase 1B packet; then Orchestrator inspection, Reviewer/high, and Security Reviewer/xhigh.
+Integrator — `gpt-5.6-sol`, medium, for the active bounded repair; then Orchestrator inspection, Reviewer/high, and Security Reviewer/xhigh.
 
 ## Explicit restart instructions
 
@@ -168,4 +176,4 @@ Worker — `gpt-5.6-sol`, low, for only the signed Phase 1B packet; then Orchest
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
 4. Confirm the Phase 0 commit/signature and reconcile any unexpected worktree changes.
 5. Verify `c3e3109`, then read accepted ADRs 0011–0012 and `docs/task-packets/phase-1b-protocol-domain.md`.
-6. Delegate only the signed packet to Worker/low. Preserve and exclude untracked `x`; after the Worker returns, inspect the actual diff and run the full packet gate before review or commit.
+6. Read the recorded Phase 1B implementation review findings and resume or consume the Integrator/medium repair. Preserve and exclude untracked `x`; inspect the actual diff and run the full packet gate before fresh review or commit.
