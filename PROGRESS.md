@@ -1,6 +1,6 @@
 # Rehow Progress
 
-Last updated: 2026-09-06
+Last updated: 2026-09-07
 State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
@@ -9,11 +9,11 @@ Phase 1 — Core foundation and format proof.
 
 ## Current task
 
-Correct and close the rejected partial Phase 1C parser implementation using the approved Integrator/medium closure packet.
+Begin the Phase 1D Architect/xhigh gate for typed Workspace/Category/Guide/Attachment binding and mutation authority; no implementation packet exists yet.
 
 ## Overall status
 
-In progress. Phase 0, Phase 1A, and Phase 1B are complete in signed, independently reviewed checkpoints. Phase 1B is accepted at `df067b2`. Phase 1C architecture is accepted at `f39d7ab` and its original packet at `c98ab13`. A Worker/low produced a compiling partial implementation and truthful evidence, but Architect/xhigh, Reviewer/high, and Security Reviewer/xhigh rejected it for substantive production-algorithm gaps. The exact sequential correction packet was introduced at `bb20342` and its non-self-referential recovery checks are approved at signed checkpoint `5a09943`; the partial implementation remains intentionally dirty and unaccepted.
+In progress. Phase 0, Phase 1A, Phase 1B, and Phase 1C are complete in signed, independently reviewed checkpoints. Phase 1C's bounded dual-parser source/presentation/semantic/reconciliation implementation, exhaustive private evidence, and dependency audit are accepted at signed commit `cf8341f`. The worktree after that commit contains only the preserved unrelated untracked executable `x`. Phase 1D has not begun.
 
 ## Completed work
 
@@ -44,14 +44,16 @@ In progress. Phase 0, Phase 1A, and Phase 1B are complete in signed, independent
 - Planner/medium created `docs/task-packets/phase-1b-protocol-domain.md`; Reviewer/high corrected impossible nominal TypeScript assertions, test-harness filesystem wording, construction-error visibility, dependency lock-resolution steps, and dirty-tree dispatch semantics, then passed the packet with no blocker/high/medium finding. Security Reviewer/xhigh passed the correction delta.
 - Implemented and accepted Phase 1B's complete protocol/domain surface: bounded public values and Serde, all 36 correlated public errors, generated TypeScript contracts, bounded parser-neutral unknown-YAML construction, exhaustive adversarial/trait-surface evidence, and deterministic contract generation.
 - Reviewer/high and Security Reviewer/xhigh independently passed the final Phase 1B implementation with no blocker, high, or medium finding. The Orchestrator repeated the exact full packet gate and created signed checkpoint `df067b2`.
+- Completed the four-boundary Phase 1C closure: exhaustive source/CST inspection, bounded production Saphyr reducer and scalar meters, monotonic eight-dimension reconciliation, proven entry/range/comment ownership, production-backed fault controls, 73-file named corpus, 8,192-case property harness, exact dependency/API/rustdoc audits, and truthful evidence.
+- Reviewer/high and Security Reviewer/xhigh passed the final Phase 1C implementation and all correction deltas with no remaining blocker, high, medium, or low finding. The Orchestrator repeated the complete Cargo/pnpm/Tauri acceptance gate and created signed checkpoint `cf8341f`.
 
 ## Work in progress
 
-- `docs/task-packets/phase-1c-parser-closure.md` is ready for one Integrator/medium owner. It freezes the dirty implementation hashes and requires sequential source/presentation, semantic/tail, reconciliation/comment, and evidence boundaries. The dependency A/B/C precompile gate already passed; do not re-resolve or alter the accepted manifest/lock.
+- None. Phase 1C is committed and accepted. The next action is a read-only Architect/xhigh Phase 1D decision pass before planning or implementation.
 
 ## Remaining work
 
-- Phase 1C: implement the accepted bounded generic YAML/presentation parser and reconciliation artifact; Phase 1D binds typed aggregate fields and mutation authority; Phase 1E proves confinement/revisions and atomic recovery.
+- Phase 1D: define typed aggregate field binding, unknown-field preservation, validation, and mutation authority; Phase 1E proves confinement/revisions and atomic recovery.
 - Phase 2: native shell and safe Workspace onboarding/import/migration.
 - Phase 3: Category/Guide/Attachment lifecycle and edit conflicts.
 - Phase 4: search/ranking/index performance.
@@ -61,9 +63,7 @@ In progress. Phase 0, Phase 1A, and Phase 1B are complete in signed, independent
 
 ## Known bugs
 
-None known in accepted Phase 1A or Phase 1B. The shell remains intentionally inert and is not yet product functionality.
-
-The unaccepted Phase 1C dirty implementation has known defects captured by `docs/task-packets/phase-1c-parser-closure.md`: incomplete production guard/tail reduction and CST normalization, unsafe correspondence/range proof, superlinear entry/comment work, incomplete comment ownership, incorrect malformed precedence/meter facts, and test controls that exercise substitutes rather than production. These are active implementation work, not accepted product bugs or waived requirements.
+None known in accepted Phase 1A, Phase 1B, or Phase 1C. The shell remains intentionally inert and is not yet product functionality.
 
 ## Design and accessibility findings
 
@@ -86,6 +86,7 @@ The unaccepted Phase 1C dirty implementation has known defects captured by `docs
 - The Phase 1C packet Security Reviewer/xhigh closure passes at SHA `10525ef529832a69e4b9a50ad27efd797c800f235c3e55e7d5e8198241a518b5`. Its precompile supply-chain gate audits newly locked identities, already-locked newly reachable identities, and already-locked feature-changed identities before executing the changed graph.
 - Phase 1C dependency gate passed after exact lock/source/feature/unsafe/build/proc-macro/yank review plus current official OSV crates.io dump and RustSec database scans. No reviewed exact package version is affected by a published advisory; the generated TypeScript remains unchanged.
 - Partial implementation security review rejected `RoundTripStatus::Proven` safety, guarded-tail behavior, range/comment proof, and hostile-input linearity. The approved closure packet preserves all corrections and requires a fresh final Security Reviewer/xhigh pass.
+- Final Phase 1C Security Reviewer/xhigh review and every security-sensitive correction delta pass with no blocker, high, medium, or low finding. The accepted parser remains crate-private, bounded, content-sanitized, non-recursive in Rehow traversal, dependency-pinned, and without filesystem/process/network/logging/mutation authority.
 
 ## Blockers and human checkpoints
 
@@ -95,9 +96,13 @@ The unaccepted Phase 1C dirty implementation has known defects captured by `docs
 
 ## Latest verified commit
 
-`5a09943` — signed, independently reviewed Phase 1C parser closure packet with hardened recovery topology; `git verify-commit 5a09943` passes with the configured project key. This progress update follows it; latest accepted implementation remains `df067b2`.
+`cf8341f` — signed, independently reviewed Phase 1C bounded YAML parser implementation; `git verify-commit cf8341f` passes with the configured project key. This progress-only recovery update follows that implementation commit.
 
 ## Tests last run and results
+
+- 2026-09-07: final Phase 1C Orchestrator gate: parser 130/130; core library 143/143; error-contract 18/18; protocol 13/13; unknown-YAML 11/11; public API positive plus all 24 trybuild negatives; desktop/MCP/Vitest smoke tests; contracts generate/check; frozen pnpm materialization; `pnpm check`, tests, integration, build; Cargo fmt, locked Workspace Clippy/tests/check/release; rustdoc/API/TypeScript absence; six Cargo-tree and three inverse-tree audits; Tauri no-bundle; bootstrap and whitespace all pass.
+- 2026-09-07: final correction gate: property 1/1 over 4,096 arbitrary plus 4,096 mutations from all 27 accepted materializations; dependency surface 6/6; parser 130/130; fmt, locked Clippy, and diff check pass. Reviewer/high and Security Reviewer/xhigh report no remaining finding.
+- 2026-09-07: `git verify-commit cf8341f`: pass — good signature from the configured project key; post-commit worktree contains only preserved unrelated untracked `x`.
 
 - 2026-09-05: `python3` `tomllib` parsed `.codex/config.toml` plus all 8 `.codex/agents/*.toml`: pass (9 files).
 - 2026-09-05: `python3 scripts/check_bootstrap.py`: pass — 17 required files, 10 ADRs, 8 pinned agents.
@@ -191,20 +196,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `docs/adr/0013-phase-1c-parser-and-reconciliation-contract.md` is accepted and checkpointed at signed commit `f39d7ab`.
 - `docs/task-packets/phase-1c-parser-reconciliation.md` is approved and checkpointed at signed commit `c98ab13`.
 - `docs/task-packets/phase-1c-parser-closure.md` is approved at `bb20342` and hardened at signed commit `5a09943`; the latter is the authoritative correction path and direct parent of this recovery ledger.
+- Phase 1C parser/domain bridge, private tests and fixtures, dependency lock delta, API negatives, and evidence are accepted at signed commit `cf8341f`.
 
 ## Next recommended action
 
-Dispatch `docs/task-packets/phase-1c-parser-closure.md` to one Integrator/medium. Verify every frozen dirty-base hash and this ledger as current signed `HEAD`, then complete Boundary 1 only and return its actual diff/tests for Orchestrator inspection before Boundary 2.
+Dispatch an Architect/xhigh read-only Phase 1D decision task. It must reconcile the accepted content model, ADRs 0011–0013, Phase 1C artifact, unknown-metadata preservation, typed known-field validation, and mutation/span-edit authority before a Planner writes the Phase 1D packet.
 
 ## Recommended agent role and reasoning effort
 
-Integrator — `gpt-5.6-sol`, medium, with sequential boundary ownership; final actual diff requires independent Reviewer/high and Security Reviewer/xhigh gates.
+Architect — `gpt-5.6-sol`, xhigh. No Worker or implementation delegation until the typed binding/mutation decisions are accepted and a precise packet exists.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read `docs/product-spec.md`, `docs/architecture.md`, `docs/implementation-plan.md`, `docs/threat-model.md`, `docs/error-contract.md`, and accepted ADRs 0011–0013.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `df067b2`, `f39d7ab`, `c98ab13`, `bb20342`, and authoritative closure packet `5a09943`, plus current signed recovery-ledger `HEAD`; confirm `HEAD^` is `5a09943` and only `PROGRESS.md` changed in the ledger.
+4. Verify signed checkpoints `df067b2`, `f39d7ab`, `c98ab13`, `5a09943`, accepted Phase 1C implementation `cf8341f`, and current signed recovery-ledger `HEAD`; confirm `HEAD^` is `cf8341f` and only `PROGRESS.md` changed in the ledger.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Read accepted ADR 0013 at `f39d7ab`, the original packet at `c98ab13`, and approved `docs/task-packets/phase-1c-parser-closure.md` at `5a09943`. Resume with Integrator/medium at Boundary 1; do not re-resolve dependencies, weaken the ADR, or treat the current green tests as acceptance.
+6. Read `docs/content-model.md`, `docs/architecture.md`, ADRs 0011–0013, and the Phase 1C evidence. Resume with an Architect/xhigh Phase 1D decision pass; do not implement typed binding, emission, span edits, or mutation authority before those decisions and their independent reviews are accepted.
