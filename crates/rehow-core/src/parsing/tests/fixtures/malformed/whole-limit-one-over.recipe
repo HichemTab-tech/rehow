@@ -1,0 +1,7 @@
+hex=23
+repeat=61,262138
+hex=0a613a20620a
+failure=SourceTooLarge
+scope=WholeYamlBytes
+limit=262144
+observed=262145

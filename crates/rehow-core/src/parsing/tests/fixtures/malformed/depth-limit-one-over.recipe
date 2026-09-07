@@ -1,0 +1,5 @@
+nested_depth=16
+failure=DepthLimit
+scope=Depth
+limit=16
+observed=17

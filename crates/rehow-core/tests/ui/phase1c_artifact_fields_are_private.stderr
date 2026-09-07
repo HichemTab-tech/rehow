@@ -1,0 +1,19 @@
+error[E0603]: module `parsing` is private
+ --> tests/ui/phase1c_artifact_fields_are_private.rs:1:31
+  |
+1 | fn inspect(value: rehow_core::parsing::ParsedYamlArtifact) {
+  |                               ^^^^^^^  ------------------ struct `ParsedYamlArtifact` is not publicly re-exported
+  |                               |
+  |                               private module
+  |
+note: the module `parsing` is defined here
+ --> src/lib.rs
+  |
+  | pub(crate) mod parsing;
+  | ^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0616]: field `nodes` of struct `rehow_core::parsing::reconcile::ParsedYamlArtifact` is private
+ --> tests/ui/phase1c_artifact_fields_are_private.rs:2:19
+  |
+2 |     let _ = value.nodes;
+  |                   ^^^^^ private field

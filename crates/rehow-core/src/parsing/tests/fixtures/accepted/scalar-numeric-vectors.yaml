@@ -1,0 +1,16 @@
+null_tilde: ~
+null_word: null
+bool_true: true
+bool_false: false
+decimal: 123456789012345678901234567890
+negative: -42
+positive: +42
+zero: 0
+negative_zero: -0
+float: 1.25
+exponent: 6.022e23
+positive_infinity: .inf
+negative_infinity: -.Inf
+not_a_number: .NAN
+octal: 0o755
+hexadecimal: 0xFF

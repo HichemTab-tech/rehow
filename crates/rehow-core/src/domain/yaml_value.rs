@@ -359,6 +359,14 @@ pub struct UnknownYamlDocumentBuilder {
     state: BuilderState,
 }
 
+#[cfg(test)]
+pub(crate) enum UnknownYamlTestMeter {
+    Nodes,
+    NumericDigits,
+    SemanticEncoding,
+    SemanticComparison,
+}
+
 impl UnknownYamlDocumentBuilder {
     #[expect(
         clippy::new_without_default,
@@ -532,6 +540,30 @@ impl UnknownYamlDocumentBuilder {
                 kind: UnknownYamlBuildErrorKind::IncompleteDocument,
             }),
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn set_test_meter(
+        &mut self,
+        meter: UnknownYamlTestMeter,
+        used: usize,
+    ) -> Result<(), UnknownYamlBuildErrorKind> {
+        let BuilderState::Active {
+            nodes,
+            numeric_digits,
+            encoding_bytes,
+            comparison_units,
+            ..
+        } = &mut self.state
+        else {
+            return Err(UnknownYamlBuildErrorKind::Poisoned);
+        };
+        match meter {
+            UnknownYamlTestMeter::Nodes => *nodes = used,
+            UnknownYamlTestMeter::NumericDigits => *numeric_digits = used,
+            UnknownYamlTestMeter::SemanticEncoding => *encoding_bytes = used,
+            UnknownYamlTestMeter::SemanticComparison => *comparison_units = used,
+        }
+        Ok(())
     }
     #[cfg(test)]
     fn seed_meters(&mut self, nodes: usize, encoding_bytes: usize, comparison_units: usize) {

@@ -1,0 +1,5 @@
+complex:
+  ? [one, two]
+  : sequence key
+  ? {nested: key}
+  : mapping key

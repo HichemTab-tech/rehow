@@ -1,0 +1,11 @@
+error[E0603]: module `parsing` is private
+ --> tests/ui/phase1c_parser_module_is_private.rs:1:17
+  |
+1 | use rehow_core::parsing;
+  |                 ^^^^^^^ private module
+  |
+note: the module `parsing` is defined here
+ --> src/lib.rs
+  |
+  | pub(crate) mod parsing;
+  | ^^^^^^^^^^^^^^^^^^^^^^

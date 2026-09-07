@@ -1,0 +1,7 @@
+hex=613a2022
+repeat=5c4c,21845
+hex=6161220a
+failure=DecodedScalarLimit
+scope=DecodedScalarBytes
+limit=65536
+observed=65537

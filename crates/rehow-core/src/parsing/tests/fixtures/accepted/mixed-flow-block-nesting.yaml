@@ -1,0 +1,5 @@
+block:
+  - flow_mapping: {sequence: [one, {two: three}]}
+  - block_mapping:
+      child:
+        - leaf

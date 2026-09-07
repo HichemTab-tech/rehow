@@ -1,0 +1,13 @@
+error[E0603]: module `parsing` is private
+ --> tests/ui/phase1c_parse_entries_are_private.rs:2:25
+  |
+2 |     let _ = rehow_core::parsing::parse_yaml_document(Vec::new().into_boxed_slice());
+  |                         ^^^^^^^  ------------------- function `parse_yaml_document` is not publicly re-exported
+  |                         |
+  |                         private module
+  |
+note: the module `parsing` is defined here
+ --> src/lib.rs
+  |
+  | pub(crate) mod parsing;
+  | ^^^^^^^^^^^^^^^^^^^^^^

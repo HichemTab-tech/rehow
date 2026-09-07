@@ -1,0 +1,5 @@
+sequence_items=2049
+failure=SequenceEntryLimit
+scope=SequenceEntries
+limit=2048
+observed=2049

@@ -1,0 +1,7 @@
+hex=613a202e
+repeat=31,65532
+hex=0a
+failure=CanonicalScalarLimit
+scope=CanonicalScalarBytes
+limit=65536
+observed=65537

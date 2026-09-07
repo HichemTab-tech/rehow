@@ -1,0 +1,23 @@
+error[E0423]: cannot initialize a tuple struct which contains private fields
+ --> tests/ui/phase1c_coordinate_constructors_are_private.rs:2:13
+  |
+2 |     let _ = rehow_core::parsing::YamlByteOffset(0);
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+note: constructor is not visible here due to private fields
+ --> src/parsing/source.rs
+  |
+  | pub(crate) struct YamlByteOffset(u32);
+  |                                  ^^^ private field
+
+error[E0603]: module `parsing` is private
+ --> tests/ui/phase1c_coordinate_constructors_are_private.rs:2:25
+  |
+2 |     let _ = rehow_core::parsing::YamlByteOffset(0);
+  |                         ^^^^^^^ private module
+  |
+note: the module `parsing` is defined here
+ --> src/lib.rs
+  |
+  | pub(crate) mod parsing;
+  | ^^^^^^^^^^^^^^^^^^^^^^

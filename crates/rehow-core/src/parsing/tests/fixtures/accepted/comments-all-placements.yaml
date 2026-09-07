@@ -1,0 +1,9 @@
+# document leading
+leading: value
+# before entry
+inline: value # inline
+nested:
+  # before child
+  child: value
+flow: [one, two] # flow trailing
+# document trailing

@@ -7,6 +7,9 @@ pub use yaml_value::{
     UnknownYamlScalarKind, UnknownYamlValue, UnknownYamlValueKind,
 };
 
+#[cfg(test)]
+pub(crate) use yaml_value::UnknownYamlTestMeter;
+
 #[derive(Clone, Copy)]
 pub struct ValueConstructionError;
 

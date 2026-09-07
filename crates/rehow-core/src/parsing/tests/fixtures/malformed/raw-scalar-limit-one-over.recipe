@@ -1,0 +1,7 @@
+hex=613a20
+repeat=61,65537
+hex=0a
+failure=RawScalarLimit
+scope=RawScalarBytes
+limit=65536
+observed=65537

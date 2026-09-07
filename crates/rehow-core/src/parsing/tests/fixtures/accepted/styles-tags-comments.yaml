@@ -1,0 +1,23 @@
+# document leading
+plain: value
+single: 'value'
+double: "value"
+literal: | # literal header
+  text # scalar content
+folded: > # folded header
+  text
+flow_sequence: [true, null, 0x10]
+flow_mapping: {nested: value}
+tag_null: !!null null
+tag_bool: !!bool true
+tag_int: !!int 12
+tag_float: !!float 1.0
+tag_string: !!str 12
+tag_sequence: !!seq [value]
+tag_mapping: !!map {key: value}
+implicit_empty:
+sequence:
+  -
+complex:
+  ? key
+  : value

@@ -1,0 +1,7 @@
+hex=2d2d2d0a23
+repeat=78,262129
+hex=0a613a20620a2d2d2d0a0a
+failure=FrontmatterTooLarge
+scope=FrontmatterBytes
+limit=262144
+observed=262145

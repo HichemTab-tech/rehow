@@ -1,0 +1,9 @@
+hex=6c617267653a202e
+repeat=31,65531
+hex=0a726573743a20
+repeat=31,16385
+hex=0a
+failure=NumericDigitLimit
+scope=NumericDigits
+limit=81920
+observed=81921

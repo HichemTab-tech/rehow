@@ -1,0 +1,7 @@
+string: !!str value
+"null": !!null null
+"boolean": !!bool true
+"integer": !!int 42
+"float": !!float 1.5
+"sequence": !!seq [one, two]
+"mapping": !!map {key: value}

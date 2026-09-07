@@ -1,0 +1,15 @@
+error[E0432]: unresolved import `rehow_core::domain::UnknownYamlTestMeter`
+ --> tests/ui/phase1c_test_controls_absent.rs:1:5
+  |
+1 | use rehow_core::domain::UnknownYamlTestMeter;
+  |     ^^^^^^^^^^^^^^^^^^^^--------------------
+  |                         |
+  |                         no `UnknownYamlTestMeter` in `domain`
+  |
+note: found an item that was configured out
+ --> src/domain.rs
+  |
+  | #[cfg(test)]
+  |       ---- the item is gated here
+  | pub(crate) use yaml_value::UnknownYamlTestMeter;
+  |                            ^^^^^^^^^^^^^^^^^^^^

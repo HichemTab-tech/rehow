@@ -1,0 +1,5 @@
+unique_mapping=257
+failure=MappingEntryLimit
+scope=MappingEntries
+limit=256
+observed=257

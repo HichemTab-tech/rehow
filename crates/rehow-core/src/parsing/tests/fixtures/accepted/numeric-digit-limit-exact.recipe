@@ -1,0 +1,6 @@
+hex=6c617267653a202e
+repeat=31,65531
+hex=0a726573743a20
+repeat=31,16384
+hex=0a
+outcome=ok
