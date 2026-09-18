@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 3A — Guide body editor checkpoint accepted; next is Workspace initialization.
+Phase 2B — empty-folder Workspace initialization accepted; next is Category creation.
 
 ## Current task
 
-Implement safe initialization for a user-selected empty folder, then connect the existing onboarding state to that native operation. MCP remains read-only.
+Implement the first bounded Category creation path so a new Workspace can organize its first Guide. MCP remains read-only.
 
 ## Overall status
 
-In progress. Existing Guides can now be edited and saved in the native desktop app through a bounded revision-checked command. Saves are atomic and recoverable, unknown metadata is preserved, tested content becomes stale, conflicts refuse overwrite, and the refreshed Guide is returned to the reader. MCP remains read-only.
+In progress. A user can open an existing Workspace or select an empty folder, name a new Workspace, initialize it without renderer path authority, and open it immediately. Existing Guide body editing remains green. MCP remains read-only.
 
 ## Completed work
 
@@ -65,10 +65,11 @@ In progress. Existing Guides can now be edited and saved in the native desktop a
 - Completed and security-accepted ADR 0009 deletion/trash/recovery at signed checkpoint `dbf4230`: exact on-disk replay classification, fsynced reused temps, exact trash paths, no-replace before-image quarantine, hostile hierarchy denial, and interruption coverage across create/update/delete/trash.
 - Added the crate-private application Guide update proof at signed checkpoint `e28cf48`: random open-capability epochs, stable root identity, expected-revision enforcement, fresh parse/bind/typed planning under the writer lock, recoverable update execution, unknown-metadata preservation, tested-to-stale behavior, and retained-view refresh.
 - Shipped the first native Guide body editor at signed checkpoint `4e0e9da`: bounded raw-body IPC, revision conflicts, atomic recovery, post-save refresh, tested-to-stale warning, dirty-discard protection, error focus, and narrow-window actions. One combined review found no blocker/high issue; its blank narrow Save-label finding was corrected.
+- Added safe empty-folder Workspace initialization at signed checkpoint `b2dac91`: retained descriptor selection, one-shot native authority, canonical internal IDs/time/YAML, no-replace manifest journaling, exclusive private `categories/`, changed-folder refusal, structured actionable errors, and an accessible onboarding form. The work also fixed repeated directory scans incorrectly sharing an exhausted stream offset.
 
 ## Work in progress
 
-- The Guide body editor is committed at signed checkpoint `4e0e9da`. The next bounded batch is safe Workspace initialization for an empty selected folder and its onboarding action.
+- Workspace initialization is committed at signed checkpoint `b2dac91`. The next bounded batch is active Category creation, which is required before the first Guide can be created.
 
 ## Remaining work
 
@@ -82,7 +83,7 @@ In progress. Existing Guides can now be edited and saved in the native desktop a
 
 ## Known bugs
 
-No known regression in accepted phases. Phase 1E-A currently retains all parsed Guide bodies in native memory for the session; broad IPC is bounded, but streaming/lazy native reread is still required before claiming the 2 GiB worst-case scan budget is production-memory-safe. Phase 4A scans and normalizes the loaded view per query, so it does not yet claim the 5,000-Guide latency/RSS budgets; the disposable index and benchmark remain required. External changes are not watched/reloaded. Safe links are intentionally inert until the guarded native opener exists.
+No known regression in accepted phases. If the process is killed after the initialization manifest commits but before `categories/` is durably created, reopening classifies the folder as malformed with `categoriesMissing`; an explicit descriptor-bound repair flow is still required and Rehow never auto-adopts the residue. Phase 1E-A currently retains all parsed Guide bodies in native memory for the session; broad IPC is bounded, but streaming/lazy native reread is still required before claiming the 2 GiB worst-case scan budget is production-memory-safe. Phase 4A scans and normalizes the loaded view per query, so it does not yet claim the 5,000-Guide latency/RSS budgets; the disposable index and benchmark remain required. External changes are not watched/reloaded. Safe links are intentionally inert until the guarded native opener exists.
 
 ## Design and accessibility findings
 
@@ -91,6 +92,7 @@ No known regression in accepted phases. Phase 1E-A currently retains all parsed 
 - Final current-guideline closure: pass with no blocker, high, medium, or low finding.
 - A fresh real-data/onboarding screenshot and interaction pass, rendered Markdown, edit/conflict/error states, and manual screen-reader verification remain Phase 2 acceptance gates.
 - The current-guideline self-review and combined checkpoint review pass the editor structure/focus/responsive design. Browser-level editor interaction tests remain open because the current Vitest setup has no DOM/browser harness; do not add one without a bounded dependency decision.
+- The current upstream web-interface guidelines were re-fetched for Workspace onboarding. The implemented form has a real label/name/autocomplete policy, bounded controlled input, inline focused errors, live updates, loading copy, visible focus, responsive action wrapping, and a truthful zero-Guide state; static review found no remaining issue. Screenshot/manual portal coverage remains open.
 
 ## Security findings
 
@@ -117,6 +119,7 @@ No known regression in accepted phases. Phase 1E-A currently retains all parsed 
 - ADR 0009 recovery closure passed the single combined Security Reviewer after correcting skipped-state trust, transition jumps, pre-rename durability probes, exact trash binding, reused-temp fsync, and path-identity cleanup. Final verdict: no blocker, high, or medium finding; before-images are quarantined with no unlink.
 - The `e28cf48` application proof adds no adapter command or arbitrary path/YAML authority. It accepts closed typed edits, validates the loaded Guide ID/Category and expected revision, derives a random launch capability hash with Linux `getrandom`, and rejects stale, reused-operation, hardlink, and unsafe-round-trip states.
 - The `4e0e9da` Tauri adapter accepts only Guide ID, expected revision, and bounded body text against native retained Workspace state. It exposes no path/YAML/status/time/operation authority; combined review reports no blocker/high security finding.
+- The `b2dac91` initialization adapter stores the selected empty-folder capability only in native state and accepts only a bounded name. The core re-scans the retained descriptor under its writer lock, rejects every new entry, generates all authority internally, journals `rehow.yaml` no-replace at `0600`, and creates `categories/` exclusively at `0700`. No path, ID, timestamp, operation ID, or YAML crosses IPC.
 
 ## Blockers and human checkpoints
 
@@ -126,10 +129,11 @@ No known regression in accepted phases. Phase 1E-A currently retains all parsed 
 
 ## Latest verified commit
 
-`4e0e9da` — signed native Guide body editor and bounded recoverable save command.
+`b2dac91` — signed empty-folder Workspace initialization and onboarding flow.
 
 ## Tests last run and results
 
+- 2026-09-18: Workspace initialization checkpoint at `b2dac91`: full `pnpm check/test/build`, locked Workspace Rust tests, all-target/all-feature Clippy with warnings denied, contracts, bootstrap, formatting, whitespace, and optimized Tauri no-bundle build pass. Counts include 232 core library tests, 5 desktop Rust tests, 13 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused coverage proves canonical create/open, `0600`/`0700` modes, invalid-name no-write, file/directory change refusal, missing-categories classification, structured IPC errors, and exact name bounds.
 - 2026-09-18: Guide editor checkpoint at `4e0e9da`: full `pnpm check/test/build`, locked full Workspace Rust tests, locked core/desktop Clippy with warnings denied, public API compile tests, formatting, contract drift, whitespace checks, and optimized Tauri no-bundle build pass. Counts include 229 core library tests, 4 desktop Rust tests, and 11 Vitest tests. The native binary built at `target/release/rehow-desktop`; the existing `.app` identifier warning remains informational for Linux.
 - 2026-09-18: final ADR 0009 gate at `dbf4230`: 14 focused Workspace-recovery tests and 225 full core library tests pass, plus all 18 error-contract, 13 protocol, 11 unknown-YAML, doc, and public API/compile-fail suites. Locked core Clippy denies warnings; formatting, contract drift, bootstrap validation, and whitespace checks pass. Fault coverage includes temp write/fsync/reuse, journal durability, create/update/delete/trash renames, source/destination directory sync, quarantine replay, hostile path types, mixed targets, and forged Complete/Committed state.
 - 2026-09-18: private application update gate at `e28cf48`: 3 focused application tests and 228 full core library tests pass, plus all 18 error-contract, 13 protocol, 11 unknown-YAML, doc, and public API/compile-fail suites. Locked core Clippy denies warnings; formatting, contract drift, bootstrap validation, and whitespace checks pass. Coverage proves save/no-op, stale/external conflict, operation-ID reuse refusal, unknown preservation, tested-to-stale, hardlink refusal, journal execution, and retained-view refresh.
@@ -252,10 +256,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - Recovery work adds `crates/rehow-core/src/storage/recovery.rs`, `recovery/store.rs`, `recovery/workspace.rs`, ADR 0009's exact codec/state behavior, and packets `phase-1e-b1` through `phase-1e-b3c`; signed checkpoints are `e810658`, `f26a868`, `dede741`, `1dd646e`, and accepted closure `dbf4230`.
 - `crates/rehow-core/src/application.rs` and `docs/task-packets/phase-1e-c1-guide-update-application.md` connect closed Guide edits to confined storage at signed checkpoint `e28cf48`; adapter exposure is intentionally absent.
 - `apps/desktop/src-tauri/src/lib.rs`, `apps/desktop/src/App.tsx`, `apps/desktop/src/index.css`, and `docs/task-packets/phase-3a-guide-body-editor.md` implement the accepted editor/save slice at `4e0e9da`.
+- `docs/task-packets/phase-2b-workspace-initialize.md` plus the core storage/application, Tauri session, and onboarding UI changes implement the accepted empty-folder creation slice at `b2dac91`.
 
 ## Next recommended action
 
-Implement safe Workspace initialization for a user-selected empty folder, then wire the existing empty-folder onboarding state to it. Do not adopt or modify nonempty folders, and keep MCP read-only.
+Implement active Category creation using the canonical emitter, expected Workspace state, descriptor-confined recovery, a bounded Tauri command, and the Reference Desk Categories surface. Keep MCP read-only.
 
 ## Recommended agent role and reasoning effort
 
@@ -264,8 +269,8 @@ Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents for routine work; us
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read the Workspace initialization portions of `docs/content-model.md`, `docs/architecture.md`, ADR 0009, and the threat model.
+2. Read the Category sections of `docs/content-model.md`, `docs/architecture.md`, ADR 0009/0014, and the threat model.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `4e0e9da`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `b2dac91`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Resume with safe empty-folder Workspace initialization; do not adopt nonempty folders or add renderer-selected paths, generic YAML, Git, or MCP writes.
+6. Resume with bounded active Category creation; do not add generic paths/YAML, broad reorder/removal, Git, or MCP writes.
