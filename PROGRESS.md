@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 2A — Reference Desk shell checkpoint; next is the read-only Workspace vertical slice.
+Phase 1E-A / 2B — read-only Workspace implementation checkpoint; independent security acceptance remains open.
 
 ## Current task
 
-Implement the smallest safe Phase 1E/2 read-only Workspace inspection and Guide-list vertical slice, then replace shell fixtures with real bound Workspace data. Advanced Phase 1D-C2b mutations remain required but no longer block read-only product progress.
+Checkpoint the implemented descriptor-confined Workspace picker/list/read vertical slice, then complete its independent Security Reviewer and native portal/manual UI gates when agent quota and an interactive display are available. Continue routine work single-agent with writable-state/onboarding classification or safe Markdown rendering; advanced Phase 1D-C2b remains required before edits.
 
 ## Overall status
 
-In progress. Phase 0 through Phase 1C and Phase 1D-A/B are accepted; Phase 1D-C1/C2a are checkpointed. The fixture-backed Reference Desk desktop shell is implemented, visually inspected across wide/narrow/light/dark/focus/empty/2× states, independently reviewed, and native-built at signed commit `df95874`. Real Workspace integration, editing, and advanced C2b mutations remain.
+In progress. Phase 0 through Phase 1C and Phase 1D-A/B are accepted; Phase 1D-C1/C2a are checkpointed. The Reference Desk shell now has a tested real-data read path: a native no-path-input folder picker, retained descriptor capability, bounded current-schema scan, Category/Guide lists, and per-Guide body reads. Its full Cargo/pnpm/native build gate is green. This Phase 1E-A work is an implementation checkpoint, not accepted phase closure, because the single Security Reviewer attempt could not start after the agent usage quota was exhausted and manual portal/real-data visual checks remain.
 
 ## Completed work
 
@@ -55,10 +55,11 @@ In progress. Phase 0 through Phase 1C and Phase 1D-A/B are accepted; Phase 1D-C1
 - Implemented private canonical emitters for new Workspace manifests, active Categories, and draft Guides with exact ADR 0011 escaping, schema order, LF/no-BOM envelopes, fallible retained growth, production parse/rebind comparison, golden tests, invalid-input/resource tests, and public-absence evidence. Signed checkpoint `92e4c93` verifies.
 - Implemented private existing-document mutation planning for Workspace name; Category name/order/archive/restore; and Guide title/summary/Category/body/stale transitions. Valid no-ops preserve exact bytes, actual changes require proven spans, candidates reparse/rebind, unknown data remains preserved, timestamps are monotonic, and tested content becomes stale. Signed checkpoint `539c29a` verifies.
 - Replaced the inert UI with the responsive Reference Desk shell: three/two/one-pane layouts, incremental search, result selection, keyboard search/results/Escape behavior, responsive Workspace drawer, deterministic focus restoration, Guide reading, command copy, empty results, live announcements, light/dark themes, and current-guideline accessibility. The combined Design Reviewer closure reports no remaining finding; signed checkpoint `df95874` verifies.
+- Implemented Phase 1E-A read-only Workspace loading: Linux descriptor confinement, bounded classification and scanning, BLAKE3 revisions, symlink/hardlink/special-file denial, changed-during-read refusal, duplicate/malformed isolation, a native Rust folder dialog with no renderer path argument, retained native session state, bounded metadata IPC, validated per-Guide body IPC, and real-data Reference Desk states. Full tests/Clippy/build/native build pass; independent security and manual UI closure remain open.
 
 ## Work in progress
 
-- The desktop shell is checkpointed and green but uses explicit fixture data. The next implementation replaces fixtures with confined read-only Workspace inspection/list/read data. C2b optional-field/collection/Guide archive mutations remain deferred, not cancelled.
+- The fixture data is removed and the read-only vertical slice is green locally. Awaiting independent Security Reviewer/xhigh closure and manual native portal/real-data visual validation before acceptance. The UI intentionally shows Guide Markdown as inert preformatted source until the safe renderer packet; C2b optional-field/collection/Guide archive mutations remain deferred, not cancelled.
 
 ## Remaining work
 
@@ -72,14 +73,14 @@ In progress. Phase 0 through Phase 1C and Phase 1D-A/B are accepted; Phase 1D-C1
 
 ## Known bugs
 
-None known in accepted core phases or the Phase 2A shell. Shell actions that require storage are intentionally not connected yet; fixture data must not be mistaken for Workspace integration.
+No known regression in accepted phases. Phase 1E-A currently retains all parsed Guide bodies in native memory for the session; broad IPC is bounded, but streaming/lazy native reread is still required before claiming the 2 GiB worst-case scan budget is production-memory-safe. External changes after the initial scan are not watched/reloaded yet. Writability and Git-repository classification are not yet surfaced.
 
 ## Design and accessibility findings
 
-- Reference Desk is implemented as the Phase 2A fixture-backed shell. Captures cover 1440, 1024, 720, and 480 widths; light/dark, visible focus, empty results, narrow reader/back, responsive navigation, and 2× effective reflow.
+- Reference Desk was accepted as the Phase 2A fixture-backed shell; the fixtures are now removed and real read-only Workspace states are wired. Existing captures cover 1440, 1024, 720, and 480 widths; light/dark, visible focus, empty results, narrow reader/back, responsive navigation, and 2× effective reflow.
 - The first Design Reviewer pass found 2 high, 7 medium, and 3 low issues. Search naming, focus restoration, responsive navigation, Arrow/Escape behavior, contrast, announcements, command accessibility, tests, screenshots, repeated skip behavior, tooltips, and path translation were corrected.
 - Final current-guideline closure: pass with no blocker, high, medium, or low finding.
-- Workspace onboarding, real data, edit/conflict/error states, and manual screen-reader verification remain Phase 2 acceptance gates.
+- A fresh real-data/onboarding screenshot and interaction pass, rendered Markdown, edit/conflict/error states, and manual screen-reader verification remain Phase 2 acceptance gates.
 
 ## Security findings
 
@@ -99,19 +100,23 @@ None known in accepted core phases or the Phase 2A shell. Shell actions that req
 - Phase 1D-A adds no filesystem, revision, process, network, logging, mutation, adapter, Tauri, or MCP authority. Aggregate constructors/fields/mutation/Serde remain absent; newer schemas remain distinguishable and malformed-field failures carry parser-proven positions without rejected content.
 - Phase 1D-B adds no filesystem, process, network, logging, URL-opening, Attachment-reading, adapter, Tauri, Git, or MCP authority. Canonical raw URL checks reject legacy numeric-IP aliases and misleading normalization; all product aggregate state remains read-only.
 - Phase 1D-C2a adds only private in-memory mutation planning. It accepts typed intents, requires proven source spans for changes, reparses/rebinds candidates, does not create `tested`, and has no filesystem, process, network, logging, adapter, Git, Tauri, or MCP authority.
+- Phase 1E-A introduces the first filesystem and Tauri command authority. Self-review verified no renderer path input/output, retained root descriptors, component-only `openat` with `O_NOFOLLOW`, regular/single-link enforcement, bounded enumeration/reads, changed-during-read checks, safe filename placeholders, canonical Guide-ID reads, inert React text rendering, content-free errors, and no write/process/Git/MCP/logging authority. Adversarial tests cover symlinks, hardlinks, sockets, oversize files, duplicates, Category mismatch, nested Markdown, and cap refusal.
+- New exact pins are `blake3 1.8.7` (`std,pure`), `libc 0.2.189`, `rfd 0.17.2` (Wayland/XDG portal defaults), and `@tauri-apps/api 2.11.1`; direct rationale and permissive-license/transitive review are recorded in the packet/evidence. Independent Security Reviewer acceptance is still open.
 
 ## Blockers and human checkpoints
 
-- No active human blocker. The prior read-only `.git` session ended without staging or changing the index; the current session restores repository write access.
+- No active human decision blocker. The independent Phase 1E-A Security Reviewer attempt failed before review because the agent usage quota was exhausted; no substitute agent was launched. This blocks phase acceptance, not continued implementation or a recoverable implementation checkpoint.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`df95874` — signed Phase 2A Reference Desk shell checkpoint. Verification of its signature is recorded below; this progress-only recovery update follows it.
+`2339c48` — signed Phase 1E-A read-only Workspace implementation checkpoint. Its configured GPG signature verifies successfully. This progress-only recovery update follows it; independent security/manual acceptance remains open.
 
 ## Tests last run and results
 
+- 2026-09-18: Phase 1E-A implementation gate: `cargo fmt --all --check`; locked all-workspace/all-target/all-feature tests and Clippy with warnings denied; `pnpm check`, full tests, production build, optimized Tauri no-bundle build; bootstrap and whitespace checks all pass. Counts include core 186 library, 18 error, 13 protocol, 11 unknown-YAML, one public-API suite with one positive and 32 compile-fail cases; desktop Rust 2, MCP 1, and Vitest 6. Native output is `/home/hichemtab/Projects/rehow/target/release/rehow-desktop`. The dependency feature/license audit passes locally. Independent security and manual portal/UI review remain open.
+- 2026-09-18: `git verify-commit 2339c48`: pass — good signature from the configured project key; the implementation commit excludes `PROGRESS.md` and unrelated untracked `x`.
 - 2026-09-07: final Phase 1C Orchestrator gate: parser 130/130; core library 143/143; error-contract 18/18; protocol 13/13; unknown-YAML 11/11; public API positive plus all 24 trybuild negatives; desktop/MCP/Vitest smoke tests; contracts generate/check; frozen pnpm materialization; `pnpm check`, tests, integration, build; Cargo fmt, locked Workspace Clippy/tests/check/release; rustdoc/API/TypeScript absence; six Cargo-tree and three inverse-tree audits; Tauri no-bundle; bootstrap and whitespace all pass.
 - 2026-09-07: final correction gate: property 1/1 over 4,096 arbitrary plus 4,096 mutations from all 27 accepted materializations; dependency surface 6/6; parser 130/130; fmt, locked Clippy, and diff check pass. Reviewer/high and Security Reviewer/xhigh report no remaining finding.
 - 2026-09-07: `git verify-commit cf8341f`: pass — good signature from the configured project key; post-commit worktree contains only preserved unrelated untracked `x`.
@@ -220,20 +225,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - Phase 1D-C1 private canonical emitters, golden/resource/API tests, packet, and evidence are checkpointed at signed commit `92e4c93`; full 1D-C acceptance waits for C2 and one combined review.
 - Phase 1D-C2a required-field/body/status mutation planning, adversarial/API tests, packet, and evidence are checkpointed at signed commit `539c29a`; full 1D-C acceptance waits for C2b and one combined review.
 - Phase 2A React/CSS shell, interaction tests, task packet, current-guideline review evidence, and screenshots are checkpointed at signed commit `df95874`; it adds no IPC or filesystem authority.
+- Phase 1E-A adds `crates/rehow-core/src/storage.rs`, BLAKE3/libc pins, domain record extraction, native dialog/session commands, the real-data React states, updated locks, the revision vector, `docs/task-packets/phase-1e-a-readonly-workspace.md`, and `docs/evidence/phase-1e-a-readonly-workspace.md`. It is green but awaits independent security/manual acceptance.
 
 ## Next recommended action
 
-Implement a narrow read-only Workspace vertical slice: confined folder selection/inspection, compatible manifest/Category/Guide loading through the existing binders, bounded list/read DTOs, and minimal Tauri session commands. Replace UI fixtures only after those tests pass. Return to C2b before enabling advanced edits.
+Continue with root-writability/Git/nested-repository inspection and actionable onboarding states. When agent quota returns, run exactly one Security Reviewer/xhigh closure over Phase 1E-A; also manually exercise the native portal and capture real-data/error screenshots before accepting the phase. Keep edits disabled and return to C2b before mutation wiring.
 
 ## Recommended agent role and reasoning effort
 
-Orchestrator — `gpt-5.6-sol`, high. Keep routine work single-agent; use one independent reviewer only at the completed Phase 1D-C checkpoint.
+Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents for routine work; use one Security Reviewer/xhigh only when the Phase 1E-A closure can actually run.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read `docs/product-spec.md`, `docs/architecture.md`, `docs/implementation-plan.md`, `docs/threat-model.md`, `docs/error-contract.md`, and accepted ADRs 0011–0013.
+2. Read `docs/task-packets/phase-1e-a-readonly-workspace.md`, its evidence, `docs/architecture.md`, `docs/threat-model.md`, and ADRs 0002/0003/0009/0014.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `cf8341f`, `4d26e8f`, `0b5fb11`, `92e4c93`, `539c29a`, and Phase 2A shell `df95874`; if `HEAD` is a later progress-only ledger, confirm its parent is `df95874` and only `PROGRESS.md` changed.
+4. Verify signed Phase 1E-A checkpoint `2339c48`; the following commit should change only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Read `docs/task-packets/phase-2a-reference-desk-shell.md`, its evidence, ADRs 0003/0009/0014, and the Phase 1E requirements. Resume with a narrow read-only Workspace-inspection packet; do not expose renderer-selected paths or write authority.
+6. Run the smallest storage/desktop checks. Resume with writable/Git inspection and actionable onboarding without adding write authority, or rerun the one pending Security Reviewer closure if quota is available. Do not send or accept arbitrary paths over IPC.
