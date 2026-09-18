@@ -27,8 +27,9 @@ use crate::{
         CategoryCreateStorageError, CategoryRemoveStorageError, DocumentCreateError,
         DocumentUpdateError, DocumentUpdateRequest, EmptyWorkspaceTarget, MultiDocumentUpdateError,
         WorkspaceInitializeError, WorkspaceView, execute_category_create, execute_category_remove,
-        execute_document_create, execute_document_update, execute_multi_document_update,
-        execute_workspace_initialize, open_initialized_workspace, refresh_workspace,
+        execute_document_create, execute_document_move, execute_document_update,
+        execute_multi_document_update, execute_workspace_initialize, open_initialized_workspace,
+        refresh_workspace,
     },
 };
 use std::{collections::HashSet, path::Path};
@@ -919,6 +920,8 @@ pub enum GuideEdit {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GuideUpdateError {
     NotFound,
+    DestinationCategoryNotFound,
+    DestinationCategoryArchived,
     RevisionConflict,
     InvalidGuide,
     InvalidEdit,
@@ -988,6 +991,129 @@ pub fn set_guide_archived(
             GuideEdit::Restore
         },
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn update_guide_details(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_id: GuideId,
+    expected_revision: Revision,
+    category_id: CategoryId,
+    title: String,
+    summary: String,
+    tags: Vec<String>,
+    aliases: Vec<String>,
+) -> Result<GuideUpdateOutcome, GuideUpdateError> {
+    let (source_category_id, source_relative_path) = workspace
+        .categories()
+        .iter()
+        .find_map(|category| {
+            category
+                .guides()
+                .iter()
+                .find(|guide| guide.guide().id() == &guide_id)
+                .map(|guide| (*category.category().id(), guide.relative_path().to_owned()))
+        })
+        .ok_or(GuideUpdateError::NotFound)?;
+    let destination = workspace
+        .categories()
+        .iter()
+        .find(|category| category.category().id() == &category_id)
+        .ok_or(GuideUpdateError::DestinationCategoryNotFound)?;
+    if source_category_id == category_id {
+        return update_guide(
+            workspace,
+            state_home,
+            runtime_directory,
+            guide_id,
+            expected_revision,
+            GuideEdit::SetDetails {
+                title,
+                summary,
+                tags,
+                aliases,
+            },
+        );
+    }
+    if destination.category().status() != CategoryStatus::Active {
+        return Err(GuideUpdateError::DestinationCategoryArchived);
+    }
+    let filename = source_relative_path
+        .rsplit_once('/')
+        .map(|(_, filename)| filename)
+        .filter(|filename| filename.ends_with(".md") && !filename.is_empty())
+        .ok_or(GuideUpdateError::InvalidGuide)?;
+    let destination_relative_path = format!("{}/{filename}", destination.relative_directory());
+    let at = current_timestamp();
+    let stamp = MutationStamp::from_trusted_time(at);
+    let outcome = execute_document_move(
+        workspace,
+        state_home,
+        runtime_directory,
+        &source_relative_path,
+        &destination_relative_path,
+        expected_revision,
+        new_operation_id(),
+        at,
+        |bytes| {
+            let parsed =
+                parse_guide_source(copy_bytes(bytes)?).map_err(|_| PlanError::InvalidGuide)?;
+            let bound = bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
+            if bound.record().id() != &guide_id
+                || bound.record().category_id() != &source_category_id
+            {
+                return Err(PlanError::InvalidGuide);
+            }
+            let mut candidate_bytes = copy_bytes(bound.source_bytes())?;
+            for mutation in [
+                GuideMutation::ChangeCategory(category_id),
+                GuideMutation::SetTitle(title),
+                GuideMutation::SetSummary(summary),
+                GuideMutation::ReplaceTags(tags),
+                GuideMutation::ReplaceAliases(aliases),
+            ] {
+                let parsed =
+                    parse_guide_source(candidate_bytes).map_err(|_| PlanError::InvalidGuide)?;
+                let candidate_bound = bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
+                candidate_bytes = apply_guide_mutation(&candidate_bound, mutation, &stamp)?;
+            }
+            Ok(candidate_bytes)
+        },
+    )
+    .map_err(map_move_error)?;
+
+    if refresh_workspace(workspace).is_err() {
+        return Err(GuideUpdateError::CommittedRefreshRequired {
+            revision: outcome.revision(),
+        });
+    }
+    let mut matches = workspace.categories().iter().flat_map(|category| {
+        category
+            .guides()
+            .iter()
+            .filter(|guide| guide.guide().id() == &guide_id)
+            .map(move |guide| (category, guide))
+    });
+    let Some((loaded_category, loaded_guide)) = matches.next() else {
+        return Err(GuideUpdateError::CommittedRefreshRequired {
+            revision: outcome.revision(),
+        });
+    };
+    if matches.next().is_some()
+        || loaded_category.category().id() != &category_id
+        || loaded_guide.relative_path() != destination_relative_path
+        || loaded_guide.revision() != outcome.revision()
+    {
+        return Err(GuideUpdateError::CommittedRefreshRequired {
+            revision: outcome.revision(),
+        });
+    }
+    Ok(GuideUpdateOutcome {
+        revision: outcome.revision(),
+        changed: true,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1149,6 +1275,24 @@ fn map_update_error(error: DocumentUpdateError<PlanError>) -> GuideUpdateError {
     }
 }
 
+fn map_move_error(error: MultiDocumentUpdateError<PlanError>) -> GuideUpdateError {
+    match error {
+        MultiDocumentUpdateError::Prepare(PlanError::InvalidGuide)
+        | MultiDocumentUpdateError::InvalidPlan => GuideUpdateError::InvalidGuide,
+        MultiDocumentUpdateError::Prepare(PlanError::InvalidEdit) => GuideUpdateError::InvalidEdit,
+        MultiDocumentUpdateError::Prepare(PlanError::UnsafeRoundTrip) => {
+            GuideUpdateError::UnsafeRoundTrip
+        }
+        MultiDocumentUpdateError::Prepare(PlanError::ResourceLimit)
+        | MultiDocumentUpdateError::TooLarge => GuideUpdateError::ResourceLimit,
+        MultiDocumentUpdateError::Busy => GuideUpdateError::Busy,
+        MultiDocumentUpdateError::Conflict => GuideUpdateError::RevisionConflict,
+        MultiDocumentUpdateError::Unsafe => GuideUpdateError::UnsafeStorage,
+        MultiDocumentUpdateError::Unsupported => GuideUpdateError::UnsupportedFilesystem,
+        MultiDocumentUpdateError::Io => GuideUpdateError::Io,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1167,6 +1311,7 @@ mod tests {
 
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     const GUIDE_ID: &str = "0199a1d7-7b0d-7d8e-a38d-f936c5735e10";
+    const CATEGORY_ID: &str = "0199a1c2-d334-7d17-bd9c-f8b6ba3a5551";
     const GUIDE_PATH: &str = "categories/linux-system--b6ba3a5551/install--36c5735e10.md";
     const MANIFEST: &str = "schema_version: 1\nworkspace_id: 0199a19f-4d15-7ca7-a645-e75311caa710\nname: Test Workspace\ncreated_at: \"2026-09-05T10:00:00Z\"\nupdated_at: \"2026-09-05T10:00:00Z\"\n";
     const CATEGORY: &str = "schema_version: 1\nid: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5551\nname: Linux System\norder: 1000\nstatus: active\ncreated_at: \"2026-09-05T10:01:00Z\"\nupdated_at: \"2026-09-05T10:01:00Z\"\n";
@@ -2138,18 +2283,18 @@ mod tests {
         let (workspace, state, mut view) = fixture("tag-alias-update", GUIDE);
         let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
         let expected = revision(&view);
-        let outcome = update_guide(
+        let category_id = CategoryId::from_str(CATEGORY_ID).unwrap();
+        let outcome = update_guide_details(
             &mut view,
             state.path(),
             None,
             guide_id,
             expected,
-            GuideEdit::SetDetails {
-                title: "Install a Tarball".to_owned(),
-                summary: "Install a downloaded archive.".to_owned(),
-                tags: vec!["linux".to_owned(), "Wayland".to_owned()],
-                aliases: vec!["manual install".to_owned(), "tar app".to_owned()],
-            },
+            category_id,
+            "Install a Tarball".to_owned(),
+            "Install a downloaded archive.".to_owned(),
+            vec!["linux".to_owned(), "Wayland".to_owned()],
+            vec!["manual install".to_owned(), "tar app".to_owned()],
         )
         .unwrap();
         assert!(outcome.changed());
@@ -2167,22 +2312,321 @@ mod tests {
 
         let before = fs::read(workspace.path().join(GUIDE_PATH)).unwrap();
         assert_eq!(
-            update_guide(
+            update_guide_details(
                 &mut view,
                 state.path(),
                 None,
                 guide_id,
                 outcome.revision(),
-                GuideEdit::SetDetails {
-                    title: "Changed title".to_owned(),
-                    summary: "Changed summary".to_owned(),
-                    tags: vec!["Maße".to_owned(), "MASSE".to_owned()],
-                    aliases: vec![],
-                },
+                category_id,
+                "Changed title".to_owned(),
+                "Changed summary".to_owned(),
+                vec!["Maße".to_owned(), "MASSE".to_owned()],
+                vec![],
             ),
             Err(GuideUpdateError::InvalidEdit)
         );
         assert_eq!(fs::read(workspace.path().join(GUIDE_PATH)).unwrap(), before);
+    }
+
+    #[test]
+    fn moves_a_guide_to_an_active_category_without_changing_its_filename_or_body() {
+        let (workspace, state, mut view) = initialized_workspace("guide-category-move");
+        let source_category = create_category(&mut view, state.path(), None, "Source", None)
+            .unwrap()
+            .category_id();
+        let destination_category =
+            create_category(&mut view, state.path(), None, "Destination", None)
+                .unwrap()
+                .category_id();
+        let created = create_guide(
+            &mut view,
+            state.path(),
+            None,
+            source_category,
+            "Move This Guide",
+            "Keep every byte that is not organizational.",
+        )
+        .unwrap();
+        let guide_id = created.guide_id();
+        let (source_path, original_body) = view
+            .categories()
+            .iter()
+            .flat_map(|category| category.guides())
+            .find(|guide| guide.guide().id() == &guide_id)
+            .map(|guide| {
+                (
+                    guide.relative_path().to_owned(),
+                    guide.guide().body().to_owned(),
+                )
+            })
+            .unwrap();
+        let filename = source_path.rsplit_once('/').unwrap().1.to_owned();
+        let destination_directory = view
+            .categories()
+            .iter()
+            .find(|category| category.category().id() == &destination_category)
+            .unwrap()
+            .relative_directory()
+            .to_owned();
+        let destination_path = format!("{destination_directory}/{filename}");
+
+        let moved = update_guide_details(
+            &mut view,
+            state.path(),
+            None,
+            guide_id,
+            created.revision(),
+            destination_category,
+            "Moved Guide".to_owned(),
+            "The Category and details changed together.".to_owned(),
+            vec!["linux".to_owned()],
+            vec!["category move".to_owned()],
+        )
+        .unwrap();
+        assert!(moved.changed());
+        assert!(!workspace.path().join(&source_path).exists());
+        assert!(workspace.path().join(&destination_path).is_file());
+        let matches = view
+            .categories()
+            .iter()
+            .flat_map(|category| {
+                category
+                    .guides()
+                    .iter()
+                    .filter(|guide| guide.guide().id() == &guide_id)
+                    .map(move |guide| (category, guide))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].0.category().id(), &destination_category);
+        assert_eq!(matches[0].1.relative_path(), destination_path);
+        assert_eq!(matches[0].1.revision(), moved.revision());
+        assert_eq!(matches[0].1.guide().title(), "Moved Guide");
+        assert_eq!(matches[0].1.guide().body(), original_body);
+        assert_eq!(matches[0].1.guide().tags(), ["linux"]);
+    }
+
+    #[test]
+    fn guide_move_refuses_inactive_missing_stale_and_occupied_destinations() {
+        let (workspace, state, mut view) = initialized_workspace("guide-move-refusal");
+        let source = create_category(&mut view, state.path(), None, "Source", None)
+            .unwrap()
+            .category_id();
+        let destination = create_category(&mut view, state.path(), None, "Destination", None)
+            .unwrap()
+            .category_id();
+        let created = create_guide(
+            &mut view,
+            state.path(),
+            None,
+            source,
+            "Collision Guide",
+            "The source must survive every refusal.",
+        )
+        .unwrap();
+        let guide_id = created.guide_id();
+        let source_path = view
+            .categories()
+            .iter()
+            .flat_map(|category| category.guides())
+            .find(|guide| guide.guide().id() == &guide_id)
+            .unwrap()
+            .relative_path()
+            .to_owned();
+        let details = || {
+            (
+                "Collision Guide".to_owned(),
+                "The source must survive every refusal.".to_owned(),
+                Vec::new(),
+                Vec::new(),
+            )
+        };
+        let missing = CategoryId::from_str("0199a1c2-d334-7d17-bd9c-f8b6ba3a5999").unwrap();
+        let (title, summary, tags, aliases) = details();
+        assert_eq!(
+            update_guide_details(
+                &mut view,
+                state.path(),
+                None,
+                guide_id,
+                created.revision(),
+                missing,
+                title,
+                summary,
+                tags,
+                aliases,
+            ),
+            Err(GuideUpdateError::DestinationCategoryNotFound)
+        );
+
+        let destination_revision = view
+            .categories()
+            .iter()
+            .find(|category| category.category().id() == &destination)
+            .unwrap()
+            .descriptor_revision();
+        set_category_archived(
+            &mut view,
+            state.path(),
+            None,
+            destination,
+            destination_revision,
+            true,
+        )
+        .unwrap();
+        let (title, summary, tags, aliases) = details();
+        assert_eq!(
+            update_guide_details(
+                &mut view,
+                state.path(),
+                None,
+                guide_id,
+                created.revision(),
+                destination,
+                title,
+                summary,
+                tags,
+                aliases,
+            ),
+            Err(GuideUpdateError::DestinationCategoryArchived)
+        );
+        let destination_revision = view
+            .categories()
+            .iter()
+            .find(|category| category.category().id() == &destination)
+            .unwrap()
+            .descriptor_revision();
+        set_category_archived(
+            &mut view,
+            state.path(),
+            None,
+            destination,
+            destination_revision,
+            false,
+        )
+        .unwrap();
+
+        let destination_directory = view
+            .categories()
+            .iter()
+            .find(|category| category.category().id() == &destination)
+            .unwrap()
+            .relative_directory()
+            .to_owned();
+        let filename = source_path.rsplit_once('/').unwrap().1;
+        let occupied = workspace.path().join(destination_directory).join(filename);
+        fs::write(&occupied, b"occupied").unwrap();
+        fs::set_permissions(&occupied, fs::Permissions::from_mode(0o600)).unwrap();
+        let (title, summary, tags, aliases) = details();
+        assert_eq!(
+            update_guide_details(
+                &mut view,
+                state.path(),
+                None,
+                guide_id,
+                created.revision(),
+                destination,
+                title,
+                summary,
+                tags,
+                aliases,
+            ),
+            Err(GuideUpdateError::RevisionConflict)
+        );
+        assert!(workspace.path().join(&source_path).is_file());
+
+        fs::remove_file(occupied).unwrap();
+        let (title, summary, tags, aliases) = details();
+        assert_eq!(
+            update_guide_details(
+                &mut view,
+                state.path(),
+                None,
+                guide_id,
+                Revision::from_str(&format!("rev:v1:{}", "11".repeat(32))).unwrap(),
+                destination,
+                title,
+                summary,
+                tags,
+                aliases,
+            ),
+            Err(GuideUpdateError::RevisionConflict)
+        );
+        assert!(workspace.path().join(source_path).is_file());
+    }
+
+    #[test]
+    fn tested_guide_move_becomes_stale_and_preserves_unknown_metadata() {
+        let tested = GUIDE.replacen(
+            "status: draft\n",
+            "status: tested\nlast_verified_at: \"2026-09-05T10:03:00Z\"\nverified_content_hash: verify:v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+            1,
+        );
+        let (workspace, state, mut view) = fixture("tested-guide-move", &tested);
+        let destination_id = CategoryId::from_str("0199a1c2-d334-7d17-bd9c-f8b6ba3a5552").unwrap();
+        let destination_directory = "categories/destination--b6ba3a5552";
+        fs::create_dir(workspace.path().join(destination_directory)).unwrap();
+        fs::set_permissions(
+            workspace.path().join(destination_directory),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let descriptor = CATEGORY
+            .replace(CATEGORY_ID, &destination_id.to_string())
+            .replace("name: Linux System", "name: Destination");
+        fs::write(
+            workspace
+                .path()
+                .join(destination_directory)
+                .join("category.yaml"),
+            descriptor,
+        )
+        .unwrap();
+        fs::set_permissions(
+            workspace
+                .path()
+                .join(destination_directory)
+                .join("category.yaml"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        refresh_workspace(&mut view).unwrap();
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let expected = view
+            .categories()
+            .iter()
+            .flat_map(|category| category.guides())
+            .find(|guide| guide.guide().id() == &guide_id)
+            .unwrap()
+            .revision();
+        update_guide_details(
+            &mut view,
+            state.path(),
+            None,
+            guide_id,
+            expected,
+            destination_id,
+            "Install a Tarball".to_owned(),
+            "Install a downloaded archive.".to_owned(),
+            vec!["linux".to_owned()],
+            vec!["manual install".to_owned()],
+        )
+        .unwrap();
+        let moved = view
+            .categories()
+            .iter()
+            .flat_map(|category| category.guides())
+            .find(|guide| guide.guide().id() == &guide_id)
+            .unwrap();
+        assert_eq!(moved.guide().declared_status(), GuideStatus::Stale);
+        assert!(moved.guide().verification().is_some());
+        let bytes = fs::read(workspace.path().join(moved.relative_path())).unwrap();
+        assert!(
+            bytes
+                .windows(19)
+                .any(|value| value == b"future_key: keep-me")
+        );
     }
 
     #[test]

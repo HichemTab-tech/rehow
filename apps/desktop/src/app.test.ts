@@ -138,18 +138,31 @@ describe("application identity", () => {
         "  New summary  ",
         " linux\nwayland ",
         "manual install\n",
+        "category-id",
       ),
     ).toEqual({
       title: "New Title",
       summary: "New summary",
       tags: ["linux", "wayland"],
       aliases: ["manual install"],
+      categoryId: "category-id",
     });
-    expect(normalizedGuideMetadata("", "Summary", "", "")).toBeNull();
-    expect(normalizedGuideMetadata("Title", "", "", "")).toBeNull();
     expect(
-      normalizedGuideMetadata("x".repeat(201), "Summary", "", ""),
+      normalizedGuideMetadata("", "Summary", "", "", "category-id"),
     ).toBeNull();
+    expect(
+      normalizedGuideMetadata("Title", "", "", "", "category-id"),
+    ).toBeNull();
+    expect(
+      normalizedGuideMetadata(
+        "x".repeat(201),
+        "Summary",
+        "",
+        "",
+        "category-id",
+      ),
+    ).toBeNull();
+    expect(normalizedGuideMetadata("Title", "Summary", "", "", "")).toBeNull();
   });
 
   it("normalizes bounded one-per-line Tags and aliases", () => {
@@ -184,6 +197,7 @@ describe("Guide search", () => {
       id: "one",
       title: "Create a launcher",
       summary: "Desktop entry",
+      categoryId: "desktop",
       category: "Desktop",
       status: "Draft" as const,
       updatedAt: "2026-09-18T00:00:00Z",
@@ -195,6 +209,7 @@ describe("Guide search", () => {
       id: "two",
       title: "Add a udev rule",
       summary: "USB device",
+      categoryId: "hardware",
       category: "Hardware",
       status: "Tested" as const,
       updatedAt: "2026-09-18T00:00:00Z",

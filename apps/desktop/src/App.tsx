@@ -8,6 +8,7 @@ type GuideSummary = {
   id: string;
   title: string;
   summary: string;
+  categoryId: string;
   category: string;
   status: "Tested" | "Draft" | "Stale" | "Archived";
   updatedAt: string;
@@ -271,9 +272,11 @@ export function normalizedGuideMetadata(
   summaryValue: string,
   tagsValue: string,
   aliasesValue: string,
+  categoryId: string,
 ) {
   const title = titleValue.trim();
   const summary = summaryValue.trim();
+  if (categoryId === "") return null;
   if (Array.from(title).length < 1 || Array.from(title).length > 200)
     return null;
   if (Array.from(summary).length < 1 || Array.from(summary).length > 500)
@@ -281,7 +284,7 @@ export function normalizedGuideMetadata(
   const tags = normalizedGuideTerms(tagsValue, 64);
   const aliases = normalizedGuideTerms(aliasesValue, 200);
   if (tags === null || aliases === null) return null;
-  return { title, summary, tags, aliases };
+  return { title, summary, tags, aliases, categoryId };
 }
 
 export function normalizedGuideTerms(value: string, maxScalars: number) {
@@ -399,6 +402,7 @@ export function App() {
   const [editingGuideDetails, setEditingGuideDetails] = useState(false);
   const [detailTitle, setDetailTitle] = useState("");
   const [detailSummary, setDetailSummary] = useState("");
+  const [detailCategoryId, setDetailCategoryId] = useState("");
   const [detailTags, setDetailTags] = useState("");
   const [detailAliases, setDetailAliases] = useState("");
   const [savingGuideDetails, setSavingGuideDetails] = useState(false);
@@ -421,6 +425,7 @@ export function App() {
   const guideStatusErrorRef = useRef<HTMLParagraphElement>(null);
   const detailTitleRef = useRef<HTMLInputElement>(null);
   const detailSummaryRef = useRef<HTMLTextAreaElement>(null);
+  const detailCategoryRef = useRef<HTMLSelectElement>(null);
   const detailTagsRef = useRef<HTMLTextAreaElement>(null);
   const detailAliasesRef = useRef<HTMLTextAreaElement>(null);
   const guideDetailsErrorRef = useRef<HTMLParagraphElement>(null);
@@ -456,6 +461,7 @@ export function App() {
     selected !== null &&
     (selected.title !== detailTitle ||
       selected.summary !== detailSummary ||
+      selected.categoryId !== detailCategoryId ||
       selected.tags.join("\n") !== detailTags ||
       selected.aliases.join("\n") !== detailAliases);
   const categoryBeingRenamed =
@@ -1108,6 +1114,7 @@ export function App() {
       return;
     setDetailTitle(selected.title);
     setDetailSummary(selected.summary);
+    setDetailCategoryId(selected.categoryId);
     setDetailTags(selected.tags.join("\n"));
     setDetailAliases(selected.aliases.join("\n"));
     setGuideDetailsError("");
@@ -1138,6 +1145,7 @@ export function App() {
       detailSummary,
       detailTags,
       detailAliases,
+      detailCategoryId,
     );
     if (details === null) {
       const message =
@@ -1149,6 +1157,7 @@ export function App() {
           detailTitleRef.current?.focus();
         else if (summaryLength < 1 || summaryLength > 500)
           detailSummaryRef.current?.focus();
+        else if (detailCategoryId === "") detailCategoryRef.current?.focus();
         else if (normalizedTags === null) detailTagsRef.current?.focus();
         else if (normalizedAliases === null) detailAliasesRef.current?.focus();
         else detailTitleRef.current?.focus();
@@ -2125,6 +2134,40 @@ export function App() {
                       setGuideDetailsError("");
                     }}
                   />
+                  <label htmlFor="guide-detail-category">Category</label>
+                  <select
+                    ref={detailCategoryRef}
+                    id="guide-detail-category"
+                    name="guide-detail-category"
+                    autoComplete="off"
+                    aria-invalid={guideDetailsError !== ""}
+                    aria-describedby={
+                      guideDetailsError !== ""
+                        ? "guide-detail-category-help guide-details-error"
+                        : "guide-detail-category-help"
+                    }
+                    value={detailCategoryId}
+                    onChange={(event) => {
+                      setDetailCategoryId(event.target.value);
+                      setGuideDetailsError("");
+                    }}
+                  >
+                    {(workspace?.categories ?? [])
+                      .filter(
+                        (category) =>
+                          category.status === "active" ||
+                          category.id === selected.categoryId,
+                      )
+                      .map((category) => (
+                        <option key={category.id} value={category.id}>
+                          {category.name}
+                          {category.status === "archived" ? " (Archived)" : ""}
+                        </option>
+                      ))}
+                  </select>
+                  <p className="field-help" id="guide-detail-category-help">
+                    Moving a Guide preserves its filename and Attachments.
+                  </p>
                   <label htmlFor="guide-detail-tags">Tags</label>
                   <p className="field-help" id="guide-detail-tags-help">
                     One Tag per line, up to 64. Tags can be up to 64 characters.

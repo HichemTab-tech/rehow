@@ -6,7 +6,7 @@ use rehow_core::{
         CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError, GuideEdit, GuideUpdateError,
         WorkspaceInitializationError, create_category, create_guide, initialize_workspace,
         remove_category, reorder_categories, set_category_archived, set_guide_archived,
-        update_category_details, update_guide,
+        update_category_details, update_guide, update_guide_details,
     },
     domain::GuideStatus,
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -99,6 +99,7 @@ struct GuidePayload {
     id: String,
     title: String,
     summary: String,
+    category_id: String,
     category: String,
     status: &'static str,
     updated_at: String,
@@ -192,6 +193,7 @@ impl WorkspacePayload {
                     id: guide.id().to_string(),
                     title: guide.title().to_owned(),
                     summary: guide.summary().to_owned(),
+                    category_id: category.id().to_string(),
                     category: category.name().to_owned(),
                     status: match guide.declared_status() {
                         GuideStatus::Draft => "Draft",
@@ -338,9 +340,14 @@ fn save_open_guide_body(
 }
 
 #[tauri::command]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the Tauri command keeps every bounded Guide detail explicit"
+)]
 fn save_open_guide_details(
     guide_id: String,
     expected_revision: String,
+    category_id: String,
     title: String,
     summary: String,
     tags: Vec<String>,
@@ -349,6 +356,7 @@ fn save_open_guide_details(
 ) -> Result<SaveGuidePayload, NativeCommandError> {
     if guide_id.len() > 64
         || expected_revision.len() > 96
+        || category_id.len() > 64
         || title.len() > 1_024
         || summary.len() > 4_096
         || tags.len() > 64
@@ -363,6 +371,9 @@ fn save_open_guide_details(
     }
     let guide_id = GuideId::from_str(&guide_id)
         .map_err(|_| native_command_error("invalidGuide", "Guide ID is invalid.".to_owned()))?;
+    let category_id = CategoryId::from_str(&category_id).map_err(|_| {
+        native_command_error("invalidCategory", "Category ID is invalid.".to_owned())
+    })?;
     let expected_revision = Revision::from_str(&expected_revision).map_err(|_| {
         native_command_error(
             "invalidRevision",
@@ -392,18 +403,17 @@ fn save_open_guide_details(
             "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
         ));
     }
-    let outcome = update_guide(
+    let outcome = update_guide_details(
         &mut workspace.view,
         &state_home,
         runtime_directory.as_deref(),
         guide_id,
         expected_revision,
-        GuideEdit::SetDetails {
-            title,
-            summary,
-            tags,
-            aliases,
-        },
+        category_id,
+        title,
+        summary,
+        tags,
+        aliases,
     )
     .map_err(|error| native_command_error(guide_update_code(error), guide_update_message(error)))?;
     Ok(SaveGuidePayload {
@@ -501,6 +511,12 @@ fn native_recovery_locations() -> Result<(PathBuf, Option<PathBuf>), String> {
 fn guide_update_message(error: GuideUpdateError) -> String {
     match error {
         GuideUpdateError::NotFound => "Guide was not found. Refresh the Workspace.".to_owned(),
+        GuideUpdateError::DestinationCategoryNotFound => {
+            "The destination Category no longer exists. Refresh the Workspace.".to_owned()
+        }
+        GuideUpdateError::DestinationCategoryArchived => {
+            "Choose an active destination Category before moving this Guide.".to_owned()
+        }
         GuideUpdateError::RevisionConflict => {
             "This Guide changed on disk. Reopen it before saving.".to_owned()
         }
@@ -540,6 +556,8 @@ fn guide_update_message(error: GuideUpdateError) -> String {
 fn guide_update_code(error: GuideUpdateError) -> &'static str {
     match error {
         GuideUpdateError::NotFound => "notFound",
+        GuideUpdateError::DestinationCategoryNotFound => "categoryNotFound",
+        GuideUpdateError::DestinationCategoryArchived => "categoryArchived",
         GuideUpdateError::RevisionConflict => "revisionConflict",
         GuideUpdateError::InvalidGuide => "invalidGuide",
         GuideUpdateError::InvalidEdit => "invalidEdit",
@@ -1489,6 +1507,7 @@ mod tests {
                 id: "0199a1d7-7b0d-7d8e-a38d-f936c5735e10".to_owned(),
                 title: "Test".to_owned(),
                 summary: "Summary".to_owned(),
+                category_id: "0199a1c2-d334-7d17-bd9c-f8b6ba3a5551".to_owned(),
                 category: "Linux".to_owned(),
                 status: "Draft",
                 updated_at: "2026-09-18T00:00:00Z".to_owned(),
@@ -1517,6 +1536,10 @@ mod tests {
         );
         assert_eq!(json["guides"][0]["tags"][0], "tag");
         assert_eq!(json["guides"][0]["aliases"][0], "alias");
+        assert_eq!(
+            json["guides"][0]["categoryId"],
+            "0199a1c2-d334-7d17-bd9c-f8b6ba3a5551"
+        );
         assert!(json["guides"][0].get("body").is_none());
     }
 
@@ -1554,6 +1577,14 @@ mod tests {
         assert_eq!(
             guide_update_message(GuideUpdateError::UnsafeStorage),
             "The Guide path is unsafe or changed type. Reopen the Workspace."
+        );
+        assert_eq!(
+            guide_update_code(GuideUpdateError::DestinationCategoryNotFound),
+            "categoryNotFound"
+        );
+        assert_eq!(
+            guide_update_message(GuideUpdateError::DestinationCategoryArchived),
+            "Choose an active destination Category before moving this Guide."
         );
     }
 

@@ -7,9 +7,10 @@
 pub(crate) mod recovery;
 pub(crate) use recovery::{
     CategoryCreateStorageError, CategoryCreateStorageOutcome, CategoryRemoveStorageError,
-    CategoryRemoveStorageOutcome, DocumentCreateError, DocumentCreateOutcome, DocumentUpdateError,
-    DocumentUpdateOutcome, MultiDocumentUpdateError, MultiDocumentUpdateOutcome, PreparedDocument,
-    WorkspaceInitializeError, WorkspaceInitializeOutcome,
+    CategoryRemoveStorageOutcome, DocumentCreateError, DocumentCreateOutcome, DocumentMoveOutcome,
+    DocumentUpdateError, DocumentUpdateOutcome, MultiDocumentUpdateError,
+    MultiDocumentUpdateOutcome, PreparedDocument, WorkspaceInitializeError,
+    WorkspaceInitializeOutcome,
 };
 
 #[cfg(not(target_os = "linux"))]
@@ -278,6 +279,35 @@ where
         runtime_directory,
         *workspace.manifest.workspace_id(),
         relative_path,
+        expected_revision,
+        operation_id,
+        created_at,
+        prepare,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_document_move<E, F>(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    source_relative_path: &str,
+    destination_relative_path: &str,
+    expected_revision: Revision,
+    operation_id: crate::protocol::OperationId,
+    created_at: crate::protocol::Timestamp,
+    prepare: F,
+) -> Result<DocumentMoveOutcome, MultiDocumentUpdateError<E>>
+where
+    F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
+{
+    recovery::execute_document_move(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        source_relative_path,
+        destination_relative_path,
         expected_revision,
         operation_id,
         created_at,

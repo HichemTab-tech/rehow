@@ -28,6 +28,11 @@ pub(crate) struct DocumentUpdateOutcome {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DocumentMoveOutcome {
+    revision: Revision,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MultiDocumentUpdateError<E> {
     Prepare(E),
     InvalidPlan,
@@ -151,6 +156,12 @@ impl DocumentUpdateOutcome {
 
     pub(crate) fn changed(self) -> bool {
         self.changed
+    }
+}
+
+impl DocumentMoveOutcome {
+    pub(crate) fn revision(self) -> Revision {
+        self.revision
     }
 }
 
@@ -614,6 +625,126 @@ where
     Ok(DocumentUpdateOutcome {
         revision: super::document_revision(relative_path, &candidate),
         changed: true,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_document_move<E, F>(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    source_relative_path: &str,
+    destination_relative_path: &str,
+    expected_revision: Revision,
+    operation_id: OperationId,
+    created_at: Timestamp,
+    prepare: F,
+) -> Result<DocumentMoveOutcome, MultiDocumentUpdateError<E>>
+where
+    F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
+{
+    if source_relative_path == destination_relative_path {
+        return Err(MultiDocumentUpdateError::InvalidPlan);
+    }
+    let store = store::RecoveryStore::open(
+        state_home,
+        workspace_id,
+        root.root_hash(),
+        root.capability_hash(),
+    )
+    .map_err(map_store_multi)?;
+    let lock = store
+        .acquire_lock(runtime_directory)
+        .map_err(map_store_multi)?;
+    let source = root
+        .open_managed_target(source_relative_path)
+        .map_err(map_io_multi)?;
+    let current = match source.state(super::GUIDE_LIMIT).map_err(map_io_multi)? {
+        super::linux::ManagedState::Missing => return Err(MultiDocumentUpdateError::Conflict),
+        super::linux::ManagedState::Regular(state) => state,
+    };
+    let actual_revision = super::document_revision(source_relative_path, &current.bytes);
+    if actual_revision != expected_revision {
+        return Err(MultiDocumentUpdateError::Conflict);
+    }
+    let destination = root
+        .open_managed_target(destination_relative_path)
+        .map_err(map_io_multi)?;
+    if !matches!(
+        destination
+            .state(super::GUIDE_LIMIT)
+            .map_err(map_io_multi)?,
+        super::linux::ManagedState::Missing
+    ) {
+        return Err(MultiDocumentUpdateError::Conflict);
+    }
+    let candidate = prepare(&current.bytes).map_err(MultiDocumentUpdateError::Prepare)?;
+    let old_hash = store
+        .store_object(&lock, &current.bytes)
+        .map_err(map_store_multi)?;
+    let new_hash = store
+        .store_object(&lock, &candidate)
+        .map_err(map_store_multi)?;
+    let (root_device, root_inode) = root.identity().map_err(map_io_multi)?;
+    let mut plan = blake3::Hasher::new();
+    plan.update(b"rehow-document-move-plan-v1\0");
+    hash_plan_field(&mut plan, source_relative_path.as_bytes());
+    hash_plan_field(&mut plan, destination_relative_path.as_bytes());
+    hash_plan_field(&mut plan, expected_revision.to_string().as_bytes());
+    plan.update(&old_hash);
+    plan.update(&new_hash);
+    plan.update(&current.mode.to_be_bytes());
+    let journal = Journal {
+        generation: 1,
+        operation_id,
+        operation_kind: OperationKind::MultiFile,
+        workspace_id,
+        root_hash: root.root_hash(),
+        root_device,
+        root_inode,
+        created_at,
+        plan_hash: *plan.finalize().as_bytes(),
+        targets: vec![
+            Target {
+                relative_path: destination_relative_path.to_owned(),
+                expected: ExpectedState::Absent,
+                intended: IntendedState::Object {
+                    object_hash: new_hash,
+                    mode: current.mode,
+                },
+                temp_name: format!(".rehow-tmp-{operation_id}-destination"),
+                step: TargetStep::Prepared,
+            },
+            Target {
+                relative_path: source_relative_path.to_owned(),
+                expected: ExpectedState::Existing {
+                    revision: expected_revision,
+                    object_hash: old_hash,
+                    mode: current.mode,
+                },
+                intended: IntendedState::Absent,
+                temp_name: format!(".rehow-tmp-{operation_id}-source"),
+                step: TargetStep::Prepared,
+            },
+        ],
+        stage: JournalStage::Prepared,
+        completion: false,
+    };
+    let execution = workspace::execute_new_journal(root, &store, &lock, journal.clone());
+    if let Err(error) = execution {
+        let committed = store
+            .read_journal(&lock, operation_id)
+            .is_ok_and(|persisted| {
+                committed_matches(&persisted, &journal)
+                    && workspace::resume_journal(root, &store, &lock, operation_id).is_ok()
+            });
+        if !committed {
+            return Err(map_workspace_multi(error));
+        }
+    }
+    Ok(DocumentMoveOutcome {
+        revision: super::document_revision(destination_relative_path, &candidate),
     })
 }
 

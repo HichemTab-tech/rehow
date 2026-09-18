@@ -2160,4 +2160,98 @@ mod tests {
             b"old-two"
         );
     }
+
+    #[test]
+    fn guide_move_replay_creates_destination_before_removing_source() {
+        let (workspace, state, capability) = journal_fixture("guide-move");
+        let destination_directory = workspace.0.join("categories/system");
+        fs::create_dir_all(&destination_directory).unwrap();
+        let store = RecoveryStore::open(
+            &state.0,
+            "0199a19f-4d15-7ca7-a645-e75311caa710".parse().unwrap(),
+            [0x11; 32],
+            [0x22; 32],
+        )
+        .unwrap();
+        let lock = store.acquire_lock(None).unwrap();
+        let (root_device, root_inode) = capability.identity().unwrap();
+        let old_hash = store.store_object(&lock, b"old").unwrap();
+        let moved_hash = store.store_object(&lock, b"moved").unwrap();
+        let operation_id: OperationId = "0199a1d7-7b0d-7d8e-a38d-f936c5735e18".parse().unwrap();
+        let journal = Journal {
+            generation: 1,
+            operation_id,
+            operation_kind: OperationKind::MultiFile,
+            workspace_id: "0199a19f-4d15-7ca7-a645-e75311caa710".parse().unwrap(),
+            root_hash: [0x11; 32],
+            root_device,
+            root_inode,
+            created_at: "2026-09-18T00:00:00Z".parse().unwrap(),
+            plan_hash: [0x36; 32],
+            targets: vec![
+                Target {
+                    relative_path: "categories/system/guide.md".to_owned(),
+                    expected: ExpectedState::Absent,
+                    intended: IntendedState::Object {
+                        object_hash: moved_hash,
+                        mode: 0o600,
+                    },
+                    temp_name: ".rehow-tmp-guide-move-destination".to_owned(),
+                    step: TargetStep::Prepared,
+                },
+                Target {
+                    relative_path: "categories/linux/guide.md".to_owned(),
+                    expected: ExpectedState::Existing {
+                        revision: crate::storage::document_revision(
+                            "categories/linux/guide.md",
+                            b"old",
+                        ),
+                        object_hash: old_hash,
+                        mode: 0o600,
+                    },
+                    intended: IntendedState::Absent,
+                    temp_name: ".rehow-tmp-guide-move-source".to_owned(),
+                    step: TargetStep::Prepared,
+                },
+            ],
+            stage: JournalStage::Prepared,
+            completion: false,
+        };
+        store.install_journal(&lock, &journal).unwrap();
+        assert!(matches!(
+            install_object(
+                &capability,
+                "categories/system/guide.md",
+                None,
+                b"moved",
+                0o600,
+                ".rehow-tmp-guide-move-destination",
+            )
+            .unwrap(),
+            InstallOutcome::Created
+        ));
+        assert_eq!(
+            fs::read(workspace.0.join("categories/linux/guide.md")).unwrap(),
+            b"old"
+        );
+        assert_eq!(
+            fs::read(workspace.0.join("categories/system/guide.md")).unwrap(),
+            b"moved"
+        );
+
+        let committed = resume_journal(&capability, &store, &lock, operation_id).unwrap();
+        assert_eq!(committed.stage, JournalStage::Committed);
+        assert!(!workspace.0.join("categories/linux/guide.md").exists());
+        assert_eq!(
+            fs::read(workspace.0.join("categories/system/guide.md")).unwrap(),
+            b"moved"
+        );
+        assert_eq!(
+            fs::read(workspace.0.join(format!(
+                ".rehow/trash/{operation_id}/categories/linux/guide.md"
+            )))
+            .unwrap(),
+            b"old"
+        );
+    }
 }

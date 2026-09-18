@@ -906,7 +906,8 @@ h1 {
   line-height: 16px;
 }
 .guide-details-form input,
-.guide-details-form textarea {
+.guide-details-form textarea,
+.guide-details-form select {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--divider-strong);
@@ -920,7 +921,8 @@ h1 {
   resize: vertical;
 }
 .guide-details-form input:focus-visible,
-.guide-details-form textarea:focus-visible {
+.guide-details-form textarea:focus-visible,
+.guide-details-form select:focus-visible {
   border-color: var(--focus);
 }
 .guide-meta {
