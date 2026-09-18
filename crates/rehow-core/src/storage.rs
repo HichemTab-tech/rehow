@@ -4,6 +4,8 @@
 //! root descriptor prevents later reads from being redirected by renaming the
 //! path that the user selected.
 
+pub(crate) mod recovery;
+
 #[cfg(not(target_os = "linux"))]
 compile_error!("Rehow's confined Workspace storage currently requires Linux");
 
