@@ -4,7 +4,7 @@ use rehow_core::{
     application::{
         CategoryCreateError, CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError,
         GuideEdit, GuideUpdateError, WorkspaceInitializationError, create_category, create_guide,
-        initialize_workspace, rename_category, update_guide,
+        initialize_workspace, rename_category, set_category_archived, update_guide,
     },
     domain::GuideStatus,
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -748,9 +748,75 @@ fn rename_open_category(
     })
 }
 
+#[tauri::command]
+fn set_open_category_archived(
+    category_id: String,
+    expected_revision: String,
+    archived: bool,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<SaveCategoryPayload, NativeCommandError> {
+    if category_id.len() > 64 || expected_revision.len() > 96 {
+        return Err(native_command_error(
+            "invalidInput",
+            "Category identity is too long.".to_owned(),
+        ));
+    }
+    let category_id = CategoryId::from_str(&category_id).map_err(|_| {
+        native_command_error("invalidCategory", "Category ID is invalid.".to_owned())
+    })?;
+    let expected_revision = Revision::from_str(&expected_revision).map_err(|_| {
+        native_command_error(
+            "invalidRevision",
+            "Category revision is invalid. Reopen the Workspace and try again.".to_owned(),
+        )
+    })?;
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    fs::create_dir_all(&state_home).map_err(|_| {
+        native_command_error(
+            "stateUnavailable",
+            "Rehow could not prepare its private recovery folder.".to_owned(),
+        )
+    })?;
+    let mut guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_mut().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let outcome = set_category_archived(
+        &mut workspace.view,
+        &state_home,
+        runtime_directory.as_deref(),
+        category_id,
+        expected_revision,
+        archived,
+    )
+    .map_err(|error| {
+        native_command_error(category_update_code(error), category_update_message(error))
+    })?;
+    Ok(SaveCategoryPayload {
+        workspace: WorkspacePayload::from_view(
+            &workspace.view,
+            FolderFactsPayload::from(workspace.facts),
+        ),
+        changed: outcome.changed(),
+    })
+}
+
 fn category_update_code(error: CategoryUpdateError) -> &'static str {
     match error {
         CategoryUpdateError::NotFound => "notFound",
+        CategoryUpdateError::DefaultCategory => "defaultCategory",
         CategoryUpdateError::RevisionConflict => "revisionConflict",
         CategoryUpdateError::InvalidCategory => "invalidCategory",
         CategoryUpdateError::InvalidName => "invalidName",
@@ -768,6 +834,9 @@ fn category_update_message(error: CategoryUpdateError) -> String {
     match error {
         CategoryUpdateError::NotFound => {
             "Category was not found. Refresh the Workspace.".to_owned()
+        }
+        CategoryUpdateError::DefaultCategory => {
+            "Choose a different default Category before archiving this one.".to_owned()
         }
         CategoryUpdateError::RevisionConflict => {
             "This Category changed on disk. Reopen the Workspace before saving.".to_owned()
@@ -1018,6 +1087,7 @@ pub fn run() {
             rename_open_category,
             save_open_guide_body,
             save_open_guide_details,
+            set_open_category_archived,
             search_open_workspace
         ])
         .run(tauri::generate_context!())
@@ -1168,6 +1238,14 @@ mod tests {
         assert_eq!(
             category_update_message(CategoryUpdateError::InvalidName),
             "Enter a Category name between 1 and 200 characters."
+        );
+        assert_eq!(
+            category_update_code(CategoryUpdateError::DefaultCategory),
+            "defaultCategory"
+        );
+        assert_eq!(
+            category_update_message(CategoryUpdateError::DefaultCategory),
+            "Choose a different default Category before archiving this one."
         );
     }
 

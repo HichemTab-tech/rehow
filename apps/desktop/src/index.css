@@ -309,6 +309,10 @@ textarea:focus-visible,
   padding: 7px 8px;
   border-top: 1px solid var(--divider);
 }
+.category-entry {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 34px;
+}
 .category-list-heading {
   display: flex;
   align-items: center;
@@ -423,6 +427,16 @@ textarea:focus-visible,
   padding-left: 27px;
   font-size: 12px;
 }
+.category-state {
+  flex: 0 0 auto;
+  color: var(--faint);
+  font-size: 9px;
+}
+.category-item-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
 .category-rename-button {
   flex: 0 0 auto;
   padding: 4px;
@@ -431,9 +445,22 @@ textarea:focus-visible,
   font-size: 9px;
   cursor: pointer;
 }
+.category-rename-button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
 .category-rename-button:hover {
   color: var(--accent-strong);
   text-decoration: underline;
+}
+.category-status-error {
+  margin: 0 8px 7px 27px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--warning);
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 10px;
+  line-height: 15px;
 }
 .rail-footer {
   display: flex;
@@ -604,6 +631,10 @@ kbd {
   overflow-y: auto;
   overscroll-behavior: contain;
   list-style: none;
+}
+.result-list > li {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 82px;
 }
 .result-row {
   display: flex;

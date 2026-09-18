@@ -166,6 +166,7 @@ fn map_category_create_error(error: CategoryCreateStorageError) -> CategoryCreat
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CategoryUpdateError {
     NotFound,
+    DefaultCategory,
     RevisionConflict,
     InvalidCategory,
     InvalidName,
@@ -202,6 +203,56 @@ pub fn rename_category(
     expected_revision: Revision,
     name: String,
 ) -> Result<CategoryUpdateOutcome, CategoryUpdateError> {
+    update_category_with_mutation(
+        workspace,
+        state_home,
+        runtime_directory,
+        category_id,
+        expected_revision,
+        CategoryMutation::SetName(name),
+    )
+}
+
+pub fn set_category_archived(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    category_id: CategoryId,
+    expected_revision: Revision,
+    archived: bool,
+) -> Result<CategoryUpdateOutcome, CategoryUpdateError> {
+    if archived
+        && workspace
+            .manifest()
+            .settings()
+            .and_then(|settings| settings.default_category_id())
+            == Some(&category_id)
+    {
+        return Err(CategoryUpdateError::DefaultCategory);
+    }
+    update_category_with_mutation(
+        workspace,
+        state_home,
+        runtime_directory,
+        category_id,
+        expected_revision,
+        if archived {
+            CategoryMutation::Archive
+        } else {
+            CategoryMutation::Restore
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_category_with_mutation(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    category_id: CategoryId,
+    expected_revision: Revision,
+    mutation: CategoryMutation,
+) -> Result<CategoryUpdateOutcome, CategoryUpdateError> {
     let loaded = workspace
         .categories()
         .iter()
@@ -229,7 +280,7 @@ pub fn rename_category(
             if bound.record().id() != &category_id {
                 return Err(CategoryPlanError::InvalidCategory);
             }
-            match plan_category_mutation(&bound, CategoryMutation::SetName(name), &stamp)
+            match plan_category_mutation(&bound, mutation, &stamp)
                 .map_err(map_category_plan_failure)?
             {
                 MutationOutcome::NoOp => copy_bytes(bytes).map_err(CategoryPlanError::from),
@@ -1016,6 +1067,109 @@ mod tests {
             Err(CategoryUpdateError::RevisionConflict)
         );
         assert_eq!(view.categories()[0].category().name(), "Linux System");
+    }
+
+    #[test]
+    fn archives_and_restores_category_without_moving_content() {
+        let (workspace, state, mut view) = initialized_workspace("category-archive");
+        let created = create_category(&mut view, state.path(), None, "Linux System", None).unwrap();
+        create_guide(
+            &mut view,
+            state.path(),
+            None,
+            created.category_id(),
+            "Install a Tarball",
+            "Install a downloaded archive.",
+        )
+        .unwrap();
+        let original_directory = view.categories()[0].relative_directory().to_owned();
+        let archived = set_category_archived(
+            &mut view,
+            state.path(),
+            None,
+            created.category_id(),
+            created.revision(),
+            true,
+        )
+        .unwrap();
+        assert!(archived.changed());
+        assert_eq!(
+            view.categories()[0].category().status(),
+            CategoryStatus::Archived
+        );
+        assert_eq!(
+            view.categories()[0].relative_directory(),
+            original_directory
+        );
+        assert_eq!(view.categories()[0].guides().len(), 1);
+        assert!(workspace.path().join(&original_directory).is_dir());
+        assert!(matches!(
+            create_guide(
+                &mut view,
+                state.path(),
+                None,
+                created.category_id(),
+                "Blocked",
+                "Archived Categories refuse new Guides."
+            ),
+            Err(GuideCreateError::CategoryArchived)
+        ));
+
+        let restored = set_category_archived(
+            &mut view,
+            state.path(),
+            None,
+            created.category_id(),
+            archived.revision(),
+            false,
+        )
+        .unwrap();
+        assert!(restored.changed());
+        assert_eq!(
+            view.categories()[0].category().status(),
+            CategoryStatus::Active
+        );
+        assert_eq!(
+            view.categories()[0].relative_directory(),
+            original_directory
+        );
+        assert_eq!(view.categories()[0].guides().len(), 1);
+    }
+
+    #[test]
+    fn refuses_to_archive_the_default_category() {
+        let workspace = TestDirectory::new("default-category-archive");
+        let state = TestDirectory::new("default-category-state");
+        fs::write(
+            workspace.path().join("rehow.yaml"),
+            format!(
+                "{MANIFEST}settings:\n  default_category_id: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5551\n"
+            ),
+        )
+        .unwrap();
+        let category = workspace.path().join("categories/linux-system--b6ba3a5551");
+        fs::create_dir_all(&category).unwrap();
+        fs::write(category.join("category.yaml"), CATEGORY).unwrap();
+        let inspection = inspect_workspace(workspace.path()).unwrap().into_parts().1;
+        let WorkspaceInspection::Compatible(mut view) = inspection else {
+            panic!("expected compatible Workspace");
+        };
+        let revision = view.categories()[0].descriptor_revision();
+        assert_eq!(
+            set_category_archived(
+                &mut view,
+                state.path(),
+                None,
+                CategoryId::from_str("0199a1c2-d334-7d17-bd9c-f8b6ba3a5551").unwrap(),
+                revision,
+                true,
+            ),
+            Err(CategoryUpdateError::DefaultCategory)
+        );
+        assert_eq!(
+            view.categories()[0].category().status(),
+            CategoryStatus::Active
+        );
     }
 
     #[test]

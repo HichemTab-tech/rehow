@@ -337,6 +337,11 @@ export function App() {
   const [categoryRenameValue, setCategoryRenameValue] = useState("");
   const [savingCategoryRename, setSavingCategoryRename] = useState(false);
   const [categoryRenameError, setCategoryRenameError] = useState("");
+  const [updatingCategoryStatusId, setUpdatingCategoryStatusId] = useState("");
+  const [categoryStatusError, setCategoryStatusError] = useState<{
+    id: string;
+    message: string;
+  } | null>(null);
   const [creatingGuide, setCreatingGuide] = useState(false);
   const [guideTitle, setGuideTitle] = useState("");
   const [guideSummary, setGuideSummary] = useState("");
@@ -372,6 +377,7 @@ export function App() {
   const categoryErrorRef = useRef<HTMLParagraphElement>(null);
   const categoryRenameInputRef = useRef<HTMLInputElement>(null);
   const categoryRenameErrorRef = useRef<HTMLParagraphElement>(null);
+  const categoryStatusErrorRef = useRef<HTMLParagraphElement>(null);
   const categoryRenameButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const guideCreateButtonRef = useRef<HTMLButtonElement>(null);
   const guideTitleRef = useRef<HTMLInputElement>(null);
@@ -528,7 +534,8 @@ export function App() {
       savingGuide ||
       savingNewGuide ||
       savingGuideDetails ||
-      savingCategoryRename
+      savingCategoryRename ||
+      updatingCategoryStatusId !== ""
     )
       return false;
     if (dirtyGuide && !window.confirm("Discard your unsaved Guide changes?")) {
@@ -606,6 +613,7 @@ export function App() {
         setRenamingCategoryId("");
         setCategoryRenameValue("");
         setCategoryRenameError("");
+        setCategoryStatusError(null);
         setCreatingGuide(false);
         setGuideTitle("");
         setGuideSummary("");
@@ -815,6 +823,41 @@ export function App() {
       requestAnimationFrame(() => categoryRenameErrorRef.current?.focus());
     } finally {
       setSavingCategoryRename(false);
+    }
+  }
+
+  async function changeCategoryArchived(
+    category: WorkspacePayload["categories"][number],
+  ) {
+    if (updatingCategoryStatusId !== "") return;
+    const archived = category.status === "active";
+    setUpdatingCategoryStatusId(category.id);
+    setCategoryStatusError(null);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<SaveCategoryPayload>(
+        "set_open_category_archived",
+        {
+          categoryId: category.id,
+          expectedRevision: category.revision,
+          archived,
+        },
+      );
+      setWorkspace(result.workspace);
+      setAnnouncement(
+        result.changed
+          ? archived
+            ? `${category.name} Category archived.`
+            : `${category.name} Category restored.`
+          : `The ${category.name} Category status is unchanged.`,
+      );
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setCategoryStatusError({ id: category.id, message: failure.message });
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => categoryStatusErrorRef.current?.focus());
+    } finally {
+      setUpdatingCategoryStatusId("");
     }
   }
 
@@ -1278,31 +1321,65 @@ export function App() {
                 </div>
               </form>
             ) : (
-              <div className="category-item" key={category.id}>
-                <span>{category.name}</span>
-                <span className="count">{category.guideCount}</span>
-                {workspace?.facts.writable && (
-                  <button
-                    ref={(element) => {
-                      if (element === null) {
-                        categoryRenameButtonRefs.current.delete(category.id);
-                      } else {
-                        categoryRenameButtonRefs.current.set(
-                          category.id,
-                          element,
-                        );
-                      }
-                    }}
-                    className="category-rename-button"
-                    type="button"
-                    aria-label={`Rename ${category.name} Category`}
-                    title="Rename Category"
-                    onClick={() =>
-                      beginCategoryRename(category.id, category.name)
-                    }
+              <div className="category-entry" key={category.id}>
+                <div className="category-item">
+                  <span>{category.name}</span>
+                  {category.status === "archived" && (
+                    <span className="category-state">Archived</span>
+                  )}
+                  <span className="count">{category.guideCount}</span>
+                  {workspace?.facts.writable && (
+                    <span className="category-item-actions">
+                      <button
+                        ref={(element) => {
+                          if (element === null) {
+                            categoryRenameButtonRefs.current.delete(
+                              category.id,
+                            );
+                          } else {
+                            categoryRenameButtonRefs.current.set(
+                              category.id,
+                              element,
+                            );
+                          }
+                        }}
+                        className="category-rename-button"
+                        type="button"
+                        aria-label={`Rename ${category.name} Category`}
+                        title="Rename Category"
+                        disabled={updatingCategoryStatusId !== ""}
+                        onClick={() =>
+                          beginCategoryRename(category.id, category.name)
+                        }
+                      >
+                        Rename
+                      </button>
+                      <button
+                        className="category-rename-button"
+                        type="button"
+                        disabled={updatingCategoryStatusId !== ""}
+                        onClick={() => void changeCategoryArchived(category)}
+                      >
+                        {updatingCategoryStatusId === category.id
+                          ? category.status === "active"
+                            ? "Archiving…"
+                            : "Restoring…"
+                          : category.status === "active"
+                            ? "Archive"
+                            : "Restore"}
+                      </button>
+                    </span>
+                  )}
+                </div>
+                {categoryStatusError?.id === category.id && (
+                  <p
+                    ref={categoryStatusErrorRef}
+                    className="category-status-error"
+                    role="alert"
+                    tabIndex={-1}
                   >
-                    Rename
-                  </button>
+                    {categoryStatusError.message}
+                  </p>
                 )}
               </div>
             ),
