@@ -9,11 +9,11 @@ Phase 1D — Typed content binding.
 
 ## Current task
 
-Implement Phase 1D-C2 private mutation candidates over existing source bytes. Phase 1D-C1 canonical new-document emission is checkpointed; the combined 1D-C review remains pending.
+Implement Phase 1D-C2b optional-field, collection, and Guide archive/restore mutation candidates. C1 and C2a are checkpointed; the combined 1D-C review remains pending.
 
 ## Overall status
 
-In progress. Phase 0 through Phase 1C and Phase 1D-A/B are accepted; Phase 1D-C1 is implemented in a signed checkpoint. C1 deterministically emits and production-rebinds new Manifest, active Category, and draft Guide bytes without I/O or public authority. The worktree after signed commit `92e4c93` contains only the preserved unrelated untracked executable `x`.
+In progress. Phase 0 through Phase 1C and Phase 1D-A/B are accepted; Phase 1D-C1 and C2a are implemented in signed checkpoints. C1 emits new documents; C2a plans validated, byte-preserving required-field/body/status mutations without I/O or public authority. The worktree after signed commit `539c29a` contains only the preserved unrelated untracked executable `x`.
 
 ## Completed work
 
@@ -53,10 +53,11 @@ In progress. Phase 0 through Phase 1C and Phase 1D-A/B are accepted; Phase 1D-C1
 - Implemented Phase 1D-B Guide, Applicability, Reference, Attachment, verification, and archive read-only binding with strict status/time, Unicode fold, URL canonicality, Attachment path/NFC/MIME/hash/size, unknown-partition, and body-preservation rules.
 - Corrected the combined review's URL alias, diagnostic-position/type, allocation/resource, bounded-work, and filename-policy findings. The same Security Reviewer passed the correction closure. Signed checkpoint `0b5fb11` verifies.
 - Implemented private canonical emitters for new Workspace manifests, active Categories, and draft Guides with exact ADR 0011 escaping, schema order, LF/no-BOM envelopes, fallible retained growth, production parse/rebind comparison, golden tests, invalid-input/resource tests, and public-absence evidence. Signed checkpoint `92e4c93` verifies.
+- Implemented private existing-document mutation planning for Workspace name; Category name/order/archive/restore; and Guide title/summary/Category/body/stale transitions. Valid no-ops preserve exact bytes, actual changes require proven spans, candidates reparse/rebind, unknown data remains preserved, timestamps are monotonic, and tested content becomes stale. Signed checkpoint `539c29a` verifies.
 
 ## Work in progress
 
-- Phase 1D-C1 is checkpointed and green. Phase 1D-C2 mutation planning is not yet implemented; combined Phase 1D-C review remains pending.
+- Phase 1D-C1 and C2a are checkpointed and green. C2b optional-field, collection, and Guide archive/restore behavior remains; combined Phase 1D-C review follows once.
 
 ## Remaining work
 
@@ -96,6 +97,7 @@ None known in accepted Phase 1A, Phase 1B, Phase 1C, or Phase 1D-A/B. The shell 
 - Final Phase 1C Security Reviewer/xhigh review and every security-sensitive correction delta pass with no blocker, high, medium, or low finding. The accepted parser remains crate-private, bounded, content-sanitized, non-recursive in Rehow traversal, dependency-pinned, and without filesystem/process/network/logging/mutation authority.
 - Phase 1D-A adds no filesystem, revision, process, network, logging, mutation, adapter, Tauri, or MCP authority. Aggregate constructors/fields/mutation/Serde remain absent; newer schemas remain distinguishable and malformed-field failures carry parser-proven positions without rejected content.
 - Phase 1D-B adds no filesystem, process, network, logging, URL-opening, Attachment-reading, adapter, Tauri, Git, or MCP authority. Canonical raw URL checks reject legacy numeric-IP aliases and misleading normalization; all product aggregate state remains read-only.
+- Phase 1D-C2a adds only private in-memory mutation planning. It accepts typed intents, requires proven source spans for changes, reparses/rebinds candidates, does not create `tested`, and has no filesystem, process, network, logging, adapter, Git, Tauri, or MCP authority.
 
 ## Blockers and human checkpoints
 
@@ -105,7 +107,7 @@ None known in accepted Phase 1A, Phase 1B, Phase 1C, or Phase 1D-A/B. The shell 
 
 ## Latest verified commit
 
-`92e4c93` — signed Phase 1D-C1 canonical emission checkpoint; `git verify-commit 92e4c93` passes with the configured project key. This progress-only recovery update follows that implementation commit.
+`539c29a` — signed Phase 1D-C2a required-field mutation checkpoint; `git verify-commit 539c29a` passes with the configured project key. This progress-only recovery update follows that implementation commit.
 
 ## Tests last run and results
 
@@ -116,6 +118,7 @@ None known in accepted Phase 1A, Phase 1B, Phase 1C, or Phase 1D-A/B. The shell 
 - 2026-09-18: focused independent review found one high and two medium issues; all were corrected and covered by tests. `git verify-commit 4d26e8f` passes; post-commit worktree contains only preserved unrelated untracked `x`.
 - 2026-09-18: Phase 1D-B gate: formatting, locked all-feature core Clippy with warnings denied, bootstrap validation, whitespace checks, and all core suites pass — 164 library, 18 error-contract, 13 protocol, 11 unknown-YAML, one public API positive, and 30 compile-fail cases. The combined Security Reviewer closure passes all three prior high findings. `git verify-commit 0b5fb11` passes.
 - 2026-09-18: Phase 1D-C1 gate: formatting, locked all-feature core Clippy with warnings denied, bootstrap validation, whitespace checks, and all core suites pass — 169 library, 18 error-contract, 13 protocol, 11 unknown-YAML, one public API positive, and 31 compile-fail cases. Forbidden-authority source audit passes. `git verify-commit 92e4c93` passes.
+- 2026-09-18: Phase 1D-C2a gate: formatting and locked all-feature core Clippy with warnings denied pass; all core suites pass — 175 library, 18 error-contract, 13 protocol, 11 unknown-YAML, one public API positive, and 32 compile-fail cases. Forbidden-authority and whitespace audits pass. `git verify-commit 539c29a` passes.
 
 - 2026-09-05: `python3` `tomllib` parsed `.codex/config.toml` plus all 8 `.codex/agents/*.toml`: pass (9 files).
 - 2026-09-05: `python3 scripts/check_bootstrap.py`: pass — 17 required files, 10 ADRs, 8 pinned agents.
@@ -213,10 +216,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0014, the Phase 1D-A packet, Manifest/Category domain records and binder, parser position/test seam, and API evidence are accepted at signed commit `4d26e8f`.
 - Phase 1D-B Guide/nested binders, dependency/review evidence, task packet, API privacy tests, and accepted ADR 0014 binding delta are checkpointed at signed commit `0b5fb11`.
 - Phase 1D-C1 private canonical emitters, golden/resource/API tests, packet, and evidence are checkpointed at signed commit `92e4c93`; full 1D-C acceptance waits for C2 and one combined review.
+- Phase 1D-C2a required-field/body/status mutation planning, adversarial/API tests, packet, and evidence are checkpointed at signed commit `539c29a`; full 1D-C acceptance waits for C2b and one combined review.
 
 ## Next recommended action
 
-Create the narrow Phase 1D-C2 packet, then implement typed no-op-safe byte-preserving mutation candidates and run the single combined Phase 1D-C review.
+Implement the narrow Phase 1D-C2b remainder: optional fields, bounded collections, Workspace default Category, Category summary, and Guide archive/restore; then run one combined Phase 1D-C review.
 
 ## Recommended agent role and reasoning effort
 
@@ -227,6 +231,6 @@ Orchestrator — `gpt-5.6-sol`, high. Keep routine work single-agent; use one in
 1. Read `AGENTS.md` and this file.
 2. Read `docs/product-spec.md`, `docs/architecture.md`, `docs/implementation-plan.md`, `docs/threat-model.md`, `docs/error-contract.md`, and accepted ADRs 0011–0013.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `cf8341f`, `4d26e8f`, `0b5fb11`, and Phase 1D-C1 implementation `92e4c93`; if `HEAD` is a later progress-only ledger, confirm its parent is `92e4c93` and only `PROGRESS.md` changed.
+4. Verify signed checkpoints `cf8341f`, `4d26e8f`, `0b5fb11`, `92e4c93`, and Phase 1D-C2a implementation `539c29a`; if `HEAD` is a later progress-only ledger, confirm its parent is `539c29a` and only `PROGRESS.md` changed.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Read ADR 0014, `docs/task-packets/phase-1d-c1-canonical-emission.md`, and its evidence; verify `92e4c93`. Resume with a narrow C2 mutation packet and implementation without adding storage or adapter authority.
+6. Read ADR 0014, `docs/task-packets/phase-1d-c2a-required-field-mutations.md`, and its evidence; verify `539c29a`. Resume with the narrow C2b mutation remainder without adding storage or adapter authority.
