@@ -6,6 +6,7 @@
 
 pub(crate) mod recovery;
 pub(crate) use recovery::{
+    AttachmentImportPreview, AttachmentImportStorageOutcome, AttachmentSourceState,
     CategoryCreateStorageError, CategoryCreateStorageOutcome, CategoryRemoveStorageError,
     CategoryRemoveStorageOutcome, DocumentCreateError, DocumentCreateOutcome, DocumentMoveOutcome,
     DocumentRemoveError, DocumentRemoveOutcome, DocumentUpdateError, DocumentUpdateOutcome,
@@ -18,6 +19,11 @@ pub(crate) fn set_attachment_changed_fault() {
     linux::set_attachment_changed_fault();
 }
 
+#[cfg(test)]
+pub(crate) fn set_attachment_import_source_changed_fault() {
+    recovery::set_attachment_source_change_fault();
+}
+
 #[cfg(not(target_os = "linux"))]
 compile_error!("Rehow's confined Workspace storage currently requires Linux");
 
@@ -28,6 +34,7 @@ use crate::{
 use std::{
     collections::{HashMap, HashSet},
     fmt,
+    fs::File,
     path::Path,
 };
 
@@ -305,6 +312,78 @@ where
         expected_revision,
         operation_id,
         created_at,
+        prepare,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_attachment_import<E, F>(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_relative_path: &str,
+    guide_id: crate::protocol::GuideId,
+    expected_revision: Revision,
+    operation_id: crate::protocol::OperationId,
+    created_at: crate::protocol::Timestamp,
+    filename: &str,
+    source: &mut File,
+    source_state: &AttachmentSourceState,
+    approved_relative_path: &str,
+    approved_revision: Revision,
+    approved_object_hash: [u8; 32],
+    approved_sha256: [u8; 32],
+    approved_size: u64,
+    prepare: F,
+) -> Result<AttachmentImportStorageOutcome, MultiDocumentUpdateError<E>>
+where
+    F: FnOnce(&[u8], &str, [u8; 32], u64) -> Result<Box<[u8]>, E>,
+{
+    recovery::execute_attachment_import(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        guide_relative_path,
+        guide_id,
+        expected_revision,
+        operation_id,
+        created_at,
+        filename,
+        source,
+        source_state,
+        approved_relative_path,
+        approved_revision,
+        approved_object_hash,
+        approved_sha256,
+        approved_size,
+        prepare,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn preview_attachment_import<E, F>(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_relative_path: &str,
+    guide_id: crate::protocol::GuideId,
+    expected_revision: Revision,
+    filename: &str,
+    prepare: F,
+) -> Result<AttachmentImportPreview, MultiDocumentUpdateError<E>>
+where
+    F: FnOnce(&[u8], &str) -> Result<Box<[u8]>, E>,
+{
+    recovery::preview_attachment_import(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        guide_relative_path,
+        guide_id,
+        expected_revision,
+        filename,
         prepare,
     )
 }
@@ -814,9 +893,14 @@ fn inspect_attachments(
     issues: &mut Vec<WorkspaceIssue>,
 ) -> Result<(), WorkspaceInspectError> {
     let mut expected = HashMap::new();
+    let mut known_guide_ids = HashSet::new();
     let mut declared_count = 0usize;
     for category in categories {
         for guide in category.guides() {
+            known_guide_ids
+                .try_reserve(1)
+                .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
+            known_guide_ids.insert(*guide.guide().id());
             for attachment in guide.guide().attachments().unwrap_or_default() {
                 increment_attachment_count(&mut declared_count)?;
                 expected
@@ -855,14 +939,14 @@ fn inspect_attachments(
     let mut candidate_count = 0usize;
     let mut aggregate_bytes = 0u64;
     for guide_directory in guide_directories {
-        if guide_directory.parse::<crate::protocol::GuideId>().is_err() {
+        let Ok(directory_guide_id) = guide_directory.parse::<crate::protocol::GuideId>() else {
             push_issue(
                 issues,
                 "attachments/<unsupported>".to_owned(),
                 WorkspaceIssueKind::UnsupportedEntry,
             )?;
             continue;
-        }
+        };
         let directory = match attachments.open_directory(&guide_directory) {
             Ok(directory) => directory,
             Err(linux::OpenDirectoryError::Missing) => continue,
@@ -879,7 +963,7 @@ fn inspect_attachments(
         let remaining = ATTACHMENT_COUNT_LIMIT.saturating_sub(candidate_count);
         let mut filenames = directory.entries(remaining)?;
         filenames.sort_unstable();
-        if filenames.is_empty() {
+        if filenames.is_empty() && !known_guide_ids.contains(&directory_guide_id) {
             push_issue(
                 issues,
                 format!("attachments/{guide_directory}"),
@@ -1195,7 +1279,7 @@ mod linux {
     use std::{
         ffi::{CStr, CString, OsStr},
         fs::File,
-        io::{self, Read, Write},
+        io::{self, Read, Seek, SeekFrom, Write},
         os::{
             fd::{AsRawFd, FromRawFd, OwnedFd},
             unix::{ffi::OsStrExt, fs::MetadataExt},
@@ -1256,6 +1340,16 @@ mod linux {
     pub(super) enum ManagedState {
         Missing,
         Regular(RegularState),
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    pub(super) enum HashedState {
+        Missing,
+        Regular {
+            hash: [u8; 32],
+            size: u64,
+            mode: u32,
+        },
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1752,6 +1846,53 @@ mod linux {
             Ok(())
         }
 
+        pub(super) fn prepare_attachment_directory(
+            &self,
+            guide_id: &crate::protocol::GuideId,
+        ) -> Result<(), MutationIoError> {
+            let attachments = self.ensure_private_directory("attachments")?;
+            attachments.ensure_private_directory(&guide_id.to_string())?;
+            Ok(())
+        }
+
+        pub(super) fn available_attachment_path(
+            &self,
+            guide_id: &crate::protocol::GuideId,
+            filename: &str,
+        ) -> Result<String, MutationIoError> {
+            for suffix in 1_u32..=10_000 {
+                let candidate = if suffix == 1 {
+                    filename.to_owned()
+                } else {
+                    attachment_filename_with_suffix(filename, suffix)
+                };
+                let relative_path = format!("attachments/{guide_id}/{candidate}");
+                if !super::recovery::valid_active_path(&relative_path) {
+                    return Err(MutationIoError::Unsafe);
+                }
+                let target = self.open_managed_target(&relative_path)?;
+                if !target.exists()? {
+                    return Ok(relative_path);
+                }
+            }
+            Err(MutationIoError::Conflict)
+        }
+
+        pub(super) fn preview_attachment_path(
+            &self,
+            guide_id: &crate::protocol::GuideId,
+            filename: &str,
+        ) -> Result<String, MutationIoError> {
+            let Some(attachments) = self.optional_private_directory("attachments")? else {
+                return checked_attachment_path(guide_id, filename);
+            };
+            let Some(directory) = attachments.optional_private_directory(&guide_id.to_string())?
+            else {
+                return checked_attachment_path(guide_id, filename);
+            };
+            available_attachment_path_in(&directory, guide_id, filename)
+        }
+
         pub(super) fn remove_empty_category_directory(
             &self,
             relative_directory: &str,
@@ -2025,6 +2166,14 @@ mod linux {
                 capability_hash: self.capability_hash,
             })
         }
+
+        fn optional_private_directory(&self, name: &str) -> Result<Option<Self>, MutationIoError> {
+            match self.open_private_directory(name) {
+                Ok(directory) => Ok(Some(directory)),
+                Err(MutationIoError::Conflict) => Ok(None),
+                Err(error) => Err(error),
+            }
+        }
     }
 
     fn fill_random(bytes: &mut [u8]) -> Result<(), io::Error> {
@@ -2053,6 +2202,32 @@ mod linux {
     }
 
     impl ManagedTarget {
+        fn exists(&self) -> Result<bool, MutationIoError> {
+            let name = component(&self.name).map_err(|_| MutationIoError::Unsafe)?;
+            let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: retained directory, validated component, and output storage are valid.
+            if unsafe {
+                libc::fstatat(
+                    self.directory.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    status.as_mut_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            } != 0
+            {
+                return match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::ENOENT) => Ok(false),
+                    _ => Err(MutationIoError::Io),
+                };
+            }
+            // SAFETY: successful fstatat initialized the structure.
+            let status = unsafe { status.assume_init() };
+            if status.st_mode & libc::S_IFMT != libc::S_IFREG || status.st_nlink != 1 {
+                return Err(MutationIoError::Unsafe);
+            }
+            Ok(true)
+        }
+
         pub(super) fn state(&self, limit: usize) -> Result<ManagedState, MutationIoError> {
             self.named_state(&self.name, limit)
         }
@@ -2075,6 +2250,204 @@ mod linux {
                 Err(EntryReadError::TooLarge) => Err(MutationIoError::TooLarge),
                 Err(EntryReadError::Changed) => Err(MutationIoError::Conflict),
                 Err(EntryReadError::Io(_)) => Err(MutationIoError::Io),
+            }
+        }
+
+        pub(super) fn hashed_state(&self, limit: u64) -> Result<HashedState, MutationIoError> {
+            self.named_hashed_state(&self.name, limit)
+        }
+
+        pub(super) fn temp_hashed_state(
+            &self,
+            temp_name: &str,
+            limit: u64,
+        ) -> Result<HashedState, MutationIoError> {
+            self.named_hashed_state(temp_name, limit)
+        }
+
+        fn named_hashed_state(
+            &self,
+            name: &str,
+            limit: u64,
+        ) -> Result<HashedState, MutationIoError> {
+            let name = component(name).map_err(|_| MutationIoError::Unsafe)?;
+            // SAFETY: directory descriptor and validated component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.directory.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+                )
+            };
+            if raw < 0 {
+                return match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::ENOENT) => Ok(HashedState::Missing),
+                    Some(libc::ELOOP) | Some(libc::ENXIO) | Some(libc::ENODEV) => {
+                        Err(MutationIoError::Unsafe)
+                    }
+                    _ => Err(MutationIoError::Io),
+                };
+            }
+            // SAFETY: successful openat returns a newly owned descriptor.
+            let mut file = unsafe { File::from_raw_fd(raw) };
+            let before = file.metadata().map_err(|_| MutationIoError::Io)?;
+            if !before.file_type().is_file() || before.nlink() != 1 {
+                return Err(MutationIoError::Unsafe);
+            }
+            if before.len() > limit {
+                return Err(MutationIoError::TooLarge);
+            }
+            let mut hasher = blake3::Hasher::new();
+            let mut buffer = [0_u8; 64 * 1024];
+            let mut size = 0_u64;
+            loop {
+                let read = file.read(&mut buffer).map_err(|_| MutationIoError::Io)?;
+                if read == 0 {
+                    break;
+                }
+                size = size
+                    .checked_add(read as u64)
+                    .ok_or(MutationIoError::TooLarge)?;
+                if size > limit {
+                    return Err(MutationIoError::TooLarge);
+                }
+                hasher.update(&buffer[..read]);
+            }
+            let after = file.metadata().map_err(|_| MutationIoError::Io)?;
+            if !same_metadata(&before, &after) || size != after.len() {
+                return Err(MutationIoError::Conflict);
+            }
+            Ok(HashedState::Regular {
+                hash: *hasher.finalize().as_bytes(),
+                size,
+                mode: after.mode() & 0o7777,
+            })
+        }
+
+        pub(super) fn write_temp_stream(
+            &self,
+            temp_name: &str,
+            source: &mut File,
+            expected_hash: &[u8; 32],
+            expected_size: u64,
+            mode: u32,
+        ) -> Result<(), MutationIoError> {
+            if mode > 0o777 || expected_size > 64 * 1024 * 1024 {
+                return Err(MutationIoError::Unsafe);
+            }
+            let temp_name = component(temp_name).map_err(|_| MutationIoError::Unsafe)?;
+            // SAFETY: directory descriptor and validated component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.directory.descriptor.as_raw_fd(),
+                    temp_name.as_ptr(),
+                    libc::O_WRONLY
+                        | libc::O_CREAT
+                        | libc::O_EXCL
+                        | libc::O_CLOEXEC
+                        | libc::O_NOFOLLOW
+                        | libc::O_NONBLOCK,
+                    mode,
+                )
+            };
+            if raw < 0 {
+                return match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::EEXIST) => Err(MutationIoError::Conflict),
+                    Some(libc::ELOOP) | Some(libc::ENOTDIR) => Err(MutationIoError::Unsafe),
+                    _ => Err(MutationIoError::Io),
+                };
+            }
+            // SAFETY: successful openat returns a newly owned descriptor.
+            let mut output = unsafe { File::from_raw_fd(raw) };
+            // SAFETY: descriptor is valid and the mode is bounded.
+            if unsafe { libc::fchmod(output.as_raw_fd(), mode) } != 0 {
+                return Err(MutationIoError::Io);
+            }
+            source
+                .seek(SeekFrom::Start(0))
+                .map_err(|_| MutationIoError::Io)?;
+            let source_before = source.metadata().map_err(|_| MutationIoError::Io)?;
+            let mut hasher = blake3::Hasher::new();
+            let mut buffer = [0_u8; 64 * 1024];
+            let mut size = 0_u64;
+            loop {
+                let read = source.read(&mut buffer).map_err(|_| MutationIoError::Io)?;
+                if read == 0 {
+                    break;
+                }
+                size = size
+                    .checked_add(read as u64)
+                    .ok_or(MutationIoError::TooLarge)?;
+                if size > expected_size {
+                    return Err(MutationIoError::Conflict);
+                }
+                hasher.update(&buffer[..read]);
+                output
+                    .write_all(&buffer[..read])
+                    .map_err(|_| MutationIoError::Io)?;
+            }
+            let source_after = source.metadata().map_err(|_| MutationIoError::Io)?;
+            if !same_metadata(&source_before, &source_after)
+                || size != expected_size
+                || hasher.finalize().as_bytes() != expected_hash
+            {
+                return Err(MutationIoError::Conflict);
+            }
+            output
+                .sync_all()
+                .map_err(|_| MutationIoError::Unsupported)?;
+            let output_metadata = output.metadata().map_err(|_| MutationIoError::Io)?;
+            if !output_metadata.file_type().is_file()
+                || output_metadata.nlink() != 1
+                || output_metadata.len() != expected_size
+                || output_metadata.mode() & 0o7777 != mode
+            {
+                return Err(MutationIoError::Unsafe);
+            }
+            Ok(())
+        }
+
+        pub(super) fn sync_existing_temp_hashed(
+            &self,
+            temp_name: &str,
+            expected_hash: &[u8; 32],
+            expected_size: u64,
+            mode: u32,
+        ) -> Result<(), MutationIoError> {
+            if self.temp_hashed_state(temp_name, 64 * 1024 * 1024)?
+                != (HashedState::Regular {
+                    hash: *expected_hash,
+                    size: expected_size,
+                    mode,
+                })
+            {
+                return Err(MutationIoError::Conflict);
+            }
+            let name = component(temp_name).map_err(|_| MutationIoError::Unsafe)?;
+            // SAFETY: retained directory and validated component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.directory.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+                )
+            };
+            if raw < 0 {
+                return Err(MutationIoError::Io);
+            }
+            // SAFETY: successful openat returns a newly owned descriptor.
+            let file = unsafe { File::from_raw_fd(raw) };
+            file.sync_all().map_err(|_| MutationIoError::Unsupported)?;
+            if self.temp_hashed_state(temp_name, 64 * 1024 * 1024)?
+                == (HashedState::Regular {
+                    hash: *expected_hash,
+                    size: expected_size,
+                    mode,
+                })
+            {
+                Ok(())
+            } else {
+                Err(MutationIoError::Conflict)
             }
         }
 
@@ -2284,6 +2657,81 @@ mod linux {
                 Err(MutationIoError::Unsupported)
             }
         }
+    }
+
+    fn same_metadata(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+        left.dev() == right.dev()
+            && left.ino() == right.ino()
+            && left.len() == right.len()
+            && left.mtime() == right.mtime()
+            && left.mtime_nsec() == right.mtime_nsec()
+            && left.ctime() == right.ctime()
+            && left.ctime_nsec() == right.ctime_nsec()
+            && left.mode() == right.mode()
+    }
+
+    fn attachment_filename_with_suffix(filename: &str, suffix: u32) -> String {
+        let suffix = format!("-{suffix}");
+        let (stem, extension) = filename
+            .rsplit_once('.')
+            .map_or((filename, ""), |(stem, ext)| {
+                if stem.is_empty() || ext.is_empty() {
+                    (filename, "")
+                } else {
+                    (stem, ext)
+                }
+            });
+        let extension_bytes = if extension.is_empty() {
+            0
+        } else {
+            extension.len() + 1
+        };
+        let max_stem = 255_usize.saturating_sub(suffix.len() + extension_bytes);
+        let mut end = stem.len().min(max_stem);
+        while end > 0 && !stem.is_char_boundary(end) {
+            end -= 1;
+        }
+        let stem = if end == 0 { "attachment" } else { &stem[..end] };
+        if extension.is_empty() {
+            format!("{stem}{suffix}")
+        } else {
+            format!("{stem}{suffix}.{extension}")
+        }
+    }
+
+    fn checked_attachment_path(
+        guide_id: &crate::protocol::GuideId,
+        filename: &str,
+    ) -> Result<String, MutationIoError> {
+        let path = format!("attachments/{guide_id}/{filename}");
+        if super::recovery::valid_active_path(&path) {
+            Ok(path)
+        } else {
+            Err(MutationIoError::Unsafe)
+        }
+    }
+
+    fn available_attachment_path_in(
+        directory: &DirectoryCapability,
+        guide_id: &crate::protocol::GuideId,
+        filename: &str,
+    ) -> Result<String, MutationIoError> {
+        for suffix in 1_u32..=10_000 {
+            let candidate = if suffix == 1 {
+                filename.to_owned()
+            } else {
+                attachment_filename_with_suffix(filename, suffix)
+            };
+            let relative_path = checked_attachment_path(guide_id, &candidate)?;
+            let target = ManagedTarget {
+                directory: directory.duplicate().map_err(|_| MutationIoError::Io)?,
+                name: candidate,
+            };
+            if !target.exists()? {
+                return Ok(relative_path);
+            }
+        }
+        Err(MutationIoError::Conflict)
     }
 
     fn descriptor_identity(descriptor: &OwnedFd) -> Result<(u64, u64), io::Error> {

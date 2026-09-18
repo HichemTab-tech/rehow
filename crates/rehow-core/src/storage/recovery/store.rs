@@ -3,10 +3,10 @@ use crate::protocol::{OperationId, WorkspaceId};
 use std::{
     ffi::{CString, OsStr},
     fs::File,
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
-        unix::ffi::OsStrExt,
+        unix::{ffi::OsStrExt, fs::MetadataExt},
     },
     path::Path,
     sync::atomic::{AtomicU64, Ordering},
@@ -14,6 +14,16 @@ use std::{
 
 const MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+thread_local! {
+    static SOURCE_CHANGE_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(super) fn set_source_change_fault() {
+    SOURCE_CHANGE_FAULT.set(true);
+}
 
 pub(super) struct RecoveryStore {
     state_rehow: Directory,
@@ -29,6 +39,20 @@ pub(super) struct RecoveryStore {
 pub(super) struct WriterLock {
     descriptor: OwnedFd,
     capability_hash: ContentHash,
+}
+
+pub(super) struct StreamedObject {
+    pub(super) object_hash: ContentHash,
+    pub(super) sha256: [u8; 32],
+    pub(super) size: u64,
+    pub(super) created: bool,
+}
+
+pub(super) struct StreamedObjectExpectation<'a> {
+    pub(super) source_state: &'a super::AttachmentSourceState,
+    pub(super) object_hash: &'a ContentHash,
+    pub(super) sha256: &'a [u8; 32],
+    pub(super) size: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -167,6 +191,169 @@ impl RecoveryStore {
         self.read_object_by_name(&hex(hash))
     }
 
+    pub(super) fn store_streamed_object(
+        &self,
+        lock: &WriterLock,
+        source: &mut File,
+        limit: u64,
+        expected: &StreamedObjectExpectation<'_>,
+    ) -> Result<StreamedObject, StoreError> {
+        use sha2::Digest;
+
+        self.require_lock(lock)?;
+        if limit > MAX_OBJECT_BYTES as u64 {
+            return Err(StoreError::TooLarge);
+        }
+        let before = source.metadata().map_err(|_| StoreError::Io)?;
+        if !before.file_type().is_file() || before.nlink() != 1 {
+            return Err(StoreError::Unsafe);
+        }
+        if !expected.source_state.matches(&before) || before.len() != expected.size {
+            return Err(StoreError::Conflict);
+        }
+        if before.len() > limit {
+            return Err(StoreError::TooLarge);
+        }
+        source
+            .seek(SeekFrom::Start(0))
+            .map_err(|_| StoreError::Io)?;
+        let temp_name = temp_name("object");
+        let mut temp = TempEntry::create(&self.objects, &temp_name)?;
+        let mut blake3 = blake3::Hasher::new();
+        let mut sha256 = sha2::Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut size = 0_u64;
+        loop {
+            let remaining = limit.saturating_sub(size).saturating_add(1);
+            let read_limit = usize::try_from(remaining.min(buffer.len() as u64))
+                .map_err(|_| StoreError::TooLarge)?;
+            let read = source
+                .read(&mut buffer[..read_limit])
+                .map_err(|_| StoreError::Io)?;
+            if read == 0 {
+                break;
+            }
+            #[cfg(test)]
+            if SOURCE_CHANGE_FAULT.replace(false) {
+                let changed_mode = before.mode() ^ 0o100;
+                // SAFETY: the retained selected-file descriptor is valid; this test-only fault
+                // changes metadata so the production stability check must reject the copy.
+                if unsafe { libc::fchmod(source.as_raw_fd(), changed_mode) } != 0 {
+                    return Err(StoreError::Io);
+                }
+            }
+            size = size.checked_add(read as u64).ok_or(StoreError::TooLarge)?;
+            if size > limit {
+                return Err(StoreError::TooLarge);
+            }
+            blake3.update(&buffer[..read]);
+            sha256.update(&buffer[..read]);
+            temp.file
+                .write_all(&buffer[..read])
+                .map_err(|_| StoreError::Io)?;
+        }
+        let after = source.metadata().map_err(|_| StoreError::Io)?;
+        if !after.file_type().is_file()
+            || after.nlink() != 1
+            || before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.len() != after.len()
+            || before.mtime() != after.mtime()
+            || before.mtime_nsec() != after.mtime_nsec()
+            || before.ctime() != after.ctime()
+            || before.ctime_nsec() != after.ctime_nsec()
+            || before.mode() != after.mode()
+            || size != after.len()
+        {
+            return Err(StoreError::Conflict);
+        }
+        temp.file.sync_all().map_err(|_| StoreError::Unsupported)?;
+        validate_file_descriptor(&temp.file, 0o600, Some(size))?;
+        let object_hash = *blake3.finalize().as_bytes();
+        let sha256: [u8; 32] = sha256.finalize().into();
+        if &object_hash != expected.object_hash
+            || &sha256 != expected.sha256
+            || size != expected.size
+        {
+            return Err(StoreError::Conflict);
+        }
+        let name = hex(&object_hash);
+        match rename_no_replace(&self.objects, &temp_name, &name) {
+            Ok(()) => temp.installed = true,
+            Err(StoreError::Conflict) => {
+                self.open_object(lock, &object_hash)?;
+                return Ok(StreamedObject {
+                    object_hash,
+                    sha256,
+                    size,
+                    created: false,
+                });
+            }
+            Err(error) => return Err(error),
+        }
+        self.objects.sync()?;
+        self.open_object(lock, &object_hash)?;
+        Ok(StreamedObject {
+            object_hash,
+            sha256,
+            size,
+            created: true,
+        })
+    }
+
+    pub(super) fn remove_created_object(
+        &self,
+        lock: &WriterLock,
+        hash: &ContentHash,
+    ) -> Result<(), StoreError> {
+        self.require_lock(lock)?;
+        self.open_object(lock, hash)?;
+        let name = component(&hex(hash))?;
+        // SAFETY: directory descriptor and validated object name are valid.
+        if unsafe { libc::unlinkat(self.objects.descriptor.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+            return Err(StoreError::Io);
+        }
+        self.objects.sync()
+    }
+
+    pub(super) fn open_object(
+        &self,
+        lock: &WriterLock,
+        hash: &ContentHash,
+    ) -> Result<(File, u64), StoreError> {
+        self.require_lock(lock)?;
+        let descriptor = self.objects.open_file(&hex(hash), libc::O_RDONLY)?;
+        validate_file(&descriptor, 0o600, None)?;
+        let initial = status(descriptor.as_raw_fd())?;
+        if initial.st_size < 0 || initial.st_size as u64 > MAX_OBJECT_BYTES as u64 {
+            return Err(StoreError::TooLarge);
+        }
+        let mut file = File::from(descriptor);
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut size = 0_u64;
+        loop {
+            let read = file.read(&mut buffer).map_err(|_| StoreError::Io)?;
+            if read == 0 {
+                break;
+            }
+            size = size.checked_add(read as u64).ok_or(StoreError::TooLarge)?;
+            if size > MAX_OBJECT_BYTES as u64 {
+                return Err(StoreError::TooLarge);
+            }
+            hasher.update(&buffer[..read]);
+        }
+        let final_status = status(file.as_raw_fd())?;
+        if !same_file_state(&initial, &final_status)
+            || size != final_status.st_size as u64
+            || hasher.finalize().as_bytes() != hash
+        {
+            return Err(StoreError::Corrupt);
+        }
+        file.seek(SeekFrom::Start(0)).map_err(|_| StoreError::Io)?;
+        Ok((file, size))
+    }
+
     pub(super) fn install_journal(
         &self,
         lock: &WriterLock,
@@ -219,6 +406,15 @@ impl RecoveryStore {
     ) -> Result<Journal, StoreError> {
         self.require_lock(lock)?;
         self.read_journal_by_name(&format!("{operation_id}.cbor"), operation_id)
+    }
+
+    pub(super) fn journal_missing(
+        &self,
+        lock: &WriterLock,
+        operation_id: OperationId,
+    ) -> Result<bool, StoreError> {
+        self.require_lock(lock)?;
+        self.journals.missing(&format!("{operation_id}.cbor"))
     }
 
     fn read_object_by_name(&self, name: &str) -> Result<Vec<u8>, StoreError> {

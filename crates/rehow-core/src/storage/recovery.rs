@@ -4,11 +4,22 @@
 )]
 
 use crate::protocol::{GuideId, OperationId, Revision, Timestamp, WorkspaceId};
-use std::{collections::HashSet, path::Path, str::FromStr};
+use std::{
+    collections::HashSet,
+    fs::{File, Metadata},
+    os::unix::fs::MetadataExt,
+    path::Path,
+    str::FromStr,
+};
 use unicode_normalization::UnicodeNormalization;
 
 mod store;
 mod workspace;
+
+#[cfg(test)]
+pub(super) fn set_attachment_source_change_fault() {
+    store::set_source_change_fault();
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DocumentUpdateError<E> {
@@ -60,6 +71,63 @@ pub(crate) enum MultiDocumentUpdateError<E> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MultiDocumentUpdateOutcome {
     changed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AttachmentImportStorageOutcome {
+    revision: Revision,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AttachmentSourceState {
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+    mode: u32,
+    links: u64,
+}
+
+impl AttachmentSourceState {
+    pub(crate) fn capture(metadata: &Metadata) -> Self {
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            size: metadata.len(),
+            modified_seconds: metadata.mtime(),
+            modified_nanoseconds: metadata.mtime_nsec(),
+            changed_seconds: metadata.ctime(),
+            changed_nanoseconds: metadata.ctime_nsec(),
+            mode: metadata.mode(),
+            links: metadata.nlink(),
+        }
+    }
+
+    pub(crate) fn matches(self, metadata: &Metadata) -> bool {
+        self == Self::capture(metadata)
+    }
+
+    pub(crate) fn size(self) -> u64 {
+        self.size
+    }
+}
+
+pub(crate) struct AttachmentImportPreview {
+    relative_path: String,
+    revision: Revision,
+}
+
+impl AttachmentImportPreview {
+    pub(crate) fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+
+    pub(crate) fn revision(&self) -> Revision {
+        self.revision
+    }
 }
 
 pub(crate) struct PreparedDocument<'a> {
@@ -173,6 +241,12 @@ impl DocumentUpdateOutcome {
 }
 
 impl DocumentMoveOutcome {
+    pub(crate) fn revision(self) -> Revision {
+        self.revision
+    }
+}
+
+impl AttachmentImportStorageOutcome {
     pub(crate) fn revision(self) -> Revision {
         self.revision
     }
@@ -638,6 +712,227 @@ where
     Ok(DocumentUpdateOutcome {
         revision: super::document_revision(relative_path, &candidate),
         changed: true,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn preview_attachment_import<E, F>(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    guide_relative_path: &str,
+    guide_id: GuideId,
+    expected_revision: Revision,
+    filename: &str,
+    prepare: F,
+) -> Result<AttachmentImportPreview, MultiDocumentUpdateError<E>>
+where
+    F: FnOnce(&[u8], &str) -> Result<Box<[u8]>, E>,
+{
+    let store = store::RecoveryStore::open(
+        state_home,
+        workspace_id,
+        root.root_hash(),
+        root.capability_hash(),
+    )
+    .map_err(map_store_multi)?;
+    let _lock = store
+        .acquire_lock(runtime_directory)
+        .map_err(map_store_multi)?;
+    let guide_target = root
+        .open_managed_target(guide_relative_path)
+        .map_err(map_io_multi)?;
+    let current = match guide_target
+        .state(super::GUIDE_LIMIT)
+        .map_err(map_io_multi)?
+    {
+        super::linux::ManagedState::Missing => return Err(MultiDocumentUpdateError::Conflict),
+        super::linux::ManagedState::Regular(state) => state,
+    };
+    if super::document_revision(guide_relative_path, &current.bytes) != expected_revision {
+        return Err(MultiDocumentUpdateError::Conflict);
+    }
+    let relative_path = root
+        .preview_attachment_path(&guide_id, filename)
+        .map_err(map_io_multi)?;
+    let candidate =
+        prepare(&current.bytes, &relative_path).map_err(MultiDocumentUpdateError::Prepare)?;
+    if candidate.as_ref() == current.bytes {
+        return Err(MultiDocumentUpdateError::InvalidPlan);
+    }
+    Ok(AttachmentImportPreview {
+        relative_path,
+        revision: super::document_revision(guide_relative_path, &candidate),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_attachment_import<E, F>(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    guide_relative_path: &str,
+    guide_id: GuideId,
+    expected_revision: Revision,
+    operation_id: OperationId,
+    created_at: Timestamp,
+    filename: &str,
+    source: &mut File,
+    source_state: &AttachmentSourceState,
+    approved_relative_path: &str,
+    approved_revision: Revision,
+    approved_object_hash: [u8; 32],
+    approved_sha256: [u8; 32],
+    approved_size: u64,
+    prepare: F,
+) -> Result<AttachmentImportStorageOutcome, MultiDocumentUpdateError<E>>
+where
+    F: FnOnce(&[u8], &str, [u8; 32], u64) -> Result<Box<[u8]>, E>,
+{
+    const IMPORT_LIMIT: u64 = 32 * 1024 * 1024;
+
+    let store = store::RecoveryStore::open(
+        state_home,
+        workspace_id,
+        root.root_hash(),
+        root.capability_hash(),
+    )
+    .map_err(map_store_multi)?;
+    let lock = store
+        .acquire_lock(runtime_directory)
+        .map_err(map_store_multi)?;
+    let guide_target = root
+        .open_managed_target(guide_relative_path)
+        .map_err(map_io_multi)?;
+    let current = match guide_target
+        .state(super::GUIDE_LIMIT)
+        .map_err(map_io_multi)?
+    {
+        super::linux::ManagedState::Missing => return Err(MultiDocumentUpdateError::Conflict),
+        super::linux::ManagedState::Regular(state) => state,
+    };
+    if super::document_revision(guide_relative_path, &current.bytes) != expected_revision {
+        return Err(MultiDocumentUpdateError::Conflict);
+    }
+    let attachment_relative_path = root
+        .preview_attachment_path(&guide_id, filename)
+        .map_err(map_io_multi)?;
+    if attachment_relative_path != approved_relative_path {
+        return Err(MultiDocumentUpdateError::Conflict);
+    }
+    let candidate = prepare(
+        &current.bytes,
+        &attachment_relative_path,
+        approved_sha256,
+        approved_size,
+    )
+    .map_err(MultiDocumentUpdateError::Prepare)?;
+    if candidate.as_ref() == current.bytes
+        || super::document_revision(guide_relative_path, &candidate) != approved_revision
+    {
+        return Err(MultiDocumentUpdateError::InvalidPlan);
+    }
+    let old_hash = store
+        .store_object(&lock, &current.bytes)
+        .map_err(map_store_multi)?;
+    let new_hash = store
+        .store_object(&lock, &candidate)
+        .map_err(map_store_multi)?;
+    root.prepare_attachment_directory(&guide_id)
+        .map_err(map_io_multi)?;
+    let final_relative_path = root
+        .available_attachment_path(&guide_id, filename)
+        .map_err(map_io_multi)?;
+    if final_relative_path != attachment_relative_path {
+        return Err(MultiDocumentUpdateError::Conflict);
+    }
+    let streamed = store
+        .store_streamed_object(
+            &lock,
+            source,
+            IMPORT_LIMIT,
+            &store::StreamedObjectExpectation {
+                source_state,
+                object_hash: &approved_object_hash,
+                sha256: &approved_sha256,
+                size: approved_size,
+            },
+        )
+        .map_err(map_store_multi)?;
+    let (root_device, root_inode) = root.identity().map_err(map_io_multi)?;
+    let mut plan = blake3::Hasher::new();
+    plan.update(b"rehow-attachment-import-plan-v1\0");
+    hash_plan_field(&mut plan, guide_relative_path.as_bytes());
+    hash_plan_field(&mut plan, attachment_relative_path.as_bytes());
+    hash_plan_field(&mut plan, expected_revision.to_string().as_bytes());
+    plan.update(&streamed.object_hash);
+    plan.update(&old_hash);
+    plan.update(&new_hash);
+    plan.update(&streamed.size.to_be_bytes());
+    let journal = Journal {
+        generation: 1,
+        operation_id,
+        operation_kind: OperationKind::MultiFile,
+        workspace_id,
+        root_hash: root.root_hash(),
+        root_device,
+        root_inode,
+        created_at,
+        plan_hash: *plan.finalize().as_bytes(),
+        targets: vec![
+            Target {
+                relative_path: attachment_relative_path,
+                expected: ExpectedState::Absent,
+                intended: IntendedState::Object {
+                    object_hash: streamed.object_hash,
+                    mode: 0o600,
+                },
+                temp_name: format!(".rehow-tmp-{operation_id}-attachment"),
+                step: TargetStep::Prepared,
+            },
+            Target {
+                relative_path: guide_relative_path.to_owned(),
+                expected: ExpectedState::Existing {
+                    revision: expected_revision,
+                    object_hash: old_hash,
+                    mode: current.mode,
+                },
+                intended: IntendedState::Object {
+                    object_hash: new_hash,
+                    mode: current.mode,
+                },
+                temp_name: format!(".rehow-tmp-{operation_id}-guide"),
+                step: TargetStep::Prepared,
+            },
+        ],
+        stage: JournalStage::Prepared,
+        completion: false,
+    };
+    let execution = workspace::execute_new_journal(root, &store, &lock, journal.clone());
+    if let Err(error) = execution {
+        let committed = store
+            .read_journal(&lock, operation_id)
+            .is_ok_and(|persisted| {
+                committed_matches(&persisted, &journal)
+                    && workspace::resume_journal(root, &store, &lock, operation_id).is_ok()
+            });
+        if !committed {
+            if streamed.created
+                && store
+                    .journal_missing(&lock, operation_id)
+                    .map_err(map_store_multi)?
+            {
+                store
+                    .remove_created_object(&lock, &streamed.object_hash)
+                    .map_err(map_store_multi)?;
+            }
+            return Err(map_workspace_multi(error));
+        }
+    }
+    Ok(AttachmentImportStorageOutcome {
+        revision: super::document_revision(guide_relative_path, &candidate),
     })
 }
 

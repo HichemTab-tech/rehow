@@ -135,6 +135,10 @@ pub(crate) fn new_guide_id() -> GuideId {
     GuideId(Uuid::now_v7())
 }
 
+pub(crate) fn new_attachment_id() -> AttachmentId {
+    AttachmentId(Uuid::now_v7())
+}
+
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct RecentWorkspaceId(Uuid);
 string_ts!(RecentWorkspaceId);

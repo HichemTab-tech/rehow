@@ -5,7 +5,7 @@ use super::{
 };
 use crate::protocol::OperationId;
 use crate::storage::linux::{
-    DirectoryCapability, ManagedState, ManagedTarget, MutationIoError, RegularState,
+    DirectoryCapability, HashedState, ManagedState, ManagedTarget, MutationIoError, RegularState,
 };
 
 const TARGET_LIMIT: usize = 64 * 1024 * 1024;
@@ -132,6 +132,73 @@ pub(super) fn install_object(
             }))
         }
     }
+}
+
+fn install_streamed_object(
+    root: &DirectoryCapability,
+    store: &RecoveryStore,
+    lock: &WriterLock,
+    relative_path: &str,
+    object_hash: &[u8; 32],
+    mode: u32,
+    temp_name: &str,
+) -> Result<(), WorkspaceMutationError> {
+    if !valid_temp(temp_name) || !is_attachment_path(relative_path) {
+        return Err(WorkspaceMutationError::Unsafe);
+    }
+    let target = root.open_managed_target(relative_path).map_err(map_io)?;
+    let (mut source, size) = store.open_object(lock, object_hash).map_err(map_store)?;
+    let intended = HashedState::Regular {
+        hash: *object_hash,
+        size,
+        mode,
+    };
+    target.sync_directory().map_err(map_io)?;
+    match target.hashed_state(TARGET_LIMIT as u64).map_err(map_io)? {
+        state if state == intended => {
+            if target
+                .temp_hashed_state(temp_name, TARGET_LIMIT as u64)
+                .map_err(map_io)?
+                != HashedState::Missing
+            {
+                return Err(WorkspaceMutationError::Conflict);
+            }
+            target.sync_directory().map_err(map_io)?;
+            return Ok(());
+        }
+        HashedState::Missing => {}
+        HashedState::Regular { .. } => return Err(WorkspaceMutationError::Conflict),
+    }
+    match target
+        .temp_hashed_state(temp_name, TARGET_LIMIT as u64)
+        .map_err(map_io)?
+    {
+        HashedState::Missing => target
+            .write_temp_stream(temp_name, &mut source, object_hash, size, mode)
+            .map_err(map_io)?,
+        state if state == intended => target
+            .sync_existing_temp_hashed(temp_name, object_hash, size, mode)
+            .map_err(map_io)?,
+        HashedState::Regular { .. } => return Err(WorkspaceMutationError::Conflict),
+    }
+    target.sync_directory().map_err(map_io)?;
+    fail(WorkspaceFaultPoint::BeforeLiveRename)?;
+    target.install_no_replace(temp_name).map_err(map_io)?;
+    fail(WorkspaceFaultPoint::AfterLiveRenameBeforeSync)?;
+    if target.hashed_state(TARGET_LIMIT as u64).map_err(map_io)? != intended
+        || target
+            .temp_hashed_state(temp_name, TARGET_LIMIT as u64)
+            .map_err(map_io)?
+            != HashedState::Missing
+    {
+        return Err(WorkspaceMutationError::Conflict);
+    }
+    target.sync_directory().map_err(map_io)?;
+    Ok(())
+}
+
+fn is_attachment_path(path: &str) -> bool {
+    path.starts_with("attachments/") && super::valid_active_path(path)
 }
 
 pub(super) fn remove_object(
@@ -283,7 +350,11 @@ fn preflight(
         if let IntendedState::Object { object_hash, .. }
         | IntendedState::Trash { object_hash, .. } = &target.intended
         {
-            store.read_object(lock, object_hash).map_err(map_store)?;
+            if is_attachment_path(&target.relative_path) {
+                store.open_object(lock, object_hash).map_err(map_store)?;
+            } else {
+                store.read_object(lock, object_hash).map_err(map_store)?;
+            }
         }
     }
     Ok(())
@@ -401,6 +472,20 @@ fn apply_prepared_target(
 ) -> Result<(), WorkspaceMutationError> {
     match &target.intended {
         IntendedState::Object { object_hash, mode } => {
+            if is_attachment_path(&target.relative_path) {
+                if expected.is_some() {
+                    return Err(WorkspaceMutationError::Conflict);
+                }
+                return install_streamed_object(
+                    root,
+                    store,
+                    lock,
+                    &target.relative_path,
+                    object_hash,
+                    *mode,
+                    &target.temp_name,
+                );
+            }
             let intended = store.read_object(lock, object_hash).map_err(map_store)?;
             install_object(
                 root,
@@ -520,6 +605,26 @@ fn verify_applied_target(
     active.sync_directory().map_err(map_io)?;
     match &target.intended {
         IntendedState::Object { object_hash, mode } => {
+            if is_attachment_path(&target.relative_path) {
+                if expected.is_some() {
+                    return Err(WorkspaceMutationError::Conflict);
+                }
+                let (_, size) = store.open_object(lock, object_hash).map_err(map_store)?;
+                if active.hashed_state(TARGET_LIMIT as u64).map_err(map_io)?
+                    != (HashedState::Regular {
+                        hash: *object_hash,
+                        size,
+                        mode: *mode,
+                    })
+                    || active
+                        .temp_hashed_state(&target.temp_name, TARGET_LIMIT as u64)
+                        .map_err(map_io)?
+                        != HashedState::Missing
+                {
+                    return Err(WorkspaceMutationError::Conflict);
+                }
+                return Ok(());
+            }
             let intended = store.read_object(lock, object_hash).map_err(map_store)?;
             if !matches!(
                 active.state(TARGET_LIMIT).map_err(map_io)?,
@@ -1444,6 +1549,125 @@ mod tests {
         assert_eq!(
             fs::read(workspace.0.join("categories/linux/guide.md")).unwrap(),
             b"new"
+        );
+    }
+
+    #[test]
+    fn streamed_attachment_create_replays_after_post_rename_interruption() {
+        use sha2::Digest;
+
+        let workspace = TestDirectory::new("streamed-attachment-replay");
+        let guide_id = "0199a1d7-7b0d-7d8e-a38d-f936c5735e10";
+        let attachment_directory = workspace.0.join(format!("attachments/{guide_id}"));
+        private_parents(&attachment_directory, &workspace.0);
+        let category_directory = workspace.0.join("categories/linux");
+        private_parents(&category_directory, &workspace.0);
+        fs::write(category_directory.join("guide.md"), b"old guide").unwrap();
+        fs::set_permissions(
+            category_directory.join("guide.md"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let capability = workspace.capability();
+        let state = TestDirectory::new("state");
+        let store = RecoveryStore::open(
+            &state.0,
+            "0199a19f-4d15-7ca7-a645-e75311caa710".parse().unwrap(),
+            [0x11; 32],
+            [0x22; 32],
+        )
+        .unwrap();
+        let lock = store.acquire_lock(None).unwrap();
+        let source_directory = TestDirectory::new("attachment-source");
+        let source_path = source_directory.0.join("source.bin");
+        fs::write(&source_path, b"streamed attachment").unwrap();
+        let mut source = fs::File::open(&source_path).unwrap();
+        let source_state =
+            crate::storage::AttachmentSourceState::capture(&source.metadata().unwrap());
+        let object_hash = *blake3::hash(b"streamed attachment").as_bytes();
+        let sha256: [u8; 32] = sha2::Sha256::digest(b"streamed attachment").into();
+        let object = store
+            .store_streamed_object(
+                &lock,
+                &mut source,
+                32 * 1024 * 1024,
+                &super::super::store::StreamedObjectExpectation {
+                    source_state: &source_state,
+                    object_hash: &object_hash,
+                    sha256: &sha256,
+                    size: 19,
+                },
+            )
+            .unwrap();
+        let old_guide_hash = store.store_object(&lock, b"old guide").unwrap();
+        let new_guide_hash = store.store_object(&lock, b"new guide").unwrap();
+        let (root_device, root_inode) = capability.identity().unwrap();
+        let operation_id: OperationId = "0199a1d7-7b0d-7d8e-a38d-f936c5735e41".parse().unwrap();
+        let journal = Journal {
+            generation: 1,
+            operation_id,
+            operation_kind: OperationKind::MultiFile,
+            workspace_id: "0199a19f-4d15-7ca7-a645-e75311caa710".parse().unwrap(),
+            root_hash: [0x11; 32],
+            root_device,
+            root_inode,
+            created_at: "2026-09-18T00:00:00Z".parse().unwrap(),
+            plan_hash: [0x35; 32],
+            targets: vec![
+                Target {
+                    relative_path: format!("attachments/{guide_id}/source.bin"),
+                    expected: ExpectedState::Absent,
+                    intended: IntendedState::Object {
+                        object_hash: object.object_hash,
+                        mode: 0o600,
+                    },
+                    temp_name: ".rehow-tmp-streamed".to_owned(),
+                    step: TargetStep::Prepared,
+                },
+                Target {
+                    relative_path: "categories/linux/guide.md".to_owned(),
+                    expected: ExpectedState::Existing {
+                        revision: crate::storage::document_revision(
+                            "categories/linux/guide.md",
+                            b"old guide",
+                        ),
+                        object_hash: old_guide_hash,
+                        mode: 0o600,
+                    },
+                    intended: IntendedState::Object {
+                        object_hash: new_guide_hash,
+                        mode: 0o600,
+                    },
+                    temp_name: ".rehow-tmp-guide".to_owned(),
+                    step: TargetStep::Prepared,
+                },
+            ],
+            stage: JournalStage::Prepared,
+            completion: false,
+        };
+        WORKSPACE_FAULT.set(Some(WorkspaceFault::AfterLiveRenameBeforeSync));
+        assert_eq!(
+            execute_new_journal(&capability, &store, &lock, journal).err(),
+            Some(WorkspaceMutationError::Unsupported)
+        );
+        assert_eq!(
+            fs::read(attachment_directory.join("source.bin")).unwrap(),
+            b"streamed attachment"
+        );
+        let resumed = resume_journal(&capability, &store, &lock, operation_id).unwrap();
+        assert_eq!(resumed.stage, JournalStage::Committed);
+        assert!(resumed.completion);
+        assert_eq!(
+            fs::read(category_directory.join("guide.md")).unwrap(),
+            b"new guide"
+        );
+        assert_eq!(
+            fs::metadata(attachment_directory.join("source.bin"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o600
         );
     }
 

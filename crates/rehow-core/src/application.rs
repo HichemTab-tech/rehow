@@ -14,29 +14,37 @@ use crate::{
         },
         guide::{BoundGuide, bind_guide},
         mutation::{
-            CategoryMutation, GuideMutation, MutationFailureKind, MutationField, MutationOutcome,
-            MutationStamp, plan_category_mutation, plan_guide_mutation,
+            AttachmentInput, CategoryMutation, GuideMutation, MutationFailureKind, MutationField,
+            MutationOutcome, MutationStamp, plan_category_mutation, plan_guide_mutation,
         },
         verification::{VerificationFailure, verification_hash},
     },
     markdown::{GuideReadinessError, validate_tested_readiness},
     parsing::{parse_guide_source, parse_yaml_document},
     protocol::{
-        CategoryId, GuideId, OperationId, Revision, Timestamp, current_timestamp, new_category_id,
-        new_guide_id, new_operation_id, new_workspace_id,
+        AttachmentId, CategoryId, GuideId, OperationId, Revision, Timestamp, current_timestamp,
+        new_attachment_id, new_category_id, new_guide_id, new_operation_id, new_workspace_id,
     },
     storage::{
-        CategoryCreateStorageError, CategoryRemoveStorageError, DocumentCreateError,
-        DocumentRemoveError, DocumentUpdateError, DocumentUpdateRequest, EmptyWorkspaceTarget,
-        MultiDocumentUpdateError, WorkspaceInitializeError, WorkspaceInspectError, WorkspaceView,
-        execute_category_create, execute_category_remove, execute_document_create,
-        execute_document_move, execute_document_remove, execute_document_update,
-        execute_multi_document_update, execute_workspace_initialize, open_initialized_workspace,
+        AttachmentSourceState, CategoryCreateStorageError, CategoryRemoveStorageError,
+        DocumentCreateError, DocumentRemoveError, DocumentUpdateError, DocumentUpdateRequest,
+        EmptyWorkspaceTarget, MultiDocumentUpdateError, WorkspaceInitializeError,
+        WorkspaceInspectError, WorkspaceView, execute_attachment_import, execute_category_create,
+        execute_category_remove, execute_document_create, execute_document_move,
+        execute_document_remove, execute_document_update, execute_multi_document_update,
+        execute_workspace_initialize, open_initialized_workspace, preview_attachment_import,
         refresh_workspace,
     },
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use std::{collections::HashSet, path::Path};
+use std::{
+    collections::HashSet,
+    fs::{File, OpenOptions},
+    io::{Read, Seek, SeekFrom},
+    os::unix::{fs::MetadataExt, fs::OpenOptionsExt},
+    path::Path,
+};
+use unicode_normalization::UnicodeNormalization;
 
 pub const GUIDE_BODY_INPUT_LIMIT: usize = 2 * 1024 * 1024;
 
@@ -655,9 +663,11 @@ impl From<PlanError> for CategoryPlanError {
     fn from(error: PlanError) -> Self {
         match error {
             PlanError::ResourceLimit => Self::ResourceLimit,
-            PlanError::InvalidGuide | PlanError::InvalidEdit | PlanError::NotReady => {
-                Self::InvalidCategory
-            }
+            PlanError::InvalidGuide
+            | PlanError::InvalidEdit
+            | PlanError::NotReady
+            | PlanError::AttachmentLimit
+            | PlanError::DuplicateAttachment => Self::InvalidCategory,
             PlanError::UnsafeRoundTrip => Self::UnsafeRoundTrip,
         }
     }
@@ -1180,6 +1190,502 @@ fn approve_guide_tested_with_context(
     })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachmentImportOutcome {
+    Cancelled,
+    Imported {
+        attachment_id: AttachmentId,
+        revision: Revision,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachmentImportError {
+    NotFound,
+    RevisionConflict,
+    GuideArchived,
+    AttachmentLimit,
+    DuplicateAttachment,
+    InvalidSource,
+    SourceTooLarge,
+    SourceChanged,
+    UnsafeRoundTrip,
+    Busy,
+    UnsafeStorage,
+    UnsupportedFilesystem,
+    ResourceLimit,
+    Io,
+    CommittedRefreshRequired {
+        attachment_id: AttachmentId,
+        revision: Revision,
+    },
+}
+
+pub fn select_and_import_attachment<W: HasWindowHandle + HasDisplayHandle + ?Sized>(
+    parent: &W,
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_id: GuideId,
+    expected_revision: Revision,
+) -> Result<AttachmentImportOutcome, AttachmentImportError> {
+    let (category, loaded) = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides().iter().map(move |guide| (category, guide)))
+        .find(|(_, guide)| guide.guide().id() == &guide_id)
+        .ok_or(AttachmentImportError::NotFound)?;
+    if loaded.revision() != expected_revision {
+        return Err(AttachmentImportError::RevisionConflict);
+    }
+    if loaded.effective_status() == crate::domain::GuideStatus::Archived {
+        return Err(AttachmentImportError::GuideArchived);
+    }
+    if loaded
+        .guide()
+        .attachments()
+        .is_some_and(|attachments| attachments.len() >= 256)
+    {
+        return Err(AttachmentImportError::AttachmentLimit);
+    }
+    let guide_title = loaded.guide().title().to_owned();
+    let category_name = category.category().name().to_owned();
+    let category_id = *category.category().id();
+    let guide_relative_path = loaded.relative_path().to_owned();
+    let Some(path) = rfd::FileDialog::new()
+        .set_parent(parent)
+        .set_title("Select an Attachment")
+        .pick_file()
+    else {
+        return Ok(AttachmentImportOutcome::Cancelled);
+    };
+    let filename = sanitized_attachment_filename(&path);
+    let mut source = open_attachment_source(&path)?;
+    let source_plan = inspect_attachment_source(&mut source)?;
+    let attachment_id = new_attachment_id();
+    let operation_id = new_operation_id();
+    let at = current_timestamp();
+    let stamp = MutationStamp::from_trusted_time(at);
+    let preview = preview_attachment_import(
+        workspace,
+        state_home,
+        runtime_directory,
+        &guide_relative_path,
+        guide_id,
+        expected_revision,
+        &filename,
+        |bytes, attachment_path| {
+            prepare_attachment_candidate(
+                bytes,
+                guide_id,
+                category_id,
+                attachment_id,
+                &filename,
+                attachment_path,
+                source_plan.sha256,
+                source_plan.size,
+                &stamp,
+            )
+        },
+    )
+    .map_err(map_attachment_import_error)?;
+    let confirmed = rfd::MessageDialog::new()
+        .set_parent(parent)
+        .set_level(rfd::MessageLevel::Info)
+        .set_title("Add Attachment?")
+        .set_description(format!(
+            "Guide: {}\nCategory: {}\nGuide ID: {guide_id}\nDestination: {}\nSize: {}\n\nRehow will copy this file into the Workspace as inert content. It will not be opened or executed.",
+            safe_dialog_text(&guide_title),
+            safe_dialog_text(&category_name),
+            preview.relative_path(),
+            display_byte_size(source_plan.size)
+        ))
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes;
+    if !confirmed {
+        return Ok(AttachmentImportOutcome::Cancelled);
+    }
+    execute_approved_attachment_import(
+        workspace,
+        state_home,
+        runtime_directory,
+        guide_id,
+        expected_revision,
+        filename,
+        &mut source,
+        source_plan,
+        preview.relative_path().to_owned(),
+        preview.revision(),
+        attachment_id,
+        operation_id,
+        at,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct AttachmentSourcePlan {
+    state: AttachmentSourceState,
+    object_hash: [u8; 32],
+    sha256: [u8; 32],
+    size: u64,
+}
+
+fn open_attachment_source(path: &Path) -> Result<File, AttachmentImportError> {
+    const IMPORT_LIMIT: u64 = 32 * 1024 * 1024;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|error| match error.raw_os_error() {
+            Some(libc::ELOOP) | Some(libc::ENXIO) | Some(libc::ENODEV) => {
+                AttachmentImportError::InvalidSource
+            }
+            _ => AttachmentImportError::Io,
+        })?;
+    let metadata = file.metadata().map_err(|_| AttachmentImportError::Io)?;
+    if !metadata.file_type().is_file() || metadata.nlink() != 1 {
+        return Err(AttachmentImportError::InvalidSource);
+    }
+    if metadata.len() > IMPORT_LIMIT {
+        return Err(AttachmentImportError::SourceTooLarge);
+    }
+    Ok(file)
+}
+
+fn inspect_attachment_source(
+    source: &mut File,
+) -> Result<AttachmentSourcePlan, AttachmentImportError> {
+    use sha2::Digest;
+
+    const IMPORT_LIMIT: u64 = 32 * 1024 * 1024;
+    let before = source.metadata().map_err(|_| AttachmentImportError::Io)?;
+    let state = AttachmentSourceState::capture(&before);
+    if !before.file_type().is_file() || before.nlink() != 1 {
+        return Err(AttachmentImportError::InvalidSource);
+    }
+    if state.size() > IMPORT_LIMIT {
+        return Err(AttachmentImportError::SourceTooLarge);
+    }
+    source
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| AttachmentImportError::Io)?;
+    let mut object = blake3::Hasher::new();
+    let mut sha256 = sha2::Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut size = 0_u64;
+    loop {
+        let read = source
+            .read(&mut buffer)
+            .map_err(|_| AttachmentImportError::Io)?;
+        if read == 0 {
+            break;
+        }
+        size = size
+            .checked_add(read as u64)
+            .ok_or(AttachmentImportError::SourceTooLarge)?;
+        if size > IMPORT_LIMIT {
+            return Err(AttachmentImportError::SourceTooLarge);
+        }
+        object.update(&buffer[..read]);
+        sha256.update(&buffer[..read]);
+    }
+    let after = source.metadata().map_err(|_| AttachmentImportError::Io)?;
+    if !state.matches(&after) || size != state.size() {
+        return Err(AttachmentImportError::SourceChanged);
+    }
+    source
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| AttachmentImportError::Io)?;
+    Ok(AttachmentSourcePlan {
+        state,
+        object_hash: *object.finalize().as_bytes(),
+        sha256: sha256.finalize().into(),
+        size,
+    })
+}
+
+fn safe_dialog_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            let scalar = character as u32;
+            if character.is_control()
+                || matches!(scalar, 0x061c | 0x200e | 0x200f | 0x2028..=0x202e | 0x2066..=0x2069 | 0xfeff)
+                || matches!(scalar, 0xfdd0..=0xfdef)
+                || matches!(scalar & 0xffff, 0xfffe | 0xffff)
+            {
+                '\u{fffd}'
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
+fn sanitized_attachment_filename(path: &Path) -> String {
+    let original = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    let mut value = String::new();
+    for character in original.nfc() {
+        let scalar = character as u32;
+        let unsafe_scalar = character.is_control()
+            || matches!(character, '/' | '\\' | '\0')
+            || matches!(scalar, 0x061c | 0x200e | 0x200f | 0x2028..=0x202e | 0x2066..=0x2069 | 0xfeff)
+            || matches!(scalar, 0xfdd0..=0xfdef)
+            || matches!(scalar & 0xffff, 0xfffe | 0xffff);
+        let replacement = if unsafe_scalar { '-' } else { character };
+        if value.len() + replacement.len_utf8() > 200 {
+            break;
+        }
+        value.push(replacement);
+    }
+    while value.contains("--") {
+        value = value.replace("--", "-");
+    }
+    let value = value.trim_matches([' ', '-']).to_owned();
+    if value.is_empty() || matches!(value.as_str(), "." | "..") {
+        "attachment".to_owned()
+    } else {
+        value
+    }
+}
+
+fn display_byte_size(size: u64) -> String {
+    if size < 1_024 {
+        format!("{size} bytes")
+    } else if size < 1_024 * 1_024 {
+        format!("{:.1} KiB", size as f64 / 1_024.0)
+    } else {
+        format!("{:.1} MiB", size as f64 / (1_024.0 * 1_024.0))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn import_attachment_with_source(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_id: GuideId,
+    expected_revision: Revision,
+    filename: String,
+    source: &mut File,
+    attachment_id: AttachmentId,
+    operation_id: OperationId,
+    at: Timestamp,
+) -> Result<AttachmentImportOutcome, AttachmentImportError> {
+    let loaded = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides().iter().map(move |guide| (category, guide)))
+        .find(|(_, guide)| guide.guide().id() == &guide_id)
+        .ok_or(AttachmentImportError::NotFound)?;
+    if loaded.1.revision() != expected_revision {
+        return Err(AttachmentImportError::RevisionConflict);
+    }
+    let guide_relative_path = loaded.1.relative_path().to_owned();
+    let category_id = *loaded.0.category().id();
+    let source_plan = inspect_attachment_source(source)?;
+    let stamp = MutationStamp::from_trusted_time(at);
+    let preview = preview_attachment_import(
+        workspace,
+        state_home,
+        runtime_directory,
+        &guide_relative_path,
+        guide_id,
+        expected_revision,
+        &filename,
+        |bytes, attachment_path| {
+            prepare_attachment_candidate(
+                bytes,
+                guide_id,
+                category_id,
+                attachment_id,
+                &filename,
+                attachment_path,
+                source_plan.sha256,
+                source_plan.size,
+                &stamp,
+            )
+        },
+    )
+    .map_err(map_attachment_import_error)?;
+    execute_approved_attachment_import(
+        workspace,
+        state_home,
+        runtime_directory,
+        guide_id,
+        expected_revision,
+        filename,
+        source,
+        source_plan,
+        preview.relative_path().to_owned(),
+        preview.revision(),
+        attachment_id,
+        operation_id,
+        at,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_approved_attachment_import(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_id: GuideId,
+    expected_revision: Revision,
+    filename: String,
+    source: &mut File,
+    source_plan: AttachmentSourcePlan,
+    approved_relative_path: String,
+    approved_revision: Revision,
+    attachment_id: AttachmentId,
+    operation_id: OperationId,
+    at: Timestamp,
+) -> Result<AttachmentImportOutcome, AttachmentImportError> {
+    let loaded = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides().iter().map(move |guide| (category, guide)))
+        .find(|(_, guide)| guide.guide().id() == &guide_id)
+        .ok_or(AttachmentImportError::NotFound)?;
+    if loaded.1.revision() != expected_revision {
+        return Err(AttachmentImportError::RevisionConflict);
+    }
+    let relative_path = loaded.1.relative_path().to_owned();
+    let category_id = *loaded.0.category().id();
+    let stamp = MutationStamp::from_trusted_time(at);
+    let outcome = execute_attachment_import(
+        workspace,
+        state_home,
+        runtime_directory,
+        &relative_path,
+        guide_id,
+        expected_revision,
+        operation_id,
+        at,
+        &filename,
+        source,
+        &source_plan.state,
+        &approved_relative_path,
+        approved_revision,
+        source_plan.object_hash,
+        source_plan.sha256,
+        source_plan.size,
+        |bytes, attachment_path, sha256, size| {
+            prepare_attachment_candidate(
+                bytes,
+                guide_id,
+                category_id,
+                attachment_id,
+                &filename,
+                attachment_path,
+                sha256,
+                size,
+                &stamp,
+            )
+        },
+    )
+    .map_err(map_attachment_import_error)?;
+    if refresh_workspace(workspace).is_err()
+        || !workspace
+            .categories()
+            .iter()
+            .flat_map(|category| category.guides())
+            .any(|guide| {
+                guide.guide().id() == &guide_id
+                    && guide.revision() == outcome.revision()
+                    && guide.guide().attachments().is_some_and(|attachments| {
+                        attachments
+                            .iter()
+                            .any(|attachment| attachment.id() == &attachment_id)
+                    })
+            })
+    {
+        return Err(AttachmentImportError::CommittedRefreshRequired {
+            attachment_id,
+            revision: outcome.revision(),
+        });
+    }
+    Ok(AttachmentImportOutcome::Imported {
+        attachment_id,
+        revision: outcome.revision(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_attachment_candidate(
+    bytes: &[u8],
+    guide_id: GuideId,
+    category_id: CategoryId,
+    attachment_id: AttachmentId,
+    filename: &str,
+    attachment_path: &str,
+    sha256: [u8; 32],
+    size: u64,
+    stamp: &MutationStamp,
+) -> Result<Box<[u8]>, PlanError> {
+    let parsed = parse_guide_source(copy_bytes(bytes)?).map_err(|_| PlanError::InvalidGuide)?;
+    let bound = bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
+    if bound.record().id() != &guide_id || bound.record().category_id() != &category_id {
+        return Err(PlanError::InvalidGuide);
+    }
+    let attachments = bound.record().attachments().unwrap_or_default();
+    if attachments.len() >= 256 {
+        return Err(PlanError::AttachmentLimit);
+    }
+    let sha256 = sha256
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if attachments
+        .iter()
+        .any(|attachment| attachment.sha256() == sha256)
+    {
+        return Err(PlanError::DuplicateAttachment);
+    }
+    apply_guide_mutation(
+        &bound,
+        GuideMutation::AddAttachment(AttachmentInput {
+            id: attachment_id,
+            path: attachment_path.to_owned(),
+            title: filename.to_owned(),
+            sha256,
+            size_bytes: size,
+        }),
+        stamp,
+    )
+}
+
+fn map_attachment_import_error(
+    error: MultiDocumentUpdateError<PlanError>,
+) -> AttachmentImportError {
+    match error {
+        MultiDocumentUpdateError::Prepare(PlanError::DuplicateAttachment) => {
+            AttachmentImportError::DuplicateAttachment
+        }
+        MultiDocumentUpdateError::Prepare(PlanError::AttachmentLimit) => {
+            AttachmentImportError::AttachmentLimit
+        }
+        MultiDocumentUpdateError::Prepare(PlanError::UnsafeRoundTrip) => {
+            AttachmentImportError::UnsafeRoundTrip
+        }
+        MultiDocumentUpdateError::Prepare(PlanError::ResourceLimit)
+        | MultiDocumentUpdateError::TooLarge => AttachmentImportError::ResourceLimit,
+        MultiDocumentUpdateError::Prepare(
+            PlanError::InvalidGuide | PlanError::InvalidEdit | PlanError::NotReady,
+        )
+        | MultiDocumentUpdateError::InvalidPlan => AttachmentImportError::InvalidSource,
+        MultiDocumentUpdateError::Busy => AttachmentImportError::Busy,
+        MultiDocumentUpdateError::Conflict => AttachmentImportError::SourceChanged,
+        MultiDocumentUpdateError::Unsafe => AttachmentImportError::UnsafeStorage,
+        MultiDocumentUpdateError::Unsupported => AttachmentImportError::UnsupportedFilesystem,
+        MultiDocumentUpdateError::Io => AttachmentImportError::Io,
+    }
+}
+
 pub fn remove_guide(
     workspace: &mut WorkspaceView,
     state_home: &Path,
@@ -1475,6 +1981,8 @@ enum PlanError {
     InvalidGuide,
     InvalidEdit,
     NotReady,
+    AttachmentLimit,
+    DuplicateAttachment,
     UnsafeRoundTrip,
     ResourceLimit,
 }
@@ -1507,6 +2015,9 @@ fn map_update_error(error: DocumentUpdateError<PlanError>) -> GuideUpdateError {
         DocumentUpdateError::Prepare(PlanError::InvalidGuide) => GuideUpdateError::InvalidGuide,
         DocumentUpdateError::Prepare(PlanError::InvalidEdit) => GuideUpdateError::InvalidEdit,
         DocumentUpdateError::Prepare(PlanError::NotReady) => GuideUpdateError::NotReady,
+        DocumentUpdateError::Prepare(
+            PlanError::AttachmentLimit | PlanError::DuplicateAttachment,
+        ) => GuideUpdateError::InvalidEdit,
         DocumentUpdateError::Prepare(PlanError::UnsafeRoundTrip) => {
             GuideUpdateError::UnsafeRoundTrip
         }
@@ -1527,6 +2038,9 @@ fn map_move_error(error: MultiDocumentUpdateError<PlanError>) -> GuideUpdateErro
         | MultiDocumentUpdateError::InvalidPlan => GuideUpdateError::InvalidGuide,
         MultiDocumentUpdateError::Prepare(PlanError::InvalidEdit) => GuideUpdateError::InvalidEdit,
         MultiDocumentUpdateError::Prepare(PlanError::NotReady) => GuideUpdateError::NotReady,
+        MultiDocumentUpdateError::Prepare(
+            PlanError::AttachmentLimit | PlanError::DuplicateAttachment,
+        ) => GuideUpdateError::InvalidEdit,
         MultiDocumentUpdateError::Prepare(PlanError::UnsafeRoundTrip) => {
             GuideUpdateError::UnsafeRoundTrip
         }
@@ -1550,7 +2064,7 @@ mod tests {
     };
     use std::{
         fs,
-        os::unix::fs::PermissionsExt,
+        os::unix::fs::{PermissionsExt, symlink},
         path::{Path, PathBuf},
         str::FromStr,
         sync::atomic::{AtomicU64, Ordering},
@@ -3434,5 +3948,288 @@ mod tests {
             ),
             Err(GuideUpdateError::InvalidEdit)
         );
+    }
+
+    #[test]
+    fn imports_streamed_attachments_with_collision_and_duplicate_protection() {
+        let tested = GUIDE.replacen(
+            "status: draft\n",
+            "status: tested\nlast_verified_at: \"2026-09-05T10:03:00Z\"\nverified_content_hash: verify:v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+            1,
+        );
+        let (workspace, state, mut view) = fixture("attachment-import", &tested);
+        let source_dir = TestDirectory::new("attachment-source");
+        let source_path = source_dir.path().join("notes.txt");
+        fs::write(&source_path, b"first attachment\n").unwrap();
+        fs::set_permissions(&source_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let first_id = AttachmentId::from_str("0199a264-ef5f-73b4-a238-a71ba1509898").unwrap();
+        let mut source = open_attachment_source(&source_path).unwrap();
+        let expected = revision(&view);
+        let first = import_attachment_with_source(
+            &mut view,
+            state.path(),
+            None,
+            guide_id,
+            expected,
+            "notes.txt".to_owned(),
+            &mut source,
+            first_id,
+            operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e31"),
+            at(),
+        )
+        .unwrap();
+        let AttachmentImportOutcome::Imported {
+            revision: first_revision,
+            ..
+        } = first
+        else {
+            panic!("expected import");
+        };
+        let first_path = workspace
+            .path()
+            .join(format!("attachments/{GUIDE_ID}/notes.txt"));
+        assert_eq!(fs::read(&first_path).unwrap(), b"first attachment\n");
+        assert_eq!(
+            fs::metadata(&first_path).unwrap().permissions().mode() & 0o7777,
+            0o600
+        );
+        assert_eq!(
+            view.categories()[0].guides()[0].guide().declared_status(),
+            GuideStatus::Stale
+        );
+        assert!(
+            fs::read_to_string(workspace.path().join(GUIDE_PATH))
+                .unwrap()
+                .contains("future_key: keep-me")
+        );
+
+        fs::write(&source_path, b"second attachment\n").unwrap();
+        let second_id = AttachmentId::from_str("0199a264-ef5f-73b4-a238-a71ba1509899").unwrap();
+        let mut source = open_attachment_source(&source_path).unwrap();
+        import_attachment_with_source(
+            &mut view,
+            state.path(),
+            None,
+            guide_id,
+            first_revision,
+            "notes.txt".to_owned(),
+            &mut source,
+            second_id,
+            operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e32"),
+            at(),
+        )
+        .unwrap();
+        let loaded = &view.categories()[0].guides()[0];
+        let attachments = loaded.guide().attachments().unwrap();
+        assert_eq!(attachments.len(), 2);
+        assert_eq!(
+            attachments[0].path(),
+            format!("attachments/{GUIDE_ID}/notes.txt")
+        );
+        assert_eq!(
+            attachments[1].path(),
+            format!("attachments/{GUIDE_ID}/notes-2.txt")
+        );
+        assert_eq!(
+            fs::read(
+                workspace
+                    .path()
+                    .join(format!("attachments/{GUIDE_ID}/notes-2.txt"))
+            )
+            .unwrap(),
+            b"second attachment\n"
+        );
+        assert!(
+            fs::read_to_string(workspace.path().join(GUIDE_PATH))
+                .unwrap()
+                .contains("future_key: keep-me")
+        );
+
+        let mut duplicate = open_attachment_source(&source_path).unwrap();
+        let duplicate_id = AttachmentId::from_str("0199a264-ef5f-73b4-a238-a71ba1509900").unwrap();
+        let current_revision = revision(&view);
+        assert_eq!(
+            import_attachment_with_source(
+                &mut view,
+                state.path(),
+                None,
+                guide_id,
+                current_revision,
+                "copy.txt".to_owned(),
+                &mut duplicate,
+                duplicate_id,
+                operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e33"),
+                at(),
+            ),
+            Err(AttachmentImportError::DuplicateAttachment)
+        );
+        assert!(
+            !workspace
+                .path()
+                .join(format!("attachments/{GUIDE_ID}/copy.txt"))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn attachment_import_rejects_source_changes_before_and_during_copy() {
+        let (workspace, state, mut view) = fixture("attachment-source-change", GUIDE);
+        let source_dir = TestDirectory::new("attachment-changing-source");
+        let source_path = source_dir.path().join("changing.bin");
+        fs::write(&source_path, b"original bytes").unwrap();
+        fs::set_permissions(&source_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let category_id = CategoryId::from_str(CATEGORY_ID).unwrap();
+        let attachment_id = AttachmentId::from_str("0199a264-ef5f-73b4-a238-a71ba1509910").unwrap();
+        let expected = revision(&view);
+        let mut source = open_attachment_source(&source_path).unwrap();
+        let source_plan = inspect_attachment_source(&mut source).unwrap();
+        let stamp = MutationStamp::from_trusted_time(at());
+        let preview = match preview_attachment_import(
+            &view,
+            state.path(),
+            None,
+            GUIDE_PATH,
+            guide_id,
+            expected,
+            "changing.bin",
+            |bytes, attachment_path| {
+                prepare_attachment_candidate(
+                    bytes,
+                    guide_id,
+                    category_id,
+                    attachment_id,
+                    "changing.bin",
+                    attachment_path,
+                    source_plan.sha256,
+                    source_plan.size,
+                    &stamp,
+                )
+            },
+        ) {
+            Ok(preview) => preview,
+            Err(_) => panic!("expected import preview"),
+        };
+
+        fs::write(&source_path, b"modified bytes").unwrap();
+        assert_eq!(
+            execute_approved_attachment_import(
+                &mut view,
+                state.path(),
+                None,
+                guide_id,
+                expected,
+                "changing.bin".to_owned(),
+                &mut source,
+                source_plan,
+                preview.relative_path().to_owned(),
+                preview.revision(),
+                attachment_id,
+                operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e34"),
+                at(),
+            ),
+            Err(AttachmentImportError::SourceChanged)
+        );
+        assert!(!workspace.path().join(preview.relative_path()).exists());
+
+        fs::write(&source_path, b"stable source bytes").unwrap();
+        let mut source = open_attachment_source(&source_path).unwrap();
+        let source_plan = inspect_attachment_source(&mut source).unwrap();
+        let attachment_id = AttachmentId::from_str("0199a264-ef5f-73b4-a238-a71ba1509911").unwrap();
+        let preview = match preview_attachment_import(
+            &view,
+            state.path(),
+            None,
+            GUIDE_PATH,
+            guide_id,
+            expected,
+            "changing.bin",
+            |bytes, attachment_path| {
+                prepare_attachment_candidate(
+                    bytes,
+                    guide_id,
+                    category_id,
+                    attachment_id,
+                    "changing.bin",
+                    attachment_path,
+                    source_plan.sha256,
+                    source_plan.size,
+                    &stamp,
+                )
+            },
+        ) {
+            Ok(preview) => preview,
+            Err(_) => panic!("expected import preview"),
+        };
+        crate::storage::set_attachment_import_source_changed_fault();
+        assert_eq!(
+            execute_approved_attachment_import(
+                &mut view,
+                state.path(),
+                None,
+                guide_id,
+                expected,
+                "changing.bin".to_owned(),
+                &mut source,
+                source_plan,
+                preview.relative_path().to_owned(),
+                preview.revision(),
+                attachment_id,
+                operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e35"),
+                at(),
+            ),
+            Err(AttachmentImportError::SourceChanged)
+        );
+        assert!(!workspace.path().join(preview.relative_path()).exists());
+        assert!(
+            view.categories()[0].guides()[0]
+                .guide()
+                .attachments()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn sanitizes_hostile_attachment_display_names() {
+        assert_eq!(
+            sanitized_attachment_filename(Path::new("/tmp/report\u{202e}.txt")),
+            "report-.txt"
+        );
+        assert_eq!(
+            sanitized_attachment_filename(Path::new("/tmp/..")),
+            "attachment"
+        );
+    }
+
+    #[test]
+    fn attachment_source_refuses_links_and_oversize_files() {
+        let source = TestDirectory::new("unsafe-attachment-source");
+        let regular = source.path().join("regular.bin");
+        fs::write(&regular, b"content").unwrap();
+        fs::set_permissions(&regular, fs::Permissions::from_mode(0o600)).unwrap();
+        let hardlink = source.path().join("hardlink.bin");
+        fs::hard_link(&regular, &hardlink).unwrap();
+        assert!(matches!(
+            open_attachment_source(&regular),
+            Err(AttachmentImportError::InvalidSource)
+        ));
+
+        fs::remove_file(&hardlink).unwrap();
+        let symlink_path = source.path().join("symlink.bin");
+        symlink(&regular, &symlink_path).unwrap();
+        assert!(matches!(
+            open_attachment_source(&symlink_path),
+            Err(AttachmentImportError::InvalidSource)
+        ));
+
+        let oversize = source.path().join("oversize.bin");
+        let file = fs::File::create(&oversize).unwrap();
+        file.set_len(32 * 1024 * 1024 + 1).unwrap();
+        fs::set_permissions(&oversize, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            open_attachment_source(&oversize),
+            Err(AttachmentImportError::SourceTooLarge)
+        ));
     }
 }

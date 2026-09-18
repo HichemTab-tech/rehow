@@ -11,7 +11,7 @@ use crate::{
         CollectionPresentationStyle, CommentOwner, NodePresentation, ParsedYamlArtifact,
         ReconciledEntryKind, RoundTripStatus, parse_guide_source, parse_yaml_document,
     },
-    protocol::{CategoryId, Timestamp, VerificationHash},
+    protocol::{AttachmentId, CategoryId, Timestamp, VerificationHash},
 };
 
 use super::{
@@ -55,10 +55,19 @@ pub(crate) enum GuideMutation {
     ReplaceTags(Vec<String>),
     ReplaceAliases(Vec<String>),
     ReplaceBody(Vec<u8>),
+    AddAttachment(AttachmentInput),
     MarkTested(VerificationHash),
     MarkStale,
     Archive,
     Restore,
+}
+
+pub(crate) struct AttachmentInput {
+    pub(crate) id: AttachmentId,
+    pub(crate) path: String,
+    pub(crate) title: String,
+    pub(crate) sha256: String,
+    pub(crate) size_bytes: u64,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
@@ -77,6 +86,7 @@ pub(crate) enum MutationEffect {
     ArchivedFromStatus,
     ArchivedAt,
     Body,
+    Attachments,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -107,6 +117,7 @@ pub(crate) enum MutationField {
     ArchivedFromStatus,
     ArchivedAt,
     Body,
+    Attachments,
     Document,
 }
 
@@ -398,6 +409,12 @@ pub(crate) fn plan_guide_mutation(
     mutation: GuideMutation,
     stamp: &MutationStamp,
 ) -> Result<MutationOutcome<BoundGuide>, MutationFailure> {
+    let mutation = match mutation {
+        GuideMutation::AddAttachment(attachment) => {
+            return plan_add_attachment(bound, attachment, stamp);
+        }
+        mutation => mutation,
+    };
     let record = bound.record();
     let mut target_edit: Option<(&str, Box<[u8]>, MutationEffect, MutationField)> = None;
     let mut sequence_edit: Option<(&str, &[String], MutationEffect, MutationField)> = None;
@@ -562,6 +579,7 @@ pub(crate) fn plan_guide_mutation(
             explicit_mark_stale = false;
             lifecycle_edit = GuideLifecycleEdit::Restore(restored_status);
         }
+        GuideMutation::AddAttachment(_) => unreachable!("handled before the mutation match"),
     }
 
     let target_field = if explicit_mark_stale || !matches!(lifecycle_edit, GuideLifecycleEdit::None)
@@ -791,6 +809,274 @@ pub(crate) fn plan_guide_mutation(
         bound: candidate,
         effects,
     }))
+}
+
+fn plan_add_attachment(
+    bound: &BoundGuide,
+    attachment: AttachmentInput,
+    stamp: &MutationStamp,
+) -> Result<MutationOutcome<BoundGuide>, MutationFailure> {
+    let record = bound.record();
+    if record.declared_status() == GuideStatus::Archived {
+        return Err(failure(
+            MutationFailureKind::InvalidTransition,
+            MutationField::Attachments,
+        ));
+    }
+    let existing = record.attachments().unwrap_or_default();
+    if existing.len() >= 256
+        || existing.iter().any(|value| {
+            value.id() == &attachment.id
+                || value.path() == attachment.path
+                || value.sha256() == attachment.sha256
+        })
+    {
+        return Err(failure(
+            MutationFailureKind::InvalidValue,
+            MutationField::Attachments,
+        ));
+    }
+    require_proven(
+        bound.parsed().yaml().round_trip_status(),
+        MutationField::Attachments,
+    )?;
+
+    let newline: &[u8] = bound
+        .source_bytes()
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .filter(|offset| *offset > 0 && bound.source_bytes()[*offset - 1] == b'\r')
+        .map_or(b"\n", |_| b"\r\n");
+    let item = emit_attachment_item(&attachment, newline)?;
+    let mut edits = Vec::new();
+    reserve(&mut edits, 4, MutationField::Document)?;
+    append_attachment_entry(bound, item, newline, &mut edits)?;
+
+    let mut effects = Vec::new();
+    reserve(&mut effects, 4, MutationField::Document)?;
+    effects.push(MutationEffect::Attachments);
+    let (expected_status, expected_archived_from) =
+        stale_guide_if_required(bound, false, &mut edits, &mut effects)?;
+    let updated_at = max(*record.updated_at(), stamp.at);
+    replace_root_value(
+        bound.parsed().yaml(),
+        bound.source_bytes(),
+        "updated_at",
+        emit_yaml_display(updated_at).map_err(|error| map_emit(error, MutationField::UpdatedAt))?,
+        MutationEffect::UpdatedAt,
+        MutationField::UpdatedAt,
+        &mut edits,
+    )?;
+    effects.push(MutationEffect::UpdatedAt);
+
+    let candidate_bytes = apply_edits(bound.source_bytes(), edits)?;
+    let parsed = parse_guide_source(candidate_bytes).map_err(map_parse)?;
+    let candidate = bind_guide(parsed).map_err(|_| candidate_mismatch(MutationField::Document))?;
+    let actual = candidate.record();
+    let expected_archived_at = record.archive().map(|archive| *archive.archived_at());
+    if actual.id() != record.id()
+        || actual.title() != record.title()
+        || actual.summary() != record.summary()
+        || actual.category_id() != record.category_id()
+        || actual.tags() != record.tags()
+        || actual.aliases() != record.aliases()
+        || actual.declared_status() != expected_status
+        || actual.created_at() != record.created_at()
+        || actual.updated_at() != &updated_at
+        || actual.body() != record.body()
+        || !same_verification(actual, record)
+        || !same_archive(actual, expected_archived_from, expected_archived_at)
+        || !same_nested_except_attachments(actual, record)
+        || !attachment_was_appended(actual, record, &attachment)
+        || !same_unknown_root(&candidate, bound)
+        || candidate.unknown_partition().applicability()
+            != bound.unknown_partition().applicability()
+        || candidate.unknown_partition().references() != bound.unknown_partition().references()
+        || candidate.unknown_partition().attachments().len()
+            != bound.unknown_partition().attachments().len() + 1
+        || candidate.unknown_partition().attachments()[..existing.len()]
+            != bound.unknown_partition().attachments()[..]
+        || !candidate.unknown_partition().attachments()[existing.len()].is_empty()
+    {
+        return Err(candidate_mismatch(MutationField::Document));
+    }
+    Ok(MutationOutcome::Candidate(MutationCandidate {
+        bound: candidate,
+        effects: effect_set(&effects)?,
+    }))
+}
+
+fn emit_attachment_item(
+    attachment: &AttachmentInput,
+    newline: &[u8],
+) -> Result<Box<[u8]>, MutationFailure> {
+    let path = emit_yaml_string(&attachment.path)
+        .map_err(|error| map_emit(error, MutationField::Attachments))?;
+    let title = emit_yaml_string(&attachment.title)
+        .map_err(|error| map_emit(error, MutationField::Attachments))?;
+    let sha256 = emit_yaml_string(&attachment.sha256)
+        .map_err(|error| map_emit(error, MutationField::Attachments))?;
+    let text = format!(
+        "  - id: {}{nl}    path: {}{nl}    title: {}{nl}    sha256: {}{nl}    size_bytes: {}",
+        attachment.id,
+        String::from_utf8_lossy(&path),
+        String::from_utf8_lossy(&title),
+        String::from_utf8_lossy(&sha256),
+        attachment.size_bytes,
+        nl = core::str::from_utf8(newline).unwrap_or("\n"),
+    );
+    if text.len() > 2_048 {
+        return Err(failure(
+            MutationFailureKind::ResourceLimit,
+            MutationField::Attachments,
+        ));
+    }
+    Ok(text.into_bytes().into_boxed_slice())
+}
+
+fn append_attachment_entry(
+    bound: &BoundGuide,
+    item: Box<[u8]>,
+    newline: &[u8],
+    edits: &mut Vec<Edit>,
+) -> Result<(), MutationFailure> {
+    let artifact = bound.parsed().yaml();
+    let source = bound.source_bytes();
+    let entry = artifact.entries().iter().find(|entry| {
+        if entry.parent() != artifact.root_id() {
+            return false;
+        }
+        let ReconciledEntryKind::Mapping { key, .. } = entry.kind() else {
+            return false;
+        };
+        artifact.node(key).and_then(|node| node.decoded_scalar()) == Some("attachments")
+    });
+    let Some(entry) = entry else {
+        let mut raw = Vec::new();
+        raw.try_reserve_exact(13 + newline.len() + item.len() + newline.len())
+            .map_err(|_| {
+                failure(
+                    MutationFailureKind::ResourceLimit,
+                    MutationField::Attachments,
+                )
+            })?;
+        raw.extend_from_slice(b"attachments:");
+        raw.extend_from_slice(newline);
+        raw.extend_from_slice(&item);
+        raw.extend_from_slice(newline);
+        return insert_raw_root_entries_before(
+            artifact,
+            source,
+            "created_at",
+            raw.into_boxed_slice(),
+            MutationEffect::Attachments,
+            MutationField::Attachments,
+            edits,
+        );
+    };
+    let ReconciledEntryKind::Mapping { value, .. } = entry.kind() else {
+        return Err(failure(
+            MutationFailureKind::BindingInvariant,
+            MutationField::Attachments,
+        ));
+    };
+    let node = artifact.node(value).ok_or_else(|| {
+        failure(
+            MutationFailureKind::BindingInvariant,
+            MutationField::Attachments,
+        )
+    })?;
+    let NodePresentation::Concrete {
+        whole_file_range,
+        tag_file_range,
+        ..
+    } = node.presentation()
+    else {
+        return Err(failure(
+            MutationFailureKind::PresentationUnsafe,
+            MutationField::Attachments,
+        ));
+    };
+    let start = whole_file_range.start().get() as usize;
+    let end = whole_file_range.end().get() as usize;
+    let mut replacement = Vec::new();
+    match node.collection_style() {
+        Some(CollectionPresentationStyle::Flow)
+            if node.entries().is_empty()
+                && tag_file_range.is_none()
+                && source.get(start..end) == Some(b"[]") =>
+        {
+            replacement.extend_from_slice(newline);
+            replacement.extend_from_slice(&item);
+            replacement.extend_from_slice(newline);
+        }
+        Some(CollectionPresentationStyle::Block) => {
+            replacement.extend_from_slice(source.get(start..end).ok_or_else(|| {
+                failure(
+                    MutationFailureKind::PresentationUnsafe,
+                    MutationField::Attachments,
+                )
+            })?);
+            if !replacement.ends_with(b"\n") {
+                replacement.extend_from_slice(newline);
+            }
+            replacement.extend_from_slice(&item);
+            replacement.extend_from_slice(newline);
+        }
+        _ => {
+            return Err(failure(
+                MutationFailureKind::PresentationUnsafe,
+                MutationField::Attachments,
+            ));
+        }
+    }
+    push_edit(
+        source,
+        start,
+        end,
+        replacement.into_boxed_slice(),
+        MutationEffect::Attachments,
+        MutationField::Attachments,
+        edits,
+    )
+}
+
+fn same_nested_except_attachments(left: &super::Guide, right: &super::Guide) -> bool {
+    same_applicability(left, right)
+        && left.prerequisites() == right.prerequisites()
+        && left.warnings() == right.warnings()
+        && left.files_affected() == right.files_affected()
+        && left.related_guide_ids() == right.related_guide_ids()
+        && same_references(left, right)
+}
+
+fn attachment_was_appended(
+    actual: &super::Guide,
+    previous: &super::Guide,
+    expected: &AttachmentInput,
+) -> bool {
+    let actual = actual.attachments().unwrap_or_default();
+    let previous = previous.attachments().unwrap_or_default();
+    actual.len() == previous.len() + 1
+        && actual[..previous.len()]
+            .iter()
+            .zip(previous)
+            .all(|(left, right)| {
+                left.id() == right.id()
+                    && left.path() == right.path()
+                    && left.title() == right.title()
+                    && left.media_type() == right.media_type()
+                    && left.sha256() == right.sha256()
+                    && left.size_bytes() == right.size_bytes()
+            })
+        && actual.last().is_some_and(|value| {
+            value.id() == &expected.id
+                && value.path() == expected.path
+                && value.title() == expected.title
+                && value.media_type().is_none()
+                && value.sha256() == expected.sha256
+                && value.size_bytes() == Some(expected.size_bytes)
+        })
 }
 
 #[derive(Clone, Copy)]

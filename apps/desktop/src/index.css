@@ -875,6 +875,45 @@ h1 {
   gap: 6px;
   margin-left: 2px;
 }
+
+.guide-attachments {
+  margin-block: 1rem 1.5rem;
+  border-block: 1px solid var(--divider);
+  padding-block: 0.9rem;
+}
+
+.guide-attachments h2 {
+  margin: 0 0 0.6rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.guide-attachments ul {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.guide-attachments li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.attachment-title {
+  overflow-wrap: anywhere;
+}
+
+.attachment-size {
+  flex: none;
+  color: var(--muted);
+}
 .guide-status-button {
   color: var(--warning);
 }

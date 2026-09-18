@@ -2,13 +2,14 @@ pub const APPLICATION_NAME: &str = "Rehow";
 
 use rehow_core::{
     application::{
-        CategoryCreateError, CategoryOrderRevision, CategoryRemoveError, CategoryReorderError,
-        CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError, GuideEdit, GuideRemoveError,
-        GuideUpdateError, WorkspaceInitializationError, WorkspaceRefreshError,
-        confirm_and_approve_guide_tested, create_category, create_guide, initialize_workspace,
+        AttachmentImportError, AttachmentImportOutcome, CategoryCreateError, CategoryOrderRevision,
+        CategoryRemoveError, CategoryReorderError, CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT,
+        GuideCreateError, GuideEdit, GuideRemoveError, GuideUpdateError,
+        WorkspaceInitializationError, WorkspaceRefreshError, confirm_and_approve_guide_tested,
+        create_category, create_guide, initialize_workspace,
         refresh_open_workspace as refresh_workspace_view, remove_category, remove_guide,
-        reorder_categories, set_category_archived, set_guide_archived, update_category_details,
-        update_guide, update_guide_details,
+        reorder_categories, select_and_import_attachment, set_category_archived,
+        set_guide_archived, update_category_details, update_guide, update_guide_details,
     },
     domain::GuideStatus,
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -107,7 +108,16 @@ struct GuidePayload {
     updated_at: String,
     tags: Vec<String>,
     aliases: Vec<String>,
+    attachments: Vec<AttachmentPayload>,
     matches: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentPayload {
+    id: String,
+    title: String,
+    size_bytes: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -213,6 +223,16 @@ impl WorkspacePayload {
                     updated_at: guide.updated_at().to_string(),
                     tags: guide.tags().to_vec(),
                     aliases: guide.aliases().to_vec(),
+                    attachments: guide
+                        .attachments()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|attachment| AttachmentPayload {
+                            id: attachment.id().to_string(),
+                            title: attachment.title().to_owned(),
+                            size_bytes: attachment.size_bytes(),
+                        })
+                        .collect(),
                     matches,
                 });
             }
@@ -645,6 +665,143 @@ fn approve_open_guide_tested(
             .map_err(|message| native_command_error("refreshRequired", message))?,
         changed: outcome.changed(),
     })
+}
+
+#[tauri::command]
+fn import_open_guide_attachment(
+    guide_id: String,
+    expected_revision: String,
+    window: tauri::Window,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<SaveGuidePayload, NativeCommandError> {
+    if guide_id.len() > 64 || expected_revision.len() > 96 {
+        return Err(native_command_error(
+            "invalidInput",
+            "Guide identity is too long.".to_owned(),
+        ));
+    }
+    let guide_id = GuideId::from_str(&guide_id)
+        .map_err(|_| native_command_error("invalidGuide", "Guide ID is invalid.".to_owned()))?;
+    let expected_revision = Revision::from_str(&expected_revision).map_err(|_| {
+        native_command_error(
+            "invalidRevision",
+            "Guide revision is invalid. Reopen the Guide and try again.".to_owned(),
+        )
+    })?;
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    fs::create_dir_all(&state_home).map_err(|_| {
+        native_command_error(
+            "stateUnavailable",
+            "Rehow could not prepare its private recovery folder.".to_owned(),
+        )
+    })?;
+    let mut guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_mut().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let outcome = select_and_import_attachment(
+        &window,
+        &mut workspace.view,
+        &state_home,
+        runtime_directory.as_deref(),
+        guide_id,
+        expected_revision,
+    )
+    .map_err(|error| {
+        native_command_error(
+            attachment_import_code(error),
+            attachment_import_message(error),
+        )
+    })?;
+    Ok(SaveGuidePayload {
+        workspace: WorkspacePayload::from_view(
+            &workspace.view,
+            FolderFactsPayload::from(workspace.facts),
+        ),
+        guide: guide_body_payload(&workspace.view, &guide_id)
+            .map_err(|message| native_command_error("refreshRequired", message))?,
+        changed: matches!(outcome, AttachmentImportOutcome::Imported { .. }),
+    })
+}
+
+fn attachment_import_code(error: AttachmentImportError) -> &'static str {
+    match error {
+        AttachmentImportError::NotFound => "notFound",
+        AttachmentImportError::RevisionConflict | AttachmentImportError::SourceChanged => {
+            "revisionConflict"
+        }
+        AttachmentImportError::GuideArchived => "guideArchived",
+        AttachmentImportError::AttachmentLimit => "attachmentLimit",
+        AttachmentImportError::DuplicateAttachment => "duplicateAttachment",
+        AttachmentImportError::InvalidSource => "invalidSource",
+        AttachmentImportError::SourceTooLarge => "sourceTooLarge",
+        AttachmentImportError::UnsafeRoundTrip => "unsafeRoundTrip",
+        AttachmentImportError::Busy => "busy",
+        AttachmentImportError::UnsafeStorage => "unsafeStorage",
+        AttachmentImportError::UnsupportedFilesystem => "unsupportedFilesystem",
+        AttachmentImportError::ResourceLimit => "resourceLimit",
+        AttachmentImportError::Io => "io",
+        AttachmentImportError::CommittedRefreshRequired { .. } => "committedRefresh",
+    }
+}
+
+fn attachment_import_message(error: AttachmentImportError) -> String {
+    match error {
+        AttachmentImportError::NotFound => "Guide was not found.".to_owned(),
+        AttachmentImportError::RevisionConflict | AttachmentImportError::SourceChanged => {
+            "The Guide or selected file changed. Refresh and try again.".to_owned()
+        }
+        AttachmentImportError::GuideArchived => {
+            "Restore this Guide before adding an Attachment.".to_owned()
+        }
+        AttachmentImportError::AttachmentLimit => {
+            "This Guide already has the maximum of 256 Attachments.".to_owned()
+        }
+        AttachmentImportError::DuplicateAttachment => {
+            "This file is already attached to the Guide.".to_owned()
+        }
+        AttachmentImportError::InvalidSource => {
+            "Choose a regular, single-link file.".to_owned()
+        }
+        AttachmentImportError::SourceTooLarge => {
+            "Attachments must be 32 MiB or smaller.".to_owned()
+        }
+        AttachmentImportError::UnsafeRoundTrip => {
+            "This Guide’s formatting cannot be updated safely. Simplify its Attachment metadata first."
+                .to_owned()
+        }
+        AttachmentImportError::Busy => {
+            "Another Rehow writer is active. Wait a moment and try again.".to_owned()
+        }
+        AttachmentImportError::UnsafeStorage => {
+            "Rehow refused an unsafe Attachment or Workspace path.".to_owned()
+        }
+        AttachmentImportError::UnsupportedFilesystem => {
+            "This filesystem cannot provide the atomic durability Rehow requires.".to_owned()
+        }
+        AttachmentImportError::ResourceLimit => {
+            "Attachment import exceeded a safe resource limit.".to_owned()
+        }
+        AttachmentImportError::Io => {
+            "The Attachment could not be imported. Check file access and try again.".to_owned()
+        }
+        AttachmentImportError::CommittedRefreshRequired { .. } => {
+            "The Attachment was imported, but Rehow could not refresh it. Reopen the Workspace."
+                .to_owned()
+        }
+    }
 }
 
 #[tauri::command]
@@ -1785,6 +1942,7 @@ pub fn run() {
             create_open_category,
             create_open_guide,
             initialize_selected_workspace,
+            import_open_guide_attachment,
             read_open_guide,
             refresh_open_workspace,
             remove_open_category,
@@ -1848,6 +2006,7 @@ mod tests {
                 updated_at: "2026-09-18T00:00:00Z".to_owned(),
                 tags: vec!["tag".to_owned()],
                 aliases: vec!["alias".to_owned()],
+                attachments: vec![],
                 matches: "alias tag".to_owned(),
             }],
             issue_count: 0,

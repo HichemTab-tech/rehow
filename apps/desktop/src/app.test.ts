@@ -220,6 +220,7 @@ describe("Guide search", () => {
       updatedAt: "2026-09-18T00:00:00Z",
       tags: ["desktop"],
       aliases: ["launcher"],
+      attachments: [],
       matches: "Exec icon",
     },
     {
@@ -232,6 +233,7 @@ describe("Guide search", () => {
       updatedAt: "2026-09-18T00:00:00Z",
       tags: ["hardware"],
       aliases: ["usb rule"],
+      attachments: [],
       matches: "vendor id",
     },
   ];

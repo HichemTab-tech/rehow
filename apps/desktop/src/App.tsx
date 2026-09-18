@@ -14,6 +14,11 @@ type GuideSummary = {
   updatedAt: string;
   tags: string[];
   aliases: string[];
+  attachments: Array<{
+    id: string;
+    title: string;
+    sizeBytes: number | null;
+  }>;
   matches: string;
 };
 
@@ -172,6 +177,13 @@ function formatLongDate(value: string) {
     month: "long",
     day: "numeric",
   }).format(new Date(value));
+}
+
+function formatBytes(value: number | null) {
+  if (value === null) return "Size unavailable";
+  if (value < 1_024) return `${value} bytes`;
+  if (value < 1_048_576) return `${(value / 1_024).toFixed(1)} KiB`;
+  return `${(value / 1_048_576).toFixed(1)} MiB`;
 }
 
 export function filterGuides(guides: GuideSummary[], query: string) {
@@ -441,6 +453,7 @@ export function App() {
   const [saveError, setSaveError] = useState("");
   const [updatingGuideStatus, setUpdatingGuideStatus] = useState(false);
   const [verifyingGuide, setVerifyingGuide] = useState(false);
+  const [importingAttachment, setImportingAttachment] = useState(false);
   const [removingGuide, setRemovingGuide] = useState(false);
   const [guideStatusError, setGuideStatusError] = useState("");
   const [rankedGuideIds, setRankedGuideIds] = useState<string[] | null>(null);
@@ -454,6 +467,7 @@ export function App() {
   const editDetailsButtonRef = useRef<HTMLButtonElement>(null);
   const guideStatusButtonRef = useRef<HTMLButtonElement>(null);
   const guideVerifyButtonRef = useRef<HTMLButtonElement>(null);
+  const attachmentImportButtonRef = useRef<HTMLButtonElement>(null);
   const guideRemoveButtonRef = useRef<HTMLButtonElement>(null);
   const guideStatusErrorRef = useRef<HTMLParagraphElement>(null);
   const detailTitleRef = useRef<HTMLInputElement>(null);
@@ -516,6 +530,7 @@ export function App() {
     savingCategoryRename ||
     updatingGuideStatus ||
     verifyingGuide ||
+    importingAttachment ||
     updatingCategoryStatusId !== "" ||
     reorderingCategoryId !== "" ||
     removingCategoryId !== "" ||
@@ -1368,6 +1383,7 @@ export function App() {
       guideBody?.id !== selected.id ||
       updatingGuideStatus ||
       verifyingGuide ||
+      importingAttachment ||
       removingGuide ||
       editingGuide ||
       editingGuideDetails
@@ -1410,6 +1426,7 @@ export function App() {
       !canMarkGuideTested(selected.status) ||
       guideBody?.id !== selected.id ||
       verifyingGuide ||
+      importingAttachment ||
       updatingGuideStatus ||
       removingGuide ||
       editingGuide ||
@@ -1451,6 +1468,47 @@ export function App() {
     }
   }
 
+  async function importAttachment() {
+    if (
+      selected === null ||
+      selected.status === "Archived" ||
+      guideBody?.id !== selected.id ||
+      importingAttachment ||
+      verifyingGuide ||
+      updatingGuideStatus ||
+      removingGuide ||
+      editingGuide ||
+      editingGuideDetails
+    )
+      return;
+    setImportingAttachment(true);
+    setGuideStatusError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<SaveGuidePayload>(
+        "import_open_guide_attachment",
+        {
+          guideId: selected.id,
+          expectedRevision: guideBody.revision,
+        },
+      );
+      setWorkspace(result.workspace);
+      setGuideBody(result.guide);
+      setDraftBody(result.guide.body);
+      setAnnouncement(
+        result.changed ? "Attachment added." : "Attachment import cancelled.",
+      );
+      requestAnimationFrame(() => attachmentImportButtonRef.current?.focus());
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setGuideStatusError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => guideStatusErrorRef.current?.focus());
+    } finally {
+      setImportingAttachment(false);
+    }
+  }
+
   async function removeGuide() {
     if (
       selected === null ||
@@ -1458,6 +1516,7 @@ export function App() {
       removingGuide ||
       updatingGuideStatus ||
       verifyingGuide ||
+      importingAttachment ||
       editingGuide ||
       editingGuideDetails
     )
@@ -2264,6 +2323,7 @@ export function App() {
                           guideBody?.id !== selected.id ||
                           updatingGuideStatus ||
                           verifyingGuide ||
+                          importingAttachment ||
                           removingGuide
                         }
                       >
@@ -2278,6 +2338,7 @@ export function App() {
                           guideBody?.id !== selected.id ||
                           updatingGuideStatus ||
                           verifyingGuide ||
+                          importingAttachment ||
                           removingGuide
                         }
                       >
@@ -2292,11 +2353,31 @@ export function App() {
                           disabled={
                             guideBody?.id !== selected.id ||
                             verifyingGuide ||
+                            importingAttachment ||
                             updatingGuideStatus ||
                             removingGuide
                           }
                         >
                           {verifyingGuide ? "Confirming…" : "Mark Tested"}
+                        </button>
+                      )}
+                      {selected.status !== "Archived" && (
+                        <button
+                          ref={attachmentImportButtonRef}
+                          className="button guide-edit-button"
+                          type="button"
+                          onClick={() => void importAttachment()}
+                          disabled={
+                            guideBody?.id !== selected.id ||
+                            importingAttachment ||
+                            verifyingGuide ||
+                            updatingGuideStatus ||
+                            removingGuide
+                          }
+                        >
+                          {importingAttachment
+                            ? "Importing…"
+                            : "Add Attachment"}
                         </button>
                       )}
                       <button
@@ -2308,6 +2389,7 @@ export function App() {
                           guideBody?.id !== selected.id ||
                           updatingGuideStatus ||
                           verifyingGuide ||
+                          importingAttachment ||
                           removingGuide
                         }
                       >
@@ -2325,6 +2407,7 @@ export function App() {
                           guideBody?.id !== selected.id ||
                           updatingGuideStatus ||
                           verifyingGuide ||
+                          importingAttachment ||
                           removingGuide
                         }
                       >
@@ -2539,6 +2622,26 @@ export function App() {
                 )}
               </dl>
             </header>
+            {selected.attachments.length > 0 && (
+              <section
+                className="guide-attachments"
+                aria-labelledby="guide-attachments-heading"
+              >
+                <h2 id="guide-attachments-heading">Attachments</h2>
+                <ul>
+                  {selected.attachments.map((attachment) => (
+                    <li key={attachment.id}>
+                      <span className="attachment-title">
+                        {attachment.title}
+                      </span>
+                      <small className="attachment-size">
+                        {formatBytes(attachment.sizeBytes)}
+                      </small>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
             <section aria-labelledby="guide-body-heading">
               <h2 className="sr-only" id="guide-body-heading">
                 Guide content
