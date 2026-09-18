@@ -232,6 +232,19 @@ export function normalizedGuideDetails(
   return { categoryId, title, summary };
 }
 
+export function normalizedGuideMetadata(
+  titleValue: string,
+  summaryValue: string,
+) {
+  const title = titleValue.trim();
+  const summary = summaryValue.trim();
+  if (Array.from(title).length < 1 || Array.from(title).length > 200)
+    return null;
+  if (Array.from(summary).length < 1 || Array.from(summary).length > 500)
+    return null;
+  return { title, summary };
+}
+
 export function gitFactLabel(facts: FolderFacts) {
   if (facts.unsafeGitMarker) return "Git marker needs attention";
   if (facts.existingGitRepository && facts.nestedGitRepository) {
@@ -315,6 +328,11 @@ export function App() {
   const [savingNewGuide, setSavingNewGuide] = useState(false);
   const [guideCreateError, setGuideCreateError] = useState("");
   const [guideBody, setGuideBody] = useState<GuideBodyPayload | null>(null);
+  const [editingGuideDetails, setEditingGuideDetails] = useState(false);
+  const [detailTitle, setDetailTitle] = useState("");
+  const [detailSummary, setDetailSummary] = useState("");
+  const [savingGuideDetails, setSavingGuideDetails] = useState(false);
+  const [guideDetailsError, setGuideDetailsError] = useState("");
   const [editingGuide, setEditingGuide] = useState(false);
   const [draftBody, setDraftBody] = useState("");
   const [savingGuide, setSavingGuide] = useState(false);
@@ -326,6 +344,9 @@ export function App() {
   const lastResultRef = useRef<HTMLButtonElement | null>(null);
   const railToggleRef = useRef<HTMLButtonElement>(null);
   const editButtonRef = useRef<HTMLButtonElement>(null);
+  const editDetailsButtonRef = useRef<HTMLButtonElement>(null);
+  const detailTitleRef = useRef<HTMLInputElement>(null);
+  const guideDetailsErrorRef = useRef<HTMLParagraphElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const saveErrorRef = useRef<HTMLParagraphElement>(null);
   const workspaceNameRef = useRef<HTMLInputElement>(null);
@@ -348,6 +369,10 @@ export function App() {
     guideBody !== null &&
     guideBody.id === selected?.id &&
     hasUnsavedChanges(guideBody.body, draftBody);
+  const dirtyGuideDetails =
+    editingGuideDetails &&
+    selected !== null &&
+    (selected.title !== detailTitle || selected.summary !== detailSummary);
 
   useEffect(() => {
     const theme = initialParameter("theme");
@@ -382,7 +407,7 @@ export function App() {
         event.preventDefault();
         searchRef.current?.focus();
       } else if (event.key === "Escape") {
-        if (editingGuide) return;
+        if (editingGuide || editingGuideDetails) return;
         if (railOpen) {
           setRailOpen(false);
           requestAnimationFrame(() => railToggleRef.current?.focus());
@@ -399,17 +424,17 @@ export function App() {
     }
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [editingGuide, railOpen, readerOpen]);
+  }, [editingGuide, editingGuideDetails, railOpen, readerOpen]);
 
   useEffect(() => {
-    if (!dirtyGuide) return;
+    if (!dirtyGuide && !dirtyGuideDetails) return;
     function warnBeforeUnload(event: BeforeUnloadEvent) {
       event.preventDefault();
       event.returnValue = "";
     }
     window.addEventListener("beforeunload", warnBeforeUnload);
     return () => window.removeEventListener("beforeunload", warnBeforeUnload);
-  }, [dirtyGuide]);
+  }, [dirtyGuide, dirtyGuideDetails]);
 
   useEffect(() => {
     if (workspace === null || selectedId === "") {
@@ -419,7 +444,9 @@ export function App() {
     let active = true;
     setGuideBody(null);
     setEditingGuide(false);
+    setEditingGuideDetails(false);
     setSaveError("");
+    setGuideDetailsError("");
     import("@tauri-apps/api/core")
       .then(({ invoke }) =>
         invoke<GuideBodyPayload>("read_open_guide", { guideId: selectedId }),
@@ -471,8 +498,14 @@ export function App() {
   }, [query, workspace]);
 
   function confirmDiscard() {
-    if (savingGuide || savingNewGuide) return false;
+    if (savingGuide || savingNewGuide || savingGuideDetails) return false;
     if (dirtyGuide && !window.confirm("Discard your unsaved Guide changes?")) {
+      return false;
+    }
+    if (
+      dirtyGuideDetails &&
+      !window.confirm("Discard your unsaved Guide detail changes?")
+    ) {
       return false;
     }
     const dirtyNewGuide =
@@ -746,8 +779,84 @@ export function App() {
     }
   }
 
+  function beginEditingGuideDetails() {
+    if (
+      selected === null ||
+      guideBody === null ||
+      guideBody.id !== selected.id ||
+      editingGuide
+    )
+      return;
+    setDetailTitle(selected.title);
+    setDetailSummary(selected.summary);
+    setGuideDetailsError("");
+    setEditingGuideDetails(true);
+    requestAnimationFrame(() => detailTitleRef.current?.focus());
+  }
+
+  function cancelEditingGuideDetails() {
+    if (savingGuideDetails) return;
+    if (
+      dirtyGuideDetails &&
+      !window.confirm("Discard your unsaved Guide detail changes?")
+    )
+      return;
+    setEditingGuideDetails(false);
+    setGuideDetailsError("");
+    requestAnimationFrame(() => editDetailsButtonRef.current?.focus());
+  }
+
+  async function saveGuideDetails() {
+    const currentGuide = guideBody;
+    const details = normalizedGuideMetadata(detailTitle, detailSummary);
+    if (details === null) {
+      const message = "Enter a title and summary before saving Guide details.";
+      setGuideDetailsError(message);
+      setAnnouncement(message);
+      requestAnimationFrame(() => detailTitleRef.current?.focus());
+      return;
+    }
+    if (
+      currentGuide === null ||
+      currentGuide.id !== selected?.id ||
+      savingGuideDetails
+    )
+      return;
+    setSavingGuideDetails(true);
+    setGuideDetailsError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<SaveGuidePayload>("save_open_guide_details", {
+        guideId: currentGuide.id,
+        expectedRevision: currentGuide.revision,
+        ...details,
+      });
+      setWorkspace(result.workspace);
+      setGuideBody(result.guide);
+      setEditingGuideDetails(false);
+      setAnnouncement(
+        result.changed
+          ? "Guide details saved."
+          : "No Guide detail changes to save.",
+      );
+      requestAnimationFrame(() => editDetailsButtonRef.current?.focus());
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setGuideDetailsError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => guideDetailsErrorRef.current?.focus());
+    } finally {
+      setSavingGuideDetails(false);
+    }
+  }
+
   function beginEditing() {
-    if (guideBody === null || guideBody.id !== selected?.id) return;
+    if (
+      guideBody === null ||
+      guideBody.id !== selected?.id ||
+      editingGuideDetails
+    )
+      return;
     setDraftBody(guideBody.body);
     setSaveError("");
     setEditingGuide(true);
@@ -1318,19 +1427,117 @@ export function App() {
               <div className="title-line">
                 <h1>{selected.title}</h1>
                 <Status value={selected.status} />
-                {workspace?.facts.writable && !editingGuide && (
-                  <button
-                    ref={editButtonRef}
-                    className="button guide-edit-button"
-                    type="button"
-                    onClick={beginEditing}
-                    disabled={guideBody?.id !== selected.id}
-                  >
-                    Edit Guide
-                  </button>
-                )}
+                {workspace?.facts.writable &&
+                  !editingGuide &&
+                  !editingGuideDetails && (
+                    <div className="guide-header-actions">
+                      <button
+                        ref={editDetailsButtonRef}
+                        className="button guide-edit-button"
+                        type="button"
+                        onClick={beginEditingGuideDetails}
+                        disabled={guideBody?.id !== selected.id}
+                      >
+                        Edit Details
+                      </button>
+                      <button
+                        ref={editButtonRef}
+                        className="button guide-edit-button"
+                        type="button"
+                        onClick={beginEditing}
+                        disabled={guideBody?.id !== selected.id}
+                      >
+                        Edit Content
+                      </button>
+                    </div>
+                  )}
               </div>
-              <p className="guide-summary">{selected.summary}</p>
+              {editingGuideDetails && guideBody?.id === selected.id ? (
+                <form
+                  className="guide-details-form"
+                  aria-busy={savingGuideDetails}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void saveGuideDetails();
+                  }}
+                >
+                  <label htmlFor="guide-detail-title">Title</label>
+                  <input
+                    ref={detailTitleRef}
+                    id="guide-detail-title"
+                    name="guide-detail-title"
+                    type="text"
+                    autoComplete="off"
+                    maxLength={200}
+                    aria-invalid={guideDetailsError !== ""}
+                    aria-describedby={
+                      guideDetailsError !== ""
+                        ? "guide-details-error"
+                        : undefined
+                    }
+                    value={detailTitle}
+                    onChange={(event) => {
+                      setDetailTitle(event.target.value);
+                      setGuideDetailsError("");
+                    }}
+                  />
+                  <label htmlFor="guide-detail-summary">Summary</label>
+                  <textarea
+                    id="guide-detail-summary"
+                    name="guide-detail-summary"
+                    autoComplete="off"
+                    maxLength={500}
+                    rows={3}
+                    aria-invalid={guideDetailsError !== ""}
+                    aria-describedby={
+                      guideDetailsError !== ""
+                        ? "guide-details-error"
+                        : undefined
+                    }
+                    value={detailSummary}
+                    onChange={(event) => {
+                      setDetailSummary(event.target.value);
+                      setGuideDetailsError("");
+                    }}
+                  />
+                  {selected.status === "Tested" && (
+                    <p className="editor-notice">
+                      Saving tested Guide details marks the Guide stale until
+                      you verify it again.
+                    </p>
+                  )}
+                  {guideDetailsError !== "" && (
+                    <p
+                      ref={guideDetailsErrorRef}
+                      id="guide-details-error"
+                      className="editor-error"
+                      role="alert"
+                      tabIndex={-1}
+                    >
+                      {guideDetailsError}
+                    </p>
+                  )}
+                  <div className="editor-actions">
+                    <button
+                      className="button"
+                      type="button"
+                      disabled={savingGuideDetails}
+                      onClick={cancelEditingGuideDetails}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="button button-primary"
+                      type="submit"
+                      disabled={savingGuideDetails}
+                    >
+                      {savingGuideDetails ? "Saving…" : "Save Details"}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <p className="guide-summary">{selected.summary}</p>
+              )}
               <dl className="guide-meta">
                 <div>
                   <dt>Updated</dt>
@@ -1338,7 +1545,13 @@ export function App() {
                 </div>
                 <div>
                   <dt>Mode</dt>
-                  <dd>{editingGuide ? "Editing" : "Reader"}</dd>
+                  <dd>
+                    {editingGuide
+                      ? "Editing Content"
+                      : editingGuideDetails
+                        ? "Editing Details"
+                        : "Reader"}
+                  </dd>
                 </div>
               </dl>
             </header>

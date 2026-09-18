@@ -313,6 +313,75 @@ fn save_open_guide_body(
     })
 }
 
+#[tauri::command]
+fn save_open_guide_details(
+    guide_id: String,
+    expected_revision: String,
+    title: String,
+    summary: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<SaveGuidePayload, NativeCommandError> {
+    if guide_id.len() > 64
+        || expected_revision.len() > 96
+        || title.len() > 1_024
+        || summary.len() > 4_096
+    {
+        return Err(native_command_error(
+            "invalidInput",
+            "Guide details are too long.".to_owned(),
+        ));
+    }
+    let guide_id = GuideId::from_str(&guide_id)
+        .map_err(|_| native_command_error("invalidGuide", "Guide ID is invalid.".to_owned()))?;
+    let expected_revision = Revision::from_str(&expected_revision).map_err(|_| {
+        native_command_error(
+            "invalidRevision",
+            "Guide revision is invalid. Reopen the Guide and try again.".to_owned(),
+        )
+    })?;
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    fs::create_dir_all(&state_home).map_err(|_| {
+        native_command_error(
+            "stateUnavailable",
+            "Rehow could not prepare its private recovery folder.".to_owned(),
+        )
+    })?;
+    let mut guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_mut().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let outcome = update_guide(
+        &mut workspace.view,
+        &state_home,
+        runtime_directory.as_deref(),
+        guide_id,
+        expected_revision,
+        GuideEdit::SetMetadata { title, summary },
+    )
+    .map_err(|error| native_command_error(guide_update_code(error), guide_update_message(error)))?;
+    Ok(SaveGuidePayload {
+        workspace: WorkspacePayload::from_view(
+            &workspace.view,
+            FolderFactsPayload::from(workspace.facts),
+        ),
+        guide: guide_body_payload(&workspace.view, &guide_id)
+            .map_err(|message| native_command_error("refreshRequired", message))?,
+        changed: outcome.changed(),
+    })
+}
+
 fn native_recovery_locations() -> Result<(PathBuf, Option<PathBuf>), String> {
     let state_home = env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
@@ -365,6 +434,22 @@ fn guide_update_message(error: GuideUpdateError) -> String {
             "The Guide was saved, but Rehow could not refresh it. Reopen the Workspace."
                 .to_owned()
         }
+    }
+}
+
+fn guide_update_code(error: GuideUpdateError) -> &'static str {
+    match error {
+        GuideUpdateError::NotFound => "notFound",
+        GuideUpdateError::RevisionConflict => "revisionConflict",
+        GuideUpdateError::InvalidGuide => "invalidGuide",
+        GuideUpdateError::InvalidEdit => "invalidEdit",
+        GuideUpdateError::UnsafeRoundTrip => "unsafeRoundTrip",
+        GuideUpdateError::Busy => "busy",
+        GuideUpdateError::UnsafeStorage => "unsafeStorage",
+        GuideUpdateError::UnsupportedFilesystem => "unsupportedFilesystem",
+        GuideUpdateError::ResourceLimit => "resourceLimit",
+        GuideUpdateError::Io => "io",
+        GuideUpdateError::CommittedRefreshRequired { .. } => "committedRefresh",
     }
 }
 
@@ -801,6 +886,7 @@ pub fn run() {
             initialize_selected_workspace,
             read_open_guide,
             save_open_guide_body,
+            save_open_guide_details,
             search_open_workspace
         ])
         .run(tauri::generate_context!())
@@ -812,7 +898,7 @@ mod tests {
     use super::{
         APPLICATION_NAME, CategoryPayload, FolderFactsPayload, GuideBodyPayload, GuidePayload,
         WorkspacePayload, category_create_code, category_create_message, guide_create_code,
-        guide_create_message, guide_update_message, native_command_error,
+        guide_create_message, guide_update_code, guide_update_message, native_command_error,
         workspace_initialization_message,
     };
     use rehow_core::{
@@ -886,6 +972,10 @@ mod tests {
 
     #[test]
     fn save_errors_are_actionable_and_content_free() {
+        assert_eq!(
+            guide_update_code(GuideUpdateError::RevisionConflict),
+            "revisionConflict"
+        );
         assert_eq!(
             guide_update_message(GuideUpdateError::RevisionConflict),
             "This Guide changed on disk. Reopen it before saving."

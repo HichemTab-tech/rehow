@@ -11,6 +11,7 @@ import {
   nextResultIndex,
   normalizedCategoryDetails,
   normalizedGuideDetails,
+  normalizedGuideMetadata,
   normalizedWorkspaceName,
   rankedGuides,
   resultCountLabel,
@@ -106,6 +107,18 @@ describe("application identity", () => {
     expect(
       normalizedGuideDetails("category-id", "Title", "x".repeat(501)),
     ).toBeNull();
+  });
+
+  it("normalizes bounded Guide metadata edits", () => {
+    expect(normalizedGuideMetadata("  New Title  ", "  New summary  ")).toEqual(
+      {
+        title: "New Title",
+        summary: "New summary",
+      },
+    );
+    expect(normalizedGuideMetadata("", "Summary")).toBeNull();
+    expect(normalizedGuideMetadata("Title", "")).toBeNull();
+    expect(normalizedGuideMetadata("x".repeat(201), "Summary")).toBeNull();
   });
 });
 

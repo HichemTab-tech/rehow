@@ -12,7 +12,7 @@ use crate::{
             EmitFailureKind, EmitField, emit_new_category, emit_new_guide,
             emit_new_workspace_manifest,
         },
-        guide::bind_guide,
+        guide::{BoundGuide, bind_guide},
         mutation::{
             GuideMutation, MutationFailureKind, MutationOutcome, MutationStamp, plan_guide_mutation,
         },
@@ -385,6 +385,7 @@ fn map_workspace_initialization_error(
 pub enum GuideEdit {
     SetTitle(String),
     SetSummary(String),
+    SetMetadata { title: String, summary: String },
     ReplaceBody(Vec<u8>),
     MarkStale,
 }
@@ -480,16 +481,26 @@ pub(crate) fn update_guide_with_context(
             if bound.record().id() != &guide_id || bound.record().category_id() != &category_id {
                 return Err(PlanError::InvalidGuide);
             }
-            let mutation = match edit {
-                GuideEdit::SetTitle(value) => GuideMutation::SetTitle(value),
-                GuideEdit::SetSummary(value) => GuideMutation::SetSummary(value),
-                GuideEdit::ReplaceBody(value) => GuideMutation::ReplaceBody(value),
-                GuideEdit::MarkStale => GuideMutation::MarkStale,
-            };
-            match plan_guide_mutation(&bound, mutation, &stamp).map_err(map_plan_failure)? {
-                MutationOutcome::NoOp => copy_bytes(bytes),
-                MutationOutcome::Candidate(candidate) => {
-                    copy_bytes(candidate.bound().source_bytes())
+            match edit {
+                GuideEdit::SetMetadata { title, summary } => {
+                    let title_candidate =
+                        apply_guide_mutation(&bound, GuideMutation::SetTitle(title), &stamp)?;
+                    let parsed =
+                        parse_guide_source(title_candidate).map_err(|_| PlanError::InvalidGuide)?;
+                    let rebound = bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
+                    apply_guide_mutation(&rebound, GuideMutation::SetSummary(summary), &stamp)
+                }
+                GuideEdit::SetTitle(value) => {
+                    apply_guide_mutation(&bound, GuideMutation::SetTitle(value), &stamp)
+                }
+                GuideEdit::SetSummary(value) => {
+                    apply_guide_mutation(&bound, GuideMutation::SetSummary(value), &stamp)
+                }
+                GuideEdit::ReplaceBody(value) => {
+                    apply_guide_mutation(&bound, GuideMutation::ReplaceBody(value), &stamp)
+                }
+                GuideEdit::MarkStale => {
+                    apply_guide_mutation(&bound, GuideMutation::MarkStale, &stamp)
                 }
             }
         },
@@ -505,6 +516,17 @@ pub(crate) fn update_guide_with_context(
         revision: result.revision(),
         changed: result.changed(),
     })
+}
+
+fn apply_guide_mutation(
+    bound: &BoundGuide,
+    mutation: GuideMutation,
+    stamp: &MutationStamp,
+) -> Result<Box<[u8]>, PlanError> {
+    match plan_guide_mutation(bound, mutation, stamp).map_err(map_plan_failure)? {
+        MutationOutcome::NoOp => copy_bytes(bound.source_bytes()),
+        MutationOutcome::Candidate(candidate) => copy_bytes(candidate.bound().source_bytes()),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -967,6 +989,54 @@ mod tests {
     }
 
     #[test]
+    fn metadata_update_is_atomic_revision_checked_and_preserves_body() {
+        let (workspace, state, mut view) = fixture("metadata-update", GUIDE);
+        let expected = revision(&view);
+        let outcome = update_guide(
+            &mut view,
+            state.path(),
+            None,
+            GuideId::from_str(GUIDE_ID).unwrap(),
+            expected,
+            GuideEdit::SetMetadata {
+                title: "Install an Application Tarball".to_owned(),
+                summary: "Extract and register a downloaded application archive.".to_owned(),
+            },
+        )
+        .unwrap();
+        assert!(outcome.changed());
+        assert_ne!(outcome.revision(), expected);
+        let guide = view.categories()[0].guides()[0].guide();
+        assert_eq!(guide.title(), "Install an Application Tarball");
+        assert_eq!(
+            guide.summary(),
+            "Extract and register a downloaded application archive."
+        );
+        assert_eq!(guide.body(), b"## Steps\n\nExtract the archive.\n");
+        let bytes = fs::read(workspace.path().join(GUIDE_PATH)).unwrap();
+        assert!(
+            bytes
+                .windows(19)
+                .any(|window| window == b"future_key: keep-me")
+        );
+
+        let no_op = update_guide(
+            &mut view,
+            state.path(),
+            None,
+            GuideId::from_str(GUIDE_ID).unwrap(),
+            outcome.revision(),
+            GuideEdit::SetMetadata {
+                title: "Install an Application Tarball".to_owned(),
+                summary: "Extract and register a downloaded application archive.".to_owned(),
+            },
+        )
+        .unwrap();
+        assert!(!no_op.changed());
+        assert_eq!(no_op.revision(), outcome.revision());
+    }
+
+    #[test]
     fn stale_or_externally_changed_revision_never_overwrites() {
         let (workspace, state, mut view) = fixture("conflict", GUIDE);
         let expected = revision(&view);
@@ -1007,7 +1077,10 @@ mod tests {
             expected,
             operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e23"),
             at(),
-            GuideEdit::SetSummary("Updated summary".to_owned()),
+            GuideEdit::SetMetadata {
+                title: "Install a Verified Tarball".to_owned(),
+                summary: "Updated summary".to_owned(),
+            },
         )
         .unwrap();
         assert!(outcome.changed());

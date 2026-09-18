@@ -777,6 +777,13 @@ h1 {
 }
 .guide-edit-button {
   flex: 0 0 auto;
+}
+.guide-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
   margin-left: 2px;
 }
 .guide-summary {
@@ -786,6 +793,35 @@ h1 {
   font-size: 14px;
   line-height: 21px;
   text-wrap: pretty;
+}
+.guide-details-form {
+  display: grid;
+  max-width: 68ch;
+  gap: 7px;
+  margin: 14px 0 18px;
+}
+.guide-details-form label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.guide-details-form input,
+.guide-details-form textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--divider-strong);
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 19px;
+}
+.guide-details-form textarea {
+  resize: vertical;
+}
+.guide-details-form input:focus-visible,
+.guide-details-form textarea:focus-visible {
+  border-color: var(--focus);
 }
 .guide-meta {
   display: flex;
@@ -1246,6 +1282,9 @@ h1 {
   }
   .guide-edit-button {
     margin-top: 12px;
+  }
+  .guide-header-actions {
+    justify-content: flex-start;
     margin-left: 0;
   }
   .editor-heading {
