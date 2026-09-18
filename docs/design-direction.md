@@ -1,7 +1,7 @@
 # Design Direction
 
 Status: Reference Desk approved for implementation
-Last reviewed with web-design-guidelines: 2026-09-05 (planning; no UI files existed)
+Last reviewed with web-design-guidelines: 2026-09-18 (Phase 2A implemented shell; closure pass)
 
 ## Experience principles
 
@@ -154,7 +154,7 @@ Before every formal code review, fetch the current rules named by `.codex/skills
 - explicit image dimensions/lazy loading if images appear; safe managed assets only;
 - system dark `color-scheme`, theme color, touch behavior, zoom, and 200% scaling.
 
-Planning review result: no UI files existed, so no file:line findings were possible. This direction incorporates the current 2026-09-05 upstream rules; code review is still required.
+Phase 2A review result: the implemented fixture-backed Reference Desk shell passed the current upstream rules after correcting accessible search naming, narrow focus restoration, responsive Workspace navigation, Arrow/Escape behavior, result announcements, light-theme contrast, keyboard-accessible command text, and visual evidence coverage. Real Workspace states and editor flows still require their own review before Phase 2 acceptance.
 
 ## Screenshot and manual review matrix
 

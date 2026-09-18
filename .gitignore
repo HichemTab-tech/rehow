@@ -3,6 +3,7 @@ target/
 apps/desktop/dist/
 apps/desktop/coverage/
 apps/desktop/.vite/
+apps/desktop/src-tauri/gen/
 .DS_Store
 *.swp
 .idea/
