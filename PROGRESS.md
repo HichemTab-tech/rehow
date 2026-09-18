@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 3E — Category renaming accepted; next is Category archive/restore.
+Phase 3F — Category archive/restore accepted; next is Category summary editing.
 
 ## Current task
 
-Expose bounded Category archive and restore through the existing mutation/revision boundary. MCP remains read-only.
+Add typed optional Category summary editing through the existing mutation/revision boundary. MCP remains read-only.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace, create and rename active Categories, create draft Guides, and edit Guide title, summary, and body through descriptor-confined recoverable writes. MCP remains read-only.
+In progress. A user can open or initialize a Workspace, create/rename/archive/restore Categories, create draft Guides, and edit Guide title, summary, and body through descriptor-confined recoverable writes. MCP remains read-only.
 
 ## Completed work
 
@@ -70,10 +70,11 @@ In progress. A user can open or initialize a Workspace, create and rename active
 - Added draft Guide creation at signed checkpoint `94d2f4e`: active-Category validation, canonical core-owned ID/time/path/frontmatter/body, journaled no-replace `0600` Markdown, refreshed native state, bounded structured IPC, and a keyboard-accessible create flow that opens directly in the existing editor. Creation cannot set `tested`.
 - Added atomic Guide title/summary editing at signed checkpoint `66af3d0`: one revision-checked recovery update preserves body, unknown metadata, and filename; no-ops preserve revision; tested Guides become stale; structured native errors and an accessible inline details editor handle validation, conflicts, focus, and unsaved changes.
 - Added Category renaming at signed checkpoint `959a239`: typed revision-checked descriptor mutation preserves summary/order/status/unknown metadata, every Guide, and the stable directory path; no-ops preserve revision; bounded structured IPC and an accessible inline rail form handle validation, conflict, focus, and discard behavior.
+- Added reversible Category archive/restore at signed checkpoint `4e77979`: typed revision-checked status transitions preserve directories and Guides, archived Categories reject new Guides, configured default Categories fail with actionable replacement guidance, and the Reference Desk exposes explicit busy/status/error states. Current-guideline review also added `content-visibility` containment for large Category and Guide lists.
 
 ## Work in progress
 
-- Category renaming is committed at signed checkpoint `959a239`. The next bounded batch is Category archive/restore through the already accepted Category mutation planner.
+- Category archive/restore is committed at signed checkpoint `4e77979`. The next bounded batch is optional Category summary editing, which requires a narrow typed planner extension.
 
 ## Remaining work
 
@@ -101,6 +102,7 @@ No known regression in accepted phases. If the process is killed after the initi
 - The draft Guide form follows the freshly fetched guideline set: labeled/named bounded fields, explicit active-Category select styling, inline focused errors, loading copy, discard warning, narrow reflow, and direct editor focus after success. Static self-review found no remaining issue; a rendered screenshot/browser interaction pass remains for the combined UI gate.
 - The current upstream guidelines were re-fetched for Guide details editing. The form has labeled/named bounded controls, visible focus, submit-time validation, inline focused errors, loading copy, tested-to-stale warning, discard/beforeunload protection, and narrow reflow. Static review found no blocking issue; browser-level interaction and screenshots remain for the combined UI gate.
 - The current upstream guidelines were re-fetched for Category rename. The compact rail form has a real label/name/autocomplete policy, visible focus, submit-time validation, inline focused errors, loading copy, discard/beforeunload protection, named semantic buttons, truncation, and narrow-safe wrapping. Static review found no blocking issue; the combined visual/browser gate remains open.
+- The current upstream guidelines were re-fetched for Category lifecycle controls. Archive/Restore remains immediately reversible in place, loading/error/status text is explicit, controls are semantic and keyboard-visible, and large Category/Guide lists now use `content-visibility: auto` with intrinsic sizes. Static review found no blocking issue; the combined visual/browser gate remains open.
 
 ## Security findings
 
@@ -132,6 +134,7 @@ No known regression in accepted phases. If the process is killed after the initi
 - The `94d2f4e` Guide-create adapter accepts only a Category ID plus bounded title/summary against retained native state. Rust verifies the Category is active, generates every authoritative field/path, emits only `draft`, opens the direct managed target without following links, journals a no-replace `0600` write, and refreshes before returning. No generic path, YAML, status, shell, Git, or MCP authority was added.
 - The `66af3d0` details adapter accepts only Guide ID, expected revision, title, and summary. Rust reparses under the writer lock, applies both typed mutations before one journaled replacement, preserves unknown/body/path bytes, rejects stale revisions and unsafe presentation, and refreshes native state. It adds no generic YAML/path/status/Git/MCP authority.
 - The `959a239` Category adapter accepts only Category ID, expected descriptor revision, and name. Rust reparses under the writer lock, verifies stable identity, applies only typed `SetName`, journals one atomic replacement, verifies the directory did not move, and refreshes native state. It adds no generic YAML/path/time/operation/Git/MCP authority.
+- The `4e77979` lifecycle adapter accepts only Category ID, expected revision, and a Boolean intent mapped to closed Archive/Restore mutations. It refuses archiving the manifest's default Category, preserves every path/Guide/unknown field, and performs one journaled replacement. It adds no delete/move/generic status/Git/MCP authority.
 
 ## Blockers and human checkpoints
 
@@ -141,10 +144,11 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Latest verified commit
 
-`959a239` — signed revision-checked Category renaming across core, native adapter, and Reference Desk UI.
+`4e77979` — signed revision-checked Category archive/restore across core, native adapter, and Reference Desk UI.
 
 ## Tests last run and results
 
+- 2026-09-18: Category archive/restore checkpoint at `4e77979`: Cargo formatting, `pnpm check/test/build`, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 241 core library tests, 8 desktop Rust tests, 17 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused evidence covers reversible status/path/content preservation, archived-create refusal, default-Category refusal, native stable errors, explicit UI lifecycle state, large-list containment, and current-guideline static review.
 - 2026-09-18: Category rename checkpoint at `959a239`: Cargo formatting, `pnpm check/test/build`, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 239 core library tests, 8 desktop Rust tests, 17 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused evidence covers rename/path stability, no-op revision stability, invalid/stale refusal, native revision payload/codes, UI normalization, error/focus/discard behavior, and current-guideline static review.
 - 2026-09-18: Guide details checkpoint at `66af3d0`: Cargo formatting, `pnpm check/test/build`, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 237 core library tests, 7 desktop Rust tests, 16 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused evidence covers atomic title+summary, body/unknown/path preservation, no-op revision stability, tested-to-stale, hardlink refusal, stable native conflict codes, UI normalization, focus/error/discard behavior, and current-guideline static review.
 - 2026-09-18: draft Guide creation checkpoint at `94d2f4e`: Cargo formatting, `pnpm check/test/build`, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 236 core library tests, 7 desktop Rust tests, 15 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused coverage proves canonical draft/frontmatter/body/path, Unicode slug fallback, active Category correlation, no-write validation, `0600` mode, structured native errors/category status, UI normalization, and static accessible form semantics.
@@ -277,10 +281,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `docs/task-packets/phase-3c-guide-create.md` plus the generic confined create boundary, Guide application flow, Tauri adapter, create/editor handoff, styles, and tests implement draft Guide creation at `94d2f4e`.
 - `docs/task-packets/phase-3d-guide-details-edit.md` plus the combined application edit, native command/error mapping, inline details UI, styles, and tests implement Guide title/summary editing at `66af3d0`.
 - `docs/task-packets/phase-3e-category-rename.md` plus the Category application update, descriptor revision payload, native command/error mapping, inline rail form, styles, and tests implement Category renaming at `959a239`.
+- `docs/task-packets/phase-3f-category-archive-restore.md` plus the typed lifecycle application path, default-Category safeguard, native Boolean command, rail controls, list containment, and tests implement Category archive/restore at `4e77979`.
 
 ## Next recommended action
 
-Expose Category archive/restore through the existing revision-checked mutation planner and native session. Keep content in place, prevent new Guides in archived Categories, and keep MCP read-only.
+Extend the private Category planner with typed `SetSummary(Option<String>)`, then expose revision-checked optional summary editing without changing any path or status. Keep MCP read-only.
 
 ## Recommended agent role and reasoning effort
 
@@ -291,6 +296,6 @@ Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents for routine work; us
 1. Read `AGENTS.md` and this file.
 2. Read the Category mutation sections of `docs/content-model.md`, ADR 0009/0014, and the threat model.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `959a239`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `4e77979`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Resume with bounded Category archive/restore; do not move/delete content, add generic YAML, or add Git/MCP writes.
+6. Resume with bounded Category summary editing; do not move/delete content, add generic YAML, or add Git/MCP writes.
