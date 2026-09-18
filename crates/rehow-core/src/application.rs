@@ -1735,6 +1735,31 @@ mod tests {
     }
 
     #[test]
+    fn changed_attachment_refresh_retains_the_last_compatible_view() {
+        let guide = GUIDE.replacen(
+            "status: draft\n",
+            "attachments:\n  - id: 0199a264-ef5f-73b4-a238-a71ba1509898\n    path: attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/example.txt\n    title: Example text\n    sha256: 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\n    size_bytes: 5\nstatus: draft\n",
+            1,
+        );
+        let (workspace, _state, mut view) = fixture("attachment-refresh-failure", &guide);
+        let original_revision = revision(&view);
+        let directory = workspace.path().join("attachments").join(GUIDE_ID);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("example.txt"), b"hello").unwrap();
+        crate::storage::set_attachment_changed_fault();
+
+        assert_eq!(
+            refresh_open_workspace(&mut view),
+            Err(WorkspaceRefreshError::ChangedDuringRead)
+        );
+        assert_eq!(revision(&view), original_revision);
+        assert_eq!(
+            view.categories()[0].guides()[0].guide().title(),
+            "Install a Tarball"
+        );
+    }
+
+    #[test]
     fn initialization_refuses_every_change_after_selection() {
         let changed = TestDirectory::new("initialize-changed");
         let state = TestDirectory::new("initialize-state");

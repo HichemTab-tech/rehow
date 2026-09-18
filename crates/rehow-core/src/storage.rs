@@ -13,6 +13,11 @@ pub(crate) use recovery::{
     WorkspaceInitializeError, WorkspaceInitializeOutcome,
 };
 
+#[cfg(test)]
+pub(crate) fn set_attachment_changed_fault() {
+    linux::set_attachment_changed_fault();
+}
+
 #[cfg(not(target_os = "linux"))]
 compile_error!("Rehow's confined Workspace storage currently requires Linux");
 
@@ -20,7 +25,11 @@ use crate::{
     domain::{Category, Guide, GuideStatus, WorkspaceManifest},
     protocol::Revision,
 };
-use std::{collections::HashSet, fmt, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    path::Path,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspaceIssueKind {
@@ -34,6 +43,10 @@ pub enum WorkspaceIssueKind {
     DuplicateCategoryId,
     DuplicateGuideId,
     VerificationMismatch,
+    MissingAttachment,
+    OrphanAttachment,
+    AttachmentHashMismatch,
+    AttachmentSizeMismatch,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -231,6 +244,10 @@ const GUIDE_LIMIT: usize = 2 * 1024 * 1024;
 const CATEGORY_LIMIT: usize = 1_000;
 const GUIDE_COUNT_LIMIT: usize = 10_000;
 const MANAGED_BYTES_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
+const ATTACHMENT_COUNT_LIMIT: usize = 10_000;
+const ATTACHMENT_FILE_LIMIT: u64 = 64 * 1024 * 1024;
+const ATTACHMENT_BYTES_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
+const ISSUE_LIMIT: usize = 10_000;
 const GIT_ANCESTOR_LIMIT: usize = 64;
 
 pub(crate) struct DocumentUpdateRequest {
@@ -775,6 +792,8 @@ fn inspect_open_root(
             .then_with(|| left.relative_directory.cmp(&right.relative_directory))
     });
 
+    inspect_attachments(&root, &categories, &mut issues)?;
+
     Ok(WorkspaceInspection::Compatible(Box::new(WorkspaceView {
         _root: root,
         manifest,
@@ -782,6 +801,224 @@ fn inspect_open_root(
         categories,
         issues,
     })))
+}
+
+struct ExpectedAttachment {
+    sha256: String,
+    size_bytes: Option<u64>,
+}
+
+fn inspect_attachments(
+    root: &linux::DirectoryCapability,
+    categories: &[LoadedCategory],
+    issues: &mut Vec<WorkspaceIssue>,
+) -> Result<(), WorkspaceInspectError> {
+    let mut expected = HashMap::new();
+    let mut declared_count = 0usize;
+    for category in categories {
+        for guide in category.guides() {
+            for attachment in guide.guide().attachments().unwrap_or_default() {
+                increment_attachment_count(&mut declared_count)?;
+                expected
+                    .try_reserve(1)
+                    .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
+                expected.insert(
+                    copy_inspection_text(attachment.path())?,
+                    ExpectedAttachment {
+                        sha256: copy_inspection_text(attachment.sha256())?,
+                        size_bytes: attachment.size_bytes(),
+                    },
+                );
+            }
+        }
+    }
+
+    let attachments = match root.open_directory("attachments") {
+        Ok(directory) => directory,
+        Err(linux::OpenDirectoryError::Missing) => {
+            push_missing_attachments(&expected, issues)?;
+            return Ok(());
+        }
+        Err(linux::OpenDirectoryError::Unsafe) => {
+            push_issue(
+                issues,
+                "attachments".to_owned(),
+                WorkspaceIssueKind::UnsafeEntry,
+            )?;
+            return Ok(());
+        }
+        Err(linux::OpenDirectoryError::Io(error)) => return Err(map_io(error)),
+    };
+
+    let mut guide_directories = attachments.entries(ATTACHMENT_COUNT_LIMIT)?;
+    guide_directories.sort_unstable();
+    let mut candidate_count = 0usize;
+    let mut aggregate_bytes = 0u64;
+    for guide_directory in guide_directories {
+        if guide_directory.parse::<crate::protocol::GuideId>().is_err() {
+            push_issue(
+                issues,
+                "attachments/<unsupported>".to_owned(),
+                WorkspaceIssueKind::UnsupportedEntry,
+            )?;
+            continue;
+        }
+        let directory = match attachments.open_directory(&guide_directory) {
+            Ok(directory) => directory,
+            Err(linux::OpenDirectoryError::Missing) => continue,
+            Err(linux::OpenDirectoryError::Unsafe) => {
+                push_issue(
+                    issues,
+                    format!("attachments/{guide_directory}"),
+                    WorkspaceIssueKind::UnsafeEntry,
+                )?;
+                continue;
+            }
+            Err(linux::OpenDirectoryError::Io(error)) => return Err(map_io(error)),
+        };
+        let remaining = ATTACHMENT_COUNT_LIMIT.saturating_sub(candidate_count);
+        let mut filenames = directory.entries(remaining)?;
+        filenames.sort_unstable();
+        if filenames.is_empty() {
+            push_issue(
+                issues,
+                format!("attachments/{guide_directory}"),
+                WorkspaceIssueKind::OrphanAttachment,
+            )?;
+        }
+        for filename in filenames {
+            increment_attachment_count(&mut candidate_count)?;
+            let relative_path = format!("attachments/{guide_directory}/{filename}");
+            if !valid_attachment_filename(&filename) {
+                push_issue(
+                    issues,
+                    format!("attachments/{guide_directory}/<unsupported>"),
+                    WorkspaceIssueKind::UnsupportedEntry,
+                )?;
+                continue;
+            }
+            let remaining_bytes = ATTACHMENT_BYTES_LIMIT.saturating_sub(aggregate_bytes);
+            let streamed = match directory.hash_attachment(
+                &filename,
+                ATTACHMENT_FILE_LIMIT,
+                remaining_bytes,
+            ) {
+                Ok(streamed) => streamed,
+                Err(linux::AttachmentReadError::Unsafe) => {
+                    push_issue(issues, relative_path, WorkspaceIssueKind::UnsafeEntry)?;
+                    continue;
+                }
+                Err(linux::AttachmentReadError::TooLarge(size)) => {
+                    add_attachment_bytes(&mut aggregate_bytes, size)?;
+                    push_issue(issues, relative_path, WorkspaceIssueKind::FileTooLarge)?;
+                    continue;
+                }
+                Err(linux::AttachmentReadError::AggregateLimit) => {
+                    return Err(WorkspaceInspectError::ResourceLimit);
+                }
+                Err(linux::AttachmentReadError::Changed) => {
+                    return Err(WorkspaceInspectError::ChangedDuringRead);
+                }
+                Err(linux::AttachmentReadError::Io(error)) => return Err(map_io(error)),
+            };
+            add_attachment_bytes(&mut aggregate_bytes, streamed.size)?;
+            match expected.remove(&relative_path) {
+                Some(metadata) => {
+                    if metadata.sha256.as_bytes() != hex_sha256(&streamed.sha256).as_bytes() {
+                        push_issue(
+                            issues,
+                            relative_path.clone(),
+                            WorkspaceIssueKind::AttachmentHashMismatch,
+                        )?;
+                    }
+                    if metadata
+                        .size_bytes
+                        .is_some_and(|declared| declared != streamed.size)
+                    {
+                        push_issue(
+                            issues,
+                            relative_path,
+                            WorkspaceIssueKind::AttachmentSizeMismatch,
+                        )?;
+                    }
+                }
+                None => push_issue(issues, relative_path, WorkspaceIssueKind::OrphanAttachment)?,
+            }
+        }
+    }
+    push_missing_attachments(&expected, issues)?;
+    Ok(())
+}
+
+fn push_missing_attachments(
+    expected: &HashMap<String, ExpectedAttachment>,
+    issues: &mut Vec<WorkspaceIssue>,
+) -> Result<(), WorkspaceInspectError> {
+    let mut missing = Vec::new();
+    missing
+        .try_reserve_exact(expected.len())
+        .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
+    missing.extend(expected.keys());
+    missing.sort_unstable();
+    for path in missing {
+        push_issue(
+            issues,
+            copy_inspection_text(path)?,
+            WorkspaceIssueKind::MissingAttachment,
+        )?;
+    }
+    Ok(())
+}
+
+fn copy_inspection_text(value: &str) -> Result<String, WorkspaceInspectError> {
+    let mut output = String::new();
+    output
+        .try_reserve_exact(value.len())
+        .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
+    output.push_str(value);
+    Ok(output)
+}
+
+fn add_attachment_bytes(total: &mut u64, amount: u64) -> Result<(), WorkspaceInspectError> {
+    *total = total
+        .checked_add(amount)
+        .ok_or(WorkspaceInspectError::ResourceLimit)?;
+    if *total > ATTACHMENT_BYTES_LIMIT {
+        return Err(WorkspaceInspectError::ResourceLimit);
+    }
+    Ok(())
+}
+
+fn increment_attachment_count(count: &mut usize) -> Result<(), WorkspaceInspectError> {
+    if *count >= ATTACHMENT_COUNT_LIMIT {
+        return Err(WorkspaceInspectError::ResourceLimit);
+    }
+    *count += 1;
+    Ok(())
+}
+
+fn valid_attachment_filename(value: &str) -> bool {
+    use unicode_normalization::UnicodeNormalization;
+    !value.is_empty()
+        && value.len() <= 255
+        && value != "."
+        && value != ".."
+        && !value.contains(['/', '\\', '\0'])
+        && value.nfc().eq(value.chars())
+        && !value.chars().any(|character| {
+            matches!(character as u32, 0x00..=0x1f|0x7f..=0x9f|0x061c|0x200e|0x200f|0x2028..=0x202e|0x2066..=0x2069|0xfeff|0xfdd0..=0xfdef)
+                || matches!(character as u32 & 0xffff, 0xfffe | 0xffff)
+        })
+}
+
+fn hex_sha256(bytes: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(64);
+    for byte in bytes {
+        output.push(HEX[usize::from(byte >> 4)] as char);
+        output.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    output
 }
 
 fn inspect_folder_facts(
@@ -917,6 +1154,9 @@ fn push_issue(
     relative_path: String,
     kind: WorkspaceIssueKind,
 ) -> Result<(), WorkspaceInspectError> {
+    if issues.len() >= ISSUE_LIMIT {
+        return Err(WorkspaceInspectError::ResourceLimit);
+    }
     issues
         .try_reserve(1)
         .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
@@ -982,6 +1222,19 @@ mod linux {
         Io(io::Error),
     }
 
+    pub(super) enum AttachmentReadError {
+        Unsafe,
+        TooLarge(u64),
+        AggregateLimit,
+        Changed,
+        Io(io::Error),
+    }
+
+    pub(super) struct StreamedAttachment {
+        pub(super) size: u64,
+        pub(super) sha256: [u8; 32],
+    }
+
     pub(super) enum GitMarker {
         Missing,
         Repository,
@@ -1025,6 +1278,18 @@ mod linux {
     #[cfg(test)]
     thread_local! {
         static MANAGED_FAULT: std::cell::Cell<Option<ManagedFault>> = const { std::cell::Cell::new(None) };
+        static ATTACHMENT_CHANGED_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static ATTACHMENT_GROWTH_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_attachment_changed_fault() {
+        ATTACHMENT_CHANGED_FAULT.set(true);
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_attachment_growth_fault() {
+        ATTACHMENT_GROWTH_FAULT.set(true);
     }
 
     #[cfg(test)]
@@ -1260,6 +1525,104 @@ mod linux {
         ) -> Result<Vec<u8>, EntryReadError> {
             self.read_regular_state(name, limit)
                 .map(|state| state.bytes)
+        }
+
+        pub(super) fn hash_attachment(
+            &self,
+            name: &str,
+            file_limit: u64,
+            aggregate_remaining: u64,
+        ) -> Result<StreamedAttachment, AttachmentReadError> {
+            use sha2::Digest;
+
+            let name = component(name).map_err(|_| AttachmentReadError::Unsafe)?;
+            // SAFETY: the directory descriptor and NUL-terminated component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+                )
+            };
+            if raw < 0 {
+                let error = io::Error::last_os_error();
+                return match error.raw_os_error() {
+                    Some(libc::ELOOP) | Some(libc::ENXIO) | Some(libc::ENODEV) => {
+                        Err(AttachmentReadError::Unsafe)
+                    }
+                    _ => Err(AttachmentReadError::Io(error)),
+                };
+            }
+            // SAFETY: a successful `openat` returns a newly owned descriptor.
+            let mut file = unsafe { File::from_raw_fd(raw) };
+            let metadata = file.metadata().map_err(AttachmentReadError::Io)?;
+            if !metadata.file_type().is_file() || metadata.nlink() != 1 {
+                return Err(AttachmentReadError::Unsafe);
+            }
+            if metadata.len() > aggregate_remaining {
+                return Err(AttachmentReadError::AggregateLimit);
+            }
+            if metadata.len() > file_limit {
+                return Err(AttachmentReadError::TooLarge(metadata.len()));
+            }
+
+            let mut hasher = sha2::Sha256::new();
+            let mut buffer = [0_u8; 64 * 1024];
+            let mut size = 0_u64;
+            loop {
+                let remaining_file = file_limit.saturating_sub(size).saturating_add(1);
+                let remaining_aggregate =
+                    aggregate_remaining.saturating_sub(size).saturating_add(1);
+                let read_limit = usize::try_from(
+                    remaining_file
+                        .min(remaining_aggregate)
+                        .min(buffer.len() as u64),
+                )
+                .map_err(|_| AttachmentReadError::TooLarge(size))?;
+                let read = file
+                    .read(&mut buffer[..read_limit])
+                    .map_err(AttachmentReadError::Io)?;
+                if read == 0 {
+                    break;
+                }
+                size = size
+                    .checked_add(read as u64)
+                    .ok_or(AttachmentReadError::Changed)?;
+                #[cfg(test)]
+                if ATTACHMENT_GROWTH_FAULT.replace(false) {
+                    size = file_limit.saturating_add(1);
+                }
+                if size > file_limit || size > aggregate_remaining {
+                    return Err(AttachmentReadError::Changed);
+                }
+                hasher.update(&buffer[..read]);
+            }
+
+            #[cfg(test)]
+            if ATTACHMENT_CHANGED_FAULT.replace(false) {
+                return Err(AttachmentReadError::Changed);
+            }
+
+            let final_metadata = file.metadata().map_err(AttachmentReadError::Io)?;
+            if !final_metadata.file_type().is_file() || final_metadata.nlink() != 1 {
+                return Err(AttachmentReadError::Unsafe);
+            }
+            if metadata.dev() != final_metadata.dev()
+                || metadata.ino() != final_metadata.ino()
+                || metadata.len() != final_metadata.len()
+                || metadata.mtime() != final_metadata.mtime()
+                || metadata.mtime_nsec() != final_metadata.mtime_nsec()
+                || metadata.ctime() != final_metadata.ctime()
+                || metadata.ctime_nsec() != final_metadata.ctime_nsec()
+                || metadata.mode() != final_metadata.mode()
+                || size != final_metadata.len()
+            {
+                return Err(AttachmentReadError::Changed);
+            }
+            Ok(StreamedAttachment {
+                size,
+                sha256: hasher.finalize().into(),
+            })
         }
 
         fn read_regular_state(
@@ -2022,8 +2385,208 @@ mod tests {
         fs::write(category.join("install--36c5735e10.md"), GUIDE).unwrap();
     }
 
+    fn write_attachment_guide(root: &Path, sha256: &str, size: u64) -> PathBuf {
+        let category = root.join("categories/linux-system--b6ba3a5551");
+        let guide = GUIDE.replacen(
+            "status: draft\n",
+            &format!(
+                "attachments:\n  - id: 0199a264-ef5f-73b4-a238-a71ba1509898\n    path: attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/example.txt\n    title: Example text\n    sha256: {sha256}\n    size_bytes: {size}\nstatus: draft\n"
+            ),
+            1,
+        );
+        fs::write(category.join("install--36c5735e10.md"), guide).unwrap();
+        let directory = root
+            .join("attachments")
+            .join("0199a1d7-7b0d-7d8e-a38d-f936c5735e10");
+        fs::create_dir_all(&directory).unwrap();
+        directory.join("example.txt")
+    }
+
     fn classification(root: &Path) -> WorkspaceInspection {
         inspect_workspace(root).unwrap().into_parts().1
+    }
+
+    #[test]
+    fn correlates_attachment_hash_and_size_without_loading_bytes_into_the_view() {
+        let root = TestDirectory::new();
+        write_compatible(root.path());
+        let path = write_attachment_guide(
+            root.path(),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            5,
+        );
+        fs::write(path, b"hello").unwrap();
+
+        let WorkspaceInspection::Compatible(view) = classification(root.path()) else {
+            panic!("expected compatible Workspace");
+        };
+        assert!(view.issues().is_empty());
+    }
+
+    #[test]
+    fn reports_missing_orphan_hash_and_size_attachment_issues() {
+        let root = TestDirectory::new();
+        write_compatible(root.path());
+        let path = write_attachment_guide(
+            root.path(),
+            "0cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            4,
+        );
+        fs::write(&path, b"hello").unwrap();
+        let orphan_directory = root
+            .path()
+            .join("attachments")
+            .join("0199a1d7-7b0d-7d8e-a38d-f936c5735e11");
+        fs::create_dir(&orphan_directory).unwrap();
+        fs::write(orphan_directory.join("orphan.txt"), b"orphan").unwrap();
+
+        let WorkspaceInspection::Compatible(view) = classification(root.path()) else {
+            panic!("expected compatible Workspace");
+        };
+        let kinds = view
+            .issues()
+            .iter()
+            .map(WorkspaceIssue::kind)
+            .collect::<Vec<_>>();
+        assert!(
+            view.issues()
+                .iter()
+                .any(|issue| issue.kind() == WorkspaceIssueKind::AttachmentHashMismatch),
+            "{kinds:?}"
+        );
+        assert!(
+            view.issues()
+                .iter()
+                .any(|issue| issue.kind() == WorkspaceIssueKind::AttachmentSizeMismatch)
+        );
+        assert!(
+            view.issues()
+                .iter()
+                .any(|issue| issue.kind() == WorkspaceIssueKind::OrphanAttachment)
+        );
+
+        fs::remove_file(path).unwrap();
+        let WorkspaceInspection::Compatible(view) = classification(root.path()) else {
+            panic!("expected compatible Workspace");
+        };
+        assert!(
+            view.issues()
+                .iter()
+                .any(|issue| issue.kind() == WorkspaceIssueKind::MissingAttachment)
+        );
+    }
+
+    #[test]
+    fn refuses_symlink_and_hardlinked_attachment_candidates() {
+        use std::os::unix::fs::symlink;
+
+        let root = TestDirectory::new();
+        write_compatible(root.path());
+        let path = write_attachment_guide(
+            root.path(),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            5,
+        );
+        let source = root.path().join("source.txt");
+        fs::write(&source, b"hello").unwrap();
+        fs::hard_link(&source, &path).unwrap();
+        let WorkspaceInspection::Compatible(view) = classification(root.path()) else {
+            panic!("expected compatible Workspace");
+        };
+        assert!(
+            view.issues()
+                .iter()
+                .any(|issue| issue.kind() == WorkspaceIssueKind::UnsafeEntry)
+        );
+
+        fs::remove_file(&path).unwrap();
+        symlink(&source, &path).unwrap();
+        let WorkspaceInspection::Compatible(view) = classification(root.path()) else {
+            panic!("expected compatible Workspace");
+        };
+        assert!(
+            view.issues()
+                .iter()
+                .any(|issue| issue.kind() == WorkspaceIssueKind::UnsafeEntry)
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_attachment_hierarchy_and_special_files() {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt, os::unix::net::UnixListener};
+
+        let root = TestDirectory::new();
+        write_compatible(root.path());
+        let attachments = root.path().join("attachments");
+        let invalid_directory = attachments.join("not-a-guide-id");
+        fs::create_dir_all(&invalid_directory).unwrap();
+        fs::write(invalid_directory.join("file.txt"), b"ignored").unwrap();
+        let directory = attachments.join("0199a1d7-7b0d-7d8e-a38d-f936c5735e10");
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("bad\\name"), b"ignored").unwrap();
+        let fifo = directory.join("pipe");
+        let fifo = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: the path is a valid NUL-terminated test path in an isolated directory.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let _socket = UnixListener::bind(directory.join("socket")).unwrap();
+
+        let WorkspaceInspection::Compatible(view) = classification(root.path()) else {
+            panic!("expected compatible Workspace");
+        };
+        assert!(
+            view.issues()
+                .iter()
+                .filter(|issue| issue.kind() == WorkspaceIssueKind::UnsupportedEntry)
+                .count()
+                >= 2
+        );
+        assert_eq!(
+            view.issues()
+                .iter()
+                .filter(|issue| issue.kind() == WorkspaceIssueKind::UnsafeEntry)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn attachment_stream_and_aggregate_limits_accept_exact_and_refuse_one_over() {
+        let root = TestDirectory::new();
+        fs::write(root.path().join("five"), b"12345").unwrap();
+        fs::write(root.path().join("six"), b"123456").unwrap();
+        let capability = linux::DirectoryCapability::open_root(root.path()).unwrap();
+        let Ok(exact) = capability.hash_attachment("five", 5, 5) else {
+            panic!("exact Attachment limit should hash");
+        };
+        assert_eq!(exact.size, 5);
+        assert!(matches!(
+            capability.hash_attachment("six", 5, 10),
+            Err(linux::AttachmentReadError::TooLarge(6))
+        ));
+        assert!(matches!(
+            capability.hash_attachment("six", 10, 5),
+            Err(linux::AttachmentReadError::AggregateLimit)
+        ));
+        linux::set_attachment_growth_fault();
+        assert!(matches!(
+            capability.hash_attachment("five", 5, 5),
+            Err(linux::AttachmentReadError::Changed)
+        ));
+
+        let mut total = ATTACHMENT_BYTES_LIMIT;
+        assert!(add_attachment_bytes(&mut total, 0).is_ok());
+        assert_eq!(
+            add_attachment_bytes(&mut total, 1),
+            Err(WorkspaceInspectError::ResourceLimit)
+        );
+
+        let mut count = ATTACHMENT_COUNT_LIMIT - 1;
+        assert!(increment_attachment_count(&mut count).is_ok());
+        assert_eq!(count, ATTACHMENT_COUNT_LIMIT);
+        assert_eq!(
+            increment_attachment_count(&mut count),
+            Err(WorkspaceInspectError::ResourceLimit)
+        );
     }
 
     #[test]
