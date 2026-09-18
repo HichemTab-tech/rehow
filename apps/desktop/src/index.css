@@ -874,6 +874,12 @@ h1 {
   gap: 6px;
   margin-left: 2px;
 }
+.guide-status-button {
+  color: var(--warning);
+}
+.guide-status-error {
+  margin-top: 10px;
+}
 .guide-summary {
   max-width: 68ch;
   margin: 10px 0 18px;

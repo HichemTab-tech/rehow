@@ -903,6 +903,8 @@ pub enum GuideEdit {
     SetMetadata { title: String, summary: String },
     ReplaceBody(Vec<u8>),
     MarkStale,
+    Archive,
+    Restore,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -954,6 +956,28 @@ pub fn update_guide(
         new_operation_id(),
         current_timestamp(),
         edit,
+    )
+}
+
+pub fn set_guide_archived(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_id: GuideId,
+    expected_revision: Revision,
+    archived: bool,
+) -> Result<GuideUpdateOutcome, GuideUpdateError> {
+    update_guide(
+        workspace,
+        state_home,
+        runtime_directory,
+        guide_id,
+        expected_revision,
+        if archived {
+            GuideEdit::Archive
+        } else {
+            GuideEdit::Restore
+        },
     )
 }
 
@@ -1017,6 +1041,8 @@ pub(crate) fn update_guide_with_context(
                 GuideEdit::MarkStale => {
                     apply_guide_mutation(&bound, GuideMutation::MarkStale, &stamp)
                 }
+                GuideEdit::Archive => apply_guide_mutation(&bound, GuideMutation::Archive, &stamp),
+                GuideEdit::Restore => apply_guide_mutation(&bound, GuideMutation::Restore, &stamp),
             }
         },
     )
@@ -2146,6 +2172,67 @@ mod tests {
                 GuideEdit::MarkStale,
             ),
             Err(GuideUpdateError::UnsafeStorage)
+        );
+    }
+
+    #[test]
+    fn archives_and_restores_guide_without_moving_or_losing_content() {
+        let (workspace, state, mut view) = fixture("guide-archive", GUIDE);
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let original_path = view.categories()[0].guides()[0].relative_path().to_owned();
+        let original_body = view.categories()[0].guides()[0].guide().body().to_owned();
+        let expected = revision(&view);
+
+        let archived =
+            set_guide_archived(&mut view, state.path(), None, guide_id, expected, true).unwrap();
+        assert!(archived.changed());
+        let loaded = &view.categories()[0].guides()[0];
+        assert_eq!(loaded.guide().declared_status(), GuideStatus::Archived);
+        assert_eq!(loaded.relative_path(), original_path);
+        assert_eq!(loaded.guide().body(), original_body);
+        let archived_bytes = fs::read(workspace.path().join(GUIDE_PATH)).unwrap();
+        assert!(
+            archived_bytes
+                .windows(19)
+                .any(|value| value == b"future_key: keep-me")
+        );
+
+        assert_eq!(
+            set_guide_archived(&mut view, state.path(), None, guide_id, expected, false,),
+            Err(GuideUpdateError::RevisionConflict)
+        );
+
+        let restored = set_guide_archived(
+            &mut view,
+            state.path(),
+            None,
+            guide_id,
+            archived.revision(),
+            false,
+        )
+        .unwrap();
+        assert!(restored.changed());
+        let loaded = &view.categories()[0].guides()[0];
+        assert_eq!(loaded.guide().declared_status(), GuideStatus::Draft);
+        assert_eq!(loaded.relative_path(), original_path);
+        assert_eq!(loaded.guide().body(), original_body);
+        assert!(workspace.path().join(GUIDE_PATH).is_file());
+    }
+
+    #[test]
+    fn restoring_an_active_guide_is_an_invalid_edit() {
+        let (_workspace, state, mut view) = fixture("guide-restore-active", GUIDE);
+        let expected = revision(&view);
+        assert_eq!(
+            set_guide_archived(
+                &mut view,
+                state.path(),
+                None,
+                GuideId::from_str(GUIDE_ID).unwrap(),
+                expected,
+                false,
+            ),
+            Err(GuideUpdateError::InvalidEdit)
         );
     }
 }

@@ -53,6 +53,8 @@ pub(crate) enum GuideMutation {
     ChangeCategory(CategoryId),
     ReplaceBody(Vec<u8>),
     MarkStale,
+    Archive,
+    Restore,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
@@ -65,6 +67,7 @@ pub(crate) enum MutationEffect {
     CategoryId,
     UpdatedAt,
     ArchivedFromStatus,
+    ArchivedAt,
     Body,
 }
 
@@ -90,6 +93,7 @@ pub(crate) enum MutationField {
     CategoryId,
     UpdatedAt,
     ArchivedFromStatus,
+    ArchivedAt,
     Body,
     Document,
 }
@@ -390,6 +394,7 @@ pub(crate) fn plan_guide_mutation(
     let mut expected_category = record.category_id();
     let mut expected_body = record.body();
     let explicit_mark_stale;
+    let lifecycle_edit;
 
     match &mutation {
         GuideMutation::SetTitle(value) => {
@@ -410,6 +415,7 @@ pub(crate) fn plan_guide_mutation(
                 MutationField::Title,
             ));
             explicit_mark_stale = false;
+            lifecycle_edit = GuideLifecycleEdit::None;
         }
         GuideMutation::SetSummary(value) => {
             if !super::valid_text(value, 500) {
@@ -429,6 +435,7 @@ pub(crate) fn plan_guide_mutation(
                 MutationField::Summary,
             ));
             explicit_mark_stale = false;
+            lifecycle_edit = GuideLifecycleEdit::None;
         }
         GuideMutation::ChangeCategory(value) => {
             if value == record.category_id() {
@@ -443,6 +450,7 @@ pub(crate) fn plan_guide_mutation(
                 MutationField::CategoryId,
             ));
             explicit_mark_stale = false;
+            lifecycle_edit = GuideLifecycleEdit::None;
         }
         GuideMutation::ReplaceBody(value) => {
             core::str::from_utf8(value)
@@ -457,6 +465,7 @@ pub(crate) fn plan_guide_mutation(
             copy.extend_from_slice(value);
             body_replacement = Some(copy.into_boxed_slice());
             explicit_mark_stale = false;
+            lifecycle_edit = GuideLifecycleEdit::None;
         }
         GuideMutation::MarkStale => {
             let already_stale = match record.declared_status() {
@@ -470,10 +479,35 @@ pub(crate) fn plan_guide_mutation(
                 return Ok(MutationOutcome::NoOp);
             }
             explicit_mark_stale = true;
+            lifecycle_edit = GuideLifecycleEdit::None;
+        }
+        GuideMutation::Archive => {
+            let archived_from = match record.declared_status() {
+                GuideStatus::Draft => RestorableGuideStatus::Draft,
+                GuideStatus::Tested | GuideStatus::Stale => RestorableGuideStatus::Stale,
+                GuideStatus::Archived => return Ok(MutationOutcome::NoOp),
+            };
+            explicit_mark_stale = false;
+            lifecycle_edit = GuideLifecycleEdit::Archive(archived_from);
+        }
+        GuideMutation::Restore => {
+            let Some(archive) = record.archive() else {
+                return Err(failure(
+                    MutationFailureKind::InvalidTransition,
+                    MutationField::Status,
+                ));
+            };
+            let restored_status = match archive.archived_from_status() {
+                RestorableGuideStatus::Draft => GuideStatus::Draft,
+                RestorableGuideStatus::Tested | RestorableGuideStatus::Stale => GuideStatus::Stale,
+            };
+            explicit_mark_stale = false;
+            lifecycle_edit = GuideLifecycleEdit::Restore(restored_status);
         }
     }
 
-    let target_field = if explicit_mark_stale {
+    let target_field = if explicit_mark_stale || !matches!(lifecycle_edit, GuideLifecycleEdit::None)
+    {
         MutationField::Status
     } else {
         target_edit
@@ -514,8 +548,80 @@ pub(crate) fn plan_guide_mutation(
         effects.push(MutationEffect::Body);
     }
 
-    let (expected_status, expected_archived_from) =
-        stale_guide_if_required(bound, explicit_mark_stale, &mut edits, &mut effects)?;
+    let (expected_status, expected_archived_from, expected_archived_at) = match lifecycle_edit {
+        GuideLifecycleEdit::None => {
+            let (status, archived_from) =
+                stale_guide_if_required(bound, explicit_mark_stale, &mut edits, &mut effects)?;
+            (
+                status,
+                archived_from,
+                record.archive().map(|archive| *archive.archived_at()),
+            )
+        }
+        GuideLifecycleEdit::Archive(archived_from) => {
+            replace_root_value(
+                bound.parsed().yaml(),
+                bound.source_bytes(),
+                "status",
+                Box::<[u8]>::from(b"archived".as_slice()),
+                MutationEffect::Status,
+                MutationField::Status,
+                &mut edits,
+            )?;
+            effects.push(MutationEffect::Status);
+            insert_archive_metadata_before(
+                bound.parsed().yaml(),
+                bound.source_bytes(),
+                archived_from,
+                updated_at,
+                &mut edits,
+            )?;
+            effects.push(MutationEffect::ArchivedFromStatus);
+            effects.push(MutationEffect::ArchivedAt);
+            (GuideStatus::Archived, Some(archived_from), Some(updated_at))
+        }
+        GuideLifecycleEdit::Restore(restored_status) => {
+            let status = match restored_status {
+                GuideStatus::Draft => b"draft".as_slice(),
+                GuideStatus::Stale => b"stale".as_slice(),
+                GuideStatus::Tested | GuideStatus::Archived => {
+                    return Err(failure(
+                        MutationFailureKind::BindingInvariant,
+                        MutationField::Status,
+                    ));
+                }
+            };
+            replace_root_value(
+                bound.parsed().yaml(),
+                bound.source_bytes(),
+                "status",
+                Box::<[u8]>::from(status),
+                MutationEffect::Status,
+                MutationField::Status,
+                &mut edits,
+            )?;
+            remove_root_entry(
+                bound.parsed().yaml(),
+                bound.source_bytes(),
+                "archived_from_status",
+                MutationEffect::ArchivedFromStatus,
+                MutationField::ArchivedFromStatus,
+                &mut edits,
+            )?;
+            remove_root_entry(
+                bound.parsed().yaml(),
+                bound.source_bytes(),
+                "archived_at",
+                MutationEffect::ArchivedAt,
+                MutationField::ArchivedAt,
+                &mut edits,
+            )?;
+            effects.push(MutationEffect::Status);
+            effects.push(MutationEffect::ArchivedFromStatus);
+            effects.push(MutationEffect::ArchivedAt);
+            (restored_status, None, None)
+        }
+    };
 
     replace_root_value(
         bound.parsed().yaml(),
@@ -543,9 +649,13 @@ pub(crate) fn plan_guide_mutation(
         || candidate_record.updated_at() != &updated_at
         || candidate_record.body() != expected_body
         || !same_verification(candidate_record, record)
-        || !same_archive(candidate_record, record, expected_archived_from)
+        || !same_archive(
+            candidate_record,
+            expected_archived_from,
+            expected_archived_at,
+        )
         || !same_nested(candidate_record, record)
-        || candidate.unknown_partition().root() != bound.unknown_partition().root()
+        || !same_unknown_root(&candidate, bound)
         || candidate.unknown_partition().applicability()
             != bound.unknown_partition().applicability()
         || candidate.unknown_partition().references() != bound.unknown_partition().references()
@@ -557,6 +667,13 @@ pub(crate) fn plan_guide_mutation(
         bound: candidate,
         effects,
     }))
+}
+
+#[derive(Clone, Copy)]
+enum GuideLifecycleEdit {
+    None,
+    Archive(RestorableGuideStatus),
+    Restore(GuideStatus),
 }
 
 fn stale_guide_if_required(
@@ -623,14 +740,74 @@ fn same_verification(left: &super::Guide, right: &super::Guide) -> bool {
 }
 
 fn same_archive(
-    left: &super::Guide,
-    right: &super::Guide,
+    guide: &super::Guide,
     expected_from: Option<RestorableGuideStatus>,
+    expected_at: Option<Timestamp>,
 ) -> bool {
-    match (left.archive(), right.archive(), expected_from) {
+    match (guide.archive(), expected_from, expected_at) {
         (None, None, None) => true,
-        (Some(left), Some(right), Some(expected)) => {
-            left.archived_from_status() == expected && left.archived_at() == right.archived_at()
+        (Some(archive), Some(expected_from), Some(expected_at)) => {
+            archive.archived_from_status() == expected_from && archive.archived_at() == &expected_at
+        }
+        _ => false,
+    }
+}
+
+fn same_unknown_root(left: &BoundGuide, right: &BoundGuide) -> bool {
+    let left_entries = left.parsed().yaml().semantic().entries();
+    let right_entries = right.parsed().yaml().semantic().entries();
+    let left_unknown = left.unknown_partition().root();
+    let right_unknown = right.unknown_partition().root();
+    left_unknown.len() == right_unknown.len()
+        && left_unknown
+            .iter()
+            .zip(right_unknown)
+            .all(|(left_index, right_index)| {
+                let Some(left_entry) = left_entries.get(*left_index as usize) else {
+                    return false;
+                };
+                let Some(right_entry) = right_entries.get(*right_index as usize) else {
+                    return false;
+                };
+                left_entry.key() == right_entry.key()
+                    && same_unknown_value(left_entry.value(), right_entry.value())
+            })
+}
+
+fn same_unknown_value(
+    left: &crate::domain::UnknownYamlValue,
+    right: &crate::domain::UnknownYamlValue,
+) -> bool {
+    use crate::domain::UnknownYamlScalarKind;
+
+    match (
+        left.as_scalar(),
+        right.as_scalar(),
+        left.as_sequence(),
+        right.as_sequence(),
+        left.as_mapping(),
+        right.as_mapping(),
+    ) {
+        (Some(left), Some(right), _, _, _, _) if left.kind() == right.kind() => match left.kind() {
+            UnknownYamlScalarKind::Null => true,
+            UnknownYamlScalarKind::Boolean => left.as_bool() == right.as_bool(),
+            UnknownYamlScalarKind::Integer => left.as_integer() == right.as_integer(),
+            UnknownYamlScalarKind::Float => left.as_float() == right.as_float(),
+            UnknownYamlScalarKind::String => left.as_str() == right.as_str(),
+        },
+        (_, _, Some(left), Some(right), _, _) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| same_unknown_value(left, right))
+        }
+        (_, _, _, _, Some(left), Some(right)) => {
+            left.len() == right.len()
+                && left.iter().zip(right).all(|(left, right)| {
+                    same_unknown_value(left.key(), right.key())
+                        && same_unknown_value(left.value(), right.value())
+                })
         }
         _ => false,
     }
@@ -743,6 +920,93 @@ fn replace_root_value(
         return Err(failure(MutationFailureKind::CommentUnsafe, field));
     }
     push_edit(source, start, end, replacement, effect, field, edits)
+}
+
+fn insert_archive_metadata_before(
+    artifact: &ParsedYamlArtifact,
+    source: &[u8],
+    archived_from: RestorableGuideStatus,
+    archived_at: Timestamp,
+    edits: &mut Vec<Edit>,
+) -> Result<(), MutationFailure> {
+    let anchor = artifact
+        .entries()
+        .iter()
+        .find(|entry| {
+            if entry.parent() != artifact.root_id() {
+                return false;
+            }
+            let ReconciledEntryKind::Mapping { key, .. } = entry.kind() else {
+                return false;
+            };
+            artifact.node(key).and_then(|node| node.decoded_scalar()) == Some("created_at")
+        })
+        .ok_or_else(|| {
+            failure(
+                MutationFailureKind::BindingInvariant,
+                MutationField::ArchivedAt,
+            )
+        })?;
+    if anchor.collection_style() != CollectionPresentationStyle::Block {
+        return Err(failure(
+            MutationFailureKind::PresentationUnsafe,
+            MutationField::ArchivedAt,
+        ));
+    }
+    let start = anchor.file_range().start().get() as usize;
+    if start > source.len() || (start != 0 && source.get(start.wrapping_sub(1)) != Some(&b'\n')) {
+        return Err(failure(
+            MutationFailureKind::PresentationUnsafe,
+            MutationField::ArchivedAt,
+        ));
+    }
+    let gap_start = artifact
+        .entries()
+        .iter()
+        .filter(|entry| entry.parent() == artifact.root_id() && entry.index() < anchor.index())
+        .max_by_key(|entry| entry.index())
+        .map_or(0, |entry| entry.file_range().end().get() as usize);
+    if gap_start > start
+        || artifact.comments().iter().any(|comment| {
+            let range = comment.file_range();
+            (range.start().get() as usize) < start && (range.end().get() as usize) > gap_start
+        })
+    {
+        return Err(failure(
+            MutationFailureKind::CommentUnsafe,
+            MutationField::ArchivedAt,
+        ));
+    }
+    let archived_from = match archived_from {
+        RestorableGuideStatus::Draft => "draft",
+        RestorableGuideStatus::Tested => "tested",
+        RestorableGuideStatus::Stale => "stale",
+    };
+    let timestamp = emit_yaml_display(archived_at)
+        .map_err(|error| map_emit(error, MutationField::ArchivedAt))?;
+    let mut replacement = Vec::new();
+    replacement
+        .try_reserve_exact(55 + archived_from.len() + timestamp.len())
+        .map_err(|_| {
+            failure(
+                MutationFailureKind::ResourceLimit,
+                MutationField::ArchivedAt,
+            )
+        })?;
+    replacement.extend_from_slice(b"archived_from_status: ");
+    replacement.extend_from_slice(archived_from.as_bytes());
+    replacement.extend_from_slice(b"\narchived_at: ");
+    replacement.extend_from_slice(&timestamp);
+    replacement.push(b'\n');
+    push_edit(
+        source,
+        start,
+        start,
+        replacement.into_boxed_slice(),
+        MutationEffect::ArchivedAt,
+        MutationField::ArchivedAt,
+        edits,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1279,6 +1543,84 @@ mod tests {
             ),
             Ok(MutationOutcome::NoOp)
         ));
+    }
+
+    #[test]
+    fn guide_archive_restore_follows_the_closed_status_matrix() {
+        let stamp = MutationStamp::from_trusted_time(timestamp("2026-09-05T11:00:00Z"));
+        for (status, extra, expected_from, restored) in [
+            (
+                "draft",
+                "",
+                RestorableGuideStatus::Draft,
+                GuideStatus::Draft,
+            ),
+            (
+                "stale",
+                "",
+                RestorableGuideStatus::Stale,
+                GuideStatus::Stale,
+            ),
+            (
+                "tested",
+                "last_verified_at: 2026-09-05T10:00:00Z\nverified_content_hash: verify:v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+                RestorableGuideStatus::Stale,
+                GuideStatus::Stale,
+            ),
+        ] {
+            let original = guide(&guide_base(status, extra), "Body\n");
+            let MutationOutcome::Candidate(archived) =
+                plan_guide_mutation(&original, GuideMutation::Archive, &stamp).unwrap_or_else(
+                    |error| {
+                        panic!(
+                            "archive {status}: kind={} field={}",
+                            error.kind() as u8,
+                            error.field() as u8
+                        )
+                    },
+                )
+            else {
+                panic!("archive candidate")
+            };
+            let archive = archived.bound().record().archive().unwrap();
+            assert_eq!(
+                archived.bound().record().declared_status(),
+                GuideStatus::Archived
+            );
+            assert_eq!(archive.archived_from_status(), expected_from);
+            assert_eq!(archive.archived_at(), &timestamp("2026-09-05T11:00:00Z"));
+            assert_eq!(archived.bound().record().body(), b"Body\n");
+            assert!(same_unknown_root(archived.bound(), &original));
+            assert!(matches!(
+                plan_guide_mutation(archived.bound(), GuideMutation::Archive, &stamp),
+                Ok(MutationOutcome::NoOp)
+            ));
+
+            let MutationOutcome::Candidate(restored_candidate) = plan_guide_mutation(
+                archived.bound(),
+                GuideMutation::Restore,
+                &MutationStamp::from_trusted_time(timestamp("2026-09-05T12:00:00Z")),
+            )
+            .unwrap_or_else(|_| panic!("restore {status}")) else {
+                panic!("restore candidate")
+            };
+            assert_eq!(
+                restored_candidate.bound().record().declared_status(),
+                restored
+            );
+            assert!(restored_candidate.bound().record().archive().is_none());
+            assert_eq!(restored_candidate.bound().record().body(), b"Body\n");
+        }
+
+        let draft = guide(&guide_base("draft", ""), "Body\n");
+        let error = plan_guide_mutation(&draft, GuideMutation::Restore, &stamp)
+            .err()
+            .unwrap();
+        assert!(matches!(
+            error.kind(),
+            MutationFailureKind::InvalidTransition
+        ));
+        assert!(matches!(error.field(), MutationField::Status));
     }
 
     #[test]

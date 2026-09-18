@@ -167,6 +167,14 @@ export function filterGuides(guides: GuideSummary[], query: string) {
   });
 }
 
+export function guideLifecycleLabel(
+  status: GuideSummary["status"],
+  busy: boolean,
+) {
+  if (status === "Archived") return busy ? "Restoring…" : "Restore Guide";
+  return busy ? "Archiving…" : "Archive Guide";
+}
+
 export function rankedGuides(
   guides: GuideSummary[],
   query: string,
@@ -377,6 +385,8 @@ export function App() {
   const [draftBody, setDraftBody] = useState("");
   const [savingGuide, setSavingGuide] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [updatingGuideStatus, setUpdatingGuideStatus] = useState(false);
+  const [guideStatusError, setGuideStatusError] = useState("");
   const [rankedGuideIds, setRankedGuideIds] = useState<string[] | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const readerRef = useRef<HTMLElement>(null);
@@ -385,6 +395,8 @@ export function App() {
   const railToggleRef = useRef<HTMLButtonElement>(null);
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const editDetailsButtonRef = useRef<HTMLButtonElement>(null);
+  const guideStatusButtonRef = useRef<HTMLButtonElement>(null);
+  const guideStatusErrorRef = useRef<HTMLParagraphElement>(null);
   const detailTitleRef = useRef<HTMLInputElement>(null);
   const guideDetailsErrorRef = useRef<HTMLParagraphElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
@@ -500,6 +512,7 @@ export function App() {
     setEditingGuideDetails(false);
     setSaveError("");
     setGuideDetailsError("");
+    setGuideStatusError("");
     import("@tauri-apps/api/core")
       .then(({ invoke }) =>
         invoke<GuideBodyPayload>("read_open_guide", { guideId: selectedId }),
@@ -556,6 +569,7 @@ export function App() {
       savingNewGuide ||
       savingGuideDetails ||
       savingCategoryRename ||
+      updatingGuideStatus ||
       updatingCategoryStatusId !== ""
     )
       return false;
@@ -1183,6 +1197,46 @@ export function App() {
       requestAnimationFrame(() => saveErrorRef.current?.focus());
     } finally {
       setSavingGuide(false);
+    }
+  }
+
+  async function changeGuideArchived() {
+    if (
+      selected === null ||
+      guideBody?.id !== selected.id ||
+      updatingGuideStatus ||
+      editingGuide ||
+      editingGuideDetails
+    )
+      return;
+    const archived = selected.status !== "Archived";
+    setUpdatingGuideStatus(true);
+    setGuideStatusError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<SaveGuidePayload>("set_open_guide_archived", {
+        guideId: selected.id,
+        expectedRevision: guideBody.revision,
+        archived,
+      });
+      setWorkspace(result.workspace);
+      setGuideBody(result.guide);
+      setDraftBody(result.guide.body);
+      setAnnouncement(
+        result.changed
+          ? archived
+            ? `${selected.title} archived.`
+            : `${selected.title} restored.`
+          : `${selected.title} status is unchanged.`,
+      );
+      requestAnimationFrame(() => guideStatusButtonRef.current?.focus());
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setGuideStatusError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => guideStatusErrorRef.current?.focus());
+    } finally {
+      setUpdatingGuideStatus(false);
     }
   }
 
@@ -1930,7 +1984,9 @@ export function App() {
                         className="button guide-edit-button"
                         type="button"
                         onClick={beginEditingGuideDetails}
-                        disabled={guideBody?.id !== selected.id}
+                        disabled={
+                          guideBody?.id !== selected.id || updatingGuideStatus
+                        }
                       >
                         Edit Details
                       </button>
@@ -1939,13 +1995,39 @@ export function App() {
                         className="button guide-edit-button"
                         type="button"
                         onClick={beginEditing}
-                        disabled={guideBody?.id !== selected.id}
+                        disabled={
+                          guideBody?.id !== selected.id || updatingGuideStatus
+                        }
                       >
                         Edit Content
+                      </button>
+                      <button
+                        ref={guideStatusButtonRef}
+                        className="button guide-status-button"
+                        type="button"
+                        onClick={() => void changeGuideArchived()}
+                        disabled={
+                          guideBody?.id !== selected.id || updatingGuideStatus
+                        }
+                      >
+                        {guideLifecycleLabel(
+                          selected.status,
+                          updatingGuideStatus,
+                        )}
                       </button>
                     </div>
                   )}
               </div>
+              {guideStatusError !== "" && (
+                <p
+                  ref={guideStatusErrorRef}
+                  className="editor-error guide-status-error"
+                  role="alert"
+                  tabIndex={-1}
+                >
+                  {guideStatusError}
+                </p>
+              )}
               {editingGuideDetails && guideBody?.id === selected.id ? (
                 <form
                   className="guide-details-form"

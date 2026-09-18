@@ -5,8 +5,8 @@ use rehow_core::{
         CategoryCreateError, CategoryOrderRevision, CategoryRemoveError, CategoryReorderError,
         CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError, GuideEdit, GuideUpdateError,
         WorkspaceInitializationError, create_category, create_guide, initialize_workspace,
-        remove_category, reorder_categories, set_category_archived, update_category_details,
-        update_guide,
+        remove_category, reorder_categories, set_category_archived, set_guide_archived,
+        update_category_details, update_guide,
     },
     domain::GuideStatus,
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -389,6 +389,70 @@ fn save_open_guide_details(
         guide_id,
         expected_revision,
         GuideEdit::SetMetadata { title, summary },
+    )
+    .map_err(|error| native_command_error(guide_update_code(error), guide_update_message(error)))?;
+    Ok(SaveGuidePayload {
+        workspace: WorkspacePayload::from_view(
+            &workspace.view,
+            FolderFactsPayload::from(workspace.facts),
+        ),
+        guide: guide_body_payload(&workspace.view, &guide_id)
+            .map_err(|message| native_command_error("refreshRequired", message))?,
+        changed: outcome.changed(),
+    })
+}
+
+#[tauri::command]
+fn set_open_guide_archived(
+    guide_id: String,
+    expected_revision: String,
+    archived: bool,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<SaveGuidePayload, NativeCommandError> {
+    if guide_id.len() > 64 || expected_revision.len() > 96 {
+        return Err(native_command_error(
+            "invalidInput",
+            "Guide identity is too long.".to_owned(),
+        ));
+    }
+    let guide_id = GuideId::from_str(&guide_id)
+        .map_err(|_| native_command_error("invalidGuide", "Guide ID is invalid.".to_owned()))?;
+    let expected_revision = Revision::from_str(&expected_revision).map_err(|_| {
+        native_command_error(
+            "invalidRevision",
+            "Guide revision is invalid. Reopen the Guide and try again.".to_owned(),
+        )
+    })?;
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    fs::create_dir_all(&state_home).map_err(|_| {
+        native_command_error(
+            "stateUnavailable",
+            "Rehow could not prepare its private recovery folder.".to_owned(),
+        )
+    })?;
+    let mut guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_mut().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let outcome = set_guide_archived(
+        &mut workspace.view,
+        &state_home,
+        runtime_directory.as_deref(),
+        guide_id,
+        expected_revision,
+        archived,
     )
     .map_err(|error| native_command_error(guide_update_code(error), guide_update_message(error)))?;
     Ok(SaveGuidePayload {
@@ -1363,6 +1427,7 @@ pub fn run() {
             save_open_guide_body,
             save_open_guide_details,
             set_open_category_archived,
+            set_open_guide_archived,
             search_open_workspace
         ])
         .run(tauri::generate_context!())

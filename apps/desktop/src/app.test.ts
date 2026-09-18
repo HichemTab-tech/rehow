@@ -6,6 +6,7 @@ import {
   App,
   filterGuides,
   gitFactLabel,
+  guideLifecycleLabel,
   hasUnsavedChanges,
   movedCategoryOrder,
   nativeCommandError,
@@ -59,6 +60,13 @@ describe("application identity", () => {
   it("detects exact Guide editor dirty state", () => {
     expect(hasUnsavedChanges("same\n", "same\n")).toBe(false);
     expect(hasUnsavedChanges("same\n", "changed\n")).toBe(true);
+  });
+
+  it("labels Guide archive and restore states explicitly", () => {
+    expect(guideLifecycleLabel("Draft", false)).toBe("Archive Guide");
+    expect(guideLifecycleLabel("Stale", true)).toBe("Archiving…");
+    expect(guideLifecycleLabel("Archived", false)).toBe("Restore Guide");
+    expect(guideLifecycleLabel("Archived", true)).toBe("Restoring…");
   });
 
   it("normalizes and bounds Workspace names", () => {
