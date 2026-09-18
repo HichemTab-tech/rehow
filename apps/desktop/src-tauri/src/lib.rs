@@ -102,6 +102,8 @@ struct GuidePayload {
     category: String,
     status: &'static str,
     updated_at: String,
+    tags: Vec<String>,
+    aliases: Vec<String>,
     matches: String,
 }
 
@@ -198,6 +200,8 @@ impl WorkspacePayload {
                         GuideStatus::Archived => "Archived",
                     },
                     updated_at: guide.updated_at().to_string(),
+                    tags: guide.tags().to_vec(),
+                    aliases: guide.aliases().to_vec(),
                     matches,
                 });
             }
@@ -339,12 +343,18 @@ fn save_open_guide_details(
     expected_revision: String,
     title: String,
     summary: String,
+    tags: Vec<String>,
+    aliases: Vec<String>,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<SaveGuidePayload, NativeCommandError> {
     if guide_id.len() > 64
         || expected_revision.len() > 96
         || title.len() > 1_024
         || summary.len() > 4_096
+        || tags.len() > 64
+        || aliases.len() > 64
+        || tags.iter().any(|value| value.len() > 256)
+        || aliases.iter().any(|value| value.len() > 800)
     {
         return Err(native_command_error(
             "invalidInput",
@@ -388,7 +398,12 @@ fn save_open_guide_details(
         runtime_directory.as_deref(),
         guide_id,
         expected_revision,
-        GuideEdit::SetMetadata { title, summary },
+        GuideEdit::SetDetails {
+            title,
+            summary,
+            tags,
+            aliases,
+        },
     )
     .map_err(|error| native_command_error(guide_update_code(error), guide_update_message(error)))?;
     Ok(SaveGuidePayload {
@@ -493,7 +508,8 @@ fn guide_update_message(error: GuideUpdateError) -> String {
             "This Guide is malformed and cannot be edited safely.".to_owned()
         }
         GuideUpdateError::InvalidEdit => {
-            "The Guide content is invalid. Fix it and try again.".to_owned()
+            "The requested Guide change is invalid. Check limits and duplicate Tags or aliases."
+                .to_owned()
         }
         GuideUpdateError::UnsafeRoundTrip => {
             "Rehow cannot preserve this Guide’s formatting safely. Edit the underlying file instead."
@@ -1476,6 +1492,8 @@ mod tests {
                 category: "Linux".to_owned(),
                 status: "Draft",
                 updated_at: "2026-09-18T00:00:00Z".to_owned(),
+                tags: vec!["tag".to_owned()],
+                aliases: vec!["alias".to_owned()],
                 matches: "alias tag".to_owned(),
             }],
             issue_count: 0,
@@ -1497,6 +1515,8 @@ mod tests {
             json["categories"][0]["revision"],
             format!("rev:v1:{}", "11".repeat(32))
         );
+        assert_eq!(json["guides"][0]["tags"][0], "tag");
+        assert_eq!(json["guides"][0]["aliases"][0], "alias");
         assert!(json["guides"][0].get("body").is_none());
     }
 

@@ -11,6 +11,8 @@ type GuideSummary = {
   category: string;
   status: "Tested" | "Draft" | "Stale" | "Archived";
   updatedAt: string;
+  tags: string[];
+  aliases: string[];
   matches: string;
 };
 
@@ -267,6 +269,8 @@ export function normalizedGuideDetails(
 export function normalizedGuideMetadata(
   titleValue: string,
   summaryValue: string,
+  tagsValue: string,
+  aliasesValue: string,
 ) {
   const title = titleValue.trim();
   const summary = summaryValue.trim();
@@ -274,7 +278,23 @@ export function normalizedGuideMetadata(
     return null;
   if (Array.from(summary).length < 1 || Array.from(summary).length > 500)
     return null;
-  return { title, summary };
+  const tags = normalizedGuideTerms(tagsValue, 64);
+  const aliases = normalizedGuideTerms(aliasesValue, 200);
+  if (tags === null || aliases === null) return null;
+  return { title, summary, tags, aliases };
+}
+
+export function normalizedGuideTerms(value: string, maxScalars: number) {
+  const terms = value
+    .split(/\r?\n/)
+    .map((term) => term.trim())
+    .filter(Boolean);
+  if (
+    terms.length > 64 ||
+    terms.some((term) => Array.from(term).length > maxScalars)
+  )
+    return null;
+  return terms;
 }
 
 export function gitFactLabel(facts: FolderFacts) {
@@ -379,6 +399,8 @@ export function App() {
   const [editingGuideDetails, setEditingGuideDetails] = useState(false);
   const [detailTitle, setDetailTitle] = useState("");
   const [detailSummary, setDetailSummary] = useState("");
+  const [detailTags, setDetailTags] = useState("");
+  const [detailAliases, setDetailAliases] = useState("");
   const [savingGuideDetails, setSavingGuideDetails] = useState(false);
   const [guideDetailsError, setGuideDetailsError] = useState("");
   const [editingGuide, setEditingGuide] = useState(false);
@@ -398,6 +420,9 @@ export function App() {
   const guideStatusButtonRef = useRef<HTMLButtonElement>(null);
   const guideStatusErrorRef = useRef<HTMLParagraphElement>(null);
   const detailTitleRef = useRef<HTMLInputElement>(null);
+  const detailSummaryRef = useRef<HTMLTextAreaElement>(null);
+  const detailTagsRef = useRef<HTMLTextAreaElement>(null);
+  const detailAliasesRef = useRef<HTMLTextAreaElement>(null);
   const guideDetailsErrorRef = useRef<HTMLParagraphElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const saveErrorRef = useRef<HTMLParagraphElement>(null);
@@ -429,7 +454,10 @@ export function App() {
   const dirtyGuideDetails =
     editingGuideDetails &&
     selected !== null &&
-    (selected.title !== detailTitle || selected.summary !== detailSummary);
+    (selected.title !== detailTitle ||
+      selected.summary !== detailSummary ||
+      selected.tags.join("\n") !== detailTags ||
+      selected.aliases.join("\n") !== detailAliases);
   const categoryBeingRenamed =
     workspace?.categories.find(
       (category) => category.id === renamingCategoryId,
@@ -1080,6 +1108,8 @@ export function App() {
       return;
     setDetailTitle(selected.title);
     setDetailSummary(selected.summary);
+    setDetailTags(selected.tags.join("\n"));
+    setDetailAliases(selected.aliases.join("\n"));
     setGuideDetailsError("");
     setEditingGuideDetails(true);
     requestAnimationFrame(() => detailTitleRef.current?.focus());
@@ -1099,12 +1129,30 @@ export function App() {
 
   async function saveGuideDetails() {
     const currentGuide = guideBody;
-    const details = normalizedGuideMetadata(detailTitle, detailSummary);
+    const titleLength = Array.from(detailTitle.trim()).length;
+    const summaryLength = Array.from(detailSummary.trim()).length;
+    const normalizedTags = normalizedGuideTerms(detailTags, 64);
+    const normalizedAliases = normalizedGuideTerms(detailAliases, 200);
+    const details = normalizedGuideMetadata(
+      detailTitle,
+      detailSummary,
+      detailTags,
+      detailAliases,
+    );
     if (details === null) {
-      const message = "Enter a title and summary before saving Guide details.";
+      const message =
+        "Enter a valid title and summary, with no more than 64 unique Tags or aliases (one per line).";
       setGuideDetailsError(message);
       setAnnouncement(message);
-      requestAnimationFrame(() => detailTitleRef.current?.focus());
+      requestAnimationFrame(() => {
+        if (titleLength < 1 || titleLength > 200)
+          detailTitleRef.current?.focus();
+        else if (summaryLength < 1 || summaryLength > 500)
+          detailSummaryRef.current?.focus();
+        else if (normalizedTags === null) detailTagsRef.current?.focus();
+        else if (normalizedAliases === null) detailAliasesRef.current?.focus();
+        else detailTitleRef.current?.focus();
+      });
       return;
     }
     if (
@@ -2059,6 +2107,7 @@ export function App() {
                   />
                   <label htmlFor="guide-detail-summary">Summary</label>
                   <textarea
+                    ref={detailSummaryRef}
                     id="guide-detail-summary"
                     name="guide-detail-summary"
                     autoComplete="off"
@@ -2073,6 +2122,52 @@ export function App() {
                     value={detailSummary}
                     onChange={(event) => {
                       setDetailSummary(event.target.value);
+                      setGuideDetailsError("");
+                    }}
+                  />
+                  <label htmlFor="guide-detail-tags">Tags</label>
+                  <p className="field-help" id="guide-detail-tags-help">
+                    One Tag per line, up to 64. Tags can be up to 64 characters.
+                  </p>
+                  <textarea
+                    ref={detailTagsRef}
+                    id="guide-detail-tags"
+                    name="guide-detail-tags"
+                    autoComplete="off"
+                    maxLength={16_384}
+                    rows={3}
+                    aria-invalid={guideDetailsError !== ""}
+                    aria-describedby={
+                      guideDetailsError !== ""
+                        ? "guide-detail-tags-help guide-details-error"
+                        : "guide-detail-tags-help"
+                    }
+                    value={detailTags}
+                    onChange={(event) => {
+                      setDetailTags(event.target.value);
+                      setGuideDetailsError("");
+                    }}
+                  />
+                  <label htmlFor="guide-detail-aliases">Aliases</label>
+                  <p className="field-help" id="guide-detail-aliases-help">
+                    Add alternate search phrases, one per line, up to 64.
+                  </p>
+                  <textarea
+                    ref={detailAliasesRef}
+                    id="guide-detail-aliases"
+                    name="guide-detail-aliases"
+                    autoComplete="off"
+                    maxLength={51_200}
+                    rows={3}
+                    aria-invalid={guideDetailsError !== ""}
+                    aria-describedby={
+                      guideDetailsError !== ""
+                        ? "guide-detail-aliases-help guide-details-error"
+                        : "guide-detail-aliases-help"
+                    }
+                    value={detailAliases}
+                    onChange={(event) => {
+                      setDetailAliases(event.target.value);
                       setGuideDetailsError("");
                     }}
                   />
@@ -2129,6 +2224,18 @@ export function App() {
                         : "Reader"}
                   </dd>
                 </div>
+                {selected.tags.length > 0 && (
+                  <div>
+                    <dt>Tags</dt>
+                    <dd>{selected.tags.join(", ")}</dd>
+                  </div>
+                )}
+                {selected.aliases.length > 0 && (
+                  <div>
+                    <dt>Aliases</dt>
+                    <dd>{selected.aliases.join(", ")}</dd>
+                  </div>
+                )}
               </dl>
             </header>
             <section aria-labelledby="guide-body-heading">

@@ -4,6 +4,7 @@
 )]
 
 use core::cmp::max;
+use focaccia::CaseFold;
 
 use crate::{
     parsing::{
@@ -51,6 +52,8 @@ pub(crate) enum GuideMutation {
     SetTitle(String),
     SetSummary(String),
     ChangeCategory(CategoryId),
+    ReplaceTags(Vec<String>),
+    ReplaceAliases(Vec<String>),
     ReplaceBody(Vec<u8>),
     MarkStale,
     Archive,
@@ -65,6 +68,8 @@ pub(crate) enum MutationEffect {
     Title,
     Summary,
     CategoryId,
+    Tags,
+    Aliases,
     UpdatedAt,
     ArchivedFromStatus,
     ArchivedAt,
@@ -91,6 +96,8 @@ pub(crate) enum MutationField {
     Title,
     Summary,
     CategoryId,
+    Tags,
+    Aliases,
     UpdatedAt,
     ArchivedFromStatus,
     ArchivedAt,
@@ -388,10 +395,13 @@ pub(crate) fn plan_guide_mutation(
 ) -> Result<MutationOutcome<BoundGuide>, MutationFailure> {
     let record = bound.record();
     let mut target_edit: Option<(&str, Box<[u8]>, MutationEffect, MutationField)> = None;
+    let mut sequence_edit: Option<(&str, &[String], MutationEffect, MutationField)> = None;
     let mut body_replacement: Option<Box<[u8]>> = None;
     let mut expected_title = record.title();
     let mut expected_summary = record.summary();
     let mut expected_category = record.category_id();
+    let mut expected_tags = record.tags();
+    let mut expected_aliases = record.aliases();
     let mut expected_body = record.body();
     let explicit_mark_stale;
     let lifecycle_edit;
@@ -448,6 +458,31 @@ pub(crate) fn plan_guide_mutation(
                     .map_err(|error| map_emit(error, MutationField::CategoryId))?,
                 MutationEffect::CategoryId,
                 MutationField::CategoryId,
+            ));
+            explicit_mark_stale = false;
+            lifecycle_edit = GuideLifecycleEdit::None;
+        }
+        GuideMutation::ReplaceTags(values) => {
+            validate_string_list(values, 64, 64, MutationField::Tags)?;
+            if values.as_slice() == record.tags() {
+                return Ok(MutationOutcome::NoOp);
+            }
+            expected_tags = values;
+            sequence_edit = Some(("tags", values, MutationEffect::Tags, MutationField::Tags));
+            explicit_mark_stale = false;
+            lifecycle_edit = GuideLifecycleEdit::None;
+        }
+        GuideMutation::ReplaceAliases(values) => {
+            validate_string_list(values, 64, 200, MutationField::Aliases)?;
+            if values.as_slice() == record.aliases() {
+                return Ok(MutationOutcome::NoOp);
+            }
+            expected_aliases = values;
+            sequence_edit = Some((
+                "aliases",
+                values,
+                MutationEffect::Aliases,
+                MutationField::Aliases,
             ));
             explicit_mark_stale = false;
             lifecycle_edit = GuideLifecycleEdit::None;
@@ -512,7 +547,9 @@ pub(crate) fn plan_guide_mutation(
     } else {
         target_edit
             .as_ref()
-            .map_or(MutationField::Body, |value| value.3)
+            .map(|value| value.3)
+            .or_else(|| sequence_edit.as_ref().map(|value| value.3))
+            .unwrap_or(MutationField::Body)
     };
     require_proven(bound.parsed().yaml().round_trip_status(), target_field)?;
 
@@ -528,6 +565,18 @@ pub(crate) fn plan_guide_mutation(
             bound.source_bytes(),
             key,
             replacement,
+            effect,
+            field,
+            &mut edits,
+        )?;
+        effects.push(effect);
+    }
+    if let Some((key, values, effect, field)) = sequence_edit {
+        replace_root_string_sequence(
+            bound.parsed().yaml(),
+            bound.source_bytes(),
+            key,
+            values,
             effect,
             field,
             &mut edits,
@@ -642,8 +691,8 @@ pub(crate) fn plan_guide_mutation(
         || candidate_record.title() != expected_title
         || candidate_record.summary() != expected_summary
         || candidate_record.category_id() != expected_category
-        || candidate_record.tags() != record.tags()
-        || candidate_record.aliases() != record.aliases()
+        || candidate_record.tags() != expected_tags
+        || candidate_record.aliases() != expected_aliases
         || candidate_record.declared_status() != expected_status
         || candidate_record.created_at() != record.created_at()
         || candidate_record.updated_at() != &updated_at
@@ -865,11 +914,157 @@ fn same_attachments(left: &super::Guide, right: &super::Guide) -> bool {
     }
 }
 
+fn validate_string_list(
+    values: &[String],
+    max_items: usize,
+    max_scalars: usize,
+    field: MutationField,
+) -> Result<(), MutationFailure> {
+    if values.len() > max_items
+        || values
+            .iter()
+            .any(|value| !super::valid_text(value, max_scalars))
+    {
+        return Err(failure(MutationFailureKind::InvalidValue, field));
+    }
+    for (index, value) in values.iter().enumerate() {
+        if values[index + 1..]
+            .iter()
+            .any(|other| CaseFold::Full.case_eq(value, other))
+        {
+            return Err(failure(MutationFailureKind::InvalidValue, field));
+        }
+    }
+    Ok(())
+}
+
 struct Edit {
     start: usize,
     end: usize,
     replacement: Box<[u8]>,
     effect: MutationEffect,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn replace_root_string_sequence(
+    artifact: &ParsedYamlArtifact,
+    source: &[u8],
+    key_name: &str,
+    values: &[String],
+    effect: MutationEffect,
+    field: MutationField,
+    edits: &mut Vec<Edit>,
+) -> Result<(), MutationFailure> {
+    let entry = artifact
+        .entries()
+        .iter()
+        .find(|entry| {
+            if entry.parent() != artifact.root_id() {
+                return false;
+            }
+            let ReconciledEntryKind::Mapping { key, .. } = entry.kind() else {
+                return false;
+            };
+            artifact.node(key).and_then(|node| node.decoded_scalar()) == Some(key_name)
+        })
+        .ok_or_else(|| failure(MutationFailureKind::BindingInvariant, field))?;
+    let ReconciledEntryKind::Mapping { key, value } = entry.kind() else {
+        return Err(failure(MutationFailureKind::BindingInvariant, field));
+    };
+    let node = artifact
+        .node(value)
+        .ok_or_else(|| failure(MutationFailureKind::BindingInvariant, field))?;
+    let NodePresentation::Concrete {
+        whole_file_range,
+        tag_file_range,
+        ..
+    } = node.presentation()
+    else {
+        return Err(failure(MutationFailureKind::PresentationUnsafe, field));
+    };
+    match node.collection_style() {
+        Some(CollectionPresentationStyle::Block) => {}
+        Some(CollectionPresentationStyle::Flow)
+            if node.entries().is_empty()
+                && tag_file_range.is_none()
+                && source.get(
+                    whole_file_range.start().get() as usize..whole_file_range.end().get() as usize,
+                ) == Some(b"[]") => {}
+        _ => return Err(failure(MutationFailureKind::PresentationUnsafe, field)),
+    }
+
+    let start = entry.file_range().start().get() as usize;
+    let entry_end = entry.file_range().end().get() as usize;
+    if start > entry_end
+        || entry_end > source.len()
+        || (start != 0 && source.get(start.wrapping_sub(1)) != Some(&b'\n'))
+    {
+        return Err(failure(MutationFailureKind::PresentationUnsafe, field));
+    }
+    let end = if source.get(entry_end.wrapping_sub(1)) == Some(&b'\n') {
+        entry_end
+    } else {
+        source[entry_end..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(source.len(), |offset| entry_end + offset + 1)
+    };
+    if artifact.comments().iter().any(|comment| {
+        let range = comment.file_range();
+        let overlaps = ranges_overlap(
+            start,
+            end,
+            range.start().get() as usize,
+            range.end().get() as usize,
+        );
+        let owned = match comment.owner() {
+            CommentOwner::Entry(owner) => owner == entry.id(),
+            CommentOwner::Node(owner) => owner == key || owner == value,
+            CommentOwner::Boundary { before, after, .. } => {
+                before == Some(entry.id()) || after == Some(entry.id())
+            }
+            CommentOwner::Ambiguous => true,
+        };
+        overlaps || owned
+    }) {
+        return Err(failure(MutationFailureKind::CommentUnsafe, field));
+    }
+
+    let newline: &[u8] = source
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .filter(|offset| *offset > 0 && source[*offset - 1] == b'\r')
+        .map_or(b"\n", |_| b"\r\n");
+    let mut replacement = Vec::new();
+    replacement
+        .try_reserve_exact(key_name.len() + 4)
+        .map_err(|_| failure(MutationFailureKind::ResourceLimit, field))?;
+    replacement.extend_from_slice(key_name.as_bytes());
+    replacement.push(b':');
+    if values.is_empty() {
+        replacement.extend_from_slice(b" []");
+        replacement.extend_from_slice(newline);
+    } else {
+        replacement.extend_from_slice(newline);
+        for value in values {
+            let encoded = emit_yaml_string(value).map_err(|error| map_emit(error, field))?;
+            replacement
+                .try_reserve(4 + encoded.len() + newline.len())
+                .map_err(|_| failure(MutationFailureKind::ResourceLimit, field))?;
+            replacement.extend_from_slice(b"  - ");
+            replacement.extend_from_slice(&encoded);
+            replacement.extend_from_slice(newline);
+        }
+    }
+    push_edit(
+        source,
+        start,
+        end,
+        replacement.into_boxed_slice(),
+        effect,
+        field,
+        edits,
+    )
 }
 
 fn replace_root_value(
@@ -1621,6 +1816,131 @@ mod tests {
             MutationFailureKind::InvalidTransition
         ));
         assert!(matches!(error.field(), MutationField::Status));
+    }
+
+    #[test]
+    fn guide_tags_and_aliases_are_bounded_unique_and_round_trip_safe() {
+        let stamp = MutationStamp::from_trusted_time(timestamp("2026-09-05T11:00:00Z"));
+        let original = guide(&guide_base("draft", ""), "Body\n");
+        let MutationOutcome::Candidate(tagged) = plan_guide_mutation(
+            &original,
+            GuideMutation::ReplaceTags(vec!["linux".into(), "Wayland".into()]),
+            &stamp,
+        )
+        .unwrap_or_else(|_| panic!("tags")) else {
+            panic!("tag candidate")
+        };
+        assert_eq!(tagged.bound().record().tags(), ["linux", "Wayland"]);
+        let tagged_source = core::str::from_utf8(tagged.bound().source_bytes()).unwrap();
+        assert!(tagged_source.contains("tags:\n  - \"linux\"\n  - \"Wayland\"\n"));
+        assert!(tagged_source.contains("future: {nested: [1]}"));
+
+        let MutationOutcome::Candidate(aliased) = plan_guide_mutation(
+            tagged.bound(),
+            GuideMutation::ReplaceAliases(vec!["manual install".into(), "tar app".into()]),
+            &stamp,
+        )
+        .unwrap_or_else(|_| panic!("aliases")) else {
+            panic!("alias candidate")
+        };
+        assert_eq!(
+            aliased.bound().record().aliases(),
+            ["manual install", "tar app"]
+        );
+        assert_eq!(aliased.bound().record().tags(), ["linux", "Wayland"]);
+        assert!(matches!(
+            plan_guide_mutation(
+                aliased.bound(),
+                GuideMutation::ReplaceAliases(vec!["manual install".into(), "tar app".into()]),
+                &stamp,
+            ),
+            Ok(MutationOutcome::NoOp)
+        ));
+
+        for values in [
+            vec!["Maße".to_owned(), "MASSE".to_owned()],
+            vec![" leading".to_owned()],
+            vec!["x".repeat(65)],
+            (0..65).map(|index| format!("tag-{index}")).collect(),
+        ] {
+            let error = plan_guide_mutation(&original, GuideMutation::ReplaceTags(values), &stamp)
+                .err()
+                .unwrap();
+            assert!(matches!(error.kind(), MutationFailureKind::InvalidValue));
+            assert!(matches!(error.field(), MutationField::Tags));
+        }
+
+        let flow = guide(
+            &guide_base("draft", "").replacen("tags: []", "tags: [linux]", 1),
+            "Body\n",
+        );
+        let error = plan_guide_mutation(
+            &flow,
+            GuideMutation::ReplaceTags(vec!["linux".into(), "wayland".into()]),
+            &stamp,
+        )
+        .err()
+        .unwrap();
+        assert!(matches!(
+            error.kind(),
+            MutationFailureKind::PresentationUnsafe
+        ));
+
+        let commented = guide(
+            &guide_base("draft", "").replacen(
+                "tags: []",
+                "tags:\n  - linux # keep why this exists",
+                1,
+            ),
+            "Body\n",
+        );
+        let error = plan_guide_mutation(
+            &commented,
+            GuideMutation::ReplaceTags(vec!["wayland".into()]),
+            &stamp,
+        )
+        .err()
+        .unwrap();
+        assert!(matches!(error.kind(), MutationFailureKind::CommentUnsafe));
+
+        let decomposed = plan_guide_mutation(
+            &original,
+            GuideMutation::ReplaceTags(vec!["é".into(), "é".into()]),
+            &stamp,
+        );
+        assert!(matches!(decomposed, Ok(MutationOutcome::Candidate(_))));
+
+        let crlf_frontmatter = guide_base("draft", "").replace('\n', "\r\n");
+        let crlf_source = format!("---\r\n{crlf_frontmatter}---\r\n\r\nBody\r\n");
+        let crlf =
+            bind_guide(parse_guide_source(crlf_source.into_bytes().into_boxed_slice()).unwrap())
+                .unwrap_or_else(|_| panic!("bind crlf"));
+        let MutationOutcome::Candidate(crlf_candidate) = plan_guide_mutation(
+            &crlf,
+            GuideMutation::ReplaceAliases(vec!["manual install".into()]),
+            &stamp,
+        )
+        .unwrap_or_else(|_| panic!("crlf aliases")) else {
+            panic!("crlf candidate")
+        };
+        assert!(
+            core::str::from_utf8(crlf_candidate.bound().source_bytes())
+                .unwrap()
+                .contains("aliases:\r\n  - \"manual install\"\r\n")
+        );
+
+        let tested_extra = "last_verified_at: 2026-09-05T10:00:00Z\nverified_content_hash: verify:v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n";
+        let tested = guide(&guide_base("tested", tested_extra), "Body\n");
+        let MutationOutcome::Candidate(stale) = plan_guide_mutation(
+            &tested,
+            GuideMutation::ReplaceAliases(vec!["install tarball".into()]),
+            &stamp,
+        )
+        .unwrap_or_else(|_| panic!("tested alias")) else {
+            panic!("stale candidate")
+        };
+        assert_eq!(stale.bound().record().declared_status(), GuideStatus::Stale);
+        assert!(stale.bound().record().verification().is_some());
     }
 
     #[test]

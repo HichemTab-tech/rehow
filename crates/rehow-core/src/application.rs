@@ -900,7 +900,16 @@ fn map_workspace_initialization_error(
 pub enum GuideEdit {
     SetTitle(String),
     SetSummary(String),
-    SetMetadata { title: String, summary: String },
+    SetMetadata {
+        title: String,
+        summary: String,
+    },
+    SetDetails {
+        title: String,
+        summary: String,
+        tags: Vec<String>,
+        aliases: Vec<String>,
+    },
     ReplaceBody(Vec<u8>),
     MarkStale,
     Archive,
@@ -1028,6 +1037,27 @@ pub(crate) fn update_guide_with_context(
                         parse_guide_source(title_candidate).map_err(|_| PlanError::InvalidGuide)?;
                     let rebound = bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
                     apply_guide_mutation(&rebound, GuideMutation::SetSummary(summary), &stamp)
+                }
+                GuideEdit::SetDetails {
+                    title,
+                    summary,
+                    tags,
+                    aliases,
+                } => {
+                    let mut candidate_bytes = copy_bytes(bound.source_bytes())?;
+                    for mutation in [
+                        GuideMutation::SetTitle(title),
+                        GuideMutation::SetSummary(summary),
+                        GuideMutation::ReplaceTags(tags),
+                        GuideMutation::ReplaceAliases(aliases),
+                    ] {
+                        let parsed = parse_guide_source(candidate_bytes)
+                            .map_err(|_| PlanError::InvalidGuide)?;
+                        let candidate_bound =
+                            bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
+                        candidate_bytes = apply_guide_mutation(&candidate_bound, mutation, &stamp)?;
+                    }
+                    Ok(candidate_bytes)
                 }
                 GuideEdit::SetTitle(value) => {
                     apply_guide_mutation(&bound, GuideMutation::SetTitle(value), &stamp)
@@ -2101,6 +2131,58 @@ mod tests {
         .unwrap();
         assert!(!no_op.changed());
         assert_eq!(no_op.revision(), outcome.revision());
+    }
+
+    #[test]
+    fn detail_update_atomically_replaces_tags_and_aliases() {
+        let (workspace, state, mut view) = fixture("tag-alias-update", GUIDE);
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let expected = revision(&view);
+        let outcome = update_guide(
+            &mut view,
+            state.path(),
+            None,
+            guide_id,
+            expected,
+            GuideEdit::SetDetails {
+                title: "Install a Tarball".to_owned(),
+                summary: "Install a downloaded archive.".to_owned(),
+                tags: vec!["linux".to_owned(), "Wayland".to_owned()],
+                aliases: vec!["manual install".to_owned(), "tar app".to_owned()],
+            },
+        )
+        .unwrap();
+        assert!(outcome.changed());
+        let loaded = &view.categories()[0].guides()[0];
+        assert_eq!(loaded.guide().tags(), ["linux", "Wayland"]);
+        assert_eq!(loaded.guide().aliases(), ["manual install", "tar app"]);
+        assert_eq!(loaded.guide().body(), b"## Steps\n\nExtract the archive.\n");
+        assert_eq!(loaded.relative_path(), GUIDE_PATH);
+        let bytes = fs::read(workspace.path().join(GUIDE_PATH)).unwrap();
+        assert!(
+            bytes
+                .windows(19)
+                .any(|value| value == b"future_key: keep-me")
+        );
+
+        let before = fs::read(workspace.path().join(GUIDE_PATH)).unwrap();
+        assert_eq!(
+            update_guide(
+                &mut view,
+                state.path(),
+                None,
+                guide_id,
+                outcome.revision(),
+                GuideEdit::SetDetails {
+                    title: "Changed title".to_owned(),
+                    summary: "Changed summary".to_owned(),
+                    tags: vec!["Maße".to_owned(), "MASSE".to_owned()],
+                    aliases: vec![],
+                },
+            ),
+            Err(GuideUpdateError::InvalidEdit)
+        );
+        assert_eq!(fs::read(workspace.path().join(GUIDE_PATH)).unwrap(), before);
     }
 
     #[test]

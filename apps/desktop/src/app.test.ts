@@ -14,6 +14,7 @@ import {
   normalizedCategoryDetails,
   normalizedGuideDetails,
   normalizedGuideMetadata,
+  normalizedGuideTerms,
   normalizedWorkspaceName,
   rankedGuides,
   resultCountLabel,
@@ -131,15 +132,37 @@ describe("application identity", () => {
   });
 
   it("normalizes bounded Guide metadata edits", () => {
-    expect(normalizedGuideMetadata("  New Title  ", "  New summary  ")).toEqual(
-      {
-        title: "New Title",
-        summary: "New summary",
-      },
-    );
-    expect(normalizedGuideMetadata("", "Summary")).toBeNull();
-    expect(normalizedGuideMetadata("Title", "")).toBeNull();
-    expect(normalizedGuideMetadata("x".repeat(201), "Summary")).toBeNull();
+    expect(
+      normalizedGuideMetadata(
+        "  New Title  ",
+        "  New summary  ",
+        " linux\nwayland ",
+        "manual install\n",
+      ),
+    ).toEqual({
+      title: "New Title",
+      summary: "New summary",
+      tags: ["linux", "wayland"],
+      aliases: ["manual install"],
+    });
+    expect(normalizedGuideMetadata("", "Summary", "", "")).toBeNull();
+    expect(normalizedGuideMetadata("Title", "", "", "")).toBeNull();
+    expect(
+      normalizedGuideMetadata("x".repeat(201), "Summary", "", ""),
+    ).toBeNull();
+  });
+
+  it("normalizes bounded one-per-line Tags and aliases", () => {
+    expect(normalizedGuideTerms(" linux \n\nWayland\n", 64)).toEqual([
+      "linux",
+      "Wayland",
+    ]);
+    expect(normalizedGuideTerms("Linux\nlinux", 64)).toEqual([
+      "Linux",
+      "linux",
+    ]);
+    expect(normalizedGuideTerms(`${"x".repeat(65)}`, 64)).toBeNull();
+    expect(normalizedGuideTerms(`${"x\n".repeat(65)}`, 64)).toBeNull();
   });
 });
 
@@ -164,6 +187,8 @@ describe("Guide search", () => {
       category: "Desktop",
       status: "Draft" as const,
       updatedAt: "2026-09-18T00:00:00Z",
+      tags: ["desktop"],
+      aliases: ["launcher"],
       matches: "Exec icon",
     },
     {
@@ -173,6 +198,8 @@ describe("Guide search", () => {
       category: "Hardware",
       status: "Tested" as const,
       updatedAt: "2026-09-18T00:00:00Z",
+      tags: ["hardware"],
+      aliases: ["usb rule"],
       matches: "vendor id",
     },
   ];
