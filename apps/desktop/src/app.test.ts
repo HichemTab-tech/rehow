@@ -5,6 +5,7 @@ import {
   APPLICATION_NAME,
   App,
   filterGuides,
+  gitFactLabel,
   nextResultIndex,
   resultCountLabel,
 } from "./App";
@@ -25,6 +26,25 @@ describe("application identity", () => {
     expect(nextResultIndex(3, 4, 1)).toBe(0);
     expect(nextResultIndex(0, 4, -1)).toBe(3);
     expect(nextResultIndex(0, 0, 1)).toBe(-1);
+  });
+
+  it("describes root, ancestor, and unsafe Git facts", () => {
+    const base = {
+      writable: true,
+      existingGitRepository: false,
+      nestedGitRepository: false,
+      gitProbeComplete: true,
+      unsafeGitMarker: false,
+    };
+    expect(gitFactLabel({ ...base, existingGitRepository: true })).toBe(
+      "Git repository detected",
+    );
+    expect(gitFactLabel({ ...base, nestedGitRepository: true })).toBe(
+      "Inside an existing Git repository",
+    );
+    expect(gitFactLabel({ ...base, unsafeGitMarker: true })).toBe(
+      "Git marker needs attention",
+    );
   });
 });
 

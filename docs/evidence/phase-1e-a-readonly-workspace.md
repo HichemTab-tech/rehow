@@ -8,6 +8,7 @@ Status: implementation checkpoint ready; independent Security Reviewer gate pend
 - Linux root directory retained as an owned descriptor; managed traversal uses one-component `openat` calls with `O_NOFOLLOW`.
 - Bounded descriptor-relative enumeration and reads; only regular single-link files are accepted. Symlinks, hardlinks, sockets, directories-as-files, oversize files, and changed-during-read files fail closed.
 - Empty, compatible, newer-schema, ordinary Markdown (nested to a bounded depth), unrelated, and malformed inspection outcomes.
+- Orthogonal effective writability and Git relationship facts: safe root `.git` directory/worktree marker, ancestor repository detection through bounded descriptor-only parent walking, incomplete-probe reporting, and unsafe marker reporting without following it.
 - Current manifest/Category/Guide parsing through the accepted parser and binders; category mismatch, duplicate IDs, malformed documents, unsupported entries, and oversize Guides are isolated or stop at the documented global limits.
 - Exact BLAKE3 document revision framing with a checked-in fixed vector.
 - A native Rust folder dialog whose Tauri command accepts no path. The selected absolute path never enters the renderer response or logs. The compatible Workspace descriptor remains retained in native state.
@@ -23,6 +24,7 @@ Status: implementation checkpoint ready; independent Security Reviewer gate pend
 - Added RAII closure for `DIR*` on every enumeration exit.
 - Replaced hostile unsupported filenames in public issues with fixed safe placeholders.
 - Added nonblocking special-file handling and a Unix-socket adversarial test.
+- Added `faccessat` effective-access probing and bounded ancestor Git-marker inspection; regular `.git` files must use the bounded `gitdir: ` form, while symlink/hardlink/special/invalid markers are unsafe rather than followed.
 
 ## Dependency review
 
@@ -30,9 +32,9 @@ Direct pins and rationale are recorded in the task packet. The resolved new Rust
 
 ## Verification
 
-- `cargo test --workspace --all-targets --all-features --locked`: pass; core includes 186 library tests plus 18 error, 13 protocol, 1 public-API/32 compile-fail, and 11 unknown-YAML tests; desktop 2; MCP 1.
+- `cargo test --workspace --all-targets --all-features --locked`: pass; core includes 188 library tests plus 18 error, 13 protocol, 1 public-API/32 compile-fail, and 11 unknown-YAML tests; desktop 2; MCP 1.
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`: pass.
-- `pnpm check`, `pnpm test`, `pnpm build`: pass; desktop Vitest 6/6 and Vite production build.
+- `pnpm check`, focused desktop tests, and `pnpm build`: pass; desktop Vitest 7/7 and Vite production build.
 - `pnpm tauri:build`: pass; optimized native binary produced. The existing informational `.app` identifier warning remains.
 - `git diff --check` and `python3 scripts/check_bootstrap.py`: pass.
 

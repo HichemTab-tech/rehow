@@ -14,21 +14,30 @@ type GuideSummary = {
 
 type GuideBodyPayload = { id: string; body: string };
 
+type FolderFacts = {
+  writable: boolean;
+  existingGitRepository: boolean;
+  nestedGitRepository: boolean;
+  gitProbeComplete: boolean;
+  unsafeGitMarker: boolean;
+};
+
 type WorkspacePayload = {
   name: string;
   categories: Array<{ id: string; name: string; guideCount: number }>;
   guides: GuideSummary[];
   issueCount: number;
+  facts: FolderFacts;
 };
 
 type OpenWorkspaceResult =
   | { kind: "cancelled" }
-  | { kind: "empty" }
+  | { kind: "empty"; facts: FolderFacts }
   | { kind: "compatible"; workspace: WorkspacePayload }
-  | { kind: "newerUnsupported"; version: number }
-  | { kind: "ordinaryMarkdown" }
-  | { kind: "unrelatedNonempty" }
-  | { kind: "malformed"; reason: string };
+  | { kind: "newerUnsupported"; version: number; facts: FolderFacts }
+  | { kind: "ordinaryMarkdown"; facts: FolderFacts }
+  | { kind: "unrelatedNonempty"; facts: FolderFacts }
+  | { kind: "malformed"; reason: string; facts: FolderFacts };
 
 type IconName =
   | "book"
@@ -125,6 +134,25 @@ export function filterGuides(guides: GuideSummary[], query: string) {
 
 export function resultCountLabel(count: number) {
   return `${count} ${count === 1 ? "Guide" : "Guides"}`;
+}
+
+export function gitFactLabel(facts: FolderFacts) {
+  if (facts.unsafeGitMarker) return "Git marker needs attention";
+  if (facts.existingGitRepository && facts.nestedGitRepository) {
+    return "Git repository inside another repository";
+  }
+  if (facts.existingGitRepository) return "Git repository detected";
+  if (facts.nestedGitRepository) return "Inside an existing Git repository";
+  if (!facts.gitProbeComplete)
+    return "Git ancestry could not be fully inspected";
+  return "No Git repository detected";
+}
+
+function folderFactSuffix(facts: FolderFacts) {
+  const access = facts.writable
+    ? "The folder is writable."
+    : "The folder is read-only.";
+  return `${access} ${gitFactLabel(facts)}.`;
 }
 
 export function nextResultIndex(
@@ -310,7 +338,7 @@ export function App() {
         setReaderOpen(false);
         setQuery("");
         setAnnouncement(
-          `${result.workspace.name} opened with ${resultCountLabel(result.workspace.guides.length)}.`,
+          `${result.workspace.name} opened with ${resultCountLabel(result.workspace.guides.length)}. ${folderFactSuffix(result.workspace.facts)}`,
         );
         requestAnimationFrame(() => searchRef.current?.focus());
       } else if (result.kind !== "cancelled") {
@@ -326,7 +354,9 @@ export function App() {
           unrelatedNonempty: "That nonempty folder is not a Rehow Workspace.",
           malformed: "That Workspace is malformed and was not opened.",
         };
-        setAnnouncement(messages[result.kind]);
+        setAnnouncement(
+          `${messages[result.kind]} ${folderFactSuffix(result.facts)}`,
+        );
       }
     } catch {
       setAnnouncement("The native Workspace picker is unavailable.");
@@ -433,7 +463,9 @@ export function App() {
           {workspace === null
             ? "No Workspace open"
             : workspace.issueCount === 0
-              ? "Workspace ready"
+              ? workspace.facts.writable
+                ? "Workspace ready"
+                : "Workspace open read-only"
               : `${workspace.issueCount} item${workspace.issueCount === 1 ? "" : "s"} need attention`}
         </div>
       </aside>
@@ -586,7 +618,7 @@ export function App() {
         <span className="status-path" translate="no">
           {workspace?.name ?? "No Workspace"}
         </span>
-        <span>Read-only</span>
+        <span>{workspace ? gitFactLabel(workspace.facts) : "Read-only"}</span>
       </footer>
       <div className="sr-only" aria-live="polite">
         {announcement}

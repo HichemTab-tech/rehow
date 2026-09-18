@@ -58,6 +58,56 @@ pub enum WorkspaceInspection {
     Malformed { reason: MalformedWorkspaceReason },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkspaceFolderFacts {
+    writable: bool,
+    existing_git_repository: bool,
+    nested_git_repository: bool,
+    git_probe_complete: bool,
+    unsafe_git_marker: bool,
+}
+
+impl WorkspaceFolderFacts {
+    pub fn writable(self) -> bool {
+        self.writable
+    }
+
+    pub fn existing_git_repository(self) -> bool {
+        self.existing_git_repository
+    }
+
+    pub fn nested_git_repository(self) -> bool {
+        self.nested_git_repository
+    }
+
+    pub fn git_probe_complete(self) -> bool {
+        self.git_probe_complete
+    }
+
+    pub fn unsafe_git_marker(self) -> bool {
+        self.unsafe_git_marker
+    }
+}
+
+pub struct WorkspaceInspectionReport {
+    facts: WorkspaceFolderFacts,
+    classification: WorkspaceInspection,
+}
+
+impl WorkspaceInspectionReport {
+    pub fn facts(&self) -> WorkspaceFolderFacts {
+        self.facts
+    }
+
+    pub fn classification(&self) -> &WorkspaceInspection {
+        &self.classification
+    }
+
+    pub fn into_parts(self) -> (WorkspaceFolderFacts, WorkspaceInspection) {
+        (self.facts, self.classification)
+    }
+}
+
 pub struct WorkspaceView {
     // Keep the root capability alive for the lifetime of every loaded record.
     _root: linux::DirectoryCapability,
@@ -162,9 +212,21 @@ const GUIDE_LIMIT: usize = 2 * 1024 * 1024;
 const CATEGORY_LIMIT: usize = 1_000;
 const GUIDE_COUNT_LIMIT: usize = 10_000;
 const MANAGED_BYTES_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
+const GIT_ANCESTOR_LIMIT: usize = 64;
 
-pub fn inspect_workspace(path: &Path) -> Result<WorkspaceInspection, WorkspaceInspectError> {
+pub fn inspect_workspace(path: &Path) -> Result<WorkspaceInspectionReport, WorkspaceInspectError> {
     let root = linux::DirectoryCapability::open_root(path)?;
+    let facts = inspect_folder_facts(&root)?;
+    let classification = inspect_open_root(root)?;
+    Ok(WorkspaceInspectionReport {
+        facts,
+        classification,
+    })
+}
+
+fn inspect_open_root(
+    root: linux::DirectoryCapability,
+) -> Result<WorkspaceInspection, WorkspaceInspectError> {
     let root_entries = root.entries(20_000)?;
     if root_entries.is_empty() {
         return Ok(WorkspaceInspection::Empty);
@@ -434,6 +496,67 @@ pub fn inspect_workspace(path: &Path) -> Result<WorkspaceInspection, WorkspaceIn
     })))
 }
 
+fn inspect_folder_facts(
+    root: &linux::DirectoryCapability,
+) -> Result<WorkspaceFolderFacts, WorkspaceInspectError> {
+    let writable = root.writable()?;
+    let mut facts = WorkspaceFolderFacts {
+        writable,
+        existing_git_repository: false,
+        nested_git_repository: false,
+        git_probe_complete: true,
+        unsafe_git_marker: false,
+    };
+    apply_git_marker(root.git_marker(), true, &mut facts);
+
+    let mut ancestor = match root.open_parent() {
+        Ok(value) => value,
+        Err(_) => {
+            facts.git_probe_complete = false;
+            return Ok(facts);
+        }
+    };
+    for _ in 0..GIT_ANCESTOR_LIMIT {
+        let Some(directory) = ancestor else {
+            return Ok(facts);
+        };
+        apply_git_marker(directory.git_marker(), false, &mut facts);
+        ancestor = match directory.open_parent() {
+            Ok(value) => value,
+            Err(_) => {
+                facts.git_probe_complete = false;
+                return Ok(facts);
+            }
+        };
+    }
+    if ancestor.is_some() {
+        facts.git_probe_complete = false;
+    }
+    Ok(facts)
+}
+
+fn apply_git_marker(
+    marker: Result<linux::GitMarker, std::io::Error>,
+    selected_root: bool,
+    facts: &mut WorkspaceFolderFacts,
+) {
+    match marker {
+        Ok(linux::GitMarker::Missing) => {}
+        Ok(linux::GitMarker::Repository) if selected_root => {
+            facts.existing_git_repository = true;
+        }
+        Ok(linux::GitMarker::Repository) => {
+            facts.nested_git_repository = true;
+        }
+        Ok(linux::GitMarker::Unsafe) => {
+            facts.unsafe_git_marker = true;
+        }
+        Err(_) => {
+            facts.git_probe_complete = false;
+        }
+    }
+}
+
 fn contains_safe_markdown(
     directory: &linux::DirectoryCapability,
     names: &[String],
@@ -569,6 +692,12 @@ mod linux {
         Io(io::Error),
     }
 
+    pub(super) enum GitMarker {
+        Missing,
+        Repository,
+        Unsafe,
+    }
+
     impl DirectoryCapability {
         pub(super) fn open_root(path: &Path) -> Result<Self, WorkspaceInspectError> {
             let canonical = std::fs::canonicalize(path).map_err(super::map_io)?;
@@ -636,6 +765,91 @@ mod linux {
                 names.push(name.to_owned());
             }
             Ok(names)
+        }
+
+        pub(super) fn writable(&self) -> Result<bool, WorkspaceInspectError> {
+            // SAFETY: the retained descriptor is valid and `.` is a static,
+            // NUL-terminated relative component.
+            let result = unsafe {
+                libc::faccessat(
+                    self.descriptor.as_raw_fd(),
+                    c".".as_ptr(),
+                    libc::W_OK | libc::X_OK,
+                    libc::AT_EACCESS,
+                )
+            };
+            if result == 0 {
+                return Ok(true);
+            }
+            let error = io::Error::last_os_error();
+            match error.raw_os_error() {
+                Some(libc::EACCES) | Some(libc::EROFS) => Ok(false),
+                _ => Err(super::map_io(error)),
+            }
+        }
+
+        pub(super) fn git_marker(&self) -> Result<GitMarker, io::Error> {
+            // `O_PATH | O_NOFOLLOW` obtains metadata for the directory entry
+            // itself, including a symlink, without opening its target.
+            // SAFETY: the descriptor is valid and `.git` is static and NUL-terminated.
+            let raw = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    c".git".as_ptr(),
+                    libc::O_PATH | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
+            if raw < 0 {
+                let error = io::Error::last_os_error();
+                return match error.raw_os_error() {
+                    Some(libc::ENOENT) => Ok(GitMarker::Missing),
+                    _ => Err(error),
+                };
+            }
+            // SAFETY: a successful `openat` returns a newly owned descriptor.
+            let file = unsafe { File::from_raw_fd(raw) };
+            let metadata = file.metadata()?;
+            if metadata.file_type().is_dir() {
+                return Ok(GitMarker::Repository);
+            }
+            if !metadata.file_type().is_file() || metadata.nlink() != 1 {
+                return Ok(GitMarker::Unsafe);
+            }
+            drop(file);
+            match self.read_regular(".git", 4 * 1024) {
+                Ok(bytes) if valid_gitdir_file(&bytes) => Ok(GitMarker::Repository),
+                Ok(_)
+                | Err(
+                    EntryReadError::Unsafe | EntryReadError::TooLarge | EntryReadError::Changed,
+                ) => Ok(GitMarker::Unsafe),
+                Err(EntryReadError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                    Ok(GitMarker::Missing)
+                }
+                Err(EntryReadError::Io(error)) => Err(error),
+            }
+        }
+
+        pub(super) fn open_parent(&self) -> Result<Option<Self>, io::Error> {
+            // SAFETY: the descriptor is valid and `..` is static and NUL-terminated.
+            let raw = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    c"..".as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
+            if raw < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: a successful `openat` returns a newly owned descriptor.
+            let parent = unsafe { OwnedFd::from_raw_fd(raw) };
+            let current_identity = descriptor_identity(&self.descriptor)?;
+            let parent_identity = descriptor_identity(&parent)?;
+            if current_identity == parent_identity {
+                Ok(None)
+            } else {
+                Ok(Some(Self { descriptor: parent }))
+            }
         }
 
         pub(super) fn open_directory(&self, name: &str) -> Result<Self, OpenDirectoryError> {
@@ -723,6 +937,28 @@ mod linux {
         }
     }
 
+    fn descriptor_identity(descriptor: &OwnedFd) -> Result<(u64, u64), io::Error> {
+        let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: `status` points to writable storage and the descriptor is valid.
+        if unsafe { libc::fstat(descriptor.as_raw_fd(), status.as_mut_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: successful `fstat` initialized the complete structure.
+        let status = unsafe { status.assume_init() };
+        Ok((status.st_dev, status.st_ino))
+    }
+
+    fn valid_gitdir_file(bytes: &[u8]) -> bool {
+        let line = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+        let Some(target) = line.strip_prefix(b"gitdir: ") else {
+            return false;
+        };
+        !target.is_empty()
+            && !target.contains(&0)
+            && !target.contains(&b'\n')
+            && !target.contains(&b'\r')
+    }
+
     struct DirectoryStream(*mut libc::DIR);
 
     impl Drop for DirectoryStream {
@@ -800,16 +1036,20 @@ mod tests {
         fs::write(category.join("install--36c5735e10.md"), GUIDE).unwrap();
     }
 
+    fn classification(root: &Path) -> WorkspaceInspection {
+        inspect_workspace(root).unwrap().into_parts().1
+    }
+
     #[test]
     fn classifies_empty_and_unrelated_folders() {
         let empty = TestDirectory::new();
         assert!(matches!(
-            inspect_workspace(empty.path()).unwrap(),
+            classification(empty.path()),
             WorkspaceInspection::Empty
         ));
         fs::write(empty.path().join("notes.txt"), "hello").unwrap();
         assert!(matches!(
-            inspect_workspace(empty.path()).unwrap(),
+            classification(empty.path()),
             WorkspaceInspection::UnrelatedNonempty
         ));
     }
@@ -819,7 +1059,7 @@ mod tests {
         let root = TestDirectory::new();
         fs::write(root.path().join("notes.md"), "# Notes\n").unwrap();
         assert!(matches!(
-            inspect_workspace(root.path()).unwrap(),
+            classification(root.path()),
             WorkspaceInspection::OrdinaryMarkdown
         ));
     }
@@ -831,7 +1071,7 @@ mod tests {
         fs::create_dir_all(&nested).unwrap();
         fs::write(nested.join("install.md"), "# Install\n").unwrap();
         assert!(matches!(
-            inspect_workspace(root.path()).unwrap(),
+            classification(root.path()),
             WorkspaceInspection::OrdinaryMarkdown
         ));
 
@@ -841,7 +1081,7 @@ mod tests {
             let links = TestDirectory::new();
             symlink(nested.join("install.md"), links.path().join("outside.md")).unwrap();
             assert!(matches!(
-                inspect_workspace(links.path()).unwrap(),
+                classification(links.path()),
                 WorkspaceInspection::UnrelatedNonempty
             ));
         }
@@ -851,7 +1091,7 @@ mod tests {
     fn loads_a_compatible_workspace_and_revisions() {
         let root = TestDirectory::new();
         write_compatible(root.path());
-        let WorkspaceInspection::Compatible(view) = inspect_workspace(root.path()).unwrap() else {
+        let WorkspaceInspection::Compatible(view) = classification(root.path()) else {
             panic!("expected compatible Workspace");
         };
         assert_eq!(view.manifest().name(), "Test Workspace");
@@ -873,14 +1113,14 @@ mod tests {
         let newer = TestDirectory::new();
         fs::write(newer.path().join("rehow.yaml"), manifest(2)).unwrap();
         assert!(matches!(
-            inspect_workspace(newer.path()).unwrap(),
+            classification(newer.path()),
             WorkspaceInspection::NewerUnsupported { version: 2 }
         ));
 
         let malformed = TestDirectory::new();
         fs::write(malformed.path().join("rehow.yaml"), "not: [valid").unwrap();
         assert!(matches!(
-            inspect_workspace(malformed.path()).unwrap(),
+            classification(malformed.path()),
             WorkspaceInspection::Malformed {
                 reason: MalformedWorkspaceReason::Manifest
             }
@@ -899,7 +1139,7 @@ mod tests {
             "0199a1c2-d334-7d17-bd9c-f8b6ba3a5552",
         );
         fs::write(path, changed).unwrap();
-        let WorkspaceInspection::Compatible(view) = inspect_workspace(root.path()).unwrap() else {
+        let WorkspaceInspection::Compatible(view) = classification(root.path()) else {
             panic!("expected compatible Workspace");
         };
         assert!(view.categories()[0].guides().is_empty());
@@ -920,7 +1160,7 @@ mod tests {
             vec![b'x'; GUIDE_LIMIT + 1],
         )
         .unwrap();
-        let WorkspaceInspection::Compatible(view) = inspect_workspace(root.path()).unwrap() else {
+        let WorkspaceInspection::Compatible(view) = classification(root.path()) else {
             panic!("expected compatible Workspace");
         };
         assert_eq!(view.categories()[0].guides().len(), 1);
@@ -948,6 +1188,59 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reports_writability_and_root_or_ancestor_git_markers() {
+        let repository = TestDirectory::new();
+        fs::create_dir(repository.path().join(".git")).unwrap();
+        let root_report = inspect_workspace(repository.path()).unwrap();
+        assert!(root_report.facts().writable());
+        assert!(root_report.facts().existing_git_repository());
+        assert!(!root_report.facts().nested_git_repository());
+        assert!(root_report.facts().git_probe_complete());
+        assert!(!root_report.facts().unsafe_git_marker());
+
+        let nested = repository.path().join("notes/rehow");
+        fs::create_dir_all(&nested).unwrap();
+        let nested_report = inspect_workspace(&nested).unwrap();
+        assert!(!nested_report.facts().existing_git_repository());
+        assert!(nested_report.facts().nested_git_repository());
+        assert!(nested_report.facts().git_probe_complete());
+
+        let worktree = TestDirectory::new();
+        fs::write(worktree.path().join(".git"), "gitdir: ../metadata\n").unwrap();
+        assert!(
+            inspect_workspace(worktree.path())
+                .unwrap()
+                .facts()
+                .existing_git_repository()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reports_non_writable_and_unsafe_git_markers_without_following_them() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let root = TestDirectory::new();
+        let outside = TestDirectory::new();
+        symlink(outside.path(), root.path().join(".git")).unwrap();
+        let unsafe_report = inspect_workspace(root.path()).unwrap();
+        assert!(!unsafe_report.facts().existing_git_repository());
+        assert!(unsafe_report.facts().unsafe_git_marker());
+
+        fs::remove_file(root.path().join(".git")).unwrap();
+        fs::write(root.path().join(".git"), "ordinary file\n").unwrap();
+        let invalid_file_report = inspect_workspace(root.path()).unwrap();
+        assert!(!invalid_file_report.facts().existing_git_repository());
+        assert!(invalid_file_report.facts().unsafe_git_marker());
+
+        fs::remove_file(root.path().join(".git")).unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        let read_only_report = inspect_workspace(root.path()).unwrap();
+        assert!(!read_only_report.facts().writable());
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn rejects_a_socket_disguised_as_a_guide_without_blocking() {
@@ -960,7 +1253,7 @@ mod tests {
             .join("categories/linux-system--b6ba3a5551/install--36c5735e10.md");
         fs::remove_file(&guide).unwrap();
         let _listener = UnixListener::bind(&guide).unwrap();
-        let WorkspaceInspection::Compatible(view) = inspect_workspace(root.path()).unwrap() else {
+        let WorkspaceInspection::Compatible(view) = classification(root.path()) else {
             panic!("expected compatible Workspace");
         };
         assert!(view.categories()[0].guides().is_empty());
@@ -981,7 +1274,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            inspect_workspace(root.path()).unwrap(),
+            classification(root.path()),
             WorkspaceInspection::Malformed {
                 reason: MalformedWorkspaceReason::Manifest
             }
@@ -994,7 +1287,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            inspect_workspace(root.path()).unwrap(),
+            classification(root.path()),
             WorkspaceInspection::Malformed {
                 reason: MalformedWorkspaceReason::Manifest
             }
