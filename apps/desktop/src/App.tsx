@@ -52,6 +52,11 @@ type SaveGuidePayload = {
   changed: boolean;
 };
 
+type CreateCategoryPayload = {
+  workspace: WorkspacePayload;
+  categoryId: string;
+};
+
 type IconName =
   | "book"
   | "search"
@@ -173,7 +178,7 @@ export function normalizedWorkspaceName(value: string) {
   return length >= 1 && length <= 200 ? name : null;
 }
 
-export function workspaceInitializationError(error: unknown) {
+export function nativeCommandError(error: unknown) {
   if (
     typeof error === "object" &&
     error !== null &&
@@ -188,6 +193,17 @@ export function workspaceInitializationError(error: unknown) {
     code: "unknown",
     message: "The Workspace could not be created. Choose the folder again.",
   };
+}
+
+export function normalizedCategoryDetails(
+  nameValue: string,
+  summaryValue: string,
+) {
+  const name = nameValue.trim();
+  const summary = summaryValue.trim();
+  if (Array.from(name).length < 1 || Array.from(name).length > 200) return null;
+  if (Array.from(summary).length > 500) return null;
+  return { name, summary: summary === "" ? null : summary };
 }
 
 export function gitFactLabel(facts: FolderFacts) {
@@ -261,6 +277,11 @@ export function App() {
   const [workspaceName, setWorkspaceName] = useState("");
   const [initializingWorkspace, setInitializingWorkspace] = useState(false);
   const [workspaceSetupError, setWorkspaceSetupError] = useState("");
+  const [creatingCategory, setCreatingCategory] = useState(false);
+  const [categoryName, setCategoryName] = useState("");
+  const [categorySummary, setCategorySummary] = useState("");
+  const [savingCategory, setSavingCategory] = useState(false);
+  const [categoryError, setCategoryError] = useState("");
   const [guideBody, setGuideBody] = useState<GuideBodyPayload | null>(null);
   const [editingGuide, setEditingGuide] = useState(false);
   const [draftBody, setDraftBody] = useState("");
@@ -277,6 +298,9 @@ export function App() {
   const saveErrorRef = useRef<HTMLParagraphElement>(null);
   const workspaceNameRef = useRef<HTMLInputElement>(null);
   const workspaceSetupErrorRef = useRef<HTMLParagraphElement>(null);
+  const categoryCreateButtonRef = useRef<HTMLButtonElement>(null);
+  const categoryNameRef = useRef<HTMLInputElement>(null);
+  const categoryErrorRef = useRef<HTMLParagraphElement>(null);
   const guides = workspace?.guides ?? [];
   const visibleGuides = useMemo(
     () => rankedGuides(guides, query, rankedGuideIds),
@@ -461,6 +485,12 @@ export function App() {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const result = await invoke<OpenWorkspaceResult>("choose_workspace");
+      if (result.kind !== "cancelled") {
+        setCreatingCategory(false);
+        setCategoryName("");
+        setCategorySummary("");
+        setCategoryError("");
+      }
       if (result.kind === "compatible") {
         setWorkspace(result.workspace);
         setPendingWorkspace(null);
@@ -529,7 +559,7 @@ export function App() {
       setAnnouncement(`${created.name} was created and opened.`);
       requestAnimationFrame(() => searchRef.current?.focus());
     } catch (error) {
-      const failure = workspaceInitializationError(error);
+      const failure = nativeCommandError(error);
       setWorkspaceSetupError(failure.message);
       if (failure.code !== "invalidName" && failure.code !== "busy") {
         setPendingWorkspace(null);
@@ -555,6 +585,51 @@ export function App() {
     setWorkspaceSetupError("");
     setAnnouncement("Workspace creation cancelled.");
     requestAnimationFrame(() => searchRef.current?.focus());
+  }
+
+  function beginCategoryCreation() {
+    if (workspace === null || !workspace.facts.writable) return;
+    setCategoryName("");
+    setCategorySummary("");
+    setCategoryError("");
+    setCreatingCategory(true);
+    requestAnimationFrame(() => categoryNameRef.current?.focus());
+  }
+
+  function cancelCategoryCreation() {
+    if (savingCategory) return;
+    setCreatingCategory(false);
+    setCategoryName("");
+    setCategorySummary("");
+    setCategoryError("");
+    requestAnimationFrame(() => categoryCreateButtonRef.current?.focus());
+  }
+
+  async function saveCategory() {
+    const details = normalizedCategoryDetails(categoryName, categorySummary);
+    if (details === null || savingCategory) return;
+    setSavingCategory(true);
+    setCategoryError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const created = await invoke<CreateCategoryPayload>(
+        "create_open_category",
+        details,
+      );
+      setWorkspace(created.workspace);
+      setCreatingCategory(false);
+      setCategoryName("");
+      setCategorySummary("");
+      setAnnouncement(`${details.name} Category created.`);
+      requestAnimationFrame(() => categoryCreateButtonRef.current?.focus());
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setCategoryError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => categoryErrorRef.current?.focus());
+    } finally {
+      setSavingCategory(false);
+    }
   }
 
   function beginEditing() {
@@ -696,12 +771,106 @@ export function App() {
           />
         </nav>
         <div className="category-list">
-          <p className="rail-label">Categories</p>
+          <div className="category-list-heading">
+            <p className="rail-label">Categories</p>
+            {workspace?.facts.writable && (
+              <button
+                ref={categoryCreateButtonRef}
+                className="category-create-button"
+                type="button"
+                aria-label="Create Category"
+                title="Create Category"
+                aria-expanded={creatingCategory}
+                onClick={beginCategoryCreation}
+                disabled={creatingCategory}
+              >
+                <Icon name="plus" />
+              </button>
+            )}
+          </div>
+          {creatingCategory && (
+            <form
+              className="category-create-form"
+              aria-busy={savingCategory}
+              onSubmit={(event) => {
+                event.preventDefault();
+                void saveCategory();
+              }}
+            >
+              <label htmlFor="category-name">Category Name</label>
+              <input
+                ref={categoryNameRef}
+                id="category-name"
+                name="category-name"
+                type="text"
+                autoComplete="off"
+                maxLength={200}
+                aria-invalid={categoryError !== ""}
+                aria-describedby={
+                  categoryError !== "" ? "category-create-error" : undefined
+                }
+                value={categoryName}
+                onChange={(event) => {
+                  setCategoryName(event.target.value);
+                  setCategoryError("");
+                }}
+              />
+              <label htmlFor="category-summary">Summary (Optional)</label>
+              <textarea
+                id="category-summary"
+                name="category-summary"
+                autoComplete="off"
+                maxLength={500}
+                rows={3}
+                aria-invalid={categoryError !== ""}
+                aria-describedby={
+                  categoryError !== "" ? "category-create-error" : undefined
+                }
+                value={categorySummary}
+                onChange={(event) => {
+                  setCategorySummary(event.target.value);
+                  setCategoryError("");
+                }}
+              />
+              {categoryError !== "" && (
+                <p
+                  ref={categoryErrorRef}
+                  id="category-create-error"
+                  className="category-create-error"
+                  role="alert"
+                  tabIndex={-1}
+                >
+                  {categoryError}
+                </p>
+              )}
+              <div className="category-create-actions">
+                <button
+                  className="button"
+                  type="button"
+                  disabled={savingCategory}
+                  onClick={cancelCategoryCreation}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="button button-primary"
+                  type="submit"
+                  disabled={
+                    savingCategory ||
+                    normalizedCategoryDetails(categoryName, categorySummary) ===
+                      null
+                  }
+                >
+                  {savingCategory ? "Creating…" : "Create Category"}
+                </button>
+              </div>
+            </form>
+          )}
           {(workspace?.categories ?? []).map((category) => (
-            <button className="category-item" type="button" key={category.id}>
+            <div className="category-item" key={category.id}>
               <span>{category.name}</span>
               <span className="count">{category.guideCount}</span>
-            </button>
+            </div>
           ))}
         </div>
         <div className="rail-footer">

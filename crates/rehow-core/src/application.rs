@@ -7,7 +7,7 @@
 
 use crate::{
     domain::content::{
-        emission::{EmitFailureKind, emit_new_workspace_manifest},
+        emission::{EmitFailureKind, EmitField, emit_new_category, emit_new_workspace_manifest},
         guide::bind_guide,
         mutation::{
             GuideMutation, MutationFailureKind, MutationOutcome, MutationStamp, plan_guide_mutation,
@@ -15,18 +15,147 @@ use crate::{
     },
     parsing::parse_guide_source,
     protocol::{
-        GuideId, OperationId, Revision, Timestamp, current_timestamp, new_operation_id,
-        new_workspace_id,
+        CategoryId, GuideId, OperationId, Revision, Timestamp, current_timestamp, new_category_id,
+        new_operation_id, new_workspace_id,
     },
     storage::{
-        DocumentUpdateError, EmptyWorkspaceTarget, WorkspaceInitializeError, WorkspaceView,
-        execute_document_update, execute_workspace_initialize, open_initialized_workspace,
-        refresh_workspace,
+        CategoryCreateStorageError, DocumentUpdateError, EmptyWorkspaceTarget,
+        WorkspaceInitializeError, WorkspaceView, execute_category_create, execute_document_update,
+        execute_workspace_initialize, open_initialized_workspace, refresh_workspace,
     },
 };
 use std::path::Path;
 
 pub const GUIDE_BODY_INPUT_LIMIT: usize = 2 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CategoryCreateError {
+    InvalidName,
+    InvalidSummary,
+    Busy,
+    Conflict,
+    UnsafeStorage,
+    UnsupportedFilesystem,
+    ResourceLimit,
+    Io,
+    Incomplete,
+    CommittedRefreshRequired {
+        category_id: CategoryId,
+        revision: Revision,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CategoryCreateOutcome {
+    category_id: CategoryId,
+    revision: Revision,
+}
+
+impl CategoryCreateOutcome {
+    pub fn category_id(self) -> CategoryId {
+        self.category_id
+    }
+
+    pub fn revision(self) -> Revision {
+        self.revision
+    }
+}
+
+pub fn create_category(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    name: &str,
+    summary: Option<&str>,
+) -> Result<CategoryCreateOutcome, CategoryCreateError> {
+    if workspace.categories().len() >= 1_000 {
+        return Err(CategoryCreateError::ResourceLimit);
+    }
+    let category_id = new_category_id();
+    let operation_id = new_operation_id();
+    let timestamp = current_timestamp();
+    let order = workspace
+        .categories()
+        .iter()
+        .map(|loaded| loaded.category().order())
+        .max()
+        .map_or(1_000, |current| current.saturating_add(1_000));
+    let descriptor = emit_new_category(&category_id, name, summary, order, &timestamp).map_err(
+        |error| match (error.kind(), error.field()) {
+            (EmitFailureKind::ResourceLimit, _) => CategoryCreateError::ResourceLimit,
+            (EmitFailureKind::InvalidValue, EmitField::Summary) => {
+                CategoryCreateError::InvalidSummary
+            }
+            (EmitFailureKind::InvalidValue, _) => CategoryCreateError::InvalidName,
+            (EmitFailureKind::CandidateMismatch, _) => CategoryCreateError::Io,
+        },
+    )?;
+    let relative_directory = category_directory_name(name, &category_id);
+    let result = execute_category_create(
+        workspace,
+        state_home,
+        runtime_directory,
+        &relative_directory,
+        operation_id,
+        timestamp,
+        descriptor.source_bytes(),
+    )
+    .map_err(map_category_create_error)?;
+    if refresh_workspace(workspace).is_err()
+        || !workspace.categories().iter().any(|loaded| {
+            loaded.category().id() == &category_id
+                && loaded.descriptor_revision() == result.revision()
+        })
+    {
+        return Err(CategoryCreateError::CommittedRefreshRequired {
+            category_id,
+            revision: result.revision(),
+        });
+    }
+    Ok(CategoryCreateOutcome {
+        category_id,
+        revision: result.revision(),
+    })
+}
+
+fn category_directory_name(name: &str, category_id: &CategoryId) -> String {
+    let mut slug = String::new();
+    let mut separator = false;
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() {
+            if separator && !slug.is_empty() && slug.len() < 80 {
+                slug.push('-');
+            }
+            separator = false;
+            if slug.len() < 80 {
+                slug.push(character.to_ascii_lowercase());
+            }
+        } else {
+            separator = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        slug.push_str("category");
+    }
+    let id = category_id.to_string();
+    let suffix = &id[id.len() - 10..];
+    format!("categories/{slug}--{suffix}")
+}
+
+fn map_category_create_error(error: CategoryCreateStorageError) -> CategoryCreateError {
+    match error {
+        CategoryCreateStorageError::Busy => CategoryCreateError::Busy,
+        CategoryCreateStorageError::Conflict => CategoryCreateError::Conflict,
+        CategoryCreateStorageError::Unsafe => CategoryCreateError::UnsafeStorage,
+        CategoryCreateStorageError::Unsupported => CategoryCreateError::UnsupportedFilesystem,
+        CategoryCreateStorageError::TooLarge => CategoryCreateError::ResourceLimit,
+        CategoryCreateStorageError::Io => CategoryCreateError::Io,
+        CategoryCreateStorageError::Incomplete => CategoryCreateError::Incomplete,
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspaceInitializationError {
@@ -276,7 +405,11 @@ fn map_update_error(error: DocumentUpdateError<PlanError>) -> GuideUpdateError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{domain::GuideStatus, storage::WorkspaceInspection, storage::inspect_workspace};
+    use crate::{
+        domain::{CategoryStatus, GuideStatus},
+        storage::WorkspaceInspection,
+        storage::inspect_workspace,
+    };
     use std::{
         fs,
         os::unix::fs::PermissionsExt,
@@ -356,6 +489,14 @@ mod tests {
         target
     }
 
+    fn initialized_workspace(label: &str) -> (TestDirectory, TestDirectory, Box<WorkspaceView>) {
+        let workspace = TestDirectory::new(label);
+        let state = TestDirectory::new("initialized-state");
+        let target = empty_target(&workspace);
+        let view = initialize_workspace(&target, state.path(), None, "Personal Rehow").unwrap();
+        (workspace, state, view)
+    }
+
     #[test]
     fn initializes_and_opens_an_empty_workspace() {
         let workspace = TestDirectory::new("initialize");
@@ -427,6 +568,90 @@ mod tests {
             Err(WorkspaceInitializationError::InvalidName)
         ));
         assert!(fs::read_dir(workspace.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn creates_categories_with_canonical_order_paths_and_modes() {
+        let (workspace, state, mut view) = initialized_workspace("category-create");
+        let first = create_category(
+            &mut view,
+            state.path(),
+            None,
+            "Linux System",
+            Some("Boot, devices, and desktop configuration."),
+        )
+        .unwrap();
+        assert_eq!(view.categories().len(), 1);
+        let loaded = &view.categories()[0];
+        assert_eq!(loaded.category().id(), &first.category_id());
+        assert_eq!(loaded.category().name(), "Linux System");
+        assert_eq!(
+            loaded.category().summary(),
+            Some("Boot, devices, and desktop configuration.")
+        );
+        assert_eq!(loaded.category().order(), 1_000);
+        assert_eq!(loaded.category().status(), CategoryStatus::Active);
+        assert!(
+            loaded
+                .relative_directory()
+                .starts_with("categories/linux-system--")
+        );
+        assert_eq!(loaded.descriptor_revision(), first.revision());
+        assert_eq!(
+            fs::metadata(workspace.path().join(loaded.relative_directory()))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(
+                workspace
+                    .path()
+                    .join(loaded.relative_directory())
+                    .join("category.yaml")
+            )
+            .unwrap()
+            .permissions()
+            .mode()
+                & 0o777,
+            0o600
+        );
+
+        create_category(&mut view, state.path(), None, "Shell", None).unwrap();
+        assert_eq!(view.categories().len(), 2);
+        assert_eq!(view.categories()[1].category().order(), 2_000);
+    }
+
+    #[test]
+    fn category_slug_falls_back_and_invalid_input_writes_nothing() {
+        let id = CategoryId::from_str("0199a1c2-d334-7d17-bd9c-f8b6ba3a5551").unwrap();
+        assert_eq!(
+            category_directory_name("系统", &id),
+            "categories/category--b6ba3a5551"
+        );
+        let (workspace, state, mut view) = initialized_workspace("category-invalid");
+        assert!(matches!(
+            create_category(&mut view, state.path(), None, " ", None),
+            Err(CategoryCreateError::InvalidName)
+        ));
+        assert!(matches!(
+            create_category(
+                &mut view,
+                state.path(),
+                None,
+                "Valid",
+                Some(&"x".repeat(501))
+            ),
+            Err(CategoryCreateError::InvalidSummary)
+        ));
+        assert!(
+            fs::read_dir(workspace.path().join("categories"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
     }
 
     #[test]

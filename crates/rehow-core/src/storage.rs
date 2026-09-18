@@ -6,8 +6,8 @@
 
 pub(crate) mod recovery;
 pub(crate) use recovery::{
-    DocumentUpdateError, DocumentUpdateOutcome, WorkspaceInitializeError,
-    WorkspaceInitializeOutcome,
+    CategoryCreateStorageError, CategoryCreateStorageOutcome, DocumentUpdateError,
+    DocumentUpdateOutcome, WorkspaceInitializeError, WorkspaceInitializeOutcome,
 };
 
 #[cfg(not(target_os = "linux"))]
@@ -279,6 +279,28 @@ pub(crate) fn execute_workspace_initialize(
         operation_id,
         created_at,
         manifest,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_category_create(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    relative_directory: &str,
+    operation_id: crate::protocol::OperationId,
+    created_at: crate::protocol::Timestamp,
+    descriptor: &[u8],
+) -> Result<CategoryCreateStorageOutcome, CategoryCreateStorageError> {
+    recovery::execute_category_create(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        relative_directory,
+        operation_id,
+        created_at,
+        descriptor,
     )
 }
 
@@ -1161,48 +1183,28 @@ mod linux {
         }
 
         pub(super) fn create_categories_directory(&self) -> Result<(), MutationIoError> {
-            let name = c"categories";
-            // SAFETY: the retained parent and static component are valid.
-            if unsafe { libc::mkdirat(self.descriptor.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
-                return match io::Error::last_os_error().raw_os_error() {
-                    Some(libc::EEXIST) => Err(MutationIoError::Conflict),
-                    _ => Err(MutationIoError::Io),
-                };
-            }
-            // SAFETY: the retained parent and static component are valid.
-            let raw = unsafe {
-                libc::openat(
-                    self.descriptor.as_raw_fd(),
-                    name.as_ptr(),
-                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-                )
+            self.create_private_directory_exclusive("categories")?;
+            Ok(())
+        }
+
+        pub(super) fn create_category_directory(
+            &self,
+            relative_directory: &str,
+        ) -> Result<(), MutationIoError> {
+            let Some(name) = relative_directory.strip_prefix("categories/") else {
+                return Err(MutationIoError::Unsafe);
             };
-            if raw < 0 {
+            if !super::valid_category_directory(name) {
                 return Err(MutationIoError::Unsafe);
             }
-            // SAFETY: successful `openat` returns a newly owned descriptor.
-            let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
-            // SAFETY: descriptor is valid and owned.
-            if unsafe { libc::fchmod(descriptor.as_raw_fd(), 0o700) } != 0 {
-                return Err(MutationIoError::Io);
-            }
-            let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
-            // SAFETY: descriptor/status are valid.
-            if unsafe { libc::fstat(descriptor.as_raw_fd(), status.as_mut_ptr()) } != 0 {
-                return Err(MutationIoError::Io);
-            }
-            // SAFETY: successful `fstat` initialized the structure.
-            let status = unsafe { status.assume_init() };
-            if status.st_uid != unsafe { libc::geteuid() }
-                || status.st_mode & libc::S_IFMT != libc::S_IFDIR
-                || status.st_mode & 0o7777 != 0o700
-            {
-                return Err(MutationIoError::Unsafe);
-            }
-            // SAFETY: the retained root descriptor is valid.
-            if unsafe { libc::fsync(self.descriptor.as_raw_fd()) } != 0 {
-                return Err(MutationIoError::Unsupported);
-            }
+            let categories = self
+                .open_directory("categories")
+                .map_err(|error| match error {
+                    OpenDirectoryError::Missing => MutationIoError::Conflict,
+                    OpenDirectoryError::Unsafe => MutationIoError::Unsafe,
+                    OpenDirectoryError::Io(_) => MutationIoError::Io,
+                })?;
+            categories.create_private_directory_exclusive(name)?;
             Ok(())
         }
 
@@ -1328,6 +1330,56 @@ mod linux {
                 return Err(MutationIoError::Unsafe);
             }
             // SAFETY: the parent descriptor is a retained directory.
+            if unsafe { libc::fsync(self.descriptor.as_raw_fd()) } != 0 {
+                return Err(MutationIoError::Unsupported);
+            }
+            Ok(Self {
+                descriptor,
+                root_hash: self.root_hash,
+                capability_hash: self.capability_hash,
+            })
+        }
+
+        fn create_private_directory_exclusive(&self, name: &str) -> Result<Self, MutationIoError> {
+            let name = component(name).map_err(|_| MutationIoError::Unsafe)?;
+            // SAFETY: the retained parent and validated component are valid.
+            if unsafe { libc::mkdirat(self.descriptor.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+                return match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::EEXIST) => Err(MutationIoError::Conflict),
+                    _ => Err(MutationIoError::Io),
+                };
+            }
+            // SAFETY: the retained parent and validated component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
+            if raw < 0 {
+                return Err(MutationIoError::Unsafe);
+            }
+            // SAFETY: successful `openat` returns a newly owned descriptor.
+            let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
+            // SAFETY: descriptor is valid and owned.
+            if unsafe { libc::fchmod(descriptor.as_raw_fd(), 0o700) } != 0 {
+                return Err(MutationIoError::Io);
+            }
+            let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: descriptor/status are valid.
+            if unsafe { libc::fstat(descriptor.as_raw_fd(), status.as_mut_ptr()) } != 0 {
+                return Err(MutationIoError::Io);
+            }
+            // SAFETY: successful `fstat` initialized the structure.
+            let status = unsafe { status.assume_init() };
+            if status.st_uid != unsafe { libc::geteuid() }
+                || status.st_mode & libc::S_IFMT != libc::S_IFDIR
+                || status.st_mode & 0o7777 != 0o700
+            {
+                return Err(MutationIoError::Unsafe);
+            }
+            // SAFETY: the retained parent descriptor is valid.
             if unsafe { libc::fsync(self.descriptor.as_raw_fd()) } != 0 {
                 return Err(MutationIoError::Unsupported);
             }

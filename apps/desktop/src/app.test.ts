@@ -7,11 +7,12 @@ import {
   filterGuides,
   gitFactLabel,
   hasUnsavedChanges,
+  nativeCommandError,
   nextResultIndex,
+  normalizedCategoryDetails,
   normalizedWorkspaceName,
   rankedGuides,
   resultCountLabel,
-  workspaceInitializationError,
 } from "./App";
 import { MarkdownDocument } from "./MarkdownDocument";
 
@@ -68,11 +69,22 @@ describe("application identity", () => {
 
   it("accepts only structured Workspace initialization errors", () => {
     expect(
-      workspaceInitializationError({ code: "conflict", message: "Changed." }),
+      nativeCommandError({ code: "conflict", message: "Changed." }),
     ).toEqual({ code: "conflict", message: "Changed." });
-    expect(workspaceInitializationError("hostile content").code).toBe(
-      "unknown",
-    );
+    expect(nativeCommandError("hostile content").code).toBe("unknown");
+  });
+
+  it("normalizes bounded Category details", () => {
+    expect(normalizedCategoryDetails("  Linux  ", "  System work  ")).toEqual({
+      name: "Linux",
+      summary: "System work",
+    });
+    expect(normalizedCategoryDetails("Linux", "   ")).toEqual({
+      name: "Linux",
+      summary: null,
+    });
+    expect(normalizedCategoryDetails("", "Summary")).toBeNull();
+    expect(normalizedCategoryDetails("Linux", "x".repeat(501))).toBeNull();
   });
 });
 

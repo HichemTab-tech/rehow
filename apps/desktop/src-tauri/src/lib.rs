@@ -2,8 +2,8 @@ pub const APPLICATION_NAME: &str = "Rehow";
 
 use rehow_core::{
     application::{
-        GUIDE_BODY_INPUT_LIMIT, GuideEdit, GuideUpdateError, WorkspaceInitializationError,
-        initialize_workspace, update_guide,
+        CategoryCreateError, GUIDE_BODY_INPUT_LIMIT, GuideEdit, GuideUpdateError,
+        WorkspaceInitializationError, create_category, initialize_workspace, update_guide,
     },
     domain::GuideStatus,
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -118,7 +118,14 @@ struct SaveGuidePayload {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WorkspaceInitializationCommandError {
+struct CreateCategoryPayload {
+    workspace: WorkspacePayload,
+    category_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeCommandError {
     code: &'static str,
     message: String,
 }
@@ -352,35 +359,35 @@ fn guide_update_message(error: GuideUpdateError) -> String {
 fn initialize_selected_workspace(
     name: String,
     state: tauri::State<'_, DesktopState>,
-) -> Result<WorkspacePayload, WorkspaceInitializationCommandError> {
+) -> Result<WorkspacePayload, NativeCommandError> {
     if name.len() > 1_024 {
-        return Err(initialization_command_error(
+        return Err(native_command_error(
             "invalidName",
             "Workspace name is too long.".to_owned(),
         ));
     }
     let (state_home, runtime_directory) = native_recovery_locations()
-        .map_err(|message| initialization_command_error("stateUnavailable", message))?;
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
     fs::create_dir_all(&state_home).map_err(|_| {
-        initialization_command_error(
+        native_command_error(
             "stateUnavailable",
             "Rehow could not prepare its private recovery folder.".to_owned(),
         )
     })?;
     let mut pending = state.pending_empty.lock().map_err(|_| {
-        initialization_command_error(
+        native_command_error(
             "selectionUnavailable",
             "Workspace selection is unavailable".to_owned(),
         )
     })?;
     let selected = pending.take().ok_or_else(|| {
-        initialization_command_error(
+        native_command_error(
             "selectionUnavailable",
             "Choose an empty folder before creating a Workspace.".to_owned(),
         )
     })?;
     if !selected.facts.writable() {
-        return Err(initialization_command_error(
+        return Err(native_command_error(
             "readOnly",
             "That folder is read-only. Choose a writable folder.".to_owned(),
         ));
@@ -399,7 +406,7 @@ fn initialize_selected_workspace(
             ) {
                 *pending = Some(selected);
             }
-            return Err(initialization_command_error(
+            return Err(native_command_error(
                 workspace_initialization_code(error),
                 workspace_initialization_message(error),
             ));
@@ -408,7 +415,7 @@ fn initialize_selected_workspace(
     let facts = selected.facts;
     let payload = WorkspacePayload::from_view(&view, FolderFactsPayload::from(facts));
     *state.workspace.lock().map_err(|_| {
-        initialization_command_error(
+        native_command_error(
             "sessionUnavailable",
             "Workspace session is unavailable".to_owned(),
         )
@@ -416,11 +423,8 @@ fn initialize_selected_workspace(
     Ok(payload)
 }
 
-fn initialization_command_error(
-    code: &'static str,
-    message: String,
-) -> WorkspaceInitializationCommandError {
-    WorkspaceInitializationCommandError { code, message }
+fn native_command_error(code: &'static str, message: String) -> NativeCommandError {
+    NativeCommandError { code, message }
 }
 
 fn workspace_initialization_code(error: WorkspaceInitializationError) -> &'static str {
@@ -461,6 +465,112 @@ fn workspace_initialization_message(error: WorkspaceInitializationError) -> Stri
         }
         WorkspaceInitializationError::CommittedRefreshRequired { .. } => {
             "The Workspace was created, but Rehow could not open it. Choose the folder again."
+                .to_owned()
+        }
+    }
+}
+
+#[tauri::command]
+fn create_open_category(
+    name: String,
+    summary: Option<String>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<CreateCategoryPayload, NativeCommandError> {
+    if name.len() > 1_024 || summary.as_ref().is_some_and(|value| value.len() > 4_096) {
+        return Err(native_command_error(
+            "invalidInput",
+            "Category details are too long.".to_owned(),
+        ));
+    }
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    fs::create_dir_all(&state_home).map_err(|_| {
+        native_command_error(
+            "stateUnavailable",
+            "Rehow could not prepare its private recovery folder.".to_owned(),
+        )
+    })?;
+    let mut guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_mut().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let outcome = create_category(
+        &mut workspace.view,
+        &state_home,
+        runtime_directory.as_deref(),
+        &name,
+        summary.as_deref(),
+    )
+    .map_err(|error| {
+        native_command_error(category_create_code(error), category_create_message(error))
+    })?;
+    Ok(CreateCategoryPayload {
+        workspace: WorkspacePayload::from_view(
+            &workspace.view,
+            FolderFactsPayload::from(workspace.facts),
+        ),
+        category_id: outcome.category_id().to_string(),
+    })
+}
+
+fn category_create_code(error: CategoryCreateError) -> &'static str {
+    match error {
+        CategoryCreateError::InvalidName => "invalidName",
+        CategoryCreateError::InvalidSummary => "invalidSummary",
+        CategoryCreateError::Busy => "busy",
+        CategoryCreateError::Conflict => "conflict",
+        CategoryCreateError::UnsafeStorage => "unsafeStorage",
+        CategoryCreateError::UnsupportedFilesystem => "unsupportedFilesystem",
+        CategoryCreateError::ResourceLimit => "resourceLimit",
+        CategoryCreateError::Io => "io",
+        CategoryCreateError::Incomplete => "incomplete",
+        CategoryCreateError::CommittedRefreshRequired { .. } => "committedRefresh",
+    }
+}
+
+fn category_create_message(error: CategoryCreateError) -> String {
+    match error {
+        CategoryCreateError::InvalidName => {
+            "Enter a Category name between 1 and 200 characters.".to_owned()
+        }
+        CategoryCreateError::InvalidSummary => {
+            "Keep the optional Category summary below 500 characters.".to_owned()
+        }
+        CategoryCreateError::Busy => {
+            "Another Rehow writer is active. Wait a moment and try again.".to_owned()
+        }
+        CategoryCreateError::Conflict => {
+            "The Category destination changed. Refresh the Workspace and try again.".to_owned()
+        }
+        CategoryCreateError::UnsafeStorage => {
+            "The Category destination is unsafe and was not overwritten.".to_owned()
+        }
+        CategoryCreateError::UnsupportedFilesystem => {
+            "This filesystem cannot provide the atomic durability Rehow requires.".to_owned()
+        }
+        CategoryCreateError::ResourceLimit => {
+            "The Workspace reached a safe Category or content limit.".to_owned()
+        }
+        CategoryCreateError::Io => {
+            "The Category could not be created. Check folder access and try again.".to_owned()
+        }
+        CategoryCreateError::Incomplete => {
+            "Category creation was interrupted. Reopen the Workspace to inspect the empty residue."
+                .to_owned()
+        }
+        CategoryCreateError::CommittedRefreshRequired { .. } => {
+            "The Category was created, but Rehow could not refresh it. Reopen the Workspace."
                 .to_owned()
         }
     }
@@ -552,6 +662,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             cancel_selected_workspace_initialization,
             choose_workspace,
+            create_open_category,
             initialize_selected_workspace,
             read_open_guide,
             save_open_guide_body,
@@ -565,10 +676,11 @@ pub fn run() {
 mod tests {
     use super::{
         APPLICATION_NAME, FolderFactsPayload, GuideBodyPayload, GuidePayload, WorkspacePayload,
-        guide_update_message, initialization_command_error, workspace_initialization_message,
+        category_create_code, category_create_message, guide_update_message, native_command_error,
+        workspace_initialization_message,
     };
     use rehow_core::{
-        application::{GuideUpdateError, WorkspaceInitializationError},
+        application::{CategoryCreateError, GuideUpdateError, WorkspaceInitializationError},
         markdown::parse_safe_markdown,
     };
 
@@ -655,12 +767,24 @@ mod tests {
             "The Workspace was created, but Rehow could not open it. Choose the folder again."
         );
         assert_eq!(
-            serde_json::to_value(initialization_command_error(
+            serde_json::to_value(native_command_error(
                 "conflict",
                 "Folder changed.".to_owned()
             ))
             .unwrap(),
             serde_json::json!({ "code": "conflict", "message": "Folder changed." })
+        );
+    }
+
+    #[test]
+    fn category_create_errors_are_stable_and_actionable() {
+        assert_eq!(
+            category_create_code(CategoryCreateError::Conflict),
+            "conflict"
+        );
+        assert_eq!(
+            category_create_message(CategoryCreateError::Incomplete),
+            "Category creation was interrupted. Reopen the Workspace to inspect the empty residue."
         );
     }
 }

@@ -43,6 +43,28 @@ pub(crate) struct WorkspaceInitializeOutcome {
     revision: Revision,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CategoryCreateStorageError {
+    Busy,
+    Conflict,
+    Unsafe,
+    Unsupported,
+    TooLarge,
+    Io,
+    Incomplete,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CategoryCreateStorageOutcome {
+    revision: Revision,
+}
+
+impl CategoryCreateStorageOutcome {
+    pub(crate) fn revision(self) -> Revision {
+        self.revision
+    }
+}
+
 impl WorkspaceInitializeOutcome {
     pub(crate) fn revision(self) -> Revision {
         self.revision
@@ -139,6 +161,92 @@ pub(super) fn execute_workspace_initialize(
     root.create_categories_directory()
         .map_err(|_| WorkspaceInitializeError::Committed { revision })?;
     Ok(WorkspaceInitializeOutcome { revision })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_category_create(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    relative_directory: &str,
+    operation_id: OperationId,
+    created_at: Timestamp,
+    descriptor: &[u8],
+) -> Result<CategoryCreateStorageOutcome, CategoryCreateStorageError> {
+    let store = store::RecoveryStore::open(
+        state_home,
+        workspace_id,
+        root.root_hash(),
+        root.capability_hash(),
+    )
+    .map_err(map_store_category_create)?;
+    let lock = store
+        .acquire_lock(runtime_directory)
+        .map_err(map_store_category_create)?;
+    root.create_category_directory(relative_directory)
+        .map_err(map_io_category_create)?;
+    let relative_path = format!("{relative_directory}/category.yaml");
+    let target = root
+        .open_managed_target(&relative_path)
+        .map_err(|_| CategoryCreateStorageError::Incomplete)?;
+    if !matches!(
+        target
+            .state(super::DESCRIPTOR_LIMIT)
+            .map_err(|_| CategoryCreateStorageError::Incomplete)?,
+        super::linux::ManagedState::Missing
+    ) {
+        return Err(CategoryCreateStorageError::Incomplete);
+    }
+
+    let object_hash = store
+        .store_object(&lock, descriptor)
+        .map_err(|_| CategoryCreateStorageError::Incomplete)?;
+    let (root_device, root_inode) = root
+        .identity()
+        .map_err(|_| CategoryCreateStorageError::Incomplete)?;
+    let mut plan = blake3::Hasher::new();
+    plan.update(b"rehow-category-create-plan-v1\0");
+    hash_plan_field(&mut plan, relative_path.as_bytes());
+    hash_plan_field(&mut plan, descriptor);
+    let journal = Journal {
+        generation: 1,
+        operation_id,
+        operation_kind: OperationKind::Create,
+        workspace_id,
+        root_hash: root.root_hash(),
+        root_device,
+        root_inode,
+        created_at,
+        plan_hash: *plan.finalize().as_bytes(),
+        targets: vec![Target {
+            relative_path: relative_path.clone(),
+            expected: ExpectedState::Absent,
+            intended: IntendedState::Object {
+                object_hash,
+                mode: 0o600,
+            },
+            temp_name: format!(".rehow-tmp-{operation_id}"),
+            step: TargetStep::Prepared,
+        }],
+        stage: JournalStage::Prepared,
+        completion: false,
+    };
+    let execution = workspace::execute_new_journal(root, &store, &lock, journal.clone());
+    if execution.is_err() {
+        let committed = store
+            .read_journal(&lock, operation_id)
+            .is_ok_and(|persisted| {
+                committed_matches(&persisted, &journal)
+                    && workspace::resume_journal(root, &store, &lock, operation_id).is_ok()
+            });
+        if !committed {
+            return Err(CategoryCreateStorageError::Incomplete);
+        }
+    }
+    Ok(CategoryCreateStorageOutcome {
+        revision: super::document_revision(&relative_path, descriptor),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -333,6 +441,31 @@ fn map_workspace_initialize(error: workspace::WorkspaceMutationError) -> Workspa
         workspace::WorkspaceMutationError::Unsupported => WorkspaceInitializeError::Unsupported,
         workspace::WorkspaceMutationError::TooLarge => WorkspaceInitializeError::TooLarge,
         workspace::WorkspaceMutationError::Io => WorkspaceInitializeError::Io,
+    }
+}
+
+fn map_store_category_create(error: store::StoreError) -> CategoryCreateStorageError {
+    match error {
+        store::StoreError::Busy => CategoryCreateStorageError::Busy,
+        store::StoreError::Conflict | store::StoreError::Corrupt => {
+            CategoryCreateStorageError::Conflict
+        }
+        store::StoreError::Unsafe => CategoryCreateStorageError::Unsafe,
+        store::StoreError::Unsupported => CategoryCreateStorageError::Unsupported,
+        store::StoreError::TooLarge => CategoryCreateStorageError::TooLarge,
+        store::StoreError::Io => CategoryCreateStorageError::Io,
+        #[cfg(test)]
+        store::StoreError::Injected => CategoryCreateStorageError::Io,
+    }
+}
+
+fn map_io_category_create(error: super::linux::MutationIoError) -> CategoryCreateStorageError {
+    match error {
+        super::linux::MutationIoError::Unsafe => CategoryCreateStorageError::Unsafe,
+        super::linux::MutationIoError::Conflict => CategoryCreateStorageError::Conflict,
+        super::linux::MutationIoError::Unsupported => CategoryCreateStorageError::Unsupported,
+        super::linux::MutationIoError::TooLarge => CategoryCreateStorageError::TooLarge,
+        super::linux::MutationIoError::Io => CategoryCreateStorageError::Io,
     }
 }
 
