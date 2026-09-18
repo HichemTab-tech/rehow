@@ -7,6 +7,8 @@ use crate::protocol::{GuideId, OperationId, Revision, Timestamp, WorkspaceId};
 use std::{collections::HashSet, str::FromStr};
 use unicode_normalization::UnicodeNormalization;
 
+mod store;
+
 pub(crate) const JOURNAL_VERSION: u64 = 1;
 pub(crate) const MAX_JOURNAL_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const MAX_TARGETS: usize = 1_024;
@@ -232,6 +234,13 @@ impl Journal {
                 return Err(JournalCodecError::Invalid);
             }
         }
+        let mut prior_complete = true;
+        for target in &self.targets {
+            if !prior_complete && target.step != TargetStep::Prepared {
+                return Err(JournalCodecError::Invalid);
+            }
+            prior_complete = target.step == TargetStep::Complete;
+        }
         for (index, target) in self.targets.iter().enumerate() {
             for prior in &self.targets[..index] {
                 if parent(&target.relative_path) == parent(&prior.relative_path)
@@ -243,9 +252,38 @@ impl Journal {
         }
         Ok(())
     }
+
+    fn is_next_generation_of(&self, next: &Self) -> bool {
+        !self.completion
+            && self.stage.allows(next.stage)
+            && self.generation.checked_add(1) == Some(next.generation)
+            && self.operation_id == next.operation_id
+            && self.operation_kind == next.operation_kind
+            && self.workspace_id == next.workspace_id
+            && self.root_hash == next.root_hash
+            && self.root_device == next.root_device
+            && self.root_inode == next.root_inode
+            && self.created_at == next.created_at
+            && self.plan_hash == next.plan_hash
+            && self.targets.len() == next.targets.len()
+            && self
+                .targets
+                .iter()
+                .zip(&next.targets)
+                .all(|(current, candidate)| {
+                    current.same_intent(candidate) && current.step.code() <= candidate.step.code()
+                })
+    }
 }
 
 impl Target {
+    fn same_intent(&self, other: &Self) -> bool {
+        self.relative_path == other.relative_path
+            && self.expected == other.expected
+            && self.intended == other.intended
+            && self.temp_name == other.temp_name
+    }
+
     fn encode(&self, writer: &mut Writer) -> Result<(), JournalCodecError> {
         writer.map(5)?;
         writer.key(0)?;
@@ -498,6 +536,21 @@ coded_enum!(JournalStage,
     JournalStage::Committed => 2,
     JournalStage::Conflict => 3,
 );
+
+impl JournalStage {
+    fn allows(self, next: Self) -> bool {
+        matches!(
+            (self, next),
+            (
+                Self::Prepared,
+                Self::Prepared | Self::Applying | Self::Conflict
+            ) | (
+                Self::Applying,
+                Self::Applying | Self::Committed | Self::Conflict
+            )
+        )
+    }
+}
 coded_enum!(TargetStep,
     TargetStep::Prepared => 0,
     TargetStep::Swapped => 1,
@@ -1009,6 +1062,14 @@ mod tests {
         assert!(valid_active_path(
             "attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/screenshot.png"
         ));
+
+        let mut out_of_order = sample();
+        let mut later = out_of_order.targets[0].clone();
+        later.relative_path = "rehow.yaml".to_owned();
+        later.step = TargetStep::Swapped;
+        out_of_order.targets.push(later);
+        out_of_order.stage = JournalStage::Applying;
+        assert_eq!(out_of_order.encode(), Err(JournalCodecError::Invalid));
     }
 
     #[test]
