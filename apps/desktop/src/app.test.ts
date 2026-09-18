@@ -6,6 +6,7 @@ import {
   App,
   filterGuides,
   gitFactLabel,
+  hasUnsavedChanges,
   nextResultIndex,
   rankedGuides,
   resultCountLabel,
@@ -47,6 +48,11 @@ describe("application identity", () => {
     expect(gitFactLabel({ ...base, unsafeGitMarker: true })).toBe(
       "Git marker needs attention",
     );
+  });
+
+  it("detects exact Guide editor dirty state", () => {
+    expect(hasUnsavedChanges("same\n", "same\n")).toBe(false);
+    expect(hasUnsavedChanges("same\n", "changed\n")).toBe(true);
   });
 });
 

@@ -14,7 +14,12 @@ type GuideSummary = {
   matches: string;
 };
 
-type GuideBodyPayload = { id: string; document: SafeMarkdownDocument };
+type GuideBodyPayload = {
+  id: string;
+  revision: string;
+  body: string;
+  document: SafeMarkdownDocument;
+};
 
 type FolderFacts = {
   writable: boolean;
@@ -40,6 +45,12 @@ type OpenWorkspaceResult =
   | { kind: "ordinaryMarkdown"; facts: FolderFacts }
   | { kind: "unrelatedNonempty"; facts: FolderFacts }
   | { kind: "malformed"; reason: string; facts: FolderFacts };
+
+type SaveGuidePayload = {
+  workspace: WorkspacePayload;
+  guide: GuideBodyPayload;
+  changed: boolean;
+};
 
 type IconName =
   | "book"
@@ -152,6 +163,10 @@ export function resultCountLabel(count: number) {
   return `${count} ${count === 1 ? "Guide" : "Guides"}`;
 }
 
+export function hasUnsavedChanges(original: string, draft: string) {
+  return original !== draft;
+}
+
 export function gitFactLabel(facts: FolderFacts) {
   if (facts.unsafeGitMarker) return "Git marker needs attention";
   if (facts.existingGitRepository && facts.nestedGitRepository) {
@@ -218,12 +233,19 @@ export function App() {
   const [announcement, setAnnouncement] = useState("");
   const [openingWorkspace, setOpeningWorkspace] = useState(false);
   const [guideBody, setGuideBody] = useState<GuideBodyPayload | null>(null);
+  const [editingGuide, setEditingGuide] = useState(false);
+  const [draftBody, setDraftBody] = useState("");
+  const [savingGuide, setSavingGuide] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [rankedGuideIds, setRankedGuideIds] = useState<string[] | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const readerRef = useRef<HTMLElement>(null);
   const resultListRef = useRef<HTMLUListElement>(null);
   const lastResultRef = useRef<HTMLButtonElement | null>(null);
   const railToggleRef = useRef<HTMLButtonElement>(null);
+  const editButtonRef = useRef<HTMLButtonElement>(null);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const saveErrorRef = useRef<HTMLParagraphElement>(null);
   const guides = workspace?.guides ?? [];
   const visibleGuides = useMemo(
     () => rankedGuides(guides, query, rankedGuideIds),
@@ -231,6 +253,11 @@ export function App() {
   );
   const selected =
     guides.find((guide) => guide.id === selectedId) ?? visibleGuides[0] ?? null;
+  const dirtyGuide =
+    editingGuide &&
+    guideBody !== null &&
+    guideBody.id === selected?.id &&
+    hasUnsavedChanges(guideBody.body, draftBody);
 
   useEffect(() => {
     const theme = initialParameter("theme");
@@ -265,6 +292,7 @@ export function App() {
         event.preventDefault();
         searchRef.current?.focus();
       } else if (event.key === "Escape") {
+        if (editingGuide) return;
         if (railOpen) {
           setRailOpen(false);
           requestAnimationFrame(() => railToggleRef.current?.focus());
@@ -281,7 +309,17 @@ export function App() {
     }
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [railOpen, readerOpen]);
+  }, [editingGuide, railOpen, readerOpen]);
+
+  useEffect(() => {
+    if (!dirtyGuide) return;
+    function warnBeforeUnload(event: BeforeUnloadEvent) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [dirtyGuide]);
 
   useEffect(() => {
     if (workspace === null || selectedId === "") {
@@ -290,12 +328,17 @@ export function App() {
     }
     let active = true;
     setGuideBody(null);
+    setEditingGuide(false);
+    setSaveError("");
     import("@tauri-apps/api/core")
       .then(({ invoke }) =>
         invoke<GuideBodyPayload>("read_open_guide", { guideId: selectedId }),
       )
       .then((payload) => {
-        if (active) setGuideBody(payload);
+        if (active) {
+          setGuideBody(payload);
+          setDraftBody(payload.body);
+        }
       })
       .catch(() => {
         if (active) {
@@ -337,7 +380,13 @@ export function App() {
     };
   }, [query, workspace]);
 
+  function confirmDiscard() {
+    if (savingGuide) return false;
+    return !dirtyGuide || window.confirm("Discard your unsaved Guide changes?");
+  }
+
   function openGuide(id: string, trigger?: HTMLButtonElement) {
+    if (id !== selectedId && !confirmDiscard()) return;
     if (trigger) lastResultRef.current = trigger;
     setSelectedId(id);
     setReaderOpen(true);
@@ -345,6 +394,7 @@ export function App() {
   }
 
   function closeReader() {
+    if (!confirmDiscard()) return;
     setReaderOpen(false);
     clearGuideHash();
     requestAnimationFrame(() => {
@@ -365,6 +415,7 @@ export function App() {
     );
     const guide = visibleGuides[next];
     if (!guide) return;
+    if (guide.id !== selectedId && !confirmDiscard()) return;
     setSelectedId(guide.id);
     resultListRef.current
       ?.querySelectorAll<HTMLButtonElement>(".result-row")
@@ -373,6 +424,7 @@ export function App() {
   }
 
   async function openWorkspace() {
+    if (!confirmDiscard()) return;
     setOpeningWorkspace(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -407,6 +459,60 @@ export function App() {
       setAnnouncement("The native Workspace picker is unavailable.");
     } finally {
       setOpeningWorkspace(false);
+    }
+  }
+
+  function beginEditing() {
+    if (guideBody === null || guideBody.id !== selected?.id) return;
+    setDraftBody(guideBody.body);
+    setSaveError("");
+    setEditingGuide(true);
+    requestAnimationFrame(() => editorRef.current?.focus());
+  }
+
+  function cancelEditing() {
+    if (!confirmDiscard()) return;
+    setDraftBody(guideBody?.body ?? "");
+    setSaveError("");
+    setEditingGuide(false);
+    requestAnimationFrame(() => editButtonRef.current?.focus());
+  }
+
+  async function saveGuide() {
+    const currentGuide = guideBody;
+    if (
+      currentGuide === null ||
+      currentGuide.id !== selected?.id ||
+      savingGuide
+    )
+      return;
+    setSavingGuide(true);
+    setSaveError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<SaveGuidePayload>("save_open_guide_body", {
+        guideId: currentGuide.id,
+        expectedRevision: currentGuide.revision,
+        body: draftBody,
+      });
+      setWorkspace(result.workspace);
+      setGuideBody(result.guide);
+      setDraftBody(result.guide.body);
+      setEditingGuide(false);
+      setAnnouncement(
+        result.changed ? "Guide saved." : "No Guide changes to save.",
+      );
+      requestAnimationFrame(() => editButtonRef.current?.focus());
+    } catch (error) {
+      const message =
+        typeof error === "string"
+          ? error
+          : "The Guide could not be saved. Check the Workspace and try again.";
+      setSaveError(message);
+      setAnnouncement(message);
+      requestAnimationFrame(() => saveErrorRef.current?.focus());
+    } finally {
+      setSavingGuide(false);
     }
   }
 
@@ -629,6 +735,17 @@ export function App() {
               <div className="title-line">
                 <h1>{selected.title}</h1>
                 <Status value={selected.status} />
+                {workspace?.facts.writable && !editingGuide && (
+                  <button
+                    ref={editButtonRef}
+                    className="button guide-edit-button"
+                    type="button"
+                    onClick={beginEditing}
+                    disabled={guideBody?.id !== selected.id}
+                  >
+                    Edit Guide
+                  </button>
+                )}
               </div>
               <p className="guide-summary">{selected.summary}</p>
               <dl className="guide-meta">
@@ -638,7 +755,7 @@ export function App() {
                 </div>
                 <div>
                   <dt>Mode</dt>
-                  <dd>Read-only</dd>
+                  <dd>{editingGuide ? "Editing" : "Reader"}</dd>
                 </div>
               </dl>
             </header>
@@ -646,7 +763,72 @@ export function App() {
               <h2 className="sr-only" id="guide-body-heading">
                 Guide content
               </h2>
-              {guideBody?.id === selected.id ? (
+              {editingGuide && guideBody?.id === selected.id ? (
+                <form
+                  className="guide-editor"
+                  aria-busy={savingGuide}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void saveGuide();
+                  }}
+                >
+                  <div className="editor-heading">
+                    <div>
+                      <label htmlFor="guide-markdown">Guide Markdown</label>
+                      <p id="guide-markdown-help">
+                        Edit the Guide body. Frontmatter and unknown metadata
+                        are preserved by Rehow.
+                      </p>
+                    </div>
+                    <span className={dirtyGuide ? "is-dirty" : ""}>
+                      {dirtyGuide ? "Unsaved Changes" : "No Changes"}
+                    </span>
+                  </div>
+                  {selected.status === "Tested" && (
+                    <p className="editor-notice">
+                      Saving a tested Guide marks it stale until you verify it
+                      again.
+                    </p>
+                  )}
+                  <textarea
+                    ref={editorRef}
+                    id="guide-markdown"
+                    name="guide-markdown"
+                    autoComplete="off"
+                    aria-describedby="guide-markdown-help"
+                    maxLength={2_097_152}
+                    value={draftBody}
+                    onChange={(event) => setDraftBody(event.target.value)}
+                  />
+                  {saveError !== "" && (
+                    <p
+                      ref={saveErrorRef}
+                      className="editor-error"
+                      role="alert"
+                      tabIndex={-1}
+                    >
+                      {saveError}
+                    </p>
+                  )}
+                  <div className="editor-actions">
+                    <button
+                      className="button"
+                      type="button"
+                      onClick={cancelEditing}
+                      disabled={savingGuide}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="button button-primary"
+                      type="submit"
+                      disabled={savingGuide}
+                    >
+                      {savingGuide ? "Saving…" : "Save Guide"}
+                    </button>
+                  </div>
+                </form>
+              ) : guideBody?.id === selected.id ? (
                 <MarkdownDocument
                   document={guideBody.document}
                   onAnnouncement={setAnnouncement}

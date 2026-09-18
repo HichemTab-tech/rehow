@@ -13,12 +13,14 @@ use crate::{
         },
     },
     parsing::parse_guide_source,
-    protocol::{GuideId, OperationId, Revision, Timestamp},
+    protocol::{GuideId, OperationId, Revision, Timestamp, current_timestamp, new_operation_id},
     storage::{DocumentUpdateError, WorkspaceView, execute_document_update, refresh_workspace},
 };
 use std::path::Path;
 
-pub(crate) enum GuideEdit {
+pub const GUIDE_BODY_INPUT_LIMIT: usize = 2 * 1024 * 1024;
+
+pub enum GuideEdit {
     SetTitle(String),
     SetSummary(String),
     ReplaceBody(Vec<u8>),
@@ -26,7 +28,7 @@ pub(crate) enum GuideEdit {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum GuideUpdateError {
+pub enum GuideUpdateError {
     NotFound,
     RevisionConflict,
     InvalidGuide,
@@ -41,23 +43,44 @@ pub(crate) enum GuideUpdateError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct GuideUpdateOutcome {
+pub struct GuideUpdateOutcome {
     revision: Revision,
     changed: bool,
 }
 
 impl GuideUpdateOutcome {
-    pub(crate) fn revision(self) -> Revision {
+    pub fn revision(self) -> Revision {
         self.revision
     }
 
-    pub(crate) fn changed(self) -> bool {
+    pub fn changed(self) -> bool {
         self.changed
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn update_guide(
+pub fn update_guide(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_id: GuideId,
+    expected_revision: Revision,
+    edit: GuideEdit,
+) -> Result<GuideUpdateOutcome, GuideUpdateError> {
+    update_guide_with_context(
+        workspace,
+        state_home,
+        runtime_directory,
+        guide_id,
+        expected_revision,
+        new_operation_id(),
+        current_timestamp(),
+        edit,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_guide_with_context(
     workspace: &mut WorkspaceView,
     state_home: &Path,
     runtime_directory: Option<&Path>,
@@ -250,7 +273,7 @@ mod tests {
     fn update_is_revision_checked_preserves_unknowns_and_refreshes() {
         let (workspace, state, mut view) = fixture("update", GUIDE);
         let original_revision = revision(&view);
-        let outcome = update_guide(
+        let outcome = update_guide_with_context(
             &mut view,
             state.path(),
             None,
@@ -275,7 +298,7 @@ mod tests {
                 .any(|window| window == b"future_key: keep-me")
         );
 
-        let no_op = update_guide(
+        let no_op = update_guide_with_context(
             &mut view,
             state.path(),
             None,
@@ -289,7 +312,7 @@ mod tests {
         assert!(!no_op.changed());
         assert_eq!(no_op.revision(), outcome.revision());
         assert_eq!(
-            update_guide(
+            update_guide_with_context(
                 &mut view,
                 state.path(),
                 None,
@@ -308,6 +331,24 @@ mod tests {
     }
 
     #[test]
+    fn public_update_generates_context_and_commits() {
+        let (_workspace, state, mut view) = fixture("public-update", GUIDE);
+        let expected = revision(&view);
+        let outcome = update_guide(
+            &mut view,
+            state.path(),
+            None,
+            GuideId::from_str(GUIDE_ID).unwrap(),
+            expected,
+            GuideEdit::ReplaceBody(b"## Steps\n\nSaved from the desktop.\n".to_vec()),
+        )
+        .unwrap();
+
+        assert!(outcome.changed());
+        assert_eq!(revision(&view), outcome.revision());
+    }
+
+    #[test]
     fn stale_or_externally_changed_revision_never_overwrites() {
         let (workspace, state, mut view) = fixture("conflict", GUIDE);
         let expected = revision(&view);
@@ -316,7 +357,7 @@ mod tests {
         fs::write(&path, external.as_bytes()).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(
-            update_guide(
+            update_guide_with_context(
                 &mut view,
                 state.path(),
                 None,
@@ -340,7 +381,7 @@ mod tests {
         );
         let (workspace, state, mut view) = fixture("tested", &tested);
         let expected = revision(&view);
-        let outcome = update_guide(
+        let outcome = update_guide_with_context(
             &mut view,
             state.path(),
             None,
@@ -362,7 +403,7 @@ mod tests {
         let hardlink = workspace.path().join("hostile.md");
         fs::hard_link(&target, &hardlink).unwrap();
         assert_eq!(
-            update_guide(
+            update_guide_with_context(
                 &mut view,
                 state.path(),
                 None,

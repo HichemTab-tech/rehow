@@ -52,7 +52,8 @@ body {
   );
 }
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 button {
@@ -68,6 +69,7 @@ input {
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
+textarea:focus-visible,
 [tabindex]:focus-visible {
   position: relative;
   z-index: 2;
@@ -578,6 +580,10 @@ h1 {
 .title-line > .status {
   margin-top: 8px;
 }
+.guide-edit-button {
+  flex: 0 0 auto;
+  margin-left: 2px;
+}
 .guide-summary {
   max-width: 68ch;
   margin: 10px 0 18px;
@@ -699,6 +705,78 @@ h1 {
 }
 .guide-loading {
   color: var(--muted);
+}
+.guide-editor {
+  display: grid;
+  gap: 14px;
+}
+.editor-heading {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+.editor-heading > div {
+  min-width: 0;
+}
+.editor-heading label {
+  display: inline-block;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+}
+.editor-heading p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 17px;
+}
+.editor-heading > span {
+  flex: 0 0 auto;
+  padding-top: 2px;
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 650;
+}
+.editor-heading > span.is-dirty {
+  color: var(--stale);
+}
+.editor-notice,
+.editor-error {
+  margin: 0;
+  padding: 9px 11px;
+  border-left: 3px solid var(--warning);
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 11px;
+  line-height: 17px;
+}
+.guide-editor textarea {
+  width: 100%;
+  min-height: min(54vh, 620px);
+  resize: vertical;
+  padding: 14px 15px;
+  border: 1px solid var(--divider-strong);
+  border-radius: 4px;
+  background: var(--code);
+  color: var(--text);
+  font-family: ui-monospace, "JetBrains Mono", "DejaVu Sans Mono", monospace;
+  font-size: 12px;
+  line-height: 1.65;
+  tab-size: 2;
+}
+.guide-editor textarea:focus-visible {
+  border-color: var(--focus);
+}
+.editor-actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 0;
+  background: var(--reader);
 }
 .guide-reader h2 {
   margin: 0 0 13px;
@@ -921,11 +999,11 @@ h1 {
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .button-primary {
+  .toolbar-actions .button-primary {
     padding: 0 9px;
     font-size: 0;
   }
-  .button-primary .icon {
+  .toolbar-actions .button-primary .icon {
     width: 18px;
     height: 18px;
   }
@@ -963,6 +1041,14 @@ h1 {
   }
   .title-line > .status {
     margin-top: 10px;
+  }
+  .guide-edit-button {
+    margin-top: 12px;
+    margin-left: 0;
+  }
+  .editor-heading {
+    display: grid;
+    gap: 6px;
   }
 }
 

@@ -119,6 +119,10 @@ fn parse_uuid(v: &str) -> Result<Uuid, ValueConstructionError> {
     Ok(id)
 }
 
+pub(crate) fn new_operation_id() -> OperationId {
+    OperationId(Uuid::now_v7())
+}
+
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct RecentWorkspaceId(Uuid);
 string_ts!(RecentWorkspaceId);
@@ -152,6 +156,9 @@ string_serde!(RecentWorkspaceId);
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Timestamp(time::OffsetDateTime);
 string_ts!(Timestamp);
+pub(crate) fn current_timestamp() -> Timestamp {
+    Timestamp(time::OffsetDateTime::now_utc())
+}
 impl FromStr for Timestamp {
     type Err = ValueConstructionError;
     fn from_str(v: &str) -> Result<Self, Self::Err> {
