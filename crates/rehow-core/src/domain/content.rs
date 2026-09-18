@@ -3,6 +3,7 @@
     reason = "Phase 1D-A binding is connected to storage/application in Phase 1E"
 )]
 
+mod emission;
 mod guide;
 
 pub use guide::{

@@ -1,0 +1,7 @@
+error[E0432]: unresolved import `rehow_core::domain::emit_new_workspace_manifest`
+ --> tests/ui/private_emission.rs:1:5
+  |
+1 | use rehow_core::domain::emit_new_workspace_manifest;
+  |     ^^^^^^^^^^^^^^^^^^^^---------------------------
+  |                         |
+  |                         no `emit_new_workspace_manifest` in `domain`

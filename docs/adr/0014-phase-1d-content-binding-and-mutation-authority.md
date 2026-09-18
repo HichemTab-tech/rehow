@@ -17,7 +17,8 @@ To keep the foundation reviewable, Phase 1D is split without changing its final 
 
 1. **Phase 1D-A (accepted now):** read-only `WorkspaceManifest`, `WorkspaceSettings`, and `Category` records; current/newer Manifest schema classification; exact known/unknown binding; sanitized private failures; no new dependency.
 2. **Phase 1D-B (accepted):** Guide, Applicability, Reference, and Attachment binding after the three dependency audits.
-3. **Phase 1D-C (proposed):** deterministic emission and private mutation candidates.
+3. **Phase 1D-C1 (implemented checkpoint; final review pending):** deterministic canonical emission for new Manifest, Category, and draft Guide documents.
+4. **Phase 1D-C2 (proposed):** private mutation candidates over existing source bytes. Phase 1D-C is accepted only after the combined C1/C2 review and full gate.
 
 The read-only binding parts through 1D-B are implementation authority. Emitter and mutation text records the intended 1D-C direction and remains proposed until its combined architecture/security review. No Phase 1D subphase writes files.
 
