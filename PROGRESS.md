@@ -9,11 +9,11 @@ Phase 1D — Typed content binding.
 
 ## Current task
 
-Begin Phase 1D-B Guide/nested-value binding. Phase 1D-A Manifest/Category read-only binding is accepted and checkpointed.
+Begin Phase 1D-C deterministic emission and private mutation-candidate planning. Phase 1D-B Guide/nested read-only binding is accepted and checkpointed.
 
 ## Overall status
 
-In progress. Phase 0 through Phase 1C and Phase 1D-A are complete in signed checkpoints. Phase 1D-A adds read-only Workspace Manifest and Category records, current/newer Manifest classification, exact known/unknown binding, content-free positioned failures, and API-absence tests without adding dependencies or I/O/mutation authority. The worktree after signed commit `4d26e8f` contains only the preserved unrelated untracked executable `x`.
+In progress. Phase 0 through Phase 1C and Phase 1D-A/B are complete in signed checkpoints. Phase 1D-B adds read-only Guide and nested records, exact opaque body retention, private unknown partitions, bounded Unicode/URL/Attachment validation, content-free positioned failures, and public API privacy without I/O or mutation authority. The worktree after signed commit `0b5fb11` contains only the preserved unrelated untracked executable `x`.
 
 ## Completed work
 
@@ -49,14 +49,16 @@ In progress. Phase 0 through Phase 1C and Phase 1D-A are complete in signed chec
 - Split Phase 1D into 1D-A read-only Manifest/Category binding, 1D-B Guide/nested binding, and 1D-C emission/mutation so implementation can advance through smaller gates.
 - Implemented Phase 1D-A with production-parser-backed binding, exact current/newer Manifest classification, preserved unknown-entry identities, full `i64` Category ordering, timestamp/text/schema validation, read-only artifact support, positioned content-free failures, and deliberate public API/compile-fail evidence.
 - Corrected the independent review findings covering newer-schema collapse, missing diagnostic positions, settings/malformed/boundary/read-only coverage, and aggregate constructor/Serde/mutation absence. Signed checkpoint `4d26e8f` verifies.
+- Audited and pinned `focaccia 2.0.0`, `unicode-normalization 0.1.25`, and the already locked `url 2.5.8` without installing or switching tools.
+- Implemented Phase 1D-B Guide, Applicability, Reference, Attachment, verification, and archive read-only binding with strict status/time, Unicode fold, URL canonicality, Attachment path/NFC/MIME/hash/size, unknown-partition, and body-preservation rules.
+- Corrected the combined review's URL alias, diagnostic-position/type, allocation/resource, bounded-work, and filename-policy findings. The same Security Reviewer passed the correction closure. Signed checkpoint `0b5fb11` verifies.
 
 ## Work in progress
 
-- None. Phase 1D-A is committed and accepted. Phase 1D-B has not changed manifests or lockfiles.
+- None. Phase 1D-B is committed and accepted.
 
 ## Remaining work
 
-- Phase 1D-B: audit the exact Unicode/URL dependencies and implement Guide, Applicability, Reference, and Attachment read-only binding.
 - Phase 1D-C: finish deterministic emission and private mutation candidate authority; Phase 1E proves confinement/revisions and atomic recovery.
 - Phase 2: native shell and safe Workspace onboarding/import/migration.
 - Phase 3: Category/Guide/Attachment lifecycle and edit conflicts.
@@ -67,7 +69,7 @@ In progress. Phase 0 through Phase 1C and Phase 1D-A are complete in signed chec
 
 ## Known bugs
 
-None known in accepted Phase 1A, Phase 1B, Phase 1C, or Phase 1D-A. The shell remains intentionally inert and is not yet product functionality.
+None known in accepted Phase 1A, Phase 1B, Phase 1C, or Phase 1D-A/B. The shell remains intentionally inert and is not yet product functionality.
 
 ## Design and accessibility findings
 
@@ -92,6 +94,7 @@ None known in accepted Phase 1A, Phase 1B, Phase 1C, or Phase 1D-A. The shell re
 - Partial implementation security review rejected `RoundTripStatus::Proven` safety, guarded-tail behavior, range/comment proof, and hostile-input linearity. The approved closure packet preserves all corrections and requires a fresh final Security Reviewer/xhigh pass.
 - Final Phase 1C Security Reviewer/xhigh review and every security-sensitive correction delta pass with no blocker, high, medium, or low finding. The accepted parser remains crate-private, bounded, content-sanitized, non-recursive in Rehow traversal, dependency-pinned, and without filesystem/process/network/logging/mutation authority.
 - Phase 1D-A adds no filesystem, revision, process, network, logging, mutation, adapter, Tauri, or MCP authority. Aggregate constructors/fields/mutation/Serde remain absent; newer schemas remain distinguishable and malformed-field failures carry parser-proven positions without rejected content.
+- Phase 1D-B adds no filesystem, process, network, logging, URL-opening, Attachment-reading, adapter, Tauri, Git, or MCP authority. Canonical raw URL checks reject legacy numeric-IP aliases and misleading normalization; all product aggregate state remains read-only.
 
 ## Blockers and human checkpoints
 
@@ -101,7 +104,7 @@ None known in accepted Phase 1A, Phase 1B, Phase 1C, or Phase 1D-A. The shell re
 
 ## Latest verified commit
 
-`4d26e8f` — signed Phase 1D-A Manifest/Category binding checkpoint; `git verify-commit 4d26e8f` passes with the configured project key. This progress-only recovery update follows that implementation commit.
+`0b5fb11` — signed Phase 1D-B Guide/nested binding checkpoint; `git verify-commit 0b5fb11` passes with the configured project key. This progress-only recovery update follows that implementation commit.
 
 ## Tests last run and results
 
@@ -110,6 +113,7 @@ None known in accepted Phase 1A, Phase 1B, Phase 1C, or Phase 1D-A. The shell re
 - 2026-09-07: `git verify-commit cf8341f`: pass — good signature from the configured project key; post-commit worktree contains only preserved unrelated untracked `x`.
 - 2026-09-18: Phase 1D-A gate: Cargo formatting and core Clippy with warnings denied pass; all-feature core tests pass with 153 library tests, 18 error-contract tests, 13 protocol tests, 11 unknown-YAML tests, the public API positive, and 27 compile-fail cases. Bootstrap validation passes with 14 ADRs; whitespace checks pass.
 - 2026-09-18: focused independent review found one high and two medium issues; all were corrected and covered by tests. `git verify-commit 4d26e8f` passes; post-commit worktree contains only preserved unrelated untracked `x`.
+- 2026-09-18: Phase 1D-B gate: formatting, locked all-feature core Clippy with warnings denied, bootstrap validation, whitespace checks, and all core suites pass — 164 library, 18 error-contract, 13 protocol, 11 unknown-YAML, one public API positive, and 30 compile-fail cases. The combined Security Reviewer closure passes all three prior high findings. `git verify-commit 0b5fb11` passes.
 
 - 2026-09-05: `python3` `tomllib` parsed `.codex/config.toml` plus all 8 `.codex/agents/*.toml`: pass (9 files).
 - 2026-09-05: `python3 scripts/check_bootstrap.py`: pass — 17 required files, 10 ADRs, 8 pinned agents.
@@ -205,20 +209,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `docs/task-packets/phase-1c-parser-closure.md` is approved at `bb20342` and hardened at signed commit `5a09943`; the latter is the authoritative correction path and direct parent of this recovery ledger.
 - Phase 1C parser/domain bridge, private tests and fixtures, dependency lock delta, API negatives, and evidence are accepted at signed commit `cf8341f`.
 - ADR 0014, the Phase 1D-A packet, Manifest/Category domain records and binder, parser position/test seam, and API evidence are accepted at signed commit `4d26e8f`.
+- Phase 1D-B Guide/nested binders, dependency/review evidence, task packet, API privacy tests, and accepted ADR 0014 binding delta are checkpointed at signed commit `0b5fb11`.
 
 ## Next recommended action
 
-Run the Phase 1D-B precompile audit for exact proposed pins `focaccia = 2.0.0`, `url = 2.5.8`, and `unicode-normalization = 0.1.25`; then implement Guide/nested read-only binding without mutation or I/O authority.
+Reduce the proposed Phase 1D-C mutation/emitter design into one implementation-ready packet, retaining the no-I/O boundary and avoiding requirements already deferred to Phase 1E.
 
 ## Recommended agent role and reasoning effort
 
-Orchestrator — `gpt-5.6-sol`, high. Keep agent usage minimal; use one independent reviewer only at the completed Phase 1D-B checkpoint.
+Orchestrator — `gpt-5.6-sol`, high. Keep routine work single-agent; use one independent reviewer only at the completed Phase 1D-C checkpoint.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read `docs/product-spec.md`, `docs/architecture.md`, `docs/implementation-plan.md`, `docs/threat-model.md`, `docs/error-contract.md`, and accepted ADRs 0011–0013.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `cf8341f` and Phase 1D-A implementation `4d26e8f`; if `HEAD` is a later progress-only ledger, confirm its parent is `4d26e8f` and only `PROGRESS.md` changed.
+4. Verify signed checkpoints `cf8341f`, `4d26e8f`, and Phase 1D-B implementation `0b5fb11`; if `HEAD` is a later progress-only ledger, confirm its parent is `0b5fb11` and only `PROGRESS.md` changed.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Read ADR 0014 and `docs/task-packets/phase-1d-a-manifest-category-binding.md`; verify `4d26e8f`. Resume with the Phase 1D-B dependency audit and Guide/nested read-only binding. Do not begin Phase 1D-C emission/mutation until its proposed ADR sections receive the combined review.
+6. Read ADR 0014, `docs/task-packets/phase-1d-b-guide-binding.md`, and the Phase 1D-B evidence; verify `0b5fb11`. Resume by narrowing Phase 1D-C emission/mutation into a packet, then implement it without adding storage or adapter authority.
