@@ -820,32 +820,42 @@ mod tests {
         );
         let mut second = journal(2);
         second.stage = JournalStage::Applying;
-        second.targets[0].step = TargetStep::Swapped;
         store.install_journal(&lock, &second).unwrap();
         assert!(store.read_journal(&lock, ids().1).unwrap() == second);
-        let mut skipped = second.clone();
-        skipped.generation = 4;
+        let mut skipped_step = second.clone();
+        skipped_step.generation = 3;
+        skipped_step.targets[0].step = TargetStep::DirectorySynced;
+        assert_eq!(
+            store.install_journal(&lock, &skipped_step),
+            Err(StoreError::Conflict)
+        );
+        let mut third = second.clone();
+        third.generation = 3;
+        third.targets[0].step = TargetStep::Swapped;
+        store.install_journal(&lock, &third).unwrap();
+        let mut skipped = third.clone();
+        skipped.generation = 5;
         assert_eq!(
             store.install_journal(&lock, &skipped),
             Err(StoreError::Conflict)
         );
-        let mut changed = second.clone();
-        changed.generation = 3;
+        let mut changed = third.clone();
+        changed.generation = 4;
         changed.plan_hash = [0x99; 32];
         assert_eq!(
             store.install_journal(&lock, &changed),
             Err(StoreError::Conflict)
         );
-        let mut regressed = second.clone();
-        regressed.generation = 3;
+        let mut regressed = third.clone();
+        regressed.generation = 4;
         regressed.stage = JournalStage::Prepared;
         regressed.targets[0].step = TargetStep::Prepared;
         assert_eq!(
             store.install_journal(&lock, &regressed),
             Err(StoreError::Conflict)
         );
-        let mut wrong_workspace = second.clone();
-        wrong_workspace.generation = 3;
+        let mut wrong_workspace = third.clone();
+        wrong_workspace.generation = 4;
         wrong_workspace.workspace_id = "0199a19f-4d15-7ca7-a645-e75311caa711".parse().unwrap();
         assert_eq!(
             store.install_journal(&lock, &wrong_workspace),

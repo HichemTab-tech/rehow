@@ -726,6 +726,34 @@ mod linux {
         Io,
     }
 
+    #[cfg(test)]
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    pub(super) enum ManagedFault {
+        TempAfterWrite,
+        TempAfterFileSync,
+        ReusedTempAfterFileSync,
+    }
+
+    #[cfg(test)]
+    thread_local! {
+        static MANAGED_FAULT: std::cell::Cell<Option<ManagedFault>> = const { std::cell::Cell::new(None) };
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_managed_fault(fault: ManagedFault) {
+        MANAGED_FAULT.set(Some(fault));
+    }
+
+    #[cfg(test)]
+    fn managed_fail(point: ManagedFault) -> Result<(), MutationIoError> {
+        if MANAGED_FAULT.get() == Some(point) {
+            MANAGED_FAULT.set(None);
+            Err(MutationIoError::Unsupported)
+        } else {
+            Ok(())
+        }
+    }
+
     impl DirectoryCapability {
         pub(super) fn open_root(path: &Path) -> Result<Self, WorkspaceInspectError> {
             let canonical = std::fs::canonicalize(path).map_err(super::map_io)?;
@@ -1004,6 +1032,46 @@ mod linux {
             Err(MutationIoError::Unsafe)
         }
 
+        pub(super) fn open_trash_target(
+            &self,
+            relative_path: &str,
+        ) -> Result<ManagedTarget, MutationIoError> {
+            self.trash_target(relative_path, false)
+        }
+
+        pub(super) fn prepare_trash_target(
+            &self,
+            relative_path: &str,
+        ) -> Result<ManagedTarget, MutationIoError> {
+            self.trash_target(relative_path, true)
+        }
+
+        fn trash_target(
+            &self,
+            relative_path: &str,
+            create_parents: bool,
+        ) -> Result<ManagedTarget, MutationIoError> {
+            if !super::recovery::valid_trash_path(relative_path) {
+                return Err(MutationIoError::Unsafe);
+            }
+            let mut parts = relative_path.split('/').peekable();
+            let mut directory = self.duplicate().map_err(|_| MutationIoError::Io)?;
+            while let Some(part) = parts.next() {
+                if parts.peek().is_none() {
+                    return Ok(ManagedTarget {
+                        directory,
+                        name: part.to_owned(),
+                    });
+                }
+                directory = if create_parents {
+                    directory.ensure_private_directory(part)?
+                } else {
+                    directory.open_private_directory(part)?
+                };
+            }
+            Err(MutationIoError::Unsafe)
+        }
+
         pub(super) fn identity(&self) -> Result<(u64, u64), MutationIoError> {
             descriptor_identity(&self.descriptor).map_err(|_| MutationIoError::Io)
         }
@@ -1019,6 +1087,94 @@ mod linux {
                     descriptor: unsafe { OwnedFd::from_raw_fd(raw) },
                 })
             }
+        }
+
+        fn ensure_private_directory(&self, name: &str) -> Result<Self, MutationIoError> {
+            let name = component(name).map_err(|_| MutationIoError::Unsafe)?;
+            // SAFETY: the retained parent and validated component are valid.
+            let created =
+                unsafe { libc::mkdirat(self.descriptor.as_raw_fd(), name.as_ptr(), 0o700) } == 0;
+            if !created {
+                match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::EEXIST) => {}
+                    _ => return Err(MutationIoError::Io),
+                }
+            }
+            // SAFETY: the retained parent and validated component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
+            if raw < 0 {
+                return match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::ELOOP) | Some(libc::ENOTDIR) => Err(MutationIoError::Unsafe),
+                    _ => Err(MutationIoError::Io),
+                };
+            }
+            // SAFETY: successful `openat` returns a newly owned descriptor.
+            let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
+            if created {
+                // SAFETY: descriptor is owned and valid.
+                if unsafe { libc::fchmod(descriptor.as_raw_fd(), 0o700) } != 0 {
+                    return Err(MutationIoError::Io);
+                }
+            }
+            let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: descriptor/status are valid.
+            if unsafe { libc::fstat(descriptor.as_raw_fd(), status.as_mut_ptr()) } != 0 {
+                return Err(MutationIoError::Io);
+            }
+            // SAFETY: successful `fstat` initialized the structure.
+            let status = unsafe { status.assume_init() };
+            if status.st_uid != unsafe { libc::geteuid() }
+                || status.st_mode & libc::S_IFMT != libc::S_IFDIR
+                || status.st_mode & 0o7777 != 0o700
+            {
+                return Err(MutationIoError::Unsafe);
+            }
+            // SAFETY: the parent descriptor is a retained directory.
+            if unsafe { libc::fsync(self.descriptor.as_raw_fd()) } != 0 {
+                return Err(MutationIoError::Unsupported);
+            }
+            Ok(Self { descriptor })
+        }
+
+        fn open_private_directory(&self, name: &str) -> Result<Self, MutationIoError> {
+            let name = component(name).map_err(|_| MutationIoError::Unsafe)?;
+            // SAFETY: the retained parent and validated component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
+            if raw < 0 {
+                return match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::ENOENT) => Err(MutationIoError::Conflict),
+                    Some(libc::ELOOP) | Some(libc::ENOTDIR) => Err(MutationIoError::Unsafe),
+                    _ => Err(MutationIoError::Io),
+                };
+            }
+            // SAFETY: successful `openat` returns a newly owned descriptor.
+            let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
+            let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: descriptor/status are valid.
+            if unsafe { libc::fstat(descriptor.as_raw_fd(), status.as_mut_ptr()) } != 0 {
+                return Err(MutationIoError::Io);
+            }
+            // SAFETY: successful `fstat` initialized the structure.
+            let status = unsafe { status.assume_init() };
+            if status.st_uid != unsafe { libc::geteuid() }
+                || status.st_mode & libc::S_IFMT != libc::S_IFDIR
+                || status.st_mode & 0o7777 != 0o700
+            {
+                return Err(MutationIoError::Unsafe);
+            }
+            Ok(Self { descriptor })
         }
     }
 
@@ -1086,7 +1242,11 @@ mod linux {
                 return Err(MutationIoError::Io);
             }
             file.write_all(bytes).map_err(|_| MutationIoError::Io)?;
+            #[cfg(test)]
+            managed_fail(ManagedFault::TempAfterWrite)?;
             file.sync_all().map_err(|_| MutationIoError::Unsupported)?;
+            #[cfg(test)]
+            managed_fail(ManagedFault::TempAfterFileSync)?;
             let metadata = file.metadata().map_err(|_| MutationIoError::Io)?;
             if !metadata.file_type().is_file()
                 || metadata.nlink() != 1
@@ -1094,6 +1254,78 @@ mod linux {
                 || metadata.mode() & 0o7777 != mode
             {
                 return Err(MutationIoError::Unsafe);
+            }
+            Ok(())
+        }
+
+        pub(super) fn sync_existing_temp(
+            &self,
+            temp_name: &str,
+            expected: &[u8],
+            mode: u32,
+        ) -> Result<(), MutationIoError> {
+            let temp_name = component(temp_name).map_err(|_| MutationIoError::Unsafe)?;
+            // SAFETY: directory descriptor and validated component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.directory.descriptor.as_raw_fd(),
+                    temp_name.as_ptr(),
+                    libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+                )
+            };
+            if raw < 0 {
+                return match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::ENOENT) => Err(MutationIoError::Conflict),
+                    Some(libc::ELOOP) | Some(libc::ENXIO) | Some(libc::ENODEV) => {
+                        Err(MutationIoError::Unsafe)
+                    }
+                    _ => Err(MutationIoError::Io),
+                };
+            }
+            // SAFETY: successful `openat` returns a newly owned descriptor.
+            let mut file = unsafe { File::from_raw_fd(raw) };
+            let before = file.metadata().map_err(|_| MutationIoError::Io)?;
+            if !before.file_type().is_file() || before.nlink() != 1 {
+                return Err(MutationIoError::Unsafe);
+            }
+            if before.len() != expected.len() as u64 || before.mode() & 0o7777 != mode {
+                return Err(MutationIoError::Conflict);
+            }
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(expected.len())
+                .map_err(|_| MutationIoError::TooLarge)?;
+            Read::by_ref(&mut file)
+                .take((expected.len() as u64).saturating_add(1))
+                .read_to_end(&mut bytes)
+                .map_err(|_| MutationIoError::Io)?;
+            let after_read = file.metadata().map_err(|_| MutationIoError::Io)?;
+            if bytes != expected
+                || before.dev() != after_read.dev()
+                || before.ino() != after_read.ino()
+                || before.len() != after_read.len()
+                || before.mtime() != after_read.mtime()
+                || before.mtime_nsec() != after_read.mtime_nsec()
+                || before.ctime() != after_read.ctime()
+                || before.ctime_nsec() != after_read.ctime_nsec()
+                || before.mode() != after_read.mode()
+            {
+                return Err(MutationIoError::Conflict);
+            }
+            file.sync_all().map_err(|_| MutationIoError::Unsupported)?;
+            #[cfg(test)]
+            managed_fail(ManagedFault::ReusedTempAfterFileSync)?;
+            let after_sync = file.metadata().map_err(|_| MutationIoError::Io)?;
+            if after_read.dev() != after_sync.dev()
+                || after_read.ino() != after_sync.ino()
+                || after_read.len() != after_sync.len()
+                || after_read.mtime() != after_sync.mtime()
+                || after_read.mtime_nsec() != after_sync.mtime_nsec()
+                || after_read.ctime() != after_sync.ctime()
+                || after_read.ctime_nsec() != after_sync.ctime_nsec()
+                || after_read.mode() != after_sync.mode()
+            {
+                return Err(MutationIoError::Conflict);
             }
             Ok(())
         }
@@ -1106,16 +1338,52 @@ mod linux {
             self.rename(temp_name, &self.name, libc::RENAME_EXCHANGE)
         }
 
+        pub(super) fn move_to_temp(&self, temp_name: &str) -> Result<(), MutationIoError> {
+            self.rename(&self.name, temp_name, libc::RENAME_NOREPLACE)
+        }
+
+        pub(super) fn move_to(&self, destination: &Self) -> Result<(), MutationIoError> {
+            self.rename_between(
+                &self.name,
+                destination,
+                &destination.name,
+                libc::RENAME_NOREPLACE,
+            )
+        }
+
+        pub(super) fn move_temp_to(
+            &self,
+            temp_name: &str,
+            destination: &Self,
+        ) -> Result<(), MutationIoError> {
+            self.rename_between(
+                temp_name,
+                destination,
+                &destination.name,
+                libc::RENAME_NOREPLACE,
+            )
+        }
+
         fn rename(&self, from: &str, to: &str, flags: u32) -> Result<(), MutationIoError> {
+            self.rename_between(from, self, to, flags)
+        }
+
+        fn rename_between(
+            &self,
+            from: &str,
+            destination: &Self,
+            to: &str,
+            flags: u32,
+        ) -> Result<(), MutationIoError> {
             let from = component(from).map_err(|_| MutationIoError::Unsafe)?;
             let to = component(to).map_err(|_| MutationIoError::Unsafe)?;
-            // SAFETY: both validated names use the same retained directory descriptor.
+            // SAFETY: both names and retained directory descriptors are valid.
             let result = unsafe {
                 libc::syscall(
                     libc::SYS_renameat2,
                     self.directory.descriptor.as_raw_fd(),
                     from.as_ptr(),
-                    self.directory.descriptor.as_raw_fd(),
+                    destination.directory.descriptor.as_raw_fd(),
                     to.as_ptr(),
                     flags,
                 )
@@ -1125,9 +1393,10 @@ mod linux {
             }
             match io::Error::last_os_error().raw_os_error() {
                 Some(libc::EEXIST) | Some(libc::ENOENT) => Err(MutationIoError::Conflict),
-                Some(libc::ENOSYS) | Some(libc::EINVAL) | Some(libc::EOPNOTSUPP) => {
-                    Err(MutationIoError::Unsupported)
-                }
+                Some(libc::ENOSYS)
+                | Some(libc::EINVAL)
+                | Some(libc::EOPNOTSUPP)
+                | Some(libc::EXDEV) => Err(MutationIoError::Unsupported),
                 Some(libc::ELOOP) | Some(libc::ENOTDIR) => Err(MutationIoError::Unsafe),
                 _ => Err(MutationIoError::Io),
             }

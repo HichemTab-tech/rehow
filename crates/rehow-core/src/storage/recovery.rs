@@ -231,6 +231,15 @@ impl Journal {
             .map_err(|_| JournalCodecError::ResourceLimit)?;
         for target in &self.targets {
             target.validate(self.operation_kind)?;
+            if let IntendedState::Trash { destination, .. } = &target.intended {
+                let expected = format!(
+                    ".rehow/trash/{}/{}",
+                    self.operation_id, target.relative_path
+                );
+                if destination != &expected {
+                    return Err(JournalCodecError::Invalid);
+                }
+            }
             if !paths.insert(target.relative_path.as_str()) {
                 return Err(JournalCodecError::Invalid);
             }
@@ -256,7 +265,6 @@ impl Journal {
 
     fn is_next_generation_of(&self, next: &Self) -> bool {
         !self.completion
-            && self.stage.allows(next.stage)
             && self.generation.checked_add(1) == Some(next.generation)
             && self.operation_id == next.operation_id
             && self.operation_kind == next.operation_kind
@@ -271,9 +279,37 @@ impl Journal {
                 .targets
                 .iter()
                 .zip(&next.targets)
-                .all(|(current, candidate)| {
-                    current.same_intent(candidate) && current.step.code() <= candidate.step.code()
-                })
+                .all(|(current, candidate)| current.same_intent(candidate))
+            && match (self.stage, next.stage) {
+                (JournalStage::Prepared, JournalStage::Applying)
+                | (JournalStage::Prepared | JournalStage::Applying, JournalStage::Conflict)
+                | (JournalStage::Applying, JournalStage::Committed) => self.same_target_steps(next),
+                (JournalStage::Applying, JournalStage::Applying) => {
+                    self.has_one_exact_step_advance(next)
+                }
+                _ => false,
+            }
+    }
+
+    fn same_target_steps(&self, other: &Self) -> bool {
+        self.targets
+            .iter()
+            .zip(&other.targets)
+            .all(|(current, candidate)| current.step == candidate.step)
+    }
+
+    fn has_one_exact_step_advance(&self, other: &Self) -> bool {
+        let mut advances = 0usize;
+        for (current, candidate) in self.targets.iter().zip(&other.targets) {
+            if current.step == candidate.step {
+                continue;
+            }
+            if current.step.next() != Some(candidate.step) {
+                return false;
+            }
+            advances += 1;
+        }
+        advances == 1
     }
 }
 
@@ -538,26 +574,23 @@ coded_enum!(JournalStage,
     JournalStage::Conflict => 3,
 );
 
-impl JournalStage {
-    fn allows(self, next: Self) -> bool {
-        matches!(
-            (self, next),
-            (
-                Self::Prepared,
-                Self::Prepared | Self::Applying | Self::Conflict
-            ) | (
-                Self::Applying,
-                Self::Applying | Self::Committed | Self::Conflict
-            )
-        )
-    }
-}
 coded_enum!(TargetStep,
     TargetStep::Prepared => 0,
     TargetStep::Swapped => 1,
     TargetStep::DirectorySynced => 2,
     TargetStep::Complete => 3,
 );
+
+impl TargetStep {
+    fn next(self) -> Option<Self> {
+        match self {
+            Self::Prepared => Some(Self::Swapped),
+            Self::Swapped => Some(Self::DirectorySynced),
+            Self::DirectorySynced => Some(Self::Complete),
+            Self::Complete => None,
+        }
+    }
+}
 
 struct Writer {
     bytes: Vec<u8>,
@@ -830,7 +863,7 @@ fn valid_attachment_filename(value: &str) -> bool {
         })
 }
 
-fn valid_trash_path(path: &str) -> bool {
+pub(super) fn valid_trash_path(path: &str) -> bool {
     let Some(remainder) = path.strip_prefix(".rehow/trash/") else {
         return false;
     };
@@ -994,6 +1027,27 @@ mod tests {
             destination:
                 ".rehow/trash/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/categories/linux/guide.md"
                     .to_owned(),
+        };
+        assert_eq!(journal.encode(), Err(JournalCodecError::Invalid));
+        journal = sample();
+        journal.operation_kind = OperationKind::Delete;
+        journal.targets[0].expected = ExpectedState::Existing {
+            revision: format!("rev:v1:{}", "44".repeat(32)).parse().unwrap(),
+            object_hash: [0x44; 32],
+            mode: 0o600,
+        };
+        journal.targets[0].intended = IntendedState::Trash {
+            object_hash: [0x44; 32],
+            mode: 0o600,
+            destination:
+                ".rehow/trash/0199a1d7-7b0d-7d8e-a38d-f936c5735e11/categories/linux/guide.md"
+                    .to_owned(),
+        };
+        assert_eq!(journal.encode(), Err(JournalCodecError::Invalid));
+        journal.targets[0].intended = IntendedState::Trash {
+            object_hash: [0x44; 32],
+            mode: 0o600,
+            destination: ".rehow/trash/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/rehow.yaml".to_owned(),
         };
         assert_eq!(journal.encode(), Err(JournalCodecError::Invalid));
     }
