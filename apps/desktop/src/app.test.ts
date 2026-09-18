@@ -10,6 +10,7 @@ import {
   nativeCommandError,
   nextResultIndex,
   normalizedCategoryDetails,
+  normalizedCategoryName,
   normalizedGuideDetails,
   normalizedGuideMetadata,
   normalizedWorkspaceName,
@@ -87,6 +88,12 @@ describe("application identity", () => {
     });
     expect(normalizedCategoryDetails("", "Summary")).toBeNull();
     expect(normalizedCategoryDetails("Linux", "x".repeat(501))).toBeNull();
+  });
+
+  it("normalizes bounded Category rename values", () => {
+    expect(normalizedCategoryName("  Desktop  ")).toBe("Desktop");
+    expect(normalizedCategoryName(" ")).toBeNull();
+    expect(normalizedCategoryName("x".repeat(201))).toBeNull();
   });
 
   it("normalizes bounded draft Guide details", () => {

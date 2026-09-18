@@ -392,10 +392,48 @@ textarea:focus-visible,
   padding-inline: 8px;
   font-size: 10px;
 }
+.category-rename-form {
+  display: grid;
+  gap: 7px;
+  margin: 4px 0 8px;
+  padding: 9px;
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  background: var(--surface);
+}
+.category-rename-form label {
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 700;
+}
+.category-rename-form input {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--divider-strong);
+  border-radius: 3px;
+  background: var(--reader);
+  color: var(--text);
+  font-size: 11px;
+}
+.category-rename-form input:focus-visible {
+  border-color: var(--focus);
+}
 .category-item {
   min-height: 30px;
   padding-left: 27px;
   font-size: 12px;
+}
+.category-rename-button {
+  flex: 0 0 auto;
+  padding: 4px;
+  background: transparent;
+  color: var(--faint);
+  font-size: 9px;
+  cursor: pointer;
+}
+.category-rename-button:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
 }
 .rail-footer {
   display: flex;

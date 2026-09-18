@@ -7,17 +7,18 @@
 
 use crate::{
     domain::content::{
-        CategoryStatus,
+        CategoryStatus, bind_category,
         emission::{
             EmitFailureKind, EmitField, emit_new_category, emit_new_guide,
             emit_new_workspace_manifest,
         },
         guide::{BoundGuide, bind_guide},
         mutation::{
-            GuideMutation, MutationFailureKind, MutationOutcome, MutationStamp, plan_guide_mutation,
+            CategoryMutation, GuideMutation, MutationFailureKind, MutationOutcome, MutationStamp,
+            plan_category_mutation, plan_guide_mutation,
         },
     },
-    parsing::parse_guide_source,
+    parsing::{parse_guide_source, parse_yaml_document},
     protocol::{
         CategoryId, GuideId, OperationId, Revision, Timestamp, current_timestamp, new_category_id,
         new_guide_id, new_operation_id, new_workspace_id,
@@ -159,6 +160,158 @@ fn map_category_create_error(error: CategoryCreateStorageError) -> CategoryCreat
         CategoryCreateStorageError::TooLarge => CategoryCreateError::ResourceLimit,
         CategoryCreateStorageError::Io => CategoryCreateError::Io,
         CategoryCreateStorageError::Incomplete => CategoryCreateError::Incomplete,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CategoryUpdateError {
+    NotFound,
+    RevisionConflict,
+    InvalidCategory,
+    InvalidName,
+    UnsafeRoundTrip,
+    Busy,
+    UnsafeStorage,
+    UnsupportedFilesystem,
+    ResourceLimit,
+    Io,
+    CommittedRefreshRequired { revision: Revision },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CategoryUpdateOutcome {
+    revision: Revision,
+    changed: bool,
+}
+
+impl CategoryUpdateOutcome {
+    pub fn revision(self) -> Revision {
+        self.revision
+    }
+
+    pub fn changed(self) -> bool {
+        self.changed
+    }
+}
+
+pub fn rename_category(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    category_id: CategoryId,
+    expected_revision: Revision,
+    name: String,
+) -> Result<CategoryUpdateOutcome, CategoryUpdateError> {
+    let loaded = workspace
+        .categories()
+        .iter()
+        .find(|category| category.category().id() == &category_id)
+        .ok_or(CategoryUpdateError::NotFound)?;
+    if loaded.descriptor_revision() != expected_revision {
+        return Err(CategoryUpdateError::RevisionConflict);
+    }
+    let relative_directory = loaded.relative_directory().to_owned();
+    let relative_path = format!("{relative_directory}/category.yaml");
+    let at = current_timestamp();
+    let stamp = MutationStamp::from_trusted_time(at);
+    let result = execute_document_update(
+        workspace,
+        state_home,
+        runtime_directory,
+        &relative_path,
+        expected_revision,
+        new_operation_id(),
+        at,
+        |bytes| {
+            let parsed = parse_yaml_document(copy_bytes(bytes)?)
+                .map_err(|_| CategoryPlanError::InvalidCategory)?;
+            let bound = bind_category(parsed).map_err(|_| CategoryPlanError::InvalidCategory)?;
+            if bound.record().id() != &category_id {
+                return Err(CategoryPlanError::InvalidCategory);
+            }
+            match plan_category_mutation(&bound, CategoryMutation::SetName(name), &stamp)
+                .map_err(map_category_plan_failure)?
+            {
+                MutationOutcome::NoOp => copy_bytes(bytes).map_err(CategoryPlanError::from),
+                MutationOutcome::Candidate(candidate) => {
+                    copy_bytes(candidate.bound().source_bytes()).map_err(CategoryPlanError::from)
+                }
+            }
+        },
+    )
+    .map_err(map_category_update_error)?;
+
+    if result.changed()
+        && (refresh_workspace(workspace).is_err()
+            || !workspace.categories().iter().any(|category| {
+                category.category().id() == &category_id
+                    && category.relative_directory() == relative_directory
+                    && category.descriptor_revision() == result.revision()
+            }))
+    {
+        return Err(CategoryUpdateError::CommittedRefreshRequired {
+            revision: result.revision(),
+        });
+    }
+    Ok(CategoryUpdateOutcome {
+        revision: result.revision(),
+        changed: result.changed(),
+    })
+}
+
+#[derive(Clone, Copy)]
+enum CategoryPlanError {
+    InvalidCategory,
+    InvalidName,
+    UnsafeRoundTrip,
+    ResourceLimit,
+}
+
+impl From<PlanError> for CategoryPlanError {
+    fn from(error: PlanError) -> Self {
+        match error {
+            PlanError::ResourceLimit => Self::ResourceLimit,
+            PlanError::InvalidGuide | PlanError::InvalidEdit => Self::InvalidCategory,
+            PlanError::UnsafeRoundTrip => Self::UnsafeRoundTrip,
+        }
+    }
+}
+
+fn map_category_plan_failure(
+    error: crate::domain::content::mutation::MutationFailure,
+) -> CategoryPlanError {
+    match error.kind() {
+        MutationFailureKind::InvalidValue | MutationFailureKind::InvalidTransition => {
+            CategoryPlanError::InvalidName
+        }
+        MutationFailureKind::ReadOnly
+        | MutationFailureKind::CommentUnsafe
+        | MutationFailureKind::PresentationUnsafe => CategoryPlanError::UnsafeRoundTrip,
+        MutationFailureKind::ResourceLimit => CategoryPlanError::ResourceLimit,
+        MutationFailureKind::CandidateMismatch | MutationFailureKind::BindingInvariant => {
+            CategoryPlanError::InvalidCategory
+        }
+    }
+}
+
+fn map_category_update_error(error: DocumentUpdateError<CategoryPlanError>) -> CategoryUpdateError {
+    match error {
+        DocumentUpdateError::Prepare(CategoryPlanError::InvalidCategory) => {
+            CategoryUpdateError::InvalidCategory
+        }
+        DocumentUpdateError::Prepare(CategoryPlanError::InvalidName) => {
+            CategoryUpdateError::InvalidName
+        }
+        DocumentUpdateError::Prepare(CategoryPlanError::UnsafeRoundTrip) => {
+            CategoryUpdateError::UnsafeRoundTrip
+        }
+        DocumentUpdateError::Prepare(CategoryPlanError::ResourceLimit)
+        | DocumentUpdateError::TooLarge => CategoryUpdateError::ResourceLimit,
+        DocumentUpdateError::Busy => CategoryUpdateError::Busy,
+        DocumentUpdateError::Conflict => CategoryUpdateError::RevisionConflict,
+        DocumentUpdateError::Unsafe => CategoryUpdateError::UnsafeStorage,
+        DocumentUpdateError::Unsupported => CategoryUpdateError::UnsupportedFilesystem,
+        DocumentUpdateError::Io => CategoryUpdateError::Io,
     }
 }
 
@@ -798,6 +951,71 @@ mod tests {
         create_category(&mut view, state.path(), None, "Shell", None).unwrap();
         assert_eq!(view.categories().len(), 2);
         assert_eq!(view.categories()[1].category().order(), 2_000);
+    }
+
+    #[test]
+    fn renames_category_without_moving_its_directory() {
+        let (workspace, state, mut view) = initialized_workspace("category-rename");
+        let created = create_category(&mut view, state.path(), None, "Linux System", None).unwrap();
+        let original_directory = view.categories()[0].relative_directory().to_owned();
+        let outcome = rename_category(
+            &mut view,
+            state.path(),
+            None,
+            created.category_id(),
+            created.revision(),
+            "Linux & Desktop".to_owned(),
+        )
+        .unwrap();
+        assert!(outcome.changed());
+        assert_ne!(outcome.revision(), created.revision());
+        assert_eq!(view.categories()[0].category().name(), "Linux & Desktop");
+        assert_eq!(
+            view.categories()[0].relative_directory(),
+            original_directory
+        );
+        assert!(workspace.path().join(original_directory).is_dir());
+
+        let no_op = rename_category(
+            &mut view,
+            state.path(),
+            None,
+            created.category_id(),
+            outcome.revision(),
+            "Linux & Desktop".to_owned(),
+        )
+        .unwrap();
+        assert!(!no_op.changed());
+        assert_eq!(no_op.revision(), outcome.revision());
+    }
+
+    #[test]
+    fn category_rename_rejects_invalid_and_stale_input() {
+        let (_workspace, state, mut view) = initialized_workspace("category-rename-invalid");
+        let created = create_category(&mut view, state.path(), None, "Linux System", None).unwrap();
+        assert_eq!(
+            rename_category(
+                &mut view,
+                state.path(),
+                None,
+                created.category_id(),
+                created.revision(),
+                " ".to_owned(),
+            ),
+            Err(CategoryUpdateError::InvalidName)
+        );
+        assert_eq!(
+            rename_category(
+                &mut view,
+                state.path(),
+                None,
+                created.category_id(),
+                Revision::from_str(&format!("rev:v1:{}", "11".repeat(32))).unwrap(),
+                "Changed".to_owned(),
+            ),
+            Err(CategoryUpdateError::RevisionConflict)
+        );
+        assert_eq!(view.categories()[0].category().name(), "Linux System");
     }
 
     #[test]

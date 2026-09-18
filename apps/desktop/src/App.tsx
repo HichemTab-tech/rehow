@@ -35,6 +35,7 @@ type WorkspacePayload = {
     id: string;
     name: string;
     status: "active" | "archived";
+    revision: string;
     guideCount: number;
   }>;
   guides: GuideSummary[];
@@ -65,6 +66,11 @@ type CreateCategoryPayload = {
 type CreateGuidePayload = {
   workspace: WorkspacePayload;
   guide: GuideBodyPayload;
+};
+
+type SaveCategoryPayload = {
+  workspace: WorkspacePayload;
+  changed: boolean;
 };
 
 type IconName =
@@ -217,6 +223,12 @@ export function normalizedCategoryDetails(
   return { name, summary: summary === "" ? null : summary };
 }
 
+export function normalizedCategoryName(value: string) {
+  const name = value.trim();
+  const length = Array.from(name).length;
+  return length >= 1 && length <= 200 ? name : null;
+}
+
 export function normalizedGuideDetails(
   categoryId: string,
   titleValue: string,
@@ -321,6 +333,10 @@ export function App() {
   const [categorySummary, setCategorySummary] = useState("");
   const [savingCategory, setSavingCategory] = useState(false);
   const [categoryError, setCategoryError] = useState("");
+  const [renamingCategoryId, setRenamingCategoryId] = useState("");
+  const [categoryRenameValue, setCategoryRenameValue] = useState("");
+  const [savingCategoryRename, setSavingCategoryRename] = useState(false);
+  const [categoryRenameError, setCategoryRenameError] = useState("");
   const [creatingGuide, setCreatingGuide] = useState(false);
   const [guideTitle, setGuideTitle] = useState("");
   const [guideSummary, setGuideSummary] = useState("");
@@ -354,6 +370,9 @@ export function App() {
   const categoryCreateButtonRef = useRef<HTMLButtonElement>(null);
   const categoryNameRef = useRef<HTMLInputElement>(null);
   const categoryErrorRef = useRef<HTMLParagraphElement>(null);
+  const categoryRenameInputRef = useRef<HTMLInputElement>(null);
+  const categoryRenameErrorRef = useRef<HTMLParagraphElement>(null);
+  const categoryRenameButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const guideCreateButtonRef = useRef<HTMLButtonElement>(null);
   const guideTitleRef = useRef<HTMLInputElement>(null);
   const guideCreateErrorRef = useRef<HTMLParagraphElement>(null);
@@ -373,6 +392,13 @@ export function App() {
     editingGuideDetails &&
     selected !== null &&
     (selected.title !== detailTitle || selected.summary !== detailSummary);
+  const categoryBeingRenamed =
+    workspace?.categories.find(
+      (category) => category.id === renamingCategoryId,
+    ) ?? null;
+  const dirtyCategoryRename =
+    categoryBeingRenamed !== null &&
+    categoryRenameValue !== categoryBeingRenamed.name;
 
   useEffect(() => {
     const theme = initialParameter("theme");
@@ -427,14 +453,14 @@ export function App() {
   }, [editingGuide, editingGuideDetails, railOpen, readerOpen]);
 
   useEffect(() => {
-    if (!dirtyGuide && !dirtyGuideDetails) return;
+    if (!dirtyGuide && !dirtyGuideDetails && !dirtyCategoryRename) return;
     function warnBeforeUnload(event: BeforeUnloadEvent) {
       event.preventDefault();
       event.returnValue = "";
     }
     window.addEventListener("beforeunload", warnBeforeUnload);
     return () => window.removeEventListener("beforeunload", warnBeforeUnload);
-  }, [dirtyGuide, dirtyGuideDetails]);
+  }, [dirtyCategoryRename, dirtyGuide, dirtyGuideDetails]);
 
   useEffect(() => {
     if (workspace === null || selectedId === "") {
@@ -498,13 +524,25 @@ export function App() {
   }, [query, workspace]);
 
   function confirmDiscard() {
-    if (savingGuide || savingNewGuide || savingGuideDetails) return false;
+    if (
+      savingGuide ||
+      savingNewGuide ||
+      savingGuideDetails ||
+      savingCategoryRename
+    )
+      return false;
     if (dirtyGuide && !window.confirm("Discard your unsaved Guide changes?")) {
       return false;
     }
     if (
       dirtyGuideDetails &&
       !window.confirm("Discard your unsaved Guide detail changes?")
+    ) {
+      return false;
+    }
+    if (
+      dirtyCategoryRename &&
+      !window.confirm("Discard this Category name change?")
     ) {
       return false;
     }
@@ -565,6 +603,9 @@ export function App() {
         setCategoryName("");
         setCategorySummary("");
         setCategoryError("");
+        setRenamingCategoryId("");
+        setCategoryRenameValue("");
+        setCategoryRenameError("");
         setCreatingGuide(false);
         setGuideTitle("");
         setGuideSummary("");
@@ -709,6 +750,71 @@ export function App() {
       requestAnimationFrame(() => categoryErrorRef.current?.focus());
     } finally {
       setSavingCategory(false);
+    }
+  }
+
+  function beginCategoryRename(categoryId: string, name: string) {
+    if (workspace === null || !workspace.facts.writable) return;
+    setRenamingCategoryId(categoryId);
+    setCategoryRenameValue(name);
+    setCategoryRenameError("");
+    requestAnimationFrame(() => categoryRenameInputRef.current?.focus());
+  }
+
+  function cancelCategoryRename() {
+    if (savingCategoryRename) return;
+    if (
+      dirtyCategoryRename &&
+      !window.confirm("Discard this Category name change?")
+    )
+      return;
+    const categoryId = renamingCategoryId;
+    setRenamingCategoryId("");
+    setCategoryRenameValue("");
+    setCategoryRenameError("");
+    requestAnimationFrame(() =>
+      categoryRenameButtonRefs.current.get(categoryId)?.focus(),
+    );
+  }
+
+  async function saveCategoryRename() {
+    const category = categoryBeingRenamed;
+    const name = normalizedCategoryName(categoryRenameValue);
+    if (category === null || savingCategoryRename) return;
+    if (name === null) {
+      const message = "Enter a Category name between 1 and 200 characters.";
+      setCategoryRenameError(message);
+      setAnnouncement(message);
+      requestAnimationFrame(() => categoryRenameInputRef.current?.focus());
+      return;
+    }
+    setSavingCategoryRename(true);
+    setCategoryRenameError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<SaveCategoryPayload>("rename_open_category", {
+        categoryId: category.id,
+        expectedRevision: category.revision,
+        name,
+      });
+      setWorkspace(result.workspace);
+      setRenamingCategoryId("");
+      setCategoryRenameValue("");
+      setAnnouncement(
+        result.changed
+          ? "Category renamed."
+          : "The Category name is unchanged.",
+      );
+      requestAnimationFrame(() =>
+        categoryRenameButtonRefs.current.get(category.id)?.focus(),
+      );
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setCategoryRenameError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => categoryRenameErrorRef.current?.focus());
+    } finally {
+      setSavingCategoryRename(false);
     }
   }
 
@@ -1109,12 +1215,98 @@ export function App() {
               </div>
             </form>
           )}
-          {(workspace?.categories ?? []).map((category) => (
-            <div className="category-item" key={category.id}>
-              <span>{category.name}</span>
-              <span className="count">{category.guideCount}</span>
-            </div>
-          ))}
+          {(workspace?.categories ?? []).map((category) =>
+            renamingCategoryId === category.id ? (
+              <form
+                className="category-rename-form"
+                key={category.id}
+                aria-busy={savingCategoryRename}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveCategoryRename();
+                }}
+              >
+                <label htmlFor={`category-rename-${category.id}`}>
+                  Category Name
+                </label>
+                <input
+                  ref={categoryRenameInputRef}
+                  id={`category-rename-${category.id}`}
+                  name="category-rename"
+                  type="text"
+                  autoComplete="off"
+                  maxLength={200}
+                  aria-invalid={categoryRenameError !== ""}
+                  aria-describedby={
+                    categoryRenameError !== ""
+                      ? "category-rename-error"
+                      : undefined
+                  }
+                  value={categoryRenameValue}
+                  onChange={(event) => {
+                    setCategoryRenameValue(event.target.value);
+                    setCategoryRenameError("");
+                  }}
+                />
+                {categoryRenameError !== "" && (
+                  <p
+                    ref={categoryRenameErrorRef}
+                    id="category-rename-error"
+                    className="category-create-error"
+                    role="alert"
+                    tabIndex={-1}
+                  >
+                    {categoryRenameError}
+                  </p>
+                )}
+                <div className="category-create-actions">
+                  <button
+                    className="button"
+                    type="button"
+                    disabled={savingCategoryRename}
+                    onClick={cancelCategoryRename}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="button button-primary"
+                    type="submit"
+                    disabled={savingCategoryRename}
+                  >
+                    {savingCategoryRename ? "Saving…" : "Save Name"}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="category-item" key={category.id}>
+                <span>{category.name}</span>
+                <span className="count">{category.guideCount}</span>
+                {workspace?.facts.writable && (
+                  <button
+                    ref={(element) => {
+                      if (element === null) {
+                        categoryRenameButtonRefs.current.delete(category.id);
+                      } else {
+                        categoryRenameButtonRefs.current.set(
+                          category.id,
+                          element,
+                        );
+                      }
+                    }}
+                    className="category-rename-button"
+                    type="button"
+                    aria-label={`Rename ${category.name} Category`}
+                    title="Rename Category"
+                    onClick={() =>
+                      beginCategoryRename(category.id, category.name)
+                    }
+                  >
+                    Rename
+                  </button>
+                )}
+              </div>
+            ),
+          )}
         </div>
         <div className="rail-footer">
           <span className="sync-indicator" aria-hidden="true" />

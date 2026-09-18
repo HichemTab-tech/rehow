@@ -2,9 +2,9 @@ pub const APPLICATION_NAME: &str = "Rehow";
 
 use rehow_core::{
     application::{
-        CategoryCreateError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError, GuideEdit, GuideUpdateError,
-        WorkspaceInitializationError, create_category, create_guide, initialize_workspace,
-        update_guide,
+        CategoryCreateError, CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError,
+        GuideEdit, GuideUpdateError, WorkspaceInitializationError, create_category, create_guide,
+        initialize_workspace, rename_category, update_guide,
     },
     domain::GuideStatus,
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -86,6 +86,7 @@ struct CategoryPayload {
     id: String,
     name: String,
     status: &'static str,
+    revision: String,
     guide_count: usize,
 }
 
@@ -127,6 +128,13 @@ struct CreateCategoryPayload {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct SaveCategoryPayload {
+    workspace: WorkspacePayload,
+    changed: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CreateGuidePayload {
     workspace: WorkspacePayload,
     guide: GuideBodyPayload,
@@ -157,6 +165,7 @@ impl WorkspacePayload {
                     rehow_core::domain::CategoryStatus::Active => "active",
                     rehow_core::domain::CategoryStatus::Archived => "archived",
                 },
+                revision: loaded_category.descriptor_revision().to_string(),
                 guide_count: loaded_category.guides().len(),
             });
             for loaded_guide in loaded_category.guides() {
@@ -675,6 +684,127 @@ fn category_create_message(error: CategoryCreateError) -> String {
 }
 
 #[tauri::command]
+fn rename_open_category(
+    category_id: String,
+    expected_revision: String,
+    name: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<SaveCategoryPayload, NativeCommandError> {
+    if category_id.len() > 64 || expected_revision.len() > 96 || name.len() > 1_024 {
+        return Err(native_command_error(
+            "invalidInput",
+            "Category details are too long.".to_owned(),
+        ));
+    }
+    let category_id = CategoryId::from_str(&category_id).map_err(|_| {
+        native_command_error("invalidCategory", "Category ID is invalid.".to_owned())
+    })?;
+    let expected_revision = Revision::from_str(&expected_revision).map_err(|_| {
+        native_command_error(
+            "invalidRevision",
+            "Category revision is invalid. Reopen the Workspace and try again.".to_owned(),
+        )
+    })?;
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    fs::create_dir_all(&state_home).map_err(|_| {
+        native_command_error(
+            "stateUnavailable",
+            "Rehow could not prepare its private recovery folder.".to_owned(),
+        )
+    })?;
+    let mut guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_mut().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let outcome = rename_category(
+        &mut workspace.view,
+        &state_home,
+        runtime_directory.as_deref(),
+        category_id,
+        expected_revision,
+        name,
+    )
+    .map_err(|error| {
+        native_command_error(category_update_code(error), category_update_message(error))
+    })?;
+    Ok(SaveCategoryPayload {
+        workspace: WorkspacePayload::from_view(
+            &workspace.view,
+            FolderFactsPayload::from(workspace.facts),
+        ),
+        changed: outcome.changed(),
+    })
+}
+
+fn category_update_code(error: CategoryUpdateError) -> &'static str {
+    match error {
+        CategoryUpdateError::NotFound => "notFound",
+        CategoryUpdateError::RevisionConflict => "revisionConflict",
+        CategoryUpdateError::InvalidCategory => "invalidCategory",
+        CategoryUpdateError::InvalidName => "invalidName",
+        CategoryUpdateError::UnsafeRoundTrip => "unsafeRoundTrip",
+        CategoryUpdateError::Busy => "busy",
+        CategoryUpdateError::UnsafeStorage => "unsafeStorage",
+        CategoryUpdateError::UnsupportedFilesystem => "unsupportedFilesystem",
+        CategoryUpdateError::ResourceLimit => "resourceLimit",
+        CategoryUpdateError::Io => "io",
+        CategoryUpdateError::CommittedRefreshRequired { .. } => "committedRefresh",
+    }
+}
+
+fn category_update_message(error: CategoryUpdateError) -> String {
+    match error {
+        CategoryUpdateError::NotFound => {
+            "Category was not found. Refresh the Workspace.".to_owned()
+        }
+        CategoryUpdateError::RevisionConflict => {
+            "This Category changed on disk. Reopen the Workspace before saving.".to_owned()
+        }
+        CategoryUpdateError::InvalidCategory => {
+            "This Category is malformed and cannot be edited safely.".to_owned()
+        }
+        CategoryUpdateError::InvalidName => {
+            "Enter a Category name between 1 and 200 characters.".to_owned()
+        }
+        CategoryUpdateError::UnsafeRoundTrip => {
+            "Rehow cannot preserve this Category’s formatting safely. Edit the underlying file instead."
+                .to_owned()
+        }
+        CategoryUpdateError::Busy => {
+            "Another Rehow writer is active. Wait a moment and try again.".to_owned()
+        }
+        CategoryUpdateError::UnsafeStorage => {
+            "The Category path is unsafe or changed type. Reopen the Workspace.".to_owned()
+        }
+        CategoryUpdateError::UnsupportedFilesystem => {
+            "This filesystem cannot provide the atomic durability Rehow requires.".to_owned()
+        }
+        CategoryUpdateError::ResourceLimit => {
+            "The Category exceeds Rehow’s safe editing limits.".to_owned()
+        }
+        CategoryUpdateError::Io => {
+            "The Category could not be saved. Check folder access and try again.".to_owned()
+        }
+        CategoryUpdateError::CommittedRefreshRequired { .. } => {
+            "The Category was saved, but Rehow could not refresh it. Reopen the Workspace."
+                .to_owned()
+        }
+    }
+}
+
+#[tauri::command]
 fn create_open_guide(
     category_id: String,
     title: String,
@@ -885,6 +1015,7 @@ pub fn run() {
             create_open_guide,
             initialize_selected_workspace,
             read_open_guide,
+            rename_open_category,
             save_open_guide_body,
             save_open_guide_details,
             search_open_workspace
@@ -897,13 +1028,14 @@ pub fn run() {
 mod tests {
     use super::{
         APPLICATION_NAME, CategoryPayload, FolderFactsPayload, GuideBodyPayload, GuidePayload,
-        WorkspacePayload, category_create_code, category_create_message, guide_create_code,
-        guide_create_message, guide_update_code, guide_update_message, native_command_error,
-        workspace_initialization_message,
+        WorkspacePayload, category_create_code, category_create_message, category_update_code,
+        category_update_message, guide_create_code, guide_create_message, guide_update_code,
+        guide_update_message, native_command_error, workspace_initialization_message,
     };
     use rehow_core::{
         application::{
-            CategoryCreateError, GuideCreateError, GuideUpdateError, WorkspaceInitializationError,
+            CategoryCreateError, CategoryUpdateError, GuideCreateError, GuideUpdateError,
+            WorkspaceInitializationError,
         },
         markdown::parse_safe_markdown,
     };
@@ -921,6 +1053,7 @@ mod tests {
                 id: "0199a1c2-d334-7d17-bd9c-f8b6ba3a5551".to_owned(),
                 name: "Linux".to_owned(),
                 status: "active",
+                revision: format!("rev:v1:{}", "11".repeat(32)),
                 guide_count: 1,
             }],
             guides: vec![GuidePayload {
@@ -946,6 +1079,10 @@ mod tests {
         assert_eq!(json["issueCount"], 0);
         assert_eq!(json["facts"]["writable"], true);
         assert_eq!(json["categories"][0]["status"], "active");
+        assert_eq!(
+            json["categories"][0]["revision"],
+            format!("rev:v1:{}", "11".repeat(32))
+        );
         assert!(json["guides"][0].get("body").is_none());
     }
 
@@ -1019,6 +1156,18 @@ mod tests {
         assert_eq!(
             category_create_message(CategoryCreateError::Incomplete),
             "Category creation was interrupted. Reopen the Workspace to inspect the empty residue."
+        );
+    }
+
+    #[test]
+    fn category_update_errors_are_stable_and_actionable() {
+        assert_eq!(
+            category_update_code(CategoryUpdateError::RevisionConflict),
+            "revisionConflict"
+        );
+        assert_eq!(
+            category_update_message(CategoryUpdateError::InvalidName),
+            "Enter a Category name between 1 and 200 characters."
         );
     }
 
