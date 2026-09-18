@@ -27,6 +27,28 @@ pub(crate) struct DocumentUpdateOutcome {
     changed: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorkspaceInitializeError {
+    Busy,
+    Conflict,
+    Unsafe,
+    Unsupported,
+    TooLarge,
+    Io,
+    Committed { revision: Revision },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WorkspaceInitializeOutcome {
+    revision: Revision,
+}
+
+impl WorkspaceInitializeOutcome {
+    pub(crate) fn revision(self) -> Revision {
+        self.revision
+    }
+}
+
 impl DocumentUpdateOutcome {
     pub(crate) fn revision(self) -> Revision {
         self.revision
@@ -35,6 +57,88 @@ impl DocumentUpdateOutcome {
     pub(crate) fn changed(self) -> bool {
         self.changed
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_workspace_initialize(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    operation_id: OperationId,
+    created_at: Timestamp,
+    manifest: &[u8],
+) -> Result<WorkspaceInitializeOutcome, WorkspaceInitializeError> {
+    let store = store::RecoveryStore::open(
+        state_home,
+        workspace_id,
+        root.root_hash(),
+        root.capability_hash(),
+    )
+    .map_err(map_store_initialize)?;
+    let lock = store
+        .acquire_lock(runtime_directory)
+        .map_err(map_store_initialize)?;
+    root.verify_empty_workspace_root()
+        .map_err(map_io_initialize)?;
+    let target = root
+        .open_managed_target("rehow.yaml")
+        .map_err(map_io_initialize)?;
+    if !matches!(
+        target
+            .state(super::DESCRIPTOR_LIMIT)
+            .map_err(map_io_initialize)?,
+        super::linux::ManagedState::Missing
+    ) {
+        return Err(WorkspaceInitializeError::Conflict);
+    }
+
+    let manifest_hash = store
+        .store_object(&lock, manifest)
+        .map_err(map_store_initialize)?;
+    let (root_device, root_inode) = root.identity().map_err(map_io_initialize)?;
+    let mut plan = blake3::Hasher::new();
+    plan.update(b"rehow-workspace-initialize-plan-v1\0");
+    hash_plan_field(&mut plan, manifest);
+    let journal = Journal {
+        generation: 1,
+        operation_id,
+        operation_kind: OperationKind::Create,
+        workspace_id,
+        root_hash: root.root_hash(),
+        root_device,
+        root_inode,
+        created_at,
+        plan_hash: *plan.finalize().as_bytes(),
+        targets: vec![Target {
+            relative_path: "rehow.yaml".to_owned(),
+            expected: ExpectedState::Absent,
+            intended: IntendedState::Object {
+                object_hash: manifest_hash,
+                mode: 0o600,
+            },
+            temp_name: format!(".rehow-tmp-{operation_id}"),
+            step: TargetStep::Prepared,
+        }],
+        stage: JournalStage::Prepared,
+        completion: false,
+    };
+    let execution = workspace::execute_new_journal(root, &store, &lock, journal.clone());
+    if let Err(error) = execution {
+        let committed = store
+            .read_journal(&lock, operation_id)
+            .is_ok_and(|persisted| {
+                committed_matches(&persisted, &journal)
+                    && workspace::resume_journal(root, &store, &lock, operation_id).is_ok()
+            });
+        if !committed {
+            return Err(map_workspace_initialize(error));
+        }
+    }
+    let revision = super::document_revision("rehow.yaml", manifest);
+    root.create_categories_directory()
+        .map_err(|_| WorkspaceInitializeError::Committed { revision })?;
+    Ok(WorkspaceInitializeOutcome { revision })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -194,6 +298,41 @@ fn map_workspace_update<E>(error: workspace::WorkspaceMutationError) -> Document
         workspace::WorkspaceMutationError::Unsupported => DocumentUpdateError::Unsupported,
         workspace::WorkspaceMutationError::TooLarge => DocumentUpdateError::TooLarge,
         workspace::WorkspaceMutationError::Io => DocumentUpdateError::Io,
+    }
+}
+
+fn map_store_initialize(error: store::StoreError) -> WorkspaceInitializeError {
+    match error {
+        store::StoreError::Busy => WorkspaceInitializeError::Busy,
+        store::StoreError::Conflict | store::StoreError::Corrupt => {
+            WorkspaceInitializeError::Conflict
+        }
+        store::StoreError::Unsafe => WorkspaceInitializeError::Unsafe,
+        store::StoreError::Unsupported => WorkspaceInitializeError::Unsupported,
+        store::StoreError::TooLarge => WorkspaceInitializeError::TooLarge,
+        store::StoreError::Io => WorkspaceInitializeError::Io,
+        #[cfg(test)]
+        store::StoreError::Injected => WorkspaceInitializeError::Io,
+    }
+}
+
+fn map_io_initialize(error: super::linux::MutationIoError) -> WorkspaceInitializeError {
+    match error {
+        super::linux::MutationIoError::Unsafe => WorkspaceInitializeError::Unsafe,
+        super::linux::MutationIoError::Conflict => WorkspaceInitializeError::Conflict,
+        super::linux::MutationIoError::Unsupported => WorkspaceInitializeError::Unsupported,
+        super::linux::MutationIoError::TooLarge => WorkspaceInitializeError::TooLarge,
+        super::linux::MutationIoError::Io => WorkspaceInitializeError::Io,
+    }
+}
+
+fn map_workspace_initialize(error: workspace::WorkspaceMutationError) -> WorkspaceInitializeError {
+    match error {
+        workspace::WorkspaceMutationError::Unsafe => WorkspaceInitializeError::Unsafe,
+        workspace::WorkspaceMutationError::Conflict => WorkspaceInitializeError::Conflict,
+        workspace::WorkspaceMutationError::Unsupported => WorkspaceInitializeError::Unsupported,
+        workspace::WorkspaceMutationError::TooLarge => WorkspaceInitializeError::TooLarge,
+        workspace::WorkspaceMutationError::Io => WorkspaceInitializeError::Io,
     }
 }
 

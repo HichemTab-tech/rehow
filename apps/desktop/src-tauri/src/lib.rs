@@ -1,12 +1,18 @@
 pub const APPLICATION_NAME: &str = "Rehow";
 
 use rehow_core::{
-    application::{GUIDE_BODY_INPUT_LIMIT, GuideEdit, GuideUpdateError, update_guide},
+    application::{
+        GUIDE_BODY_INPUT_LIMIT, GuideEdit, GuideUpdateError, WorkspaceInitializationError,
+        initialize_workspace, update_guide,
+    },
     domain::GuideStatus,
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
     protocol::{GuideId, Revision},
     search::search_workspace,
-    storage::{WorkspaceFolderFacts, WorkspaceInspection, WorkspaceView, inspect_workspace},
+    storage::{
+        EmptyWorkspaceTarget, WorkspaceFolderFacts, WorkspaceInspection, WorkspaceView,
+        inspect_workspace,
+    },
 };
 use serde::Serialize;
 use std::{env, fs, path::PathBuf, str::FromStr, sync::Mutex};
@@ -14,10 +20,16 @@ use std::{env, fs, path::PathBuf, str::FromStr, sync::Mutex};
 #[derive(Default)]
 struct DesktopState {
     workspace: Mutex<Option<DesktopWorkspace>>,
+    pending_empty: Mutex<Option<PendingWorkspace>>,
 }
 
 struct DesktopWorkspace {
     view: Box<WorkspaceView>,
+    facts: WorkspaceFolderFacts,
+}
+
+struct PendingWorkspace {
+    target: EmptyWorkspaceTarget,
     facts: WorkspaceFolderFacts,
 }
 
@@ -102,6 +114,13 @@ struct SaveGuidePayload {
     workspace: WorkspacePayload,
     guide: GuideBodyPayload,
     changed: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceInitializationCommandError {
+    code: &'static str,
+    message: String,
 }
 
 impl WorkspacePayload {
@@ -330,6 +349,135 @@ fn guide_update_message(error: GuideUpdateError) -> String {
 }
 
 #[tauri::command]
+fn initialize_selected_workspace(
+    name: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<WorkspacePayload, WorkspaceInitializationCommandError> {
+    if name.len() > 1_024 {
+        return Err(initialization_command_error(
+            "invalidName",
+            "Workspace name is too long.".to_owned(),
+        ));
+    }
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| initialization_command_error("stateUnavailable", message))?;
+    fs::create_dir_all(&state_home).map_err(|_| {
+        initialization_command_error(
+            "stateUnavailable",
+            "Rehow could not prepare its private recovery folder.".to_owned(),
+        )
+    })?;
+    let mut pending = state.pending_empty.lock().map_err(|_| {
+        initialization_command_error(
+            "selectionUnavailable",
+            "Workspace selection is unavailable".to_owned(),
+        )
+    })?;
+    let selected = pending.take().ok_or_else(|| {
+        initialization_command_error(
+            "selectionUnavailable",
+            "Choose an empty folder before creating a Workspace.".to_owned(),
+        )
+    })?;
+    if !selected.facts.writable() {
+        return Err(initialization_command_error(
+            "readOnly",
+            "That folder is read-only. Choose a writable folder.".to_owned(),
+        ));
+    }
+    let view = match initialize_workspace(
+        &selected.target,
+        &state_home,
+        runtime_directory.as_deref(),
+        &name,
+    ) {
+        Ok(view) => view,
+        Err(error) => {
+            if matches!(
+                error,
+                WorkspaceInitializationError::InvalidName | WorkspaceInitializationError::Busy
+            ) {
+                *pending = Some(selected);
+            }
+            return Err(initialization_command_error(
+                workspace_initialization_code(error),
+                workspace_initialization_message(error),
+            ));
+        }
+    };
+    let facts = selected.facts;
+    let payload = WorkspacePayload::from_view(&view, FolderFactsPayload::from(facts));
+    *state.workspace.lock().map_err(|_| {
+        initialization_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })? = Some(DesktopWorkspace { view, facts });
+    Ok(payload)
+}
+
+fn initialization_command_error(
+    code: &'static str,
+    message: String,
+) -> WorkspaceInitializationCommandError {
+    WorkspaceInitializationCommandError { code, message }
+}
+
+fn workspace_initialization_code(error: WorkspaceInitializationError) -> &'static str {
+    match error {
+        WorkspaceInitializationError::InvalidName => "invalidName",
+        WorkspaceInitializationError::Busy => "busy",
+        WorkspaceInitializationError::Conflict => "conflict",
+        WorkspaceInitializationError::UnsafeStorage => "unsafeStorage",
+        WorkspaceInitializationError::UnsupportedFilesystem => "unsupportedFilesystem",
+        WorkspaceInitializationError::ResourceLimit => "resourceLimit",
+        WorkspaceInitializationError::Io => "io",
+        WorkspaceInitializationError::CommittedRefreshRequired { .. } => "committedRefresh",
+    }
+}
+
+fn workspace_initialization_message(error: WorkspaceInitializationError) -> String {
+    match error {
+        WorkspaceInitializationError::InvalidName => {
+            "Enter a Workspace name between 1 and 200 characters.".to_owned()
+        }
+        WorkspaceInitializationError::Busy => {
+            "Another Rehow writer is active. Wait a moment and try again.".to_owned()
+        }
+        WorkspaceInitializationError::Conflict => {
+            "That folder changed after selection. Reopen it before creating a Workspace.".to_owned()
+        }
+        WorkspaceInitializationError::UnsafeStorage => {
+            "That folder contains an unsafe entry and was not modified.".to_owned()
+        }
+        WorkspaceInitializationError::UnsupportedFilesystem => {
+            "This filesystem cannot provide the atomic durability Rehow requires.".to_owned()
+        }
+        WorkspaceInitializationError::ResourceLimit => {
+            "Workspace initialization exceeded a safe resource limit.".to_owned()
+        }
+        WorkspaceInitializationError::Io => {
+            "The Workspace could not be created. Check folder access and try again.".to_owned()
+        }
+        WorkspaceInitializationError::CommittedRefreshRequired { .. } => {
+            "The Workspace was created, but Rehow could not open it. Choose the folder again."
+                .to_owned()
+        }
+    }
+}
+
+#[tauri::command]
+fn cancel_selected_workspace_initialization(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    *state
+        .pending_empty
+        .lock()
+        .map_err(|_| "Workspace selection is unavailable".to_owned())? = None;
+    Ok(())
+}
+
+#[tauri::command]
 fn choose_workspace(state: tauri::State<'_, DesktopState>) -> Result<OpenWorkspaceResult, String> {
     let Some(path) = rfd::FileDialog::new()
         .set_title("Open a Rehow Workspace")
@@ -342,8 +490,26 @@ fn choose_workspace(state: tauri::State<'_, DesktopState>) -> Result<OpenWorkspa
         .map_err(|error| error.to_string())?
         .into_parts();
     let facts = FolderFactsPayload::from(report_facts);
+    *state
+        .pending_empty
+        .lock()
+        .map_err(|_| "Workspace selection is unavailable".to_owned())? = None;
     match inspection {
-        WorkspaceInspection::Empty => Ok(OpenWorkspaceResult::Empty { facts }),
+        WorkspaceInspection::Empty(target) => {
+            *state
+                .workspace
+                .lock()
+                .map_err(|_| "Workspace session is unavailable".to_owned())? = None;
+            *state
+                .pending_empty
+                .lock()
+                .map_err(|_| "Workspace selection is unavailable".to_owned())? =
+                Some(PendingWorkspace {
+                    target,
+                    facts: report_facts,
+                });
+            Ok(OpenWorkspaceResult::Empty { facts })
+        }
         WorkspaceInspection::Compatible(view) => {
             let payload = WorkspacePayload::from_view(&view, facts);
             *state
@@ -384,7 +550,9 @@ pub fn run() {
     tauri::Builder::default()
         .manage(DesktopState::default())
         .invoke_handler(tauri::generate_handler![
+            cancel_selected_workspace_initialization,
             choose_workspace,
+            initialize_selected_workspace,
             read_open_guide,
             save_open_guide_body,
             search_open_workspace
@@ -397,9 +565,12 @@ pub fn run() {
 mod tests {
     use super::{
         APPLICATION_NAME, FolderFactsPayload, GuideBodyPayload, GuidePayload, WorkspacePayload,
-        guide_update_message,
+        guide_update_message, initialization_command_error, workspace_initialization_message,
     };
-    use rehow_core::{application::GuideUpdateError, markdown::parse_safe_markdown};
+    use rehow_core::{
+        application::{GuideUpdateError, WorkspaceInitializationError},
+        markdown::parse_safe_markdown,
+    };
 
     #[test]
     fn application_name_is_stable() {
@@ -466,6 +637,30 @@ mod tests {
         assert_eq!(
             guide_update_message(GuideUpdateError::UnsafeStorage),
             "The Guide path is unsafe or changed type. Reopen the Workspace."
+        );
+    }
+
+    #[test]
+    fn initialization_errors_explain_retry_and_committed_outcomes() {
+        assert_eq!(
+            workspace_initialization_message(WorkspaceInitializationError::Conflict),
+            "That folder changed after selection. Reopen it before creating a Workspace."
+        );
+        assert_eq!(
+            workspace_initialization_message(
+                WorkspaceInitializationError::CommittedRefreshRequired {
+                    revision: format!("rev:v1:{}", "11".repeat(32)).parse().unwrap(),
+                }
+            ),
+            "The Workspace was created, but Rehow could not open it. Choose the folder again."
+        );
+        assert_eq!(
+            serde_json::to_value(initialization_command_error(
+                "conflict",
+                "Folder changed.".to_owned()
+            ))
+            .unwrap(),
+            serde_json::json!({ "code": "conflict", "message": "Folder changed." })
         );
     }
 }

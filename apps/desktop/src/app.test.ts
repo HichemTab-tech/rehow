@@ -8,8 +8,10 @@ import {
   gitFactLabel,
   hasUnsavedChanges,
   nextResultIndex,
+  normalizedWorkspaceName,
   rankedGuides,
   resultCountLabel,
+  workspaceInitializationError,
 } from "./App";
 import { MarkdownDocument } from "./MarkdownDocument";
 
@@ -53,6 +55,24 @@ describe("application identity", () => {
   it("detects exact Guide editor dirty state", () => {
     expect(hasUnsavedChanges("same\n", "same\n")).toBe(false);
     expect(hasUnsavedChanges("same\n", "changed\n")).toBe(true);
+  });
+
+  it("normalizes and bounds Workspace names", () => {
+    expect(normalizedWorkspaceName("  Personal Rehow  ")).toBe(
+      "Personal Rehow",
+    );
+    expect(normalizedWorkspaceName("   ")).toBeNull();
+    expect(normalizedWorkspaceName("a".repeat(200))).toHaveLength(200);
+    expect(normalizedWorkspaceName("a".repeat(201))).toBeNull();
+  });
+
+  it("accepts only structured Workspace initialization errors", () => {
+    expect(
+      workspaceInitializationError({ code: "conflict", message: "Changed." }),
+    ).toEqual({ code: "conflict", message: "Changed." });
+    expect(workspaceInitializationError("hostile content").code).toBe(
+      "unknown",
+    );
   });
 });
 

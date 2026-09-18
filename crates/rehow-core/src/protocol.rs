@@ -123,6 +123,10 @@ pub(crate) fn new_operation_id() -> OperationId {
     OperationId(Uuid::now_v7())
 }
 
+pub(crate) fn new_workspace_id() -> WorkspaceId {
+    WorkspaceId(Uuid::now_v7())
+}
+
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct RecentWorkspaceId(Uuid);
 string_ts!(RecentWorkspaceId);

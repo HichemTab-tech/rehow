@@ -7,18 +7,97 @@
 
 use crate::{
     domain::content::{
+        emission::{EmitFailureKind, emit_new_workspace_manifest},
         guide::bind_guide,
         mutation::{
             GuideMutation, MutationFailureKind, MutationOutcome, MutationStamp, plan_guide_mutation,
         },
     },
     parsing::parse_guide_source,
-    protocol::{GuideId, OperationId, Revision, Timestamp, current_timestamp, new_operation_id},
-    storage::{DocumentUpdateError, WorkspaceView, execute_document_update, refresh_workspace},
+    protocol::{
+        GuideId, OperationId, Revision, Timestamp, current_timestamp, new_operation_id,
+        new_workspace_id,
+    },
+    storage::{
+        DocumentUpdateError, EmptyWorkspaceTarget, WorkspaceInitializeError, WorkspaceView,
+        execute_document_update, execute_workspace_initialize, open_initialized_workspace,
+        refresh_workspace,
+    },
 };
 use std::path::Path;
 
 pub const GUIDE_BODY_INPUT_LIMIT: usize = 2 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceInitializationError {
+    InvalidName,
+    Busy,
+    Conflict,
+    UnsafeStorage,
+    UnsupportedFilesystem,
+    ResourceLimit,
+    Io,
+    CommittedRefreshRequired { revision: Revision },
+}
+
+pub fn initialize_workspace(
+    target: &EmptyWorkspaceTarget,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    name: &str,
+) -> Result<Box<WorkspaceView>, WorkspaceInitializationError> {
+    let workspace_id = new_workspace_id();
+    let operation_id = new_operation_id();
+    let timestamp = current_timestamp();
+    let manifest =
+        emit_new_workspace_manifest(&workspace_id, name, &timestamp, None).map_err(|error| {
+            match error.kind() {
+                EmitFailureKind::InvalidValue | EmitFailureKind::CandidateMismatch => {
+                    WorkspaceInitializationError::InvalidName
+                }
+                EmitFailureKind::ResourceLimit => WorkspaceInitializationError::ResourceLimit,
+            }
+        })?;
+    let outcome = execute_workspace_initialize(
+        target,
+        state_home,
+        runtime_directory,
+        workspace_id,
+        operation_id,
+        timestamp,
+        manifest.source_bytes(),
+    )
+    .map_err(map_workspace_initialization_error)?;
+    let workspace = open_initialized_workspace(target).map_err(|_| {
+        WorkspaceInitializationError::CommittedRefreshRequired {
+            revision: outcome.revision(),
+        }
+    })?;
+    if workspace.manifest_revision() != outcome.revision() {
+        return Err(WorkspaceInitializationError::CommittedRefreshRequired {
+            revision: outcome.revision(),
+        });
+    }
+    Ok(workspace)
+}
+
+fn map_workspace_initialization_error(
+    error: WorkspaceInitializeError,
+) -> WorkspaceInitializationError {
+    match error {
+        WorkspaceInitializeError::Busy => WorkspaceInitializationError::Busy,
+        WorkspaceInitializeError::Conflict => WorkspaceInitializationError::Conflict,
+        WorkspaceInitializeError::Unsafe => WorkspaceInitializationError::UnsafeStorage,
+        WorkspaceInitializeError::Unsupported => {
+            WorkspaceInitializationError::UnsupportedFilesystem
+        }
+        WorkspaceInitializeError::TooLarge => WorkspaceInitializationError::ResourceLimit,
+        WorkspaceInitializeError::Io => WorkspaceInitializationError::Io,
+        WorkspaceInitializeError::Committed { revision } => {
+            WorkspaceInitializationError::CommittedRefreshRequired { revision }
+        }
+    }
+}
 
 pub enum GuideEdit {
     SetTitle(String),
@@ -267,6 +346,87 @@ mod tests {
 
     fn at() -> Timestamp {
         Timestamp::from_str("2026-09-18T12:00:00Z").unwrap()
+    }
+
+    fn empty_target(directory: &TestDirectory) -> EmptyWorkspaceTarget {
+        let inspection = inspect_workspace(directory.path()).unwrap().into_parts().1;
+        let WorkspaceInspection::Empty(target) = inspection else {
+            panic!("expected empty Workspace target");
+        };
+        target
+    }
+
+    #[test]
+    fn initializes_and_opens_an_empty_workspace() {
+        let workspace = TestDirectory::new("initialize");
+        let state = TestDirectory::new("initialize-state");
+        let target = empty_target(&workspace);
+        let view = initialize_workspace(&target, state.path(), None, "Personal Rehow").unwrap();
+
+        assert_eq!(view.manifest().name(), "Personal Rehow");
+        assert!(view.categories().is_empty());
+        assert!(view.issues().is_empty());
+        assert_eq!(
+            fs::metadata(workspace.path().join("rehow.yaml"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(workspace.path().join("categories"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+
+    #[test]
+    fn initialization_refuses_every_change_after_selection() {
+        let changed = TestDirectory::new("initialize-changed");
+        let state = TestDirectory::new("initialize-state");
+        let target = empty_target(&changed);
+        fs::write(changed.path().join("appeared.txt"), b"do not overwrite").unwrap();
+        let changed_result = initialize_workspace(&target, state.path(), None, "Personal Rehow");
+        assert!(
+            matches!(changed_result, Err(WorkspaceInitializationError::Conflict)),
+            "unexpected result: {:?}",
+            changed_result.err()
+        );
+        assert_eq!(
+            fs::read(changed.path().join("appeared.txt")).unwrap(),
+            b"do not overwrite"
+        );
+        assert!(!changed.path().join("rehow.yaml").exists());
+
+        let directory_change = TestDirectory::new("initialize-directory-change");
+        let target = empty_target(&directory_change);
+        fs::create_dir(directory_change.path().join("categories")).unwrap();
+        fs::set_permissions(
+            directory_change.path().join("categories"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        assert!(matches!(
+            initialize_workspace(&target, state.path(), None, "Personal Rehow"),
+            Err(WorkspaceInitializationError::Conflict)
+        ));
+        assert!(!directory_change.path().join("rehow.yaml").exists());
+    }
+
+    #[test]
+    fn invalid_workspace_name_writes_nothing() {
+        let workspace = TestDirectory::new("initialize-invalid");
+        let state = TestDirectory::new("initialize-state");
+        let target = empty_target(&workspace);
+        assert!(matches!(
+            initialize_workspace(&target, state.path(), None, "   "),
+            Err(WorkspaceInitializationError::InvalidName)
+        ));
+        assert!(fs::read_dir(workspace.path()).unwrap().next().is_none());
     }
 
     #[test]

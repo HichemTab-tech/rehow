@@ -5,7 +5,10 @@
 //! crate-private recovery boundary and is not exposed to UI or MCP adapters.
 
 pub(crate) mod recovery;
-pub(crate) use recovery::{DocumentUpdateError, DocumentUpdateOutcome};
+pub(crate) use recovery::{
+    DocumentUpdateError, DocumentUpdateOutcome, WorkspaceInitializeError,
+    WorkspaceInitializeOutcome,
+};
 
 #[cfg(not(target_os = "linux"))]
 compile_error!("Rehow's confined Workspace storage currently requires Linux");
@@ -53,12 +56,16 @@ pub enum MalformedWorkspaceReason {
 }
 
 pub enum WorkspaceInspection {
-    Empty,
+    Empty(EmptyWorkspaceTarget),
     Compatible(Box<WorkspaceView>),
     NewerUnsupported { version: u32 },
     OrdinaryMarkdown,
     UnrelatedNonempty,
     Malformed { reason: MalformedWorkspaceReason },
+}
+
+pub struct EmptyWorkspaceTarget {
+    root: linux::DirectoryCapability,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -254,6 +261,37 @@ where
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_workspace_initialize(
+    target: &EmptyWorkspaceTarget,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: crate::protocol::WorkspaceId,
+    operation_id: crate::protocol::OperationId,
+    created_at: crate::protocol::Timestamp,
+    manifest: &[u8],
+) -> Result<WorkspaceInitializeOutcome, WorkspaceInitializeError> {
+    recovery::execute_workspace_initialize(
+        &target.root,
+        state_home,
+        runtime_directory,
+        workspace_id,
+        operation_id,
+        created_at,
+        manifest,
+    )
+}
+
+pub(crate) fn open_initialized_workspace(
+    target: &EmptyWorkspaceTarget,
+) -> Result<Box<WorkspaceView>, WorkspaceInspectError> {
+    let root = target.root.duplicate().map_err(map_io)?;
+    let WorkspaceInspection::Compatible(workspace) = inspect_open_root(root)? else {
+        return Err(WorkspaceInspectError::ChangedDuringRead);
+    };
+    Ok(workspace)
+}
+
 pub(crate) fn refresh_workspace(
     workspace: &mut WorkspaceView,
 ) -> Result<(), WorkspaceInspectError> {
@@ -270,7 +308,7 @@ fn inspect_open_root(
 ) -> Result<WorkspaceInspection, WorkspaceInspectError> {
     let root_entries = root.entries(20_000)?;
     if root_entries.is_empty() {
-        return Ok(WorkspaceInspection::Empty);
+        return Ok(WorkspaceInspection::Empty(EmptyWorkspaceTarget { root }));
     }
     if !root_entries.iter().any(|name| name == "rehow.yaml") {
         let mut remaining_entries = 20_000usize.saturating_sub(root_entries.len());
@@ -836,9 +874,16 @@ mod linux {
         }
 
         pub(super) fn entries(&self, limit: usize) -> Result<Vec<String>, WorkspaceInspectError> {
-            // SAFETY: `fcntl` duplicates a valid retained descriptor.
-            let duplicate =
-                unsafe { libc::fcntl(self.descriptor.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+            // Reopen `.` so each scan receives an independent directory-stream
+            // offset while remaining confined to the retained capability.
+            // SAFETY: the descriptor and static component are valid.
+            let duplicate = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    c".".as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
             if duplicate < 0 {
                 return Err(super::map_io(io::Error::last_os_error()));
             }
@@ -1097,6 +1142,68 @@ mod linux {
                     })?;
             }
             Err(MutationIoError::Unsafe)
+        }
+
+        pub(super) fn verify_empty_workspace_root(&self) -> Result<(), MutationIoError> {
+            let entries = self.entries(20_000).map_err(|error| match error {
+                WorkspaceInspectError::ResourceLimit => MutationIoError::TooLarge,
+                WorkspaceInspectError::UnsafeRoot => MutationIoError::Unsafe,
+                WorkspaceInspectError::ChangedDuringRead => MutationIoError::Conflict,
+                WorkspaceInspectError::NotFound
+                | WorkspaceInspectError::NotDirectory
+                | WorkspaceInspectError::PermissionDenied
+                | WorkspaceInspectError::Io => MutationIoError::Io,
+            })?;
+            if !entries.is_empty() {
+                return Err(MutationIoError::Conflict);
+            }
+            Ok(())
+        }
+
+        pub(super) fn create_categories_directory(&self) -> Result<(), MutationIoError> {
+            let name = c"categories";
+            // SAFETY: the retained parent and static component are valid.
+            if unsafe { libc::mkdirat(self.descriptor.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+                return match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::EEXIST) => Err(MutationIoError::Conflict),
+                    _ => Err(MutationIoError::Io),
+                };
+            }
+            // SAFETY: the retained parent and static component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
+            if raw < 0 {
+                return Err(MutationIoError::Unsafe);
+            }
+            // SAFETY: successful `openat` returns a newly owned descriptor.
+            let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
+            // SAFETY: descriptor is valid and owned.
+            if unsafe { libc::fchmod(descriptor.as_raw_fd(), 0o700) } != 0 {
+                return Err(MutationIoError::Io);
+            }
+            let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: descriptor/status are valid.
+            if unsafe { libc::fstat(descriptor.as_raw_fd(), status.as_mut_ptr()) } != 0 {
+                return Err(MutationIoError::Io);
+            }
+            // SAFETY: successful `fstat` initialized the structure.
+            let status = unsafe { status.assume_init() };
+            if status.st_uid != unsafe { libc::geteuid() }
+                || status.st_mode & libc::S_IFMT != libc::S_IFDIR
+                || status.st_mode & 0o7777 != 0o700
+            {
+                return Err(MutationIoError::Unsafe);
+            }
+            // SAFETY: the retained root descriptor is valid.
+            if unsafe { libc::fsync(self.descriptor.as_raw_fd()) } != 0 {
+                return Err(MutationIoError::Unsupported);
+            }
+            Ok(())
         }
 
         pub(super) fn open_trash_target(
@@ -1638,7 +1745,7 @@ mod tests {
         let empty = TestDirectory::new();
         assert!(matches!(
             classification(empty.path()),
-            WorkspaceInspection::Empty
+            WorkspaceInspection::Empty(_)
         ));
         fs::write(empty.path().join("notes.txt"), "hello").unwrap();
         assert!(matches!(
@@ -1716,6 +1823,19 @@ mod tests {
             classification(malformed.path()),
             WorkspaceInspection::Malformed {
                 reason: MalformedWorkspaceReason::Manifest
+            }
+        ));
+
+        let interrupted_initialization = TestDirectory::new();
+        fs::write(
+            interrupted_initialization.path().join("rehow.yaml"),
+            manifest(1),
+        )
+        .unwrap();
+        assert!(matches!(
+            classification(interrupted_initialization.path()),
+            WorkspaceInspection::Malformed {
+                reason: MalformedWorkspaceReason::CategoriesMissing
             }
         ));
     }

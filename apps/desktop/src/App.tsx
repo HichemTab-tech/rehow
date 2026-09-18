@@ -167,6 +167,29 @@ export function hasUnsavedChanges(original: string, draft: string) {
   return original !== draft;
 }
 
+export function normalizedWorkspaceName(value: string) {
+  const name = value.trim();
+  const length = Array.from(name).length;
+  return length >= 1 && length <= 200 ? name : null;
+}
+
+export function workspaceInitializationError(error: unknown) {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    "message" in error &&
+    typeof error.code === "string" &&
+    typeof error.message === "string"
+  ) {
+    return { code: error.code, message: error.message };
+  }
+  return {
+    code: "unknown",
+    message: "The Workspace could not be created. Choose the folder again.",
+  };
+}
+
 export function gitFactLabel(facts: FolderFacts) {
   if (facts.unsafeGitMarker) return "Git marker needs attention";
   if (facts.existingGitRepository && facts.nestedGitRepository) {
@@ -232,6 +255,12 @@ export function App() {
   );
   const [announcement, setAnnouncement] = useState("");
   const [openingWorkspace, setOpeningWorkspace] = useState(false);
+  const [pendingWorkspace, setPendingWorkspace] = useState<FolderFacts | null>(
+    null,
+  );
+  const [workspaceName, setWorkspaceName] = useState("");
+  const [initializingWorkspace, setInitializingWorkspace] = useState(false);
+  const [workspaceSetupError, setWorkspaceSetupError] = useState("");
   const [guideBody, setGuideBody] = useState<GuideBodyPayload | null>(null);
   const [editingGuide, setEditingGuide] = useState(false);
   const [draftBody, setDraftBody] = useState("");
@@ -246,6 +275,8 @@ export function App() {
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const saveErrorRef = useRef<HTMLParagraphElement>(null);
+  const workspaceNameRef = useRef<HTMLInputElement>(null);
+  const workspaceSetupErrorRef = useRef<HTMLParagraphElement>(null);
   const guides = workspace?.guides ?? [];
   const visibleGuides = useMemo(
     () => rankedGuides(guides, query, rankedGuideIds),
@@ -425,12 +456,15 @@ export function App() {
 
   async function openWorkspace() {
     if (!confirmDiscard()) return;
+    setWorkspaceSetupError("");
     setOpeningWorkspace(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const result = await invoke<OpenWorkspaceResult>("choose_workspace");
       if (result.kind === "compatible") {
         setWorkspace(result.workspace);
+        setPendingWorkspace(null);
+        setWorkspaceSetupError("");
         setSelectedId(result.workspace.guides[0]?.id ?? "");
         setReaderOpen(false);
         setQuery("");
@@ -438,12 +472,26 @@ export function App() {
           `${result.workspace.name} opened with ${resultCountLabel(result.workspace.guides.length)}. ${folderFactSuffix(result.workspace.facts)}`,
         );
         requestAnimationFrame(() => searchRef.current?.focus());
+      } else if (result.kind === "empty") {
+        setWorkspace(null);
+        setPendingWorkspace(result.facts);
+        setWorkspaceName("");
+        setWorkspaceSetupError("");
+        setSelectedId("");
+        setReaderOpen(false);
+        setAnnouncement(
+          `Empty folder selected. Name the new Workspace to create it. ${folderFactSuffix(result.facts)}`,
+        );
+        requestAnimationFrame(() => workspaceNameRef.current?.focus());
       } else if (result.kind !== "cancelled") {
+        setPendingWorkspace(null);
         const messages: Record<
-          Exclude<OpenWorkspaceResult["kind"], "compatible" | "cancelled">,
+          Exclude<
+            OpenWorkspaceResult["kind"],
+            "compatible" | "cancelled" | "empty"
+          >,
           string
         > = {
-          empty: "That folder is empty. Workspace creation is coming next.",
           newerUnsupported:
             "That Workspace was created by a newer Rehow version.",
           ordinaryMarkdown:
@@ -460,6 +508,53 @@ export function App() {
     } finally {
       setOpeningWorkspace(false);
     }
+  }
+
+  async function createWorkspace() {
+    const name = normalizedWorkspaceName(workspaceName);
+    if (name === null || initializingWorkspace) return;
+    setWorkspaceName(name);
+    setInitializingWorkspace(true);
+    setWorkspaceSetupError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const created = await invoke<WorkspacePayload>(
+        "initialize_selected_workspace",
+        { name },
+      );
+      setWorkspace(created);
+      setPendingWorkspace(null);
+      setSelectedId("");
+      setQuery("");
+      setAnnouncement(`${created.name} was created and opened.`);
+      requestAnimationFrame(() => searchRef.current?.focus());
+    } catch (error) {
+      const failure = workspaceInitializationError(error);
+      setWorkspaceSetupError(failure.message);
+      if (failure.code !== "invalidName" && failure.code !== "busy") {
+        setPendingWorkspace(null);
+      }
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => workspaceSetupErrorRef.current?.focus());
+    } finally {
+      setInitializingWorkspace(false);
+    }
+  }
+
+  async function cancelWorkspaceSetup() {
+    if (initializingWorkspace) return;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("cancel_selected_workspace_initialization");
+    } catch {
+      setAnnouncement("The Workspace selection could not be cleared.");
+      return;
+    }
+    setPendingWorkspace(null);
+    setWorkspaceName("");
+    setWorkspaceSetupError("");
+    setAnnouncement("Workspace creation cancelled.");
+    requestAnimationFrame(() => searchRef.current?.focus());
   }
 
   function beginEditing() {
@@ -680,16 +775,89 @@ export function App() {
             ))
           ) : (
             <li className="empty-results">
-              <Icon name="search" />
+              <Icon name={pendingWorkspace === null ? "search" : "folder"} />
               <h2>
-                {workspace === null ? "Open a Workspace" : "No Matching Guides"}
+                {pendingWorkspace !== null
+                  ? "Create This Workspace"
+                  : workspace === null
+                    ? "Open a Workspace"
+                    : guides.length === 0 && query.trim() === ""
+                      ? "No Guides Yet"
+                      : "No Matching Guides"}
               </h2>
               <p>
-                {workspace === null
-                  ? "Choose a Rehow Workspace to load its Guides securely."
-                  : "Try fewer words or search for a command, path, or error message."}
+                {pendingWorkspace !== null
+                  ? pendingWorkspace.writable
+                    ? "The selected folder is empty. Give the Workspace a name to initialize it."
+                    : "The selected folder is read-only. Choose a writable empty folder."
+                  : workspace === null
+                    ? "Choose a Rehow Workspace to load its Guides securely."
+                    : guides.length === 0 && query.trim() === ""
+                      ? "This Workspace is ready for its first Guide."
+                      : "Try fewer words or search for a command, path, or error message."}
               </p>
-              {workspace === null ? (
+              {workspaceSetupError !== "" && (
+                <p
+                  ref={workspaceSetupErrorRef}
+                  id="workspace-setup-error"
+                  className="workspace-setup-error"
+                  role="alert"
+                  tabIndex={-1}
+                >
+                  {workspaceSetupError}
+                </p>
+              )}
+              {pendingWorkspace?.writable ? (
+                <form
+                  className="workspace-setup"
+                  aria-busy={initializingWorkspace}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void createWorkspace();
+                  }}
+                >
+                  <label htmlFor="workspace-name">Workspace Name</label>
+                  <input
+                    ref={workspaceNameRef}
+                    id="workspace-name"
+                    name="workspace-name"
+                    type="text"
+                    autoComplete="off"
+                    maxLength={200}
+                    aria-invalid={workspaceSetupError !== ""}
+                    aria-describedby={
+                      workspaceSetupError !== ""
+                        ? "workspace-setup-error"
+                        : undefined
+                    }
+                    value={workspaceName}
+                    onChange={(event) => {
+                      setWorkspaceName(event.target.value);
+                      setWorkspaceSetupError("");
+                    }}
+                  />
+                  <div className="workspace-setup-actions">
+                    <button
+                      className="button"
+                      type="button"
+                      disabled={initializingWorkspace}
+                      onClick={() => void cancelWorkspaceSetup()}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="button button-primary"
+                      type="submit"
+                      disabled={
+                        initializingWorkspace ||
+                        normalizedWorkspaceName(workspaceName) === null
+                      }
+                    >
+                      {initializingWorkspace ? "Creating…" : "Create Workspace"}
+                    </button>
+                  </div>
+                </form>
+              ) : workspace === null ? (
                 <button
                   className="button"
                   type="button"
@@ -697,7 +865,7 @@ export function App() {
                 >
                   Open Workspace
                 </button>
-              ) : (
+              ) : guides.length === 0 && query.trim() === "" ? null : (
                 <button
                   className="button"
                   type="button"

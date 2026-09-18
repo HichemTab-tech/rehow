@@ -496,7 +496,7 @@ kbd {
 }
 .empty-results {
   display: flex;
-  max-width: 270px;
+  max-width: 330px;
   flex-direction: column;
   align-items: flex-start;
   gap: 7px;
@@ -512,11 +512,47 @@ kbd {
   margin: 4px 0 0;
   color: var(--text);
   font-size: 15px;
+  text-wrap: balance;
 }
 .empty-results p {
   margin: 0 0 9px;
   font-size: 12px;
   line-height: 18px;
+}
+.workspace-setup {
+  display: grid;
+  width: min(100%, 320px);
+  gap: 9px;
+}
+.workspace-setup label {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+}
+.workspace-setup input {
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 9px;
+  border: 1px solid var(--divider-strong);
+  border-radius: 4px;
+  background: var(--reader);
+  color: var(--text);
+}
+.workspace-setup input:focus-visible {
+  border-color: var(--focus);
+}
+.workspace-setup-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--warning);
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.workspace-setup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .reader-pane {

@@ -3,7 +3,7 @@
     reason = "Phase 1D-A binding is connected to storage/application in Phase 1E"
 )]
 
-mod emission;
+pub(crate) mod emission;
 pub(crate) mod guide;
 pub(crate) mod mutation;
 
