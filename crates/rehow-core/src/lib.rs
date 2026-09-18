@@ -1,4 +1,4 @@
-pub mod application {}
+pub(crate) mod application;
 pub mod domain;
 pub mod git {}
 pub mod markdown;

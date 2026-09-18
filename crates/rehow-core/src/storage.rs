@@ -5,6 +5,7 @@
 //! crate-private recovery boundary and is not exposed to UI or MCP adapters.
 
 pub(crate) mod recovery;
+pub(crate) use recovery::{DocumentUpdateError, DocumentUpdateOutcome};
 
 #[cfg(not(target_os = "linux"))]
 compile_error!("Rehow's confined Workspace storage currently requires Linux");
@@ -224,6 +225,44 @@ pub fn inspect_workspace(path: &Path) -> Result<WorkspaceInspectionReport, Works
         facts,
         classification,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_document_update<E, F>(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    relative_path: &str,
+    expected_revision: Revision,
+    operation_id: crate::protocol::OperationId,
+    created_at: crate::protocol::Timestamp,
+    prepare: F,
+) -> Result<DocumentUpdateOutcome, DocumentUpdateError<E>>
+where
+    F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
+{
+    recovery::execute_document_update(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        relative_path,
+        expected_revision,
+        operation_id,
+        created_at,
+        prepare,
+    )
+}
+
+pub(crate) fn refresh_workspace(
+    workspace: &mut WorkspaceView,
+) -> Result<(), WorkspaceInspectError> {
+    let root = workspace._root.duplicate().map_err(map_io)?;
+    let WorkspaceInspection::Compatible(refreshed) = inspect_open_root(root)? else {
+        return Err(WorkspaceInspectError::ChangedDuringRead);
+    };
+    *workspace = *refreshed;
+    Ok(())
 }
 
 fn inspect_open_root(
@@ -679,6 +718,8 @@ mod linux {
 
     pub(super) struct DirectoryCapability {
         descriptor: OwnedFd,
+        root_hash: [u8; 32],
+        capability_hash: [u8; 32],
     }
 
     pub(super) enum OpenDirectoryError {
@@ -771,7 +812,27 @@ mod linux {
             }
             // SAFETY: a successful `open` returns a newly owned descriptor.
             let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
-            Ok(Self { descriptor })
+            let (device, inode) =
+                descriptor_identity(&descriptor).map_err(|_| WorkspaceInspectError::UnsafeRoot)?;
+            let mut root_hasher = blake3::Hasher::new();
+            root_hasher.update(b"rehow-canonical-root-v1\0");
+            root_hasher.update(&(canonical.as_os_str().as_bytes().len() as u64).to_be_bytes());
+            root_hasher.update(canonical.as_os_str().as_bytes());
+            let root_hash = *root_hasher.finalize().as_bytes();
+            let mut epoch = [0_u8; 32];
+            fill_random(&mut epoch).map_err(|_| WorkspaceInspectError::Io)?;
+            let mut capability_hasher = blake3::Hasher::new();
+            capability_hasher.update(b"rehow-open-capability-v1\0");
+            capability_hasher.update(&root_hash);
+            capability_hasher.update(&device.to_be_bytes());
+            capability_hasher.update(&inode.to_be_bytes());
+            capability_hasher.update(&epoch);
+            let capability_hash = *capability_hasher.finalize().as_bytes();
+            Ok(Self {
+                descriptor,
+                root_hash,
+                capability_hash,
+            })
         }
 
         pub(super) fn entries(&self, limit: usize) -> Result<Vec<String>, WorkspaceInspectError> {
@@ -904,7 +965,11 @@ mod linux {
             if current_identity == parent_identity {
                 Ok(None)
             } else {
-                Ok(Some(Self { descriptor: parent }))
+                Ok(Some(Self {
+                    descriptor: parent,
+                    root_hash: self.root_hash,
+                    capability_hash: self.capability_hash,
+                }))
             }
         }
 
@@ -929,6 +994,8 @@ mod linux {
             // SAFETY: a successful `openat` returns a newly owned descriptor.
             Ok(Self {
                 descriptor: unsafe { OwnedFd::from_raw_fd(raw) },
+                root_hash: self.root_hash,
+                capability_hash: self.capability_hash,
             })
         }
 
@@ -1076,15 +1143,33 @@ mod linux {
             descriptor_identity(&self.descriptor).map_err(|_| MutationIoError::Io)
         }
 
-        fn duplicate(&self) -> Result<Self, io::Error> {
-            // SAFETY: `fcntl` duplicates a valid retained descriptor.
-            let raw = unsafe { libc::fcntl(self.descriptor.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+        pub(super) fn root_hash(&self) -> [u8; 32] {
+            self.root_hash
+        }
+
+        pub(super) fn capability_hash(&self) -> [u8; 32] {
+            self.capability_hash
+        }
+
+        pub(super) fn duplicate(&self) -> Result<Self, io::Error> {
+            // Reopen `.` to get an independent directory-stream offset while
+            // remaining bound to the retained directory rather than a path.
+            // SAFETY: the descriptor and static NUL-terminated component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    c".".as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
             if raw < 0 {
                 Err(io::Error::last_os_error())
             } else {
-                // SAFETY: successful `fcntl` returns a newly owned descriptor.
+                // SAFETY: successful `openat` returns a newly owned descriptor.
                 Ok(Self {
                     descriptor: unsafe { OwnedFd::from_raw_fd(raw) },
+                    root_hash: self.root_hash,
+                    capability_hash: self.capability_hash,
                 })
             }
         }
@@ -1139,7 +1224,11 @@ mod linux {
             if unsafe { libc::fsync(self.descriptor.as_raw_fd()) } != 0 {
                 return Err(MutationIoError::Unsupported);
             }
-            Ok(Self { descriptor })
+            Ok(Self {
+                descriptor,
+                root_hash: self.root_hash,
+                capability_hash: self.capability_hash,
+            })
         }
 
         fn open_private_directory(&self, name: &str) -> Result<Self, MutationIoError> {
@@ -1174,8 +1263,37 @@ mod linux {
             {
                 return Err(MutationIoError::Unsafe);
             }
-            Ok(Self { descriptor })
+            Ok(Self {
+                descriptor,
+                root_hash: self.root_hash,
+                capability_hash: self.capability_hash,
+            })
         }
+    }
+
+    fn fill_random(bytes: &mut [u8]) -> Result<(), io::Error> {
+        let mut filled = 0usize;
+        while filled < bytes.len() {
+            // SAFETY: the remaining slice is writable for the requested length.
+            let result = unsafe {
+                libc::getrandom(bytes[filled..].as_mut_ptr().cast(), bytes.len() - filled, 0)
+            };
+            if result > 0 {
+                filled += result as usize;
+                continue;
+            }
+            if result == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "system randomness returned no bytes",
+                ));
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 
     impl ManagedTarget {

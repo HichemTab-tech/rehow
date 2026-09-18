@@ -5,7 +5,7 @@
 
 mod emission;
 pub(crate) mod guide;
-mod mutation;
+pub(crate) mod mutation;
 
 pub use guide::{
     Applicability, ArchiveMetadata, Attachment, Guide, GuideReference, GuideStatus,

@@ -4,11 +4,198 @@
 )]
 
 use crate::protocol::{GuideId, OperationId, Revision, Timestamp, WorkspaceId};
-use std::{collections::HashSet, str::FromStr};
+use std::{collections::HashSet, path::Path, str::FromStr};
 use unicode_normalization::UnicodeNormalization;
 
 mod store;
 mod workspace;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DocumentUpdateError<E> {
+    Prepare(E),
+    Busy,
+    Conflict,
+    Unsafe,
+    Unsupported,
+    TooLarge,
+    Io,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DocumentUpdateOutcome {
+    revision: Revision,
+    changed: bool,
+}
+
+impl DocumentUpdateOutcome {
+    pub(crate) fn revision(self) -> Revision {
+        self.revision
+    }
+
+    pub(crate) fn changed(self) -> bool {
+        self.changed
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_document_update<E, F>(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    relative_path: &str,
+    expected_revision: Revision,
+    operation_id: OperationId,
+    created_at: Timestamp,
+    prepare: F,
+) -> Result<DocumentUpdateOutcome, DocumentUpdateError<E>>
+where
+    F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
+{
+    let store = store::RecoveryStore::open(
+        state_home,
+        workspace_id,
+        root.root_hash(),
+        root.capability_hash(),
+    )
+    .map_err(map_store_update)?;
+    let lock = store
+        .acquire_lock(runtime_directory)
+        .map_err(map_store_update)?;
+    let target = root
+        .open_managed_target(relative_path)
+        .map_err(map_io_update)?;
+    let current = match target.state(super::GUIDE_LIMIT).map_err(map_io_update)? {
+        super::linux::ManagedState::Missing => return Err(DocumentUpdateError::Conflict),
+        super::linux::ManagedState::Regular(state) => state,
+    };
+    let actual_revision = super::document_revision(relative_path, &current.bytes);
+    if actual_revision != expected_revision {
+        return Err(DocumentUpdateError::Conflict);
+    }
+    let candidate = prepare(&current.bytes).map_err(DocumentUpdateError::Prepare)?;
+    if candidate.as_ref() == current.bytes {
+        return Ok(DocumentUpdateOutcome {
+            revision: actual_revision,
+            changed: false,
+        });
+    }
+
+    let old_hash = store
+        .store_object(&lock, &current.bytes)
+        .map_err(map_store_update)?;
+    let new_hash = store
+        .store_object(&lock, &candidate)
+        .map_err(map_store_update)?;
+    let (root_device, root_inode) = root.identity().map_err(map_io_update)?;
+    let mut plan = blake3::Hasher::new();
+    plan.update(b"rehow-document-update-plan-v1\0");
+    hash_plan_field(&mut plan, relative_path.as_bytes());
+    hash_plan_field(&mut plan, expected_revision.to_string().as_bytes());
+    plan.update(&old_hash);
+    plan.update(&new_hash);
+    plan.update(&current.mode.to_be_bytes());
+    let journal = Journal {
+        generation: 1,
+        operation_id,
+        operation_kind: OperationKind::Update,
+        workspace_id,
+        root_hash: root.root_hash(),
+        root_device,
+        root_inode,
+        created_at,
+        plan_hash: *plan.finalize().as_bytes(),
+        targets: vec![Target {
+            relative_path: relative_path.to_owned(),
+            expected: ExpectedState::Existing {
+                revision: expected_revision,
+                object_hash: old_hash,
+                mode: current.mode,
+            },
+            intended: IntendedState::Object {
+                object_hash: new_hash,
+                mode: current.mode,
+            },
+            temp_name: format!(".rehow-tmp-{operation_id}"),
+            step: TargetStep::Prepared,
+        }],
+        stage: JournalStage::Prepared,
+        completion: false,
+    };
+    let execution = workspace::execute_new_journal(root, &store, &lock, journal.clone());
+    if let Err(error) = execution {
+        let committed = store
+            .read_journal(&lock, operation_id)
+            .is_ok_and(|persisted| {
+                committed_matches(&persisted, &journal)
+                    && workspace::resume_journal(root, &store, &lock, operation_id).is_ok()
+            });
+        if !committed {
+            return Err(map_workspace_update(error));
+        }
+    }
+    Ok(DocumentUpdateOutcome {
+        revision: super::document_revision(relative_path, &candidate),
+        changed: true,
+    })
+}
+
+fn committed_matches(committed: &Journal, prepared: &Journal) -> bool {
+    committed.stage == JournalStage::Committed
+        && committed.completion
+        && committed.operation_id == prepared.operation_id
+        && committed.operation_kind == prepared.operation_kind
+        && committed.workspace_id == prepared.workspace_id
+        && committed.root_hash == prepared.root_hash
+        && committed.root_device == prepared.root_device
+        && committed.root_inode == prepared.root_inode
+        && committed.created_at == prepared.created_at
+        && committed.plan_hash == prepared.plan_hash
+        && committed.targets.len() == prepared.targets.len()
+        && committed
+            .targets
+            .iter()
+            .zip(&prepared.targets)
+            .all(|(left, right)| left.step == TargetStep::Complete && left.same_intent(right))
+}
+
+fn hash_plan_field(hasher: &mut blake3::Hasher, value: &[u8]) {
+    hasher.update(&(value.len() as u64).to_be_bytes());
+    hasher.update(value);
+}
+
+fn map_store_update<E>(error: store::StoreError) -> DocumentUpdateError<E> {
+    match error {
+        store::StoreError::Busy => DocumentUpdateError::Busy,
+        store::StoreError::Conflict | store::StoreError::Corrupt => DocumentUpdateError::Conflict,
+        store::StoreError::Unsafe => DocumentUpdateError::Unsafe,
+        store::StoreError::Unsupported => DocumentUpdateError::Unsupported,
+        store::StoreError::TooLarge => DocumentUpdateError::TooLarge,
+        store::StoreError::Io => DocumentUpdateError::Io,
+        #[cfg(test)]
+        store::StoreError::Injected => DocumentUpdateError::Io,
+    }
+}
+
+fn map_io_update<E>(error: super::linux::MutationIoError) -> DocumentUpdateError<E> {
+    match error {
+        super::linux::MutationIoError::Unsafe => DocumentUpdateError::Unsafe,
+        super::linux::MutationIoError::Conflict => DocumentUpdateError::Conflict,
+        super::linux::MutationIoError::Unsupported => DocumentUpdateError::Unsupported,
+        super::linux::MutationIoError::TooLarge => DocumentUpdateError::TooLarge,
+        super::linux::MutationIoError::Io => DocumentUpdateError::Io,
+    }
+}
+
+fn map_workspace_update<E>(error: workspace::WorkspaceMutationError) -> DocumentUpdateError<E> {
+    match error {
+        workspace::WorkspaceMutationError::Unsafe => DocumentUpdateError::Unsafe,
+        workspace::WorkspaceMutationError::Conflict => DocumentUpdateError::Conflict,
+        workspace::WorkspaceMutationError::Unsupported => DocumentUpdateError::Unsupported,
+        workspace::WorkspaceMutationError::TooLarge => DocumentUpdateError::TooLarge,
+        workspace::WorkspaceMutationError::Io => DocumentUpdateError::Io,
+    }
+}
 
 pub(crate) const JOURNAL_VERSION: u64 = 1;
 pub(crate) const MAX_JOURNAL_BYTES: usize = 4 * 1024 * 1024;
