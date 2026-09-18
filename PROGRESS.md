@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 1E-A / 2B / 4A — read-only Workspace, safe Markdown, and ranked-search checkpoints; independent security acceptance remains open.
+Phase 1E-B — crash-recoverable Workspace mutation foundation; independent security acceptance remains open.
 
 ## Current task
 
-Implement ADR 0009's atomic/revision-checked storage and recovery foundation needed for create/edit Guide workflows. Complete one combined Security Reviewer and native portal/manual UI gate later, when agent quota and an interactive display are available.
+Finish ADR 0009 deletion/trash handling, safe committed-temp cleanup, and broader fault recovery. Then run one combined Security Reviewer before exposing create/edit Guide commands.
 
 ## Overall status
 
-In progress. Phase 0 through Phase 1C and Phase 1D-A/B are accepted; Phase 1D-C1/C2a are checkpointed. The Reference Desk has a tested real-data read path, bounded safe Markdown rendering, and backend-ranked search across required Guide fields. HTML, media, links, and commands remain inert; code copy is the only Guide action. Phase 1E-A/2B/4A remain implementation checkpoints until the deferred combined independent security and manual native/visual gates run.
+In progress. The Reference Desk read path, safe Markdown, and ranked search are green. ADR 0009 now has a canonical journal, secured XDG recovery store/lock, descriptor-confined no-replace/exchange primitives, and a journal-driven create/update executor that resumes after a post-exchange crash or persists a conflict without overwriting unknown content. No mutation authority is exposed to UI or MCP yet.
 
 ## Completed work
 
@@ -58,10 +58,14 @@ In progress. Phase 0 through Phase 1C and Phase 1D-A/B are accepted; Phase 1D-C1
 - Implemented Phase 1E-A read-only Workspace loading: Linux descriptor confinement, bounded classification and scanning, BLAKE3 revisions, symlink/hardlink/special-file denial, changed-during-read refusal, duplicate/malformed isolation, a native Rust folder dialog with no renderer path argument, retained native session state, bounded metadata IPC, validated per-Guide body IPC, and real-data Reference Desk states. Full tests/Clippy/build/native build pass; independent security and manual UI closure remain open.
 - Implemented the safe Markdown reader: exact-pinned `pulldown-cmark 0.13.4` produces a versioned, bounded typed event AST; strict canonical URL policy is shared with Guide references; image sources are omitted; raw HTML is literal; React uses no HTML injection, navigation, or media source; code blocks provide a user-gesture copy action. Generated contracts and adversarial Rust/React/IPC tests pass at signed checkpoint `9594c51`.
 - Implemented Phase 4A ranked search at signed checkpoint `0d0bf40`: an 80 ms debounced Tauri command searches title, aliases, commands, affected/inline paths, error lines/warnings, Tags, Category, summary, headings, body, and remaining known content. NFKC/lowercase normalization, quoted phrases, all-term coverage, documented boosts, status tie-breaking, archived exclusion, stable ordering, and input/result caps are tested. It scans the already loaded view; disposable indexing, watchers, snippets, and production performance acceptance remain open.
+- Implemented ADR 0009's canonical bounded CBOR recovery journal at signed checkpoint `e810658`, including closed schemas, a frozen vector, strict path/state invariants, and hostile/truncation tests.
+- Implemented the secured XDG recovery object/journal store and cooperating writer lock at signed checkpoint `f26a868`: descriptor-relative no-follow layout, exact ownership/modes, BLAKE3 objects, generation compare-and-swap, durability syncs, and injected-failure aftermath tests.
+- Implemented descriptor-confined Workspace target creation/replacement at signed checkpoint `dede741` using same-directory exclusive temps, `RENAME_NOREPLACE`, and `RENAME_EXCHANGE`; unsafe targets and conflicting temps fail closed while displaced bytes remain verified.
+- Implemented the journal-driven create/update executor and resume path at signed checkpoint `1dd646e`. It binds root identity and stored objects, advances durable whole generations, resumes a post-exchange/pre-journal crash, and records external neither-state conflicts without overwrite.
 
 ## Work in progress
 
-- The read-only vertical slice, safe Markdown reader, and ranked full-content search are green locally. Effective writability and Git-folder facts are surfaced. The next active boundary is ADR 0009 atomic revision-checked storage/recovery; C2b remains required before broad edit support. Independent security and manual native/visual closure are deferred to one combined major checkpoint.
+- Create/update recovery is green but remains crate-private. Deletion/trash, verified committed-temp cleanup, broader fault injection, and one combined independent Security Reviewer are required before mutation commands are exposed.
 
 ## Remaining work
 
@@ -109,16 +113,17 @@ No known regression in accepted phases. Phase 1E-A currently retains all parsed 
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. The independent Phase 1E-A Security Reviewer attempt failed before review because the agent usage quota was exhausted; no substitute agent was launched. This blocks phase acceptance, not continued implementation or a recoverable implementation checkpoint.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; one combined Security Reviewer remains deferred to the completed mutation-foundation checkpoint.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`0d0bf40` — signed ranked-search checkpoint atop the read-only Workspace and safe Markdown implementation. Independent security/manual acceptance remains open.
+`1dd646e` — signed journal-driven create/update executor atop the recovery journal/store and atomic target primitives. Independent security acceptance remains open.
 
 ## Tests last run and results
 
+- 2026-09-18: ADR 0009 recovery checkpoint through `1dd646e`: 18 focused recovery tests pass; locked core Clippy with warnings denied, formatting, contract drift, and whitespace checks pass. Earlier B2 full-core regression passed 211 library, 18 error-contract, 13 protocol, 11 unknown-YAML, and the complete public-API/compile-fail suite. Coverage includes journal canonicality, unsafe XDG entries, lock contention, object/journal failure seams, no-replace/exchange, symlink/hardlink/temp conflicts, post-exchange resume, and external neither-state conflict. One attempted command named nonexistent `scripts/check-bootstrap.sh`; the repository's actual `python3 scripts/check_bootstrap.py` remains the documented bootstrap validator and must be rerun at the combined gate.
 - 2026-09-18: ranked-search checkpoint: focused relevance tests, locked core/desktop Clippy with warnings denied, 3 desktop Rust tests, `pnpm check`, 10 Vitest tests, Vite production build, bootstrap, formatting, and whitespace checks pass. Fixtures prove exact title over repeated body text, alias/command/path/error treatment, cross-field terms, Unicode/case normalization, quoted phrases, archived scope, caps, deterministic ordering, and UI rank mapping. Production performance is explicitly not yet accepted.
 - 2026-09-18: safe Markdown checkpoint: `pnpm check`, 9 Vitest tests, Vite production build, locked core/desktop Clippy with warnings denied, 195 core library tests plus all 18 error/13 protocol/11 unknown-YAML/public-API suites, 3 desktop Rust tests, contract drift, bootstrap, formatting, and whitespace checks pass. Focused tests cover input/node/nesting limits, HTML literal handling, strict links, omitted image sources, safe IPC shape, unsupported AST versions, absent `href`/`src`, and code-copy controls.
 - 2026-09-18: dependency audit: exact `pulldown-cmark 0.13.4` is MIT, Rust 1.71.1 minimum, under 1 MiB unpacked, unsafe-forbidden with selected features, and reaches only `unicase` plus already-used `bitflags`/`memchr`; default and generation features are disabled.
@@ -235,10 +240,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - Phase 1D-C2a required-field/body/status mutation planning, adversarial/API tests, packet, and evidence are checkpointed at signed commit `539c29a`; full 1D-C acceptance waits for C2b and one combined review.
 - Phase 2A React/CSS shell, interaction tests, task packet, current-guideline review evidence, and screenshots are checkpointed at signed commit `df95874`; it adds no IPC or filesystem authority.
 - Phase 1E-A adds `crates/rehow-core/src/storage.rs`, BLAKE3/libc pins, domain record extraction, native dialog/session commands, the real-data React states, updated locks, the revision vector, `docs/task-packets/phase-1e-a-readonly-workspace.md`, and `docs/evidence/phase-1e-a-readonly-workspace.md`. It is green but awaits independent security/manual acceptance.
+- Recovery work adds `crates/rehow-core/src/storage/recovery.rs`, `recovery/store.rs`, `recovery/workspace.rs`, ADR 0009's exact codec/state behavior, and packets `phase-1e-b1` through `phase-1e-b3b`; signed checkpoints are `e810658`, `f26a868`, `dede741`, and `1dd646e`.
 
 ## Next recommended action
 
-Implement ADR 0009's storage foundation as a dedicated major phase: XDG state identity/layout, cooperating lock, durable objects/journal generations, Linux no-replace/exchange, revision recheck, recovery classification, and injected-stage tests. Only then expose create-draft/edit workflows. At that major checkpoint, run exactly one Security Reviewer/xhigh closure and capture native real-data/error states.
+Implement deletion/trash execution and safe cleanup of committed displaced temps, extend fault/restart tests across those paths, then run the full core gate and exactly one Security Reviewer/xhigh. Do not expose mutation commands before that closure.
 
 ## Recommended agent role and reasoning effort
 
@@ -247,8 +253,8 @@ Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents for routine work; us
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read `docs/task-packets/phase-1e-a-readonly-workspace.md`, `docs/task-packets/phase-2b-safe-markdown.md`, `docs/task-packets/phase-4a-ranked-search.md`, `docs/architecture.md`, `docs/threat-model.md`, and ADRs 0002/0003/0005/0009/0014.
+2. Read ADR 0009 and `docs/task-packets/phase-1e-b2-recovery-state-store.md`, `phase-1e-b3a-atomic-workspace-targets.md`, and `phase-1e-b3b-journal-executor.md` plus the architecture/threat model.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `2339c48`, `3b071b4`, `9594c51`, and `0d0bf40`; the following commit should change only `PROGRESS.md`.
+4. Verify signed checkpoints `e810658`, `f26a868`, `dede741`, and `1dd646e`; a following commit may change only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Run the smallest storage/desktop checks. Resume with atomic revision-checked Guide storage writes; do not send or accept arbitrary paths over IPC and do not permit a write to create `tested`.
+6. Run the focused recovery tests. Resume with deletion/trash and committed-temp cleanup; keep all mutation authority crate-private and never permit a write to create `tested`.
