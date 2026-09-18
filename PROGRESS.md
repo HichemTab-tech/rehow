@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 3N — manual external-change refresh accepted; next is explicit tested-status approval.
+Phase 3O — explicit native tested-status approval accepted; next is Attachment lifecycle.
 
 ## Current task
 
-Freeze and implement the native-only verification hash and explicit user approval path for marking a Guide tested.
+Freeze the first safe Attachment import/remove slice and implement it without arbitrary renderer paths or silent file replacement.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace; create/edit/archive/restore/remove Categories; create, edit, move, archive, restore, and recoverably delete Attachment-free Guides; and manually refresh external changes through the retained capability. MCP remains read-only.
+In progress. A user can open or initialize a Workspace; create/edit/archive/restore/remove Categories; create, edit, move, archive, restore, recoverably delete Attachment-free Guides; explicitly mark ready Guides tested through native confirmation; and manually refresh external changes through the retained capability. MCP remains read-only.
 
 ## Completed work
 
@@ -79,10 +79,11 @@ In progress. A user can open or initialize a Workspace; create/edit/archive/rest
 - Added safe Guide Category moves at signed checkpoint `2b49223`: Rust derives the destination from an active Category ID, preserves the filename and content, refuses overwrite/stale/unsafe targets, and journals destination creation before source removal for interruption-safe recovery.
 - Added recoverable Guide deletion at signed checkpoint `a767ccf`: a native, spoof-resistant confirmation binds Guide title and canonical ID; exact revision and Guide-only path checks precede an operation-bound trash move; Attachment metadata, symlinks, hardlinks, and unsafe targets fail closed.
 - Added manual Workspace refresh at signed checkpoint `0a7856a`: a pathless native command rescans through the retained capability, atomically retains the prior view on failure, isolates malformed files, protects dirty forms, preserves or safely replaces selection, and announces changed counts/issues.
+- Added explicit tested approval at signed checkpoint `b599396`: the core owns mandatory native confirmation, exact-revision approval, readiness checks, a versioned verification hash, effective-stale drift behavior, cross-language fixed vectors, atomic metadata updates, and the Reference Desk action. MCP cannot assert tested.
 
 ## Work in progress
 
-- Manual Workspace refresh is committed at signed checkpoint `0a7856a`. The next batch freezes and implements explicit native tested-status approval.
+- Native tested approval is committed at signed checkpoint `b599396`. The next batch is the smallest safe Attachment add/remove lifecycle.
 
 ## Remaining work
 
@@ -96,10 +97,11 @@ In progress. A user can open or initialize a Workspace; create/edit/archive/rest
 
 ## Known bugs
 
-No known regression in accepted phases. If the process is killed after the initialization manifest commits but before `categories/` is durably created, reopening classifies the folder as malformed with `categoriesMissing`; an explicit descriptor-bound repair flow is still required and Rehow never auto-adopts the residue. An interrupted Category create can similarly leave an empty private Category directory; inspection reports a missing descriptor and never deletes or adopts it automatically. An interrupted Guide create can leave a recovery journal or same-directory temp; the scan does not execute recovery automatically, so the explicit recovery UX remains required. Phase 1E-A currently retains all parsed Guide bodies in native memory for the session; broad IPC is bounded, but streaming/lazy native reread is still required before claiming the 2 GiB worst-case scan budget is production-memory-safe. Phase 4A scans and normalizes the loaded view per query, so it does not yet claim the 5,000-Guide latency/RSS budgets; the disposable index and benchmark remain required. External changes are not watched/reloaded. Safe links are intentionally inert until the guarded native opener exists.
+No known regression in accepted phases. If the process is killed after the initialization manifest commits but before `categories/` is durably created, reopening classifies the folder as malformed with `categoriesMissing`; an explicit descriptor-bound repair flow is still required and Rehow never auto-adopts the residue. An interrupted Category create can similarly leave an empty private Category directory; inspection reports a missing descriptor and never deletes or adopts it automatically. An interrupted Guide create can leave a recovery journal or same-directory temp; the scan does not execute recovery automatically, so the explicit recovery UX remains required. Phase 1E-A currently retains all parsed Guide bodies in native memory for the session; broad IPC is bounded, but streaming/lazy native reread is still required before claiming the 2 GiB worst-case scan budget is production-memory-safe. Phase 4A scans and normalizes the loaded view per query, so it does not yet claim the 5,000-Guide latency/RSS budgets; the disposable index and benchmark remain required. External changes are not watched; manual refresh is available. Safe links are intentionally inert until the guarded native opener exists.
 
 ## Design and accessibility findings
 
+- 2026-09-18: Mark Tested uses a named semantic control with busy/error/live feedback, mandatory native confirmation, visible focus, and post-success focus restoration. Fresh current-guideline static review found no issue; native dialog and screenshot smoke coverage remain in the combined manual UI gate.
 - 2026-09-18: Workspace refresh adds a labeled icon button with tooltip, visible focus, disabled/busy states, polite result/error announcements, dirty-form confirmation, selection fallback, and narrow-toolbar compatibility. The current upstream guideline review found no issue.
 - 2026-09-18: Guide deletion uses a named desktop action, a mandatory native warning dialog, busy/error/live states, cancellation focus restoration, and post-delete focus on search. Current-guideline static review found no issue; native dialog smoke verification remains for the later manual UI gate.
 - 2026-09-18: Guide Category move adds a labeled native select with active destinations, visible focus, linked help/error text, dirty-state protection, and narrow-window behavior. Fresh current-guideline static review found no issue.
@@ -159,19 +161,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - The `2b49223` move adapter accepts only Guide ID, expected revision, active destination Category ID, and bounded detail values. Rust derives both paths, requires destination absence, writes the destination before removing the source, preserves the exact filename/body/Attachments/unknown metadata, and verifies one refreshed Guide. No renderer path, overwrite, recursive move, shell, Git, or MCP authority was added.
 - The `a767ccf` delete adapter accepts only Guide ID and expected revision, then requires native user confirmation whose sanitized display includes the canonical ID. The core accepts only an exact Guide path, refuses Attachment metadata and multi-link/unsafe targets, and moves the exact before-image to operation-bound trash without recursive cleanup. No renderer path, arbitrary deletion, Attachment deletion, shell, Git, or MCP authority was added. Security Reviewer/xhigh passed the final boundary.
 - The `0a7856a` refresh adapter accepts no arguments and duplicates only the retained Workspace root capability. It performs the existing bounded read-only scan, swaps the in-memory view only after compatible success, and exposes structured content-free errors. It adds no path, write, recovery, watcher, shell, Git, or MCP authority.
+- The `b599396` tested path exposes no public headless transition: the core requires an actual native window parent and owns the confirmation before invoking its private exact-revision mutation. It computes `verify:v1` from exact body bytes plus verification-relevant canonical metadata, treats mismatched or future hashes as effectively stale, preserves unknown metadata, and writes the verification pair atomically. Independent Security Reviewer/xhigh passed after cross-language fixed-vector evidence; no blocker/high/medium finding remains.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; completed security reviews are limited to the mutation foundation and Guide deletion checkpoints.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; the tested-status batch used one Security Reviewer/xhigh because it changes trust state.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`0a7856a` — signed, verified manual Workspace refresh across the core scan, native adapter, and Reference Desk UI.
+`b599396` — signed and verified native tested approval with versioned verification hashing.
 
 ## Tests last run and results
 
+- 2026-09-18: native tested approval checkpoint at `b599396`: `pnpm check/test/test:integration/build`, Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, all-feature Workspace tests, optimized Tauri no-bundle build, bootstrap validation, contract drift, whitespace checks, and zero-byte MCP EOF smoke pass. Counts include 278 core library tests, 11 desktop Rust tests, 21 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and three independently generated JavaScript/Rust hash vectors. Security Reviewer/xhigh reports no blocker/high/medium finding. The Tauri `.app` suffix warning remains informational.
 - 2026-09-18: manual Workspace refresh checkpoint at `0a7856a`: `pnpm check/test/build`, Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 264 core library tests, 11 desktop Rust tests, 20 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Evidence covers external add/change/remove, malformed isolation, failed-refresh view retention, stable native errors, selection preservation/fallback, named refresh control, dirty Category/Guide protection, and focus/live behavior. Current upstream guideline review found no issue.
 - 2026-09-18: recoverable Guide deletion checkpoint at `a767ccf`: `pnpm check/test/build`, Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 262 core library tests, 10 desktop Rust tests, 19 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Evidence covers exact trash bytes, stale/Attachment/hardlink refusal, Guide-only path grammar, native cancellation, confirmation spoof resistance, and retained selection/focus behavior. Security Reviewer/xhigh reports no blocker/high/medium finding; current-guideline static review found no issue.
 - 2026-09-18: Guide Category move checkpoint at `2b49223`: `pnpm check/test/build`, Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 259 core library tests, 10 desktop Rust tests, 19 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused evidence covers active/inactive/missing destinations, stale revisions, occupied filenames, body/filename/unknown/verification preservation, tested-to-stale, exact refreshed location, and replay after destination creation. Fresh current-guideline static review found no issue.
@@ -321,20 +325,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `docs/task-packets/phase-3l-guide-category-move.md` plus the confined create-then-delete recovery journal, typed application flow, Category-ID-only native command, labeled Category select, and adversarial tests implement Guide Category moves at `2b49223`.
 - `docs/task-packets/phase-3m-guide-delete.md` plus the Guide-only trash executor, Attachment refusal, native confirmation, sanitized title/canonical-ID display, Reference Desk delete action, and adversarial tests implement recoverable Guide deletion at `a767ccf`.
 - `docs/task-packets/phase-3n-workspace-refresh.md` plus the read-only application refresh boundary, pathless native command, toolbar action, dirty-state protection, selection reconciliation, and external-change tests implement manual Workspace refresh at `0a7856a`.
+- ADR 0015, `docs/task-packets/phase-3o-native-tested-approval.md`, the core verification module/private approval path, native/UI control, and JavaScript compatibility vectors implement explicit tested approval at `b599396`.
 
 ## Next recommended action
 
-Accept the dedicated verification-hash/status decision required by `docs/content-model.md`, then implement an exact-revision native approval that marks only eligible stale/draft Guides tested. The user must confirm the sanitized title and canonical ID; AI/MCP cannot assert tested.
+Define and implement the smallest safe Attachment lifecycle: native file selection, confined copy into the Guide Attachment directory, metadata update in the same recoverable operation, explicit remove-to-trash, revision checks, size/type/hash limits, and no renderer-provided source paths.
 
 ## Recommended agent role and reasoning effort
 
-Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents for routine work; use one Security Reviewer/xhigh only at a combined major checkpoint.
+Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents for routine work; use one Security Reviewer/xhigh only for the final Attachment security boundary.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read the Guide status/verification sections of `docs/content-model.md`, ADR 0014, `docs/architecture.md`, and the threat model.
+2. Read the Attachment sections of `docs/content-model.md`, `docs/architecture.md`, ADRs 0004/0009/0014, and the threat model.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `0a7856a`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `b599396`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Resume with the verification-hash/tested-status decision; do not let renderer/MCP supply verification time/hash or bypass native approval.
+6. Resume with a narrow Attachment add/remove packet. Native code must own source selection; reject traversal/symlink/hardlink/special-file/oversize cases and never replace an existing Attachment silently.
