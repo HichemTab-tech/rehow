@@ -134,6 +134,20 @@ export function filterGuides(guides: GuideSummary[], query: string) {
   });
 }
 
+export function rankedGuides(
+  guides: GuideSummary[],
+  query: string,
+  rankedIds: string[] | null,
+) {
+  if (query.trim() === "") return guides;
+  if (rankedIds === null) return filterGuides(guides, query);
+  const byId = new Map(guides.map((guide) => [guide.id, guide]));
+  return rankedIds.flatMap((id) => {
+    const guide = byId.get(id);
+    return guide ? [guide] : [];
+  });
+}
+
 export function resultCountLabel(count: number) {
   return `${count} ${count === 1 ? "Guide" : "Guides"}`;
 }
@@ -204,6 +218,7 @@ export function App() {
   const [announcement, setAnnouncement] = useState("");
   const [openingWorkspace, setOpeningWorkspace] = useState(false);
   const [guideBody, setGuideBody] = useState<GuideBodyPayload | null>(null);
+  const [rankedGuideIds, setRankedGuideIds] = useState<string[] | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const readerRef = useRef<HTMLElement>(null);
   const resultListRef = useRef<HTMLUListElement>(null);
@@ -211,8 +226,8 @@ export function App() {
   const railToggleRef = useRef<HTMLButtonElement>(null);
   const guides = workspace?.guides ?? [];
   const visibleGuides = useMemo(
-    () => filterGuides(guides, query),
-    [guides, query],
+    () => rankedGuides(guides, query, rankedGuideIds),
+    [guides, query, rankedGuideIds],
   );
   const selected =
     guides.find((guide) => guide.id === selectedId) ?? visibleGuides[0] ?? null;
@@ -293,6 +308,34 @@ export function App() {
       active = false;
     };
   }, [selectedId, workspace]);
+
+  useEffect(() => {
+    if (workspace === null || query.trim() === "") {
+      setRankedGuideIds(null);
+      return;
+    }
+    let active = true;
+    setRankedGuideIds(null);
+    const timeout = window.setTimeout(() => {
+      import("@tauri-apps/api/core")
+        .then(({ invoke }) =>
+          invoke<string[]>("search_open_workspace", { query }),
+        )
+        .then((ids) => {
+          if (active) setRankedGuideIds(ids);
+        })
+        .catch(() => {
+          if (active) {
+            setRankedGuideIds([]);
+            setAnnouncement("Search could not be completed.");
+          }
+        });
+    }, 80);
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+    };
+  }, [query, workspace]);
 
   function openGuide(id: string, trigger?: HTMLButtonElement) {
     if (trigger) lastResultRef.current = trigger;
@@ -483,6 +526,7 @@ export function App() {
               name="guide-search"
               type="search"
               autoComplete="off"
+              maxLength={512}
               placeholder="Search Guides…"
               value={query}
               onChange={(event) => setQuery(event.target.value)}

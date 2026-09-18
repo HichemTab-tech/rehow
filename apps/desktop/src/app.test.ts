@@ -7,6 +7,7 @@ import {
   filterGuides,
   gitFactLabel,
   nextResultIndex,
+  rankedGuides,
   resultCountLabel,
 } from "./App";
 import { MarkdownDocument } from "./MarkdownDocument";
@@ -92,6 +93,14 @@ describe("Guide search", () => {
   it("returns the full list for whitespace and none for an absent term", () => {
     expect(filterGuides(guides, "   ")).toHaveLength(2);
     expect(filterGuides(guides, "limine")).toEqual([]);
+  });
+
+  it("applies backend rank order and ignores stale IDs", () => {
+    expect(
+      rankedGuides(guides, "body match", ["two", "missing", "one"]).map(
+        (guide) => guide.id,
+      ),
+    ).toEqual(["two", "one"]);
   });
 });
 

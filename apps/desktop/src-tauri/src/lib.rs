@@ -4,6 +4,7 @@ use rehow_core::{
     domain::GuideStatus,
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
     protocol::GuideId,
+    search::search_workspace,
     storage::{WorkspaceFolderFacts, WorkspaceInspection, WorkspaceView, inspect_workspace},
 };
 use serde::Serialize;
@@ -178,6 +179,32 @@ fn read_open_guide(
 }
 
 #[tauri::command]
+fn search_open_workspace(
+    query: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<String>, String> {
+    let guard = state
+        .workspace
+        .lock()
+        .map_err(|_| "Workspace session is unavailable".to_owned())?;
+    let workspace = guard
+        .as_deref()
+        .ok_or_else(|| "No Workspace is open".to_owned())?;
+    search_workspace(workspace, &query, false, 100)
+        .map(|hits| {
+            hits.into_iter()
+                .map(|hit| hit.guide_id().to_string())
+                .collect()
+        })
+        .map_err(|error| match error {
+            rehow_core::search::SearchError::QueryTooLarge => "Search query is too long".to_owned(),
+            rehow_core::search::SearchError::TooManyTerms => {
+                "Search query has too many terms".to_owned()
+            }
+        })
+}
+
+#[tauri::command]
 fn choose_workspace(state: tauri::State<'_, DesktopState>) -> Result<OpenWorkspaceResult, String> {
     let Some(path) = rfd::FileDialog::new()
         .set_title("Open a Rehow Workspace")
@@ -227,7 +254,11 @@ fn choose_workspace(state: tauri::State<'_, DesktopState>) -> Result<OpenWorkspa
 pub fn run() {
     tauri::Builder::default()
         .manage(DesktopState::default())
-        .invoke_handler(tauri::generate_handler![choose_workspace, read_open_guide])
+        .invoke_handler(tauri::generate_handler![
+            choose_workspace,
+            read_open_guide,
+            search_open_workspace
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Rehow");
 }
