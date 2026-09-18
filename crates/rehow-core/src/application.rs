@@ -14,8 +14,8 @@ use crate::{
         },
         guide::{BoundGuide, bind_guide},
         mutation::{
-            CategoryMutation, GuideMutation, MutationFailureKind, MutationOutcome, MutationStamp,
-            plan_category_mutation, plan_guide_mutation,
+            CategoryMutation, GuideMutation, MutationFailureKind, MutationField, MutationOutcome,
+            MutationStamp, plan_category_mutation, plan_guide_mutation,
         },
     },
     parsing::{parse_guide_source, parse_yaml_document},
@@ -170,6 +170,7 @@ pub enum CategoryUpdateError {
     RevisionConflict,
     InvalidCategory,
     InvalidName,
+    InvalidSummary,
     UnsafeRoundTrip,
     Busy,
     UnsafeStorage,
@@ -203,13 +204,35 @@ pub fn rename_category(
     expected_revision: Revision,
     name: String,
 ) -> Result<CategoryUpdateOutcome, CategoryUpdateError> {
-    update_category_with_mutation(
+    update_category_with_mutations(
         workspace,
         state_home,
         runtime_directory,
         category_id,
         expected_revision,
-        CategoryMutation::SetName(name),
+        [CategoryMutation::SetName(name)],
+    )
+}
+
+pub fn update_category_details(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    category_id: CategoryId,
+    expected_revision: Revision,
+    name: String,
+    summary: Option<String>,
+) -> Result<CategoryUpdateOutcome, CategoryUpdateError> {
+    update_category_with_mutations(
+        workspace,
+        state_home,
+        runtime_directory,
+        category_id,
+        expected_revision,
+        [
+            CategoryMutation::SetName(name),
+            CategoryMutation::SetSummary(summary),
+        ],
     )
 }
 
@@ -230,28 +253,28 @@ pub fn set_category_archived(
     {
         return Err(CategoryUpdateError::DefaultCategory);
     }
-    update_category_with_mutation(
+    update_category_with_mutations(
         workspace,
         state_home,
         runtime_directory,
         category_id,
         expected_revision,
-        if archived {
+        [if archived {
             CategoryMutation::Archive
         } else {
             CategoryMutation::Restore
-        },
+        }],
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn update_category_with_mutation(
+fn update_category_with_mutations<const N: usize>(
     workspace: &mut WorkspaceView,
     state_home: &Path,
     runtime_directory: Option<&Path>,
     category_id: CategoryId,
     expected_revision: Revision,
-    mutation: CategoryMutation,
+    mutations: [CategoryMutation; N],
 ) -> Result<CategoryUpdateOutcome, CategoryUpdateError> {
     let loaded = workspace
         .categories()
@@ -280,14 +303,22 @@ fn update_category_with_mutation(
             if bound.record().id() != &category_id {
                 return Err(CategoryPlanError::InvalidCategory);
             }
-            match plan_category_mutation(&bound, mutation, &stamp)
-                .map_err(map_category_plan_failure)?
-            {
-                MutationOutcome::NoOp => copy_bytes(bytes).map_err(CategoryPlanError::from),
-                MutationOutcome::Candidate(candidate) => {
-                    copy_bytes(candidate.bound().source_bytes()).map_err(CategoryPlanError::from)
-                }
+            let mut candidate_bytes = copy_bytes(bound.source_bytes())?;
+            for mutation in mutations {
+                let parsed = parse_yaml_document(candidate_bytes)
+                    .map_err(|_| CategoryPlanError::InvalidCategory)?;
+                let candidate_bound =
+                    bind_category(parsed).map_err(|_| CategoryPlanError::InvalidCategory)?;
+                candidate_bytes = match plan_category_mutation(&candidate_bound, mutation, &stamp)
+                    .map_err(map_category_plan_failure)?
+                {
+                    MutationOutcome::NoOp => copy_bytes(candidate_bound.source_bytes())?,
+                    MutationOutcome::Candidate(candidate) => {
+                        copy_bytes(candidate.bound().source_bytes())?
+                    }
+                };
             }
+            Ok(candidate_bytes)
         },
     )
     .map_err(map_category_update_error)?;
@@ -314,6 +345,7 @@ fn update_category_with_mutation(
 enum CategoryPlanError {
     InvalidCategory,
     InvalidName,
+    InvalidSummary,
     UnsafeRoundTrip,
     ResourceLimit,
 }
@@ -333,7 +365,10 @@ fn map_category_plan_failure(
 ) -> CategoryPlanError {
     match error.kind() {
         MutationFailureKind::InvalidValue | MutationFailureKind::InvalidTransition => {
-            CategoryPlanError::InvalidName
+            match error.field() {
+                MutationField::Summary => CategoryPlanError::InvalidSummary,
+                _ => CategoryPlanError::InvalidName,
+            }
         }
         MutationFailureKind::ReadOnly
         | MutationFailureKind::CommentUnsafe
@@ -352,6 +387,9 @@ fn map_category_update_error(error: DocumentUpdateError<CategoryPlanError>) -> C
         }
         DocumentUpdateError::Prepare(CategoryPlanError::InvalidName) => {
             CategoryUpdateError::InvalidName
+        }
+        DocumentUpdateError::Prepare(CategoryPlanError::InvalidSummary) => {
+            CategoryUpdateError::InvalidSummary
         }
         DocumentUpdateError::Prepare(CategoryPlanError::UnsafeRoundTrip) => {
             CategoryUpdateError::UnsafeRoundTrip
@@ -1067,6 +1105,58 @@ mod tests {
             Err(CategoryUpdateError::RevisionConflict)
         );
         assert_eq!(view.categories()[0].category().name(), "Linux System");
+    }
+
+    #[test]
+    fn updates_category_name_and_optional_summary_atomically() {
+        let (workspace, state, mut view) = initialized_workspace("category-details");
+        let created = create_category(&mut view, state.path(), None, "Linux", None).unwrap();
+        let original_directory = view.categories()[0].relative_directory().to_owned();
+        let updated = update_category_details(
+            &mut view,
+            state.path(),
+            None,
+            created.category_id(),
+            created.revision(),
+            "Linux System".to_owned(),
+            Some("Desktop and system work".to_owned()),
+        )
+        .unwrap();
+        assert!(updated.changed());
+        let category = view.categories()[0].category();
+        assert_eq!(category.name(), "Linux System");
+        assert_eq!(category.summary(), Some("Desktop and system work"));
+        assert_eq!(
+            view.categories()[0].relative_directory(),
+            original_directory
+        );
+        assert!(workspace.path().join(original_directory).is_dir());
+
+        let cleared = update_category_details(
+            &mut view,
+            state.path(),
+            None,
+            created.category_id(),
+            updated.revision(),
+            "Linux System".to_owned(),
+            None,
+        )
+        .unwrap();
+        assert!(cleared.changed());
+        assert_eq!(view.categories()[0].category().summary(), None);
+
+        assert_eq!(
+            update_category_details(
+                &mut view,
+                state.path(),
+                None,
+                created.category_id(),
+                cleared.revision(),
+                "Linux System".to_owned(),
+                Some(" ".to_owned()),
+            ),
+            Err(CategoryUpdateError::InvalidSummary)
+        );
     }
 
     #[test]

@@ -410,7 +410,8 @@ textarea:focus-visible,
   font-size: 10px;
   font-weight: 700;
 }
-.category-rename-form input {
+.category-rename-form input,
+.category-rename-form textarea {
   width: 100%;
   padding: 7px 8px;
   border: 1px solid var(--divider-strong);
@@ -419,7 +420,12 @@ textarea:focus-visible,
   color: var(--text);
   font-size: 11px;
 }
-.category-rename-form input:focus-visible {
+.category-rename-form textarea {
+  min-height: 58px;
+  resize: vertical;
+}
+.category-rename-form input:focus-visible,
+.category-rename-form textarea:focus-visible {
   border-color: var(--focus);
 }
 .category-item {
@@ -1301,7 +1307,9 @@ h1 {
   }
   .toolbar-actions .button-primary {
     padding: 0 9px;
-    font-size: 0;
+  }
+  .toolbar-actions .toolbar-action-label {
+    display: none;
   }
   .toolbar-actions .button-primary .icon {
     width: 18px;

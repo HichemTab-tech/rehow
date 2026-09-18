@@ -7,8 +7,8 @@ use core::cmp::max;
 
 use crate::{
     parsing::{
-        NodePresentation, ParsedYamlArtifact, ReconciledEntryKind, RoundTripStatus,
-        parse_guide_source, parse_yaml_document,
+        CollectionPresentationStyle, CommentOwner, NodePresentation, ParsedYamlArtifact,
+        ReconciledEntryKind, RoundTripStatus, parse_guide_source, parse_yaml_document,
     },
     protocol::{CategoryId, Timestamp},
 };
@@ -41,6 +41,7 @@ pub(crate) enum WorkspaceMutation {
 
 pub(crate) enum CategoryMutation {
     SetName(String),
+    SetSummary(Option<String>),
     SetOrder(i64),
     Archive,
     Restore,
@@ -207,87 +208,138 @@ pub(crate) fn plan_category_mutation(
     stamp: &MutationStamp,
 ) -> Result<MutationOutcome<BoundCategory>, MutationFailure> {
     let record = bound.record();
-    let (field, effect, key, replacement, expected_name, expected_order, expected_status) =
-        match mutation {
-            CategoryMutation::SetName(name) => {
-                if !super::valid_text(&name, 200) {
-                    return Err(failure(
-                        MutationFailureKind::InvalidValue,
-                        MutationField::Name,
-                    ));
-                }
-                if name == record.name() {
-                    return Ok(MutationOutcome::NoOp);
-                }
-                (
+    let mut expected_name = record.name().to_owned();
+    let mut expected_summary = record.summary().map(str::to_owned);
+    let mut expected_order = record.order();
+    let mut expected_status = record.status();
+    let (field, effect, edit) = match mutation {
+        CategoryMutation::SetName(name) => {
+            if !super::valid_text(&name, 200) {
+                return Err(failure(
+                    MutationFailureKind::InvalidValue,
                     MutationField::Name,
-                    MutationEffect::Name,
-                    "name",
-                    emit_yaml_string(&name)
-                        .map_err(|error| map_emit(error, MutationField::Name))?,
-                    Some(name),
-                    None,
-                    None,
-                )
+                ));
             }
-            CategoryMutation::SetOrder(order) => {
-                if order == record.order() {
-                    return Ok(MutationOutcome::NoOp);
-                }
-                (
-                    MutationField::Order,
-                    MutationEffect::Order,
+            if name == record.name() {
+                return Ok(MutationOutcome::NoOp);
+            }
+            expected_name = name.clone();
+            let replacement =
+                emit_yaml_string(&name).map_err(|error| map_emit(error, MutationField::Name))?;
+            (
+                MutationField::Name,
+                MutationEffect::Name,
+                CategoryEdit::Replace("name", replacement),
+            )
+        }
+        CategoryMutation::SetSummary(summary) => {
+            if summary
+                .as_deref()
+                .is_some_and(|value| !super::valid_text(value, 500))
+            {
+                return Err(failure(
+                    MutationFailureKind::InvalidValue,
+                    MutationField::Summary,
+                ));
+            }
+            if summary.as_deref() == record.summary() {
+                return Ok(MutationOutcome::NoOp);
+            }
+            expected_summary = summary.clone();
+            (
+                MutationField::Summary,
+                MutationEffect::Summary,
+                CategoryEdit::OptionalSummary(summary),
+            )
+        }
+        CategoryMutation::SetOrder(order) => {
+            if order == record.order() {
+                return Ok(MutationOutcome::NoOp);
+            }
+            expected_order = order;
+            (
+                MutationField::Order,
+                MutationEffect::Order,
+                CategoryEdit::Replace(
                     "order",
                     emit_plain_display(order)
                         .map_err(|error| map_emit(error, MutationField::Order))?,
-                    None,
-                    Some(order),
-                    None,
-                )
+                ),
+            )
+        }
+        CategoryMutation::Archive => {
+            if record.status() == CategoryStatus::Archived {
+                return Ok(MutationOutcome::NoOp);
             }
-            CategoryMutation::Archive => {
-                if record.status() == CategoryStatus::Archived {
-                    return Ok(MutationOutcome::NoOp);
-                }
-                (
-                    MutationField::Status,
-                    MutationEffect::Status,
-                    "status",
-                    Box::<[u8]>::from(b"archived".as_slice()),
-                    None,
-                    None,
-                    Some(CategoryStatus::Archived),
-                )
+            expected_status = CategoryStatus::Archived;
+            (
+                MutationField::Status,
+                MutationEffect::Status,
+                CategoryEdit::Replace("status", Box::<[u8]>::from(b"archived".as_slice())),
+            )
+        }
+        CategoryMutation::Restore => {
+            if record.status() == CategoryStatus::Active {
+                return Ok(MutationOutcome::NoOp);
             }
-            CategoryMutation::Restore => {
-                if record.status() == CategoryStatus::Active {
-                    return Ok(MutationOutcome::NoOp);
-                }
-                (
-                    MutationField::Status,
-                    MutationEffect::Status,
-                    "status",
-                    Box::<[u8]>::from(b"active".as_slice()),
-                    None,
-                    None,
-                    Some(CategoryStatus::Active),
-                )
-            }
-        };
+            expected_status = CategoryStatus::Active;
+            (
+                MutationField::Status,
+                MutationEffect::Status,
+                CategoryEdit::Replace("status", Box::<[u8]>::from(b"active".as_slice())),
+            )
+        }
+    };
     require_proven(bound.parsed.yaml().round_trip_status(), field)?;
 
     let updated_at = max(*record.updated_at(), stamp.at);
     let mut edits = Vec::new();
     reserve(&mut edits, 2, MutationField::Document)?;
-    replace_root_value(
-        bound.parsed.yaml(),
-        bound.source_bytes(),
-        key,
-        replacement,
-        effect,
-        field,
-        &mut edits,
-    )?;
+    match edit {
+        CategoryEdit::Replace(key, replacement) => replace_root_value(
+            bound.parsed.yaml(),
+            bound.source_bytes(),
+            key,
+            replacement,
+            effect,
+            field,
+            &mut edits,
+        )?,
+        CategoryEdit::OptionalSummary(Some(value)) => {
+            let replacement = emit_yaml_string(&value)
+                .map_err(|error| map_emit(error, MutationField::Summary))?;
+            if record.summary().is_some() {
+                replace_root_value(
+                    bound.parsed.yaml(),
+                    bound.source_bytes(),
+                    "summary",
+                    replacement,
+                    effect,
+                    field,
+                    &mut edits,
+                )?;
+            } else {
+                insert_root_value_before(
+                    bound.parsed.yaml(),
+                    bound.source_bytes(),
+                    "order",
+                    "summary",
+                    replacement,
+                    effect,
+                    field,
+                    &mut edits,
+                )?;
+            }
+        }
+        CategoryEdit::OptionalSummary(None) => remove_root_entry(
+            bound.parsed.yaml(),
+            bound.source_bytes(),
+            "summary",
+            effect,
+            field,
+            &mut edits,
+        )?,
+    }
     replace_root_value(
         bound.parsed.yaml(),
         bound.source_bytes(),
@@ -304,10 +356,10 @@ pub(crate) fn plan_category_mutation(
         bind_category(parsed).map_err(|_| candidate_mismatch(MutationField::Document))?;
     let candidate_record = candidate.record();
     if candidate_record.id() != record.id()
-        || candidate_record.name() != expected_name.as_deref().unwrap_or(record.name())
-        || candidate_record.summary() != record.summary()
-        || candidate_record.order() != expected_order.unwrap_or(record.order())
-        || candidate_record.status() != expected_status.unwrap_or(record.status())
+        || candidate_record.name() != expected_name
+        || candidate_record.summary() != expected_summary.as_deref()
+        || candidate_record.order() != expected_order
+        || candidate_record.status() != expected_status
         || candidate_record.created_at() != record.created_at()
         || candidate_record.updated_at() != &updated_at
         || candidate.unknown_root_entries() != bound.unknown_root_entries()
@@ -318,6 +370,11 @@ pub(crate) fn plan_category_mutation(
         bound: candidate,
         effects,
     }))
+}
+
+enum CategoryEdit {
+    Replace(&'static str, Box<[u8]>),
+    OptionalSummary(Option<String>),
 }
 
 pub(crate) fn plan_guide_mutation(
@@ -688,6 +745,150 @@ fn replace_root_value(
     push_edit(source, start, end, replacement, effect, field, edits)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn insert_root_value_before(
+    artifact: &ParsedYamlArtifact,
+    source: &[u8],
+    anchor_name: &str,
+    key_name: &str,
+    value: Box<[u8]>,
+    effect: MutationEffect,
+    field: MutationField,
+    edits: &mut Vec<Edit>,
+) -> Result<(), MutationFailure> {
+    let anchor = artifact
+        .entries()
+        .iter()
+        .find(|entry| {
+            if entry.parent() != artifact.root_id() {
+                return false;
+            }
+            let ReconciledEntryKind::Mapping { key, .. } = entry.kind() else {
+                return false;
+            };
+            artifact.node(key).and_then(|node| node.decoded_scalar()) == Some(anchor_name)
+        })
+        .ok_or_else(|| failure(MutationFailureKind::BindingInvariant, field))?;
+    if anchor.collection_style() != CollectionPresentationStyle::Block {
+        return Err(failure(MutationFailureKind::PresentationUnsafe, field));
+    }
+    let start = anchor.file_range().start().get() as usize;
+    if start > source.len() || (start != 0 && source.get(start.wrapping_sub(1)) != Some(&b'\n')) {
+        return Err(failure(MutationFailureKind::PresentationUnsafe, field));
+    }
+    let gap_start = artifact
+        .entries()
+        .iter()
+        .filter(|entry| entry.parent() == artifact.root_id() && entry.index() < anchor.index())
+        .max_by_key(|entry| entry.index())
+        .map_or(0, |entry| entry.file_range().end().get() as usize);
+    if gap_start > start
+        || artifact.comments().iter().any(|comment| {
+            let range = comment.file_range();
+            (range.start().get() as usize) < start && (range.end().get() as usize) > gap_start
+        })
+    {
+        return Err(failure(MutationFailureKind::CommentUnsafe, field));
+    }
+    let mut replacement = Vec::new();
+    replacement
+        .try_reserve_exact(key_name.len() + value.len() + 3)
+        .map_err(|_| failure(MutationFailureKind::ResourceLimit, field))?;
+    replacement.extend_from_slice(key_name.as_bytes());
+    replacement.extend_from_slice(b": ");
+    replacement.extend_from_slice(&value);
+    replacement.push(b'\n');
+    push_edit(
+        source,
+        start,
+        start,
+        replacement.into_boxed_slice(),
+        effect,
+        field,
+        edits,
+    )
+}
+
+fn remove_root_entry(
+    artifact: &ParsedYamlArtifact,
+    source: &[u8],
+    key_name: &str,
+    effect: MutationEffect,
+    field: MutationField,
+    edits: &mut Vec<Edit>,
+) -> Result<(), MutationFailure> {
+    let entry = artifact
+        .entries()
+        .iter()
+        .find(|entry| {
+            if entry.parent() != artifact.root_id() {
+                return false;
+            }
+            let ReconciledEntryKind::Mapping { key, .. } = entry.kind() else {
+                return false;
+            };
+            artifact.node(key).and_then(|node| node.decoded_scalar()) == Some(key_name)
+        })
+        .ok_or_else(|| failure(MutationFailureKind::BindingInvariant, field))?;
+    let ReconciledEntryKind::Mapping { key, value } = entry.kind() else {
+        return Err(failure(MutationFailureKind::BindingInvariant, field));
+    };
+    if entry.collection_style() != CollectionPresentationStyle::Block {
+        return Err(failure(MutationFailureKind::PresentationUnsafe, field));
+    }
+    let start = entry.file_range().start().get() as usize;
+    let entry_end = entry.file_range().end().get() as usize;
+    if start > entry_end
+        || entry_end > source.len()
+        || (start != 0 && source.get(start.wrapping_sub(1)) != Some(&b'\n'))
+    {
+        return Err(failure(MutationFailureKind::PresentationUnsafe, field));
+    }
+    let end = if source.get(entry_end.wrapping_sub(1)) == Some(&b'\n') {
+        entry_end
+    } else {
+        source[entry_end..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(source.len(), |offset| entry_end + offset + 1)
+    };
+    if source[entry_end..end]
+        .iter()
+        .any(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+    {
+        return Err(failure(MutationFailureKind::PresentationUnsafe, field));
+    }
+    if artifact.comments().iter().any(|comment| {
+        let range = comment.file_range();
+        let overlaps = ranges_overlap(
+            start,
+            end,
+            range.start().get() as usize,
+            range.end().get() as usize,
+        );
+        let owned = match comment.owner() {
+            CommentOwner::Entry(owner) => owner == entry.id(),
+            CommentOwner::Node(owner) => owner == key || owner == value,
+            CommentOwner::Boundary { before, after, .. } => {
+                before == Some(entry.id()) || after == Some(entry.id())
+            }
+            CommentOwner::Ambiguous => true,
+        };
+        overlaps || owned
+    }) {
+        return Err(failure(MutationFailureKind::CommentUnsafe, field));
+    }
+    push_edit(
+        source,
+        start,
+        end,
+        Box::<[u8]>::default(),
+        effect,
+        field,
+        edits,
+    )
+}
+
 fn push_edit(
     source: &[u8],
     start: usize,
@@ -936,6 +1137,61 @@ mod tests {
             panic!("candidate")
         };
         assert_eq!(ordered.bound().record().order(), i64::MIN);
+    }
+
+    #[test]
+    fn category_optional_summary_inserts_replaces_and_removes() {
+        let source = "schema_version: 1\nid: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5551\nname: Linux\nfuture: {nested: [1]}\norder: 1\nstatus: active\ncreated_at: 2026-09-05T10:00:00Z\nupdated_at: 2026-09-05T10:00:00Z\n";
+        let bound = category(source);
+        let stamp = MutationStamp::from_trusted_time(timestamp("2026-09-05T11:00:00Z"));
+        let MutationOutcome::Candidate(inserted) = plan_category_mutation(
+            &bound,
+            CategoryMutation::SetSummary(Some("System work".into())),
+            &stamp,
+        )
+        .unwrap_or_else(|_| panic!("insert summary")) else {
+            panic!("candidate")
+        };
+        assert_eq!(inserted.bound().record().summary(), Some("System work"));
+        assert!(
+            core::str::from_utf8(inserted.bound().source_bytes())
+                .unwrap()
+                .contains("future: {nested: [1]}\nsummary: \"System work\"\norder: 1")
+        );
+
+        let MutationOutcome::Candidate(replaced) = plan_category_mutation(
+            inserted.bound(),
+            CategoryMutation::SetSummary(Some("Desktop work".into())),
+            &stamp,
+        )
+        .unwrap_or_else(|_| panic!("replace summary")) else {
+            panic!("candidate")
+        };
+        assert_eq!(replaced.bound().record().summary(), Some("Desktop work"));
+
+        let Ok(MutationOutcome::Candidate(removed)) =
+            plan_category_mutation(replaced.bound(), CategoryMutation::SetSummary(None), &stamp)
+        else {
+            panic!("remove summary")
+        };
+        assert_eq!(removed.bound().record().summary(), None);
+        let removed_source = core::str::from_utf8(removed.bound().source_bytes()).unwrap();
+        assert!(!removed_source.contains("summary:"));
+        assert!(removed_source.contains("future: {nested: [1]}"));
+    }
+
+    #[test]
+    fn category_summary_removal_refuses_owned_comment() {
+        let source = "schema_version: 1\nid: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5551\nname: Linux\nsummary: Keep this # context\norder: 1\nstatus: active\ncreated_at: 2026-09-05T10:00:00Z\nupdated_at: 2026-09-05T10:00:00Z\n";
+        let error = plan_category_mutation(
+            &category(source),
+            CategoryMutation::SetSummary(None),
+            &MutationStamp::from_trusted_time(timestamp("2026-09-05T11:00:00Z")),
+        )
+        .err()
+        .unwrap();
+        assert!(matches!(error.kind(), MutationFailureKind::CommentUnsafe));
+        assert!(matches!(error.field(), MutationField::Summary));
     }
 
     #[test]

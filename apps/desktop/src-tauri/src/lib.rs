@@ -4,7 +4,7 @@ use rehow_core::{
     application::{
         CategoryCreateError, CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError,
         GuideEdit, GuideUpdateError, WorkspaceInitializationError, create_category, create_guide,
-        initialize_workspace, rename_category, set_category_archived, update_guide,
+        initialize_workspace, set_category_archived, update_category_details, update_guide,
     },
     domain::GuideStatus,
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -85,6 +85,7 @@ struct WorkspacePayload {
 struct CategoryPayload {
     id: String,
     name: String,
+    summary: Option<String>,
     status: &'static str,
     revision: String,
     guide_count: usize,
@@ -161,6 +162,7 @@ impl WorkspacePayload {
             categories.push(CategoryPayload {
                 id: category.id().to_string(),
                 name: category.name().to_owned(),
+                summary: category.summary().map(str::to_owned),
                 status: match category.status() {
                     rehow_core::domain::CategoryStatus::Active => "active",
                     rehow_core::domain::CategoryStatus::Archived => "archived",
@@ -684,13 +686,18 @@ fn category_create_message(error: CategoryCreateError) -> String {
 }
 
 #[tauri::command]
-fn rename_open_category(
+fn save_open_category_details(
     category_id: String,
     expected_revision: String,
     name: String,
+    summary: Option<String>,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<SaveCategoryPayload, NativeCommandError> {
-    if category_id.len() > 64 || expected_revision.len() > 96 || name.len() > 1_024 {
+    if category_id.len() > 64
+        || expected_revision.len() > 96
+        || name.len() > 1_024
+        || summary.as_ref().is_some_and(|value| value.len() > 4_096)
+    {
         return Err(native_command_error(
             "invalidInput",
             "Category details are too long.".to_owned(),
@@ -728,13 +735,14 @@ fn rename_open_category(
             "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
         ));
     }
-    let outcome = rename_category(
+    let outcome = update_category_details(
         &mut workspace.view,
         &state_home,
         runtime_directory.as_deref(),
         category_id,
         expected_revision,
         name,
+        summary,
     )
     .map_err(|error| {
         native_command_error(category_update_code(error), category_update_message(error))
@@ -820,6 +828,7 @@ fn category_update_code(error: CategoryUpdateError) -> &'static str {
         CategoryUpdateError::RevisionConflict => "revisionConflict",
         CategoryUpdateError::InvalidCategory => "invalidCategory",
         CategoryUpdateError::InvalidName => "invalidName",
+        CategoryUpdateError::InvalidSummary => "invalidSummary",
         CategoryUpdateError::UnsafeRoundTrip => "unsafeRoundTrip",
         CategoryUpdateError::Busy => "busy",
         CategoryUpdateError::UnsafeStorage => "unsafeStorage",
@@ -846,6 +855,9 @@ fn category_update_message(error: CategoryUpdateError) -> String {
         }
         CategoryUpdateError::InvalidName => {
             "Enter a Category name between 1 and 200 characters.".to_owned()
+        }
+        CategoryUpdateError::InvalidSummary => {
+            "Enter a Category summary of at most 500 characters.".to_owned()
         }
         CategoryUpdateError::UnsafeRoundTrip => {
             "Rehow cannot preserve this Category’s formatting safely. Edit the underlying file instead."
@@ -1084,7 +1096,7 @@ pub fn run() {
             create_open_guide,
             initialize_selected_workspace,
             read_open_guide,
-            rename_open_category,
+            save_open_category_details,
             save_open_guide_body,
             save_open_guide_details,
             set_open_category_archived,
@@ -1122,6 +1134,7 @@ mod tests {
             categories: vec![CategoryPayload {
                 id: "0199a1c2-d334-7d17-bd9c-f8b6ba3a5551".to_owned(),
                 name: "Linux".to_owned(),
+                summary: Some("System work".to_owned()),
                 status: "active",
                 revision: format!("rev:v1:{}", "11".repeat(32)),
                 guide_count: 1,
@@ -1149,6 +1162,7 @@ mod tests {
         assert_eq!(json["issueCount"], 0);
         assert_eq!(json["facts"]["writable"], true);
         assert_eq!(json["categories"][0]["status"], "active");
+        assert_eq!(json["categories"][0]["summary"], "System work");
         assert_eq!(
             json["categories"][0]["revision"],
             format!("rev:v1:{}", "11".repeat(32))
@@ -1238,6 +1252,10 @@ mod tests {
         assert_eq!(
             category_update_message(CategoryUpdateError::InvalidName),
             "Enter a Category name between 1 and 200 characters."
+        );
+        assert_eq!(
+            category_update_code(CategoryUpdateError::InvalidSummary),
+            "invalidSummary"
         );
         assert_eq!(
             category_update_code(CategoryUpdateError::DefaultCategory),

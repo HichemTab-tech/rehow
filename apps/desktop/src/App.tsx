@@ -34,6 +34,7 @@ type WorkspacePayload = {
   categories: Array<{
     id: string;
     name: string;
+    summary: string | null;
     status: "active" | "archived";
     revision: string;
     guideCount: number;
@@ -223,12 +224,6 @@ export function normalizedCategoryDetails(
   return { name, summary: summary === "" ? null : summary };
 }
 
-export function normalizedCategoryName(value: string) {
-  const name = value.trim();
-  const length = Array.from(name).length;
-  return length >= 1 && length <= 200 ? name : null;
-}
-
 export function normalizedGuideDetails(
   categoryId: string,
   titleValue: string,
@@ -335,6 +330,7 @@ export function App() {
   const [categoryError, setCategoryError] = useState("");
   const [renamingCategoryId, setRenamingCategoryId] = useState("");
   const [categoryRenameValue, setCategoryRenameValue] = useState("");
+  const [categoryRenameSummary, setCategoryRenameSummary] = useState("");
   const [savingCategoryRename, setSavingCategoryRename] = useState(false);
   const [categoryRenameError, setCategoryRenameError] = useState("");
   const [updatingCategoryStatusId, setUpdatingCategoryStatusId] = useState("");
@@ -404,7 +400,8 @@ export function App() {
     ) ?? null;
   const dirtyCategoryRename =
     categoryBeingRenamed !== null &&
-    categoryRenameValue !== categoryBeingRenamed.name;
+    (categoryRenameValue !== categoryBeingRenamed.name ||
+      categoryRenameSummary !== (categoryBeingRenamed.summary ?? ""));
 
   useEffect(() => {
     const theme = initialParameter("theme");
@@ -761,10 +758,13 @@ export function App() {
     }
   }
 
-  function beginCategoryRename(categoryId: string, name: string) {
+  function beginCategoryRename(
+    category: WorkspacePayload["categories"][number],
+  ) {
     if (workspace === null || !workspace.facts.writable) return;
-    setRenamingCategoryId(categoryId);
-    setCategoryRenameValue(name);
+    setRenamingCategoryId(category.id);
+    setCategoryRenameValue(category.name);
+    setCategoryRenameSummary(category.summary ?? "");
     setCategoryRenameError("");
     requestAnimationFrame(() => categoryRenameInputRef.current?.focus());
   }
@@ -773,12 +773,13 @@ export function App() {
     if (savingCategoryRename) return;
     if (
       dirtyCategoryRename &&
-      !window.confirm("Discard this Category name change?")
+      !window.confirm("Discard these Category detail changes?")
     )
       return;
     const categoryId = renamingCategoryId;
     setRenamingCategoryId("");
     setCategoryRenameValue("");
+    setCategoryRenameSummary("");
     setCategoryRenameError("");
     requestAnimationFrame(() =>
       categoryRenameButtonRefs.current.get(categoryId)?.focus(),
@@ -787,10 +788,14 @@ export function App() {
 
   async function saveCategoryRename() {
     const category = categoryBeingRenamed;
-    const name = normalizedCategoryName(categoryRenameValue);
+    const details = normalizedCategoryDetails(
+      categoryRenameValue,
+      categoryRenameSummary,
+    );
     if (category === null || savingCategoryRename) return;
-    if (name === null) {
-      const message = "Enter a Category name between 1 and 200 characters.";
+    if (details === null) {
+      const message =
+        "Enter a Category name from 1 to 200 characters and an optional summary up to 500 characters.";
       setCategoryRenameError(message);
       setAnnouncement(message);
       requestAnimationFrame(() => categoryRenameInputRef.current?.focus());
@@ -800,18 +805,22 @@ export function App() {
     setCategoryRenameError("");
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const result = await invoke<SaveCategoryPayload>("rename_open_category", {
-        categoryId: category.id,
-        expectedRevision: category.revision,
-        name,
-      });
+      const result = await invoke<SaveCategoryPayload>(
+        "save_open_category_details",
+        {
+          categoryId: category.id,
+          expectedRevision: category.revision,
+          ...details,
+        },
+      );
       setWorkspace(result.workspace);
       setRenamingCategoryId("");
       setCategoryRenameValue("");
+      setCategoryRenameSummary("");
       setAnnouncement(
         result.changed
-          ? "Category renamed."
-          : "The Category name is unchanged.",
+          ? "Category details saved."
+          : "Category details are unchanged.",
       );
       requestAnimationFrame(() =>
         categoryRenameButtonRefs.current.get(category.id)?.focus(),
@@ -1124,7 +1133,7 @@ export function App() {
             }
           >
             <Icon name="plus" />
-            New Guide
+            <span className="toolbar-action-label">New Guide</span>
           </button>
           <button
             className="icon-button"
@@ -1291,6 +1300,27 @@ export function App() {
                     setCategoryRenameError("");
                   }}
                 />
+                <label htmlFor={`category-summary-${category.id}`}>
+                  Summary (Optional)
+                </label>
+                <textarea
+                  id={`category-summary-${category.id}`}
+                  name="category-summary"
+                  autoComplete="off"
+                  maxLength={500}
+                  rows={3}
+                  aria-invalid={categoryRenameError !== ""}
+                  aria-describedby={
+                    categoryRenameError !== ""
+                      ? "category-rename-error"
+                      : undefined
+                  }
+                  value={categoryRenameSummary}
+                  onChange={(event) => {
+                    setCategoryRenameSummary(event.target.value);
+                    setCategoryRenameError("");
+                  }}
+                />
                 {categoryRenameError !== "" && (
                   <p
                     ref={categoryRenameErrorRef}
@@ -1316,7 +1346,7 @@ export function App() {
                     type="submit"
                     disabled={savingCategoryRename}
                   >
-                    {savingCategoryRename ? "Saving…" : "Save Name"}
+                    {savingCategoryRename ? "Saving…" : "Save Details"}
                   </button>
                 </div>
               </form>
@@ -1345,14 +1375,12 @@ export function App() {
                         }}
                         className="category-rename-button"
                         type="button"
-                        aria-label={`Rename ${category.name} Category`}
-                        title="Rename Category"
+                        aria-label={`Edit ${category.name} Category details`}
+                        title="Edit Category details"
                         disabled={updatingCategoryStatusId !== ""}
-                        onClick={() =>
-                          beginCategoryRename(category.id, category.name)
-                        }
+                        onClick={() => beginCategoryRename(category)}
                       >
-                        Rename
+                        Edit
                       </button>
                       <button
                         className="category-rename-button"
