@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 1E-C — connect the accepted crash-recoverable Workspace mutation foundation to a crate-private application boundary.
+Phase 3A — first visible Guide editor vertical slice over the accepted private mutation boundary.
 
 ## Current task
 
-Define the private capability/session identity and application mutation boundary that can submit validated Guide plans to the accepted journal executor. Keep UI and MCP mutation commands unexposed.
+Expose only the bounded existing-Guide save contract through native Tauri state, then add body editing, stale-revision handling, and post-save refresh to the Reference Desk. MCP remains read-only.
 
 ## Overall status
 
-In progress. The Reference Desk read path, safe Markdown, and ranked search are green. ADR 0009's private mutation foundation is security-accepted: canonical journals, secured recovery state, exact generation transitions, descriptor-confined create/update/delete/trash, durable replay, and identity-preserving before-image quarantine are implemented. No mutation authority is exposed to UI or MCP yet.
+In progress. The Reference Desk read path, safe Markdown, ranked search, and private revision-checked Guide update path are green. Existing Guide edits now re-read under the writer lock, preserve unknown metadata, journal atomically, stale tested content, and refresh the retained Workspace. No mutation authority is exposed to UI or MCP yet.
 
 ## Completed work
 
@@ -63,10 +63,11 @@ In progress. The Reference Desk read path, safe Markdown, and ranked search are 
 - Implemented descriptor-confined Workspace target creation/replacement at signed checkpoint `dede741` using same-directory exclusive temps, `RENAME_NOREPLACE`, and `RENAME_EXCHANGE`; unsafe targets and conflicting temps fail closed while displaced bytes remain verified.
 - Implemented the journal-driven create/update executor and resume path at signed checkpoint `1dd646e`. It binds root identity and stored objects, advances durable whole generations, resumes a post-exchange/pre-journal crash, and records external neither-state conflicts without overwrite.
 - Completed and security-accepted ADR 0009 deletion/trash/recovery at signed checkpoint `dbf4230`: exact on-disk replay classification, fsynced reused temps, exact trash paths, no-replace before-image quarantine, hostile hierarchy denial, and interruption coverage across create/update/delete/trash.
+- Added the crate-private application Guide update proof at signed checkpoint `e28cf48`: random open-capability epochs, stable root identity, expected-revision enforcement, fresh parse/bind/typed planning under the writer lock, recoverable update execution, unknown-metadata preservation, tested-to-stale behavior, and retained-view refresh.
 
 ## Work in progress
 
-- The recovery executor is green and remains crate-private. The next work is a narrow application/capability boundary; adapter exposure still requires its own reviewed packet.
+- The application update boundary is green and crate-private. The next batch promotes a deliberately bounded public core request/result, adds one native save command, and wires the existing Guide reader to an editor; it will receive one combined security/design review.
 
 ## Remaining work
 
@@ -112,6 +113,7 @@ No known regression in accepted phases. Phase 1E-A currently retains all parsed 
 - New exact pins are `blake3 1.8.7` (`std,pure`), `libc 0.2.189`, `rfd 0.17.2` (Wayland/XDG portal defaults), and `@tauri-apps/api 2.11.1`; direct rationale and permissive-license/transitive review are recorded in the packet/evidence. Independent Security Reviewer acceptance is still open.
 - Safe Markdown adds exact `pulldown-cmark 0.13.4` with default/HTML/CLI/SIMD features disabled. The selected build forbids unsafe code; its build script is a no-op without disabled `gen-tests`. Rust owns the typed AST and limits; React has no raw-HTML, `href`, image `src`, opener, filesystem, process, or execution path. Independent closure is intentionally combined with the existing Phase 1E-A review.
 - ADR 0009 recovery closure passed the single combined Security Reviewer after correcting skipped-state trust, transition jumps, pre-rename durability probes, exact trash binding, reused-temp fsync, and path-identity cleanup. Final verdict: no blocker, high, or medium finding; before-images are quarantined with no unlink.
+- The `e28cf48` application proof adds no adapter command or arbitrary path/YAML authority. It accepts closed typed edits, validates the loaded Guide ID/Category and expected revision, derives a random launch capability hash with Linux `getrandom`, and rejects stale, reused-operation, hardlink, and unsafe-round-trip states.
 
 ## Blockers and human checkpoints
 
@@ -121,11 +123,12 @@ No known regression in accepted phases. Phase 1E-A currently retains all parsed 
 
 ## Latest verified commit
 
-`dbf4230` — signed, security-accepted recoverable create/update/delete/trash executor and before-image quarantine.
+`e28cf48` — signed private application Guide update proof over the accepted recovery executor.
 
 ## Tests last run and results
 
 - 2026-09-18: final ADR 0009 gate at `dbf4230`: 14 focused Workspace-recovery tests and 225 full core library tests pass, plus all 18 error-contract, 13 protocol, 11 unknown-YAML, doc, and public API/compile-fail suites. Locked core Clippy denies warnings; formatting, contract drift, bootstrap validation, and whitespace checks pass. Fault coverage includes temp write/fsync/reuse, journal durability, create/update/delete/trash renames, source/destination directory sync, quarantine replay, hostile path types, mixed targets, and forged Complete/Committed state.
+- 2026-09-18: private application update gate at `e28cf48`: 3 focused application tests and 228 full core library tests pass, plus all 18 error-contract, 13 protocol, 11 unknown-YAML, doc, and public API/compile-fail suites. Locked core Clippy denies warnings; formatting, contract drift, bootstrap validation, and whitespace checks pass. Coverage proves save/no-op, stale/external conflict, operation-ID reuse refusal, unknown preservation, tested-to-stale, hardlink refusal, journal execution, and retained-view refresh.
 - 2026-09-18: ranked-search checkpoint: focused relevance tests, locked core/desktop Clippy with warnings denied, 3 desktop Rust tests, `pnpm check`, 10 Vitest tests, Vite production build, bootstrap, formatting, and whitespace checks pass. Fixtures prove exact title over repeated body text, alias/command/path/error treatment, cross-field terms, Unicode/case normalization, quoted phrases, archived scope, caps, deterministic ordering, and UI rank mapping. Production performance is explicitly not yet accepted.
 - 2026-09-18: safe Markdown checkpoint: `pnpm check`, 9 Vitest tests, Vite production build, locked core/desktop Clippy with warnings denied, 195 core library tests plus all 18 error/13 protocol/11 unknown-YAML/public-API suites, 3 desktop Rust tests, contract drift, bootstrap, formatting, and whitespace checks pass. Focused tests cover input/node/nesting limits, HTML literal handling, strict links, omitted image sources, safe IPC shape, unsupported AST versions, absent `href`/`src`, and code-copy controls.
 - 2026-09-18: dependency audit: exact `pulldown-cmark 0.13.4` is MIT, Rust 1.71.1 minimum, under 1 MiB unpacked, unsafe-forbidden with selected features, and reaches only `unicase` plus already-used `bitflags`/`memchr`; default and generation features are disabled.
@@ -243,10 +246,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - Phase 2A React/CSS shell, interaction tests, task packet, current-guideline review evidence, and screenshots are checkpointed at signed commit `df95874`; it adds no IPC or filesystem authority.
 - Phase 1E-A adds `crates/rehow-core/src/storage.rs`, BLAKE3/libc pins, domain record extraction, native dialog/session commands, the real-data React states, updated locks, the revision vector, `docs/task-packets/phase-1e-a-readonly-workspace.md`, and `docs/evidence/phase-1e-a-readonly-workspace.md`. It is green but awaits independent security/manual acceptance.
 - Recovery work adds `crates/rehow-core/src/storage/recovery.rs`, `recovery/store.rs`, `recovery/workspace.rs`, ADR 0009's exact codec/state behavior, and packets `phase-1e-b1` through `phase-1e-b3c`; signed checkpoints are `e810658`, `f26a868`, `dede741`, `1dd646e`, and accepted closure `dbf4230`.
+- `crates/rehow-core/src/application.rs` and `docs/task-packets/phase-1e-c1-guide-update-application.md` connect closed Guide edits to confined storage at signed checkpoint `e28cf48`; adapter exposure is intentionally absent.
 
 ## Next recommended action
 
-Specify and implement the crate-private application mutation/capability boundary over the accepted executor. Do not expose UI or MCP writes until that boundary has exact revision, recovery, and tested-status semantics.
+Implement one bounded Tauri existing-Guide save command and Reference Desk body editor over `e28cf48`, including revision conflicts, dirty state, cancel/save focus behavior, and post-save refreshed payloads. Keep MCP read-only and run one combined security/design review after the vertical slice.
 
 ## Recommended agent role and reasoning effort
 
@@ -255,8 +259,8 @@ Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents for routine work; us
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read ADR 0009 and `docs/task-packets/phase-1e-b3c-delete-trash-cleanup.md` plus the architecture, content model, and threat model.
+2. Read `docs/task-packets/phase-1e-c1-guide-update-application.md`, ADR 0009, the design direction, content model, and threat model.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `dbf4230`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoints `dbf4230` and `e28cf48`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Run the focused recovery tests. Resume with the private application/capability mutation boundary; keep adapters read-only and never permit an AI-originated write to create `tested`.
+6. Run the focused application tests. Resume with the bounded native save command and Guide body editor; do not add generic paths/YAML, tested approval, or MCP writes.
