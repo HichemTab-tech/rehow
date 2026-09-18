@@ -3,6 +3,13 @@
     reason = "Phase 1D-A binding is connected to storage/application in Phase 1E"
 )]
 
+mod guide;
+
+pub use guide::{
+    Applicability, ArchiveMetadata, Attachment, Guide, GuideReference, GuideStatus,
+    RestorableGuideStatus, VerificationMetadata,
+};
+
 use core::str::FromStr;
 
 use crate::{

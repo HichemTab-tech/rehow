@@ -178,7 +178,7 @@ Check the executable bit and mount options.
 
 Unknown keys are retained as concrete-syntax nodes within depth/size/type limits. Reserved keys with invalid values are errors, not treated as unknown.
 
-ADR 0014 is normative now for Phase 1D-A Manifest/Category read-only binding. Its Guide/nested-value and mutation sections record the proposed 1D-B/1D-C contract and are not implementation authority until their combined review passes. This document remains the human-readable schema overview; accepted ADR text controls where it is more specific.
+ADR 0014 is normative for Phase 1D-A Manifest/Category and Phase 1D-B Guide/nested-value read-only binding. Its mutation/emitter sections remain proposed for Phase 1D-C. This document remains the human-readable schema overview; accepted ADR text controls where it is more specific.
 
 ### Unknown YAML semantic values
 

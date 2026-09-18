@@ -1,7 +1,10 @@
 mod content;
 mod yaml_value;
 
-pub use content::{Category, CategoryStatus, WorkspaceManifest, WorkspaceSettings};
+pub use content::{
+    Applicability, ArchiveMetadata, Attachment, Category, CategoryStatus, Guide, GuideReference,
+    GuideStatus, RestorableGuideStatus, VerificationMetadata, WorkspaceManifest, WorkspaceSettings,
+};
 
 pub use yaml_value::{
     CanonicalYamlFloat, CanonicalYamlFloatKind, CanonicalYamlInteger, UnknownMetadataDocument,

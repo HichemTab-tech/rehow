@@ -1,7 +1,9 @@
 use rehow_core::{
     domain::{
-        CanonicalYamlFloat, CanonicalYamlInteger, Category, CategoryStatus,
-        UnknownYamlDocumentBuilder, UnknownYamlEvent, WorkspaceManifest, WorkspaceSettings,
+        Applicability, ArchiveMetadata, Attachment, CanonicalYamlFloat, CanonicalYamlInteger,
+        Category, CategoryStatus, Guide, GuideReference, GuideStatus, RestorableGuideStatus,
+        UnknownYamlDocumentBuilder, UnknownYamlEvent, VerificationMetadata, WorkspaceManifest,
+        WorkspaceSettings,
     },
     protocol::{
         BoundedList, ErrorDto, GuideId, PlanToken, PortableEntityId, SafeRelativePath, Timestamp,
@@ -37,7 +39,36 @@ fn main() {
             value.updated_at(),
         );
     }
-    let _ = (inspect_manifest, inspect_settings, inspect_category);
+    fn inspect_guide(value: &Guide) {
+        let _: GuideStatus = value.declared_status();
+        let _ = (
+            value.schema_version(), value.id(), value.title(), value.summary(), value.category_id(),
+            value.tags(), value.aliases(), value.created_at(), value.updated_at(),
+            value.verification(), value.archive(), value.applies_to(), value.prerequisites(),
+            value.warnings(), value.files_affected(), value.related_guide_ids(), value.references(),
+            value.attachments(), value.body(),
+        );
+    }
+    fn inspect_applicability(value: &Applicability) {
+        let _ = (value.platform(), value.versions(), value.notes());
+    }
+    fn inspect_reference(value: &GuideReference) {
+        let _ = (value.title(), value.url());
+    }
+    fn inspect_attachment(value: &Attachment) {
+        let _ = (value.id(), value.path(), value.title(), value.media_type(), value.sha256(), value.size_bytes());
+    }
+    fn inspect_verification(value: &VerificationMetadata) {
+        let _ = (value.last_verified_at(), value.verified_content_hash());
+    }
+    fn inspect_archive(value: &ArchiveMetadata) {
+        let _: RestorableGuideStatus = value.archived_from_status();
+        let _ = value.archived_at();
+    }
+    let _ = (
+        inspect_manifest, inspect_settings, inspect_category, inspect_guide, inspect_applicability,
+        inspect_reference, inspect_attachment, inspect_verification, inspect_archive,
+    );
     let id = WorkspaceId::from_str("0199a1d7-7b0d-7d8e-a38d-f936c5735e10").unwrap();
     let _: WorkspaceId = "0199a1d7-7b0d-7d8e-a38d-f936c5735e10"
         .try_into()

@@ -1,0 +1,5 @@
+error[E0616]: field `title` of struct `Guide` is private
+ --> tests/ui/private_guide_mutation.rs:4:11
+  |
+4 |     value.title = "changed".to_owned();
+  |           ^^^^^ private field
