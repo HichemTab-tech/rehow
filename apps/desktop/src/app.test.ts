@@ -10,6 +10,7 @@ import {
   nativeCommandError,
   nextResultIndex,
   normalizedCategoryDetails,
+  normalizedGuideDetails,
   normalizedWorkspaceName,
   rankedGuides,
   resultCountLabel,
@@ -85,6 +86,26 @@ describe("application identity", () => {
     });
     expect(normalizedCategoryDetails("", "Summary")).toBeNull();
     expect(normalizedCategoryDetails("Linux", "x".repeat(501))).toBeNull();
+  });
+
+  it("normalizes bounded draft Guide details", () => {
+    expect(
+      normalizedGuideDetails(
+        "category-id",
+        "  Install Tool  ",
+        "  Do it safely  ",
+      ),
+    ).toEqual({
+      categoryId: "category-id",
+      title: "Install Tool",
+      summary: "Do it safely",
+    });
+    expect(normalizedGuideDetails("", "Title", "Summary")).toBeNull();
+    expect(normalizedGuideDetails("category-id", "", "Summary")).toBeNull();
+    expect(normalizedGuideDetails("category-id", "Title", "")).toBeNull();
+    expect(
+      normalizedGuideDetails("category-id", "Title", "x".repeat(501)),
+    ).toBeNull();
   });
 });
 

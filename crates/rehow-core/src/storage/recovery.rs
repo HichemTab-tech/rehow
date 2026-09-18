@@ -59,7 +59,29 @@ pub(crate) struct CategoryCreateStorageOutcome {
     revision: Revision,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DocumentCreateError {
+    Busy,
+    Conflict,
+    Unsafe,
+    Unsupported,
+    TooLarge,
+    Io,
+    Incomplete,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DocumentCreateOutcome {
+    revision: Revision,
+}
+
 impl CategoryCreateStorageOutcome {
+    pub(crate) fn revision(self) -> Revision {
+        self.revision
+    }
+}
+
+impl DocumentCreateOutcome {
     pub(crate) fn revision(self) -> Revision {
         self.revision
     }
@@ -246,6 +268,85 @@ pub(super) fn execute_category_create(
     }
     Ok(CategoryCreateStorageOutcome {
         revision: super::document_revision(&relative_path, descriptor),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_document_create(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    relative_path: &str,
+    operation_id: OperationId,
+    created_at: Timestamp,
+    content: &[u8],
+) -> Result<DocumentCreateOutcome, DocumentCreateError> {
+    let store = store::RecoveryStore::open(
+        state_home,
+        workspace_id,
+        root.root_hash(),
+        root.capability_hash(),
+    )
+    .map_err(map_store_document_create)?;
+    let lock = store
+        .acquire_lock(runtime_directory)
+        .map_err(map_store_document_create)?;
+    let target = root
+        .open_managed_target(relative_path)
+        .map_err(map_io_document_create)?;
+    if !matches!(
+        target
+            .state(super::GUIDE_LIMIT)
+            .map_err(map_io_document_create)?,
+        super::linux::ManagedState::Missing
+    ) {
+        return Err(DocumentCreateError::Conflict);
+    }
+    let object_hash = store
+        .store_object(&lock, content)
+        .map_err(map_store_document_create)?;
+    let (root_device, root_inode) = root.identity().map_err(map_io_document_create)?;
+    let mut plan = blake3::Hasher::new();
+    plan.update(b"rehow-document-create-plan-v1\0");
+    hash_plan_field(&mut plan, relative_path.as_bytes());
+    hash_plan_field(&mut plan, content);
+    let journal = Journal {
+        generation: 1,
+        operation_id,
+        operation_kind: OperationKind::Create,
+        workspace_id,
+        root_hash: root.root_hash(),
+        root_device,
+        root_inode,
+        created_at,
+        plan_hash: *plan.finalize().as_bytes(),
+        targets: vec![Target {
+            relative_path: relative_path.to_owned(),
+            expected: ExpectedState::Absent,
+            intended: IntendedState::Object {
+                object_hash,
+                mode: 0o600,
+            },
+            temp_name: format!(".rehow-tmp-{operation_id}"),
+            step: TargetStep::Prepared,
+        }],
+        stage: JournalStage::Prepared,
+        completion: false,
+    };
+    if workspace::execute_new_journal(root, &store, &lock, journal.clone()).is_err() {
+        let committed = store
+            .read_journal(&lock, operation_id)
+            .is_ok_and(|persisted| {
+                committed_matches(&persisted, &journal)
+                    && workspace::resume_journal(root, &store, &lock, operation_id).is_ok()
+            });
+        if !committed {
+            return Err(DocumentCreateError::Incomplete);
+        }
+    }
+    Ok(DocumentCreateOutcome {
+        revision: super::document_revision(relative_path, content),
     })
 }
 
@@ -466,6 +567,29 @@ fn map_io_category_create(error: super::linux::MutationIoError) -> CategoryCreat
         super::linux::MutationIoError::Unsupported => CategoryCreateStorageError::Unsupported,
         super::linux::MutationIoError::TooLarge => CategoryCreateStorageError::TooLarge,
         super::linux::MutationIoError::Io => CategoryCreateStorageError::Io,
+    }
+}
+
+fn map_store_document_create(error: store::StoreError) -> DocumentCreateError {
+    match error {
+        store::StoreError::Busy => DocumentCreateError::Busy,
+        store::StoreError::Conflict | store::StoreError::Corrupt => DocumentCreateError::Conflict,
+        store::StoreError::Unsafe => DocumentCreateError::Unsafe,
+        store::StoreError::Unsupported => DocumentCreateError::Unsupported,
+        store::StoreError::TooLarge => DocumentCreateError::TooLarge,
+        store::StoreError::Io => DocumentCreateError::Io,
+        #[cfg(test)]
+        store::StoreError::Injected => DocumentCreateError::Io,
+    }
+}
+
+fn map_io_document_create(error: super::linux::MutationIoError) -> DocumentCreateError {
+    match error {
+        super::linux::MutationIoError::Unsafe => DocumentCreateError::Unsafe,
+        super::linux::MutationIoError::Conflict => DocumentCreateError::Conflict,
+        super::linux::MutationIoError::Unsupported => DocumentCreateError::Unsupported,
+        super::linux::MutationIoError::TooLarge => DocumentCreateError::TooLarge,
+        super::linux::MutationIoError::Io => DocumentCreateError::Io,
     }
 }
 

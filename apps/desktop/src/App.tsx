@@ -31,7 +31,12 @@ type FolderFacts = {
 
 type WorkspacePayload = {
   name: string;
-  categories: Array<{ id: string; name: string; guideCount: number }>;
+  categories: Array<{
+    id: string;
+    name: string;
+    status: "active" | "archived";
+    guideCount: number;
+  }>;
   guides: GuideSummary[];
   issueCount: number;
   facts: FolderFacts;
@@ -55,6 +60,11 @@ type SaveGuidePayload = {
 type CreateCategoryPayload = {
   workspace: WorkspacePayload;
   categoryId: string;
+};
+
+type CreateGuidePayload = {
+  workspace: WorkspacePayload;
+  guide: GuideBodyPayload;
 };
 
 type IconName =
@@ -191,7 +201,8 @@ export function nativeCommandError(error: unknown) {
   }
   return {
     code: "unknown",
-    message: "The Workspace could not be created. Choose the folder again.",
+    message:
+      "The operation could not be completed. Reopen the Workspace and try again.",
   };
 }
 
@@ -204,6 +215,21 @@ export function normalizedCategoryDetails(
   if (Array.from(name).length < 1 || Array.from(name).length > 200) return null;
   if (Array.from(summary).length > 500) return null;
   return { name, summary: summary === "" ? null : summary };
+}
+
+export function normalizedGuideDetails(
+  categoryId: string,
+  titleValue: string,
+  summaryValue: string,
+) {
+  const title = titleValue.trim();
+  const summary = summaryValue.trim();
+  if (categoryId === "") return null;
+  if (Array.from(title).length < 1 || Array.from(title).length > 200)
+    return null;
+  if (Array.from(summary).length < 1 || Array.from(summary).length > 500)
+    return null;
+  return { categoryId, title, summary };
 }
 
 export function gitFactLabel(facts: FolderFacts) {
@@ -282,6 +308,12 @@ export function App() {
   const [categorySummary, setCategorySummary] = useState("");
   const [savingCategory, setSavingCategory] = useState(false);
   const [categoryError, setCategoryError] = useState("");
+  const [creatingGuide, setCreatingGuide] = useState(false);
+  const [guideTitle, setGuideTitle] = useState("");
+  const [guideSummary, setGuideSummary] = useState("");
+  const [guideCategoryId, setGuideCategoryId] = useState("");
+  const [savingNewGuide, setSavingNewGuide] = useState(false);
+  const [guideCreateError, setGuideCreateError] = useState("");
   const [guideBody, setGuideBody] = useState<GuideBodyPayload | null>(null);
   const [editingGuide, setEditingGuide] = useState(false);
   const [draftBody, setDraftBody] = useState("");
@@ -301,6 +333,9 @@ export function App() {
   const categoryCreateButtonRef = useRef<HTMLButtonElement>(null);
   const categoryNameRef = useRef<HTMLInputElement>(null);
   const categoryErrorRef = useRef<HTMLParagraphElement>(null);
+  const guideCreateButtonRef = useRef<HTMLButtonElement>(null);
+  const guideTitleRef = useRef<HTMLInputElement>(null);
+  const guideCreateErrorRef = useRef<HTMLParagraphElement>(null);
   const guides = workspace?.guides ?? [];
   const visibleGuides = useMemo(
     () => rankedGuides(guides, query, rankedGuideIds),
@@ -436,8 +471,15 @@ export function App() {
   }, [query, workspace]);
 
   function confirmDiscard() {
-    if (savingGuide) return false;
-    return !dirtyGuide || window.confirm("Discard your unsaved Guide changes?");
+    if (savingGuide || savingNewGuide) return false;
+    if (dirtyGuide && !window.confirm("Discard your unsaved Guide changes?")) {
+      return false;
+    }
+    const dirtyNewGuide =
+      creatingGuide && (guideTitle.trim() !== "" || guideSummary.trim() !== "");
+    return (
+      !dirtyNewGuide || window.confirm("Discard this unfinished Guide draft?")
+    );
   }
 
   function openGuide(id: string, trigger?: HTMLButtonElement) {
@@ -490,6 +532,11 @@ export function App() {
         setCategoryName("");
         setCategorySummary("");
         setCategoryError("");
+        setCreatingGuide(false);
+        setGuideTitle("");
+        setGuideSummary("");
+        setGuideCategoryId("");
+        setGuideCreateError("");
       }
       if (result.kind === "compatible") {
         setWorkspace(result.workspace);
@@ -632,6 +679,73 @@ export function App() {
     }
   }
 
+  function beginGuideCreation() {
+    if (workspace === null || !workspace.facts.writable) return;
+    const category = workspace.categories.find(
+      (candidate) => candidate.status === "active",
+    );
+    if (!category) {
+      setAnnouncement("Create an active Category before creating a Guide.");
+      requestAnimationFrame(() => categoryCreateButtonRef.current?.focus());
+      return;
+    }
+    setGuideTitle("");
+    setGuideSummary("");
+    setGuideCategoryId(category.id);
+    setGuideCreateError("");
+    setCreatingGuide(true);
+    requestAnimationFrame(() => guideTitleRef.current?.focus());
+  }
+
+  function cancelGuideCreation() {
+    if (savingNewGuide) return;
+    if (
+      (guideTitle.trim() !== "" || guideSummary.trim() !== "") &&
+      !window.confirm("Discard this unfinished Guide draft?")
+    )
+      return;
+    setCreatingGuide(false);
+    setGuideTitle("");
+    setGuideSummary("");
+    setGuideCreateError("");
+    requestAnimationFrame(() => guideCreateButtonRef.current?.focus());
+  }
+
+  async function saveNewGuide() {
+    const details = normalizedGuideDetails(
+      guideCategoryId,
+      guideTitle,
+      guideSummary,
+    );
+    if (details === null || savingNewGuide) return;
+    setSavingNewGuide(true);
+    setGuideCreateError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const created = await invoke<CreateGuidePayload>(
+        "create_open_guide",
+        details,
+      );
+      setWorkspace(created.workspace);
+      setGuideBody(created.guide);
+      setDraftBody(created.guide.body);
+      setSelectedId(created.guide.id);
+      setCreatingGuide(false);
+      setEditingGuide(true);
+      setReaderOpen(true);
+      setQuery("");
+      setAnnouncement(`${details.title} Guide created as a draft.`);
+      requestAnimationFrame(() => editorRef.current?.focus());
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setGuideCreateError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => guideCreateErrorRef.current?.focus());
+    } finally {
+      setSavingNewGuide(false);
+    }
+  }
+
   function beginEditing() {
     if (guideBody === null || guideBody.id !== selected?.id) return;
     setDraftBody(guideBody.body);
@@ -726,10 +840,30 @@ export function App() {
         </button>
         <div className="toolbar-actions">
           <button
+            ref={guideCreateButtonRef}
             className="button button-primary"
             type="button"
-            title="Guide editing is enabled in the next phase"
-            disabled
+            onClick={beginGuideCreation}
+            aria-expanded={creatingGuide}
+            title={
+              workspace === null
+                ? "Open a Workspace to create a Guide"
+                : !workspace.facts.writable
+                  ? "This Workspace is read-only"
+                  : !workspace.categories.some(
+                        (category) => category.status === "active",
+                      )
+                    ? "Create an active Category first"
+                    : "Create Guide"
+            }
+            disabled={
+              workspace === null ||
+              !workspace.facts.writable ||
+              creatingGuide ||
+              !workspace.categories.some(
+                (category) => category.status === "active",
+              )
+            }
           >
             <Icon name="plus" />
             New Guide
@@ -919,6 +1053,118 @@ export function App() {
             </p>
           )}
         </div>
+        {creatingGuide && workspace !== null && (
+          <form
+            className="guide-create-form"
+            aria-busy={savingNewGuide}
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveNewGuide();
+            }}
+          >
+            <div className="guide-create-heading">
+              <div>
+                <h2>Create Guide</h2>
+                <p>Start a draft, then write the steps in the editor.</p>
+              </div>
+              <button
+                className="button"
+                type="button"
+                disabled={savingNewGuide}
+                onClick={cancelGuideCreation}
+              >
+                Cancel
+              </button>
+            </div>
+            <div className="guide-create-fields">
+              <label htmlFor="new-guide-title">Title</label>
+              <input
+                ref={guideTitleRef}
+                id="new-guide-title"
+                name="new-guide-title"
+                type="text"
+                autoComplete="off"
+                maxLength={200}
+                aria-invalid={guideCreateError !== ""}
+                aria-describedby={
+                  guideCreateError !== "" ? "guide-create-error" : undefined
+                }
+                value={guideTitle}
+                onChange={(event) => {
+                  setGuideTitle(event.target.value);
+                  setGuideCreateError("");
+                }}
+              />
+              <label htmlFor="new-guide-summary">Summary</label>
+              <textarea
+                id="new-guide-summary"
+                name="new-guide-summary"
+                autoComplete="off"
+                maxLength={500}
+                rows={2}
+                aria-invalid={guideCreateError !== ""}
+                aria-describedby={
+                  guideCreateError !== "" ? "guide-create-error" : undefined
+                }
+                value={guideSummary}
+                onChange={(event) => {
+                  setGuideSummary(event.target.value);
+                  setGuideCreateError("");
+                }}
+              />
+              <label htmlFor="new-guide-category">Category</label>
+              <select
+                id="new-guide-category"
+                name="new-guide-category"
+                autoComplete="off"
+                aria-invalid={guideCreateError !== ""}
+                aria-describedby={
+                  guideCreateError !== "" ? "guide-create-error" : undefined
+                }
+                value={guideCategoryId}
+                onChange={(event) => {
+                  setGuideCategoryId(event.target.value);
+                  setGuideCreateError("");
+                }}
+              >
+                {workspace.categories
+                  .filter((category) => category.status === "active")
+                  .map((category) => (
+                    <option key={category.id} value={category.id}>
+                      {category.name}
+                    </option>
+                  ))}
+              </select>
+            </div>
+            {guideCreateError !== "" && (
+              <p
+                ref={guideCreateErrorRef}
+                id="guide-create-error"
+                className="guide-create-error"
+                role="alert"
+                tabIndex={-1}
+              >
+                {guideCreateError}
+              </p>
+            )}
+            <div className="guide-create-actions">
+              <button
+                className="button button-primary"
+                type="submit"
+                disabled={
+                  savingNewGuide ||
+                  normalizedGuideDetails(
+                    guideCategoryId,
+                    guideTitle,
+                    guideSummary,
+                  ) === null
+                }
+              >
+                {savingNewGuide ? "Creating…" : "Create & Edit Guide"}
+              </button>
+            </div>
+          </form>
+        )}
         <ul ref={resultListRef} className="result-list" aria-label="Guides">
           {visibleGuides.length > 0 ? (
             visibleGuides.map((guide, index) => (

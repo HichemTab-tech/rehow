@@ -53,6 +53,7 @@ body {
 }
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -63,12 +64,14 @@ button {
 }
 button,
 a,
-input {
+input,
+select {
   outline: none;
 }
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
+select:focus-visible,
 textarea:focus-visible,
 [tabindex]:focus-visible {
   position: relative;
@@ -485,6 +488,75 @@ kbd {
   color: var(--muted);
   font-size: 11px;
   line-height: 16px;
+}
+.guide-create-form {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 12px;
+  padding: 14px;
+  border-bottom: 1px solid var(--divider-strong);
+  background: var(--reader);
+}
+.guide-create-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.guide-create-heading h2 {
+  margin: 0;
+  font-family: ui-serif, Georgia, serif;
+  font-size: 17px;
+  text-wrap: balance;
+}
+.guide-create-heading p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.guide-create-fields {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 10px;
+}
+.guide-create-fields label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.guide-create-fields input,
+.guide-create-fields select,
+.guide-create-fields textarea {
+  min-width: 0;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--divider-strong);
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 17px;
+}
+.guide-create-fields textarea {
+  resize: vertical;
+}
+.guide-create-fields input:focus-visible,
+.guide-create-fields select:focus-visible,
+.guide-create-fields textarea:focus-visible {
+  border-color: var(--focus);
+}
+.guide-create-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--warning);
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 11px;
+}
+.guide-create-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 .result-list {
   min-height: 0;
@@ -1154,6 +1226,13 @@ h1 {
   }
   .workspace-switcher {
     max-width: 138px;
+  }
+  .guide-create-fields {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+  .guide-create-fields label:not(:first-child) {
+    margin-top: 5px;
   }
   .guide-meta {
     display: grid;

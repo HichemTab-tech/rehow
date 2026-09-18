@@ -6,8 +6,9 @@
 
 pub(crate) mod recovery;
 pub(crate) use recovery::{
-    CategoryCreateStorageError, CategoryCreateStorageOutcome, DocumentUpdateError,
-    DocumentUpdateOutcome, WorkspaceInitializeError, WorkspaceInitializeOutcome,
+    CategoryCreateStorageError, CategoryCreateStorageOutcome, DocumentCreateError,
+    DocumentCreateOutcome, DocumentUpdateError, DocumentUpdateOutcome, WorkspaceInitializeError,
+    WorkspaceInitializeOutcome,
 };
 
 #[cfg(not(target_os = "linux"))]
@@ -301,6 +302,28 @@ pub(crate) fn execute_category_create(
         operation_id,
         created_at,
         descriptor,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_document_create(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    relative_path: &str,
+    operation_id: crate::protocol::OperationId,
+    created_at: crate::protocol::Timestamp,
+    content: &[u8],
+) -> Result<DocumentCreateOutcome, DocumentCreateError> {
+    recovery::execute_document_create(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        relative_path,
+        operation_id,
+        created_at,
+        content,
     )
 }
 

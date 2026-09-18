@@ -2,12 +2,13 @@ pub const APPLICATION_NAME: &str = "Rehow";
 
 use rehow_core::{
     application::{
-        CategoryCreateError, GUIDE_BODY_INPUT_LIMIT, GuideEdit, GuideUpdateError,
-        WorkspaceInitializationError, create_category, initialize_workspace, update_guide,
+        CategoryCreateError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError, GuideEdit, GuideUpdateError,
+        WorkspaceInitializationError, create_category, create_guide, initialize_workspace,
+        update_guide,
     },
     domain::GuideStatus,
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
-    protocol::{GuideId, Revision},
+    protocol::{CategoryId, GuideId, Revision},
     search::search_workspace,
     storage::{
         EmptyWorkspaceTarget, WorkspaceFolderFacts, WorkspaceInspection, WorkspaceView,
@@ -84,6 +85,7 @@ struct WorkspacePayload {
 struct CategoryPayload {
     id: String,
     name: String,
+    status: &'static str,
     guide_count: usize,
 }
 
@@ -125,6 +127,13 @@ struct CreateCategoryPayload {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct CreateGuidePayload {
+    workspace: WorkspacePayload,
+    guide: GuideBodyPayload,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct NativeCommandError {
     code: &'static str,
     message: String,
@@ -144,6 +153,10 @@ impl WorkspacePayload {
             categories.push(CategoryPayload {
                 id: category.id().to_string(),
                 name: category.name().to_owned(),
+                status: match category.status() {
+                    rehow_core::domain::CategoryStatus::Active => "active",
+                    rehow_core::domain::CategoryStatus::Archived => "archived",
+                },
                 guide_count: loaded_category.guides().len(),
             });
             for loaded_guide in loaded_category.guides() {
@@ -577,6 +590,127 @@ fn category_create_message(error: CategoryCreateError) -> String {
 }
 
 #[tauri::command]
+fn create_open_guide(
+    category_id: String,
+    title: String,
+    summary: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<CreateGuidePayload, NativeCommandError> {
+    if category_id.len() > 64 || title.len() > 1_024 || summary.len() > 4_096 {
+        return Err(native_command_error(
+            "invalidInput",
+            "Guide details are too long.".to_owned(),
+        ));
+    }
+    let category_id = CategoryId::from_str(&category_id).map_err(|_| {
+        native_command_error(
+            "invalidCategory",
+            "Choose an active Category for this Guide.".to_owned(),
+        )
+    })?;
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    fs::create_dir_all(&state_home).map_err(|_| {
+        native_command_error(
+            "stateUnavailable",
+            "Rehow could not prepare its private recovery folder.".to_owned(),
+        )
+    })?;
+    let mut guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_mut().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let outcome = create_guide(
+        &mut workspace.view,
+        &state_home,
+        runtime_directory.as_deref(),
+        category_id,
+        &title,
+        &summary,
+    )
+    .map_err(|error| native_command_error(guide_create_code(error), guide_create_message(error)))?;
+    let guide_id = outcome.guide_id();
+    Ok(CreateGuidePayload {
+        workspace: WorkspacePayload::from_view(
+            &workspace.view,
+            FolderFactsPayload::from(workspace.facts),
+        ),
+        guide: guide_body_payload(&workspace.view, &guide_id)
+            .map_err(|message| native_command_error("refreshRequired", message))?,
+    })
+}
+
+fn guide_create_code(error: GuideCreateError) -> &'static str {
+    match error {
+        GuideCreateError::CategoryNotFound => "categoryNotFound",
+        GuideCreateError::CategoryArchived => "categoryArchived",
+        GuideCreateError::InvalidTitle => "invalidTitle",
+        GuideCreateError::InvalidSummary => "invalidSummary",
+        GuideCreateError::Busy => "busy",
+        GuideCreateError::Conflict => "conflict",
+        GuideCreateError::UnsafeStorage => "unsafeStorage",
+        GuideCreateError::UnsupportedFilesystem => "unsupportedFilesystem",
+        GuideCreateError::ResourceLimit => "resourceLimit",
+        GuideCreateError::Io => "io",
+        GuideCreateError::Incomplete => "incomplete",
+        GuideCreateError::CommittedRefreshRequired { .. } => "committedRefresh",
+    }
+}
+
+fn guide_create_message(error: GuideCreateError) -> String {
+    match error {
+        GuideCreateError::CategoryNotFound => {
+            "That Category no longer exists. Refresh the Workspace and choose another.".to_owned()
+        }
+        GuideCreateError::CategoryArchived => {
+            "Choose an active Category before creating the Guide.".to_owned()
+        }
+        GuideCreateError::InvalidTitle => {
+            "Enter a Guide title between 1 and 200 characters.".to_owned()
+        }
+        GuideCreateError::InvalidSummary => {
+            "Enter a Guide summary between 1 and 500 characters.".to_owned()
+        }
+        GuideCreateError::Busy => {
+            "Another Rehow writer is active. Wait a moment and try again.".to_owned()
+        }
+        GuideCreateError::Conflict => {
+            "The Guide destination changed. Refresh the Workspace and try again.".to_owned()
+        }
+        GuideCreateError::UnsafeStorage => {
+            "The Guide destination is unsafe and was not overwritten.".to_owned()
+        }
+        GuideCreateError::UnsupportedFilesystem => {
+            "This filesystem cannot provide the atomic durability Rehow requires.".to_owned()
+        }
+        GuideCreateError::ResourceLimit => {
+            "The Workspace reached a safe Guide or content limit.".to_owned()
+        }
+        GuideCreateError::Io => {
+            "The Guide could not be created. Check folder access and try again.".to_owned()
+        }
+        GuideCreateError::Incomplete => {
+            "Guide creation was interrupted. Reopen the Workspace before trying again.".to_owned()
+        }
+        GuideCreateError::CommittedRefreshRequired { .. } => {
+            "The Guide was created, but Rehow could not refresh it. Reopen the Workspace."
+                .to_owned()
+        }
+    }
+}
+
+#[tauri::command]
 fn cancel_selected_workspace_initialization(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
@@ -663,6 +797,7 @@ pub fn run() {
             cancel_selected_workspace_initialization,
             choose_workspace,
             create_open_category,
+            create_open_guide,
             initialize_selected_workspace,
             read_open_guide,
             save_open_guide_body,
@@ -675,12 +810,15 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        APPLICATION_NAME, FolderFactsPayload, GuideBodyPayload, GuidePayload, WorkspacePayload,
-        category_create_code, category_create_message, guide_update_message, native_command_error,
+        APPLICATION_NAME, CategoryPayload, FolderFactsPayload, GuideBodyPayload, GuidePayload,
+        WorkspacePayload, category_create_code, category_create_message, guide_create_code,
+        guide_create_message, guide_update_message, native_command_error,
         workspace_initialization_message,
     };
     use rehow_core::{
-        application::{CategoryCreateError, GuideUpdateError, WorkspaceInitializationError},
+        application::{
+            CategoryCreateError, GuideCreateError, GuideUpdateError, WorkspaceInitializationError,
+        },
         markdown::parse_safe_markdown,
     };
 
@@ -693,7 +831,12 @@ mod tests {
     fn payload_field_names_are_stable() {
         let payload = WorkspacePayload {
             name: "Test".to_owned(),
-            categories: Vec::new(),
+            categories: vec![CategoryPayload {
+                id: "0199a1c2-d334-7d17-bd9c-f8b6ba3a5551".to_owned(),
+                name: "Linux".to_owned(),
+                status: "active",
+                guide_count: 1,
+            }],
             guides: vec![GuidePayload {
                 id: "0199a1d7-7b0d-7d8e-a38d-f936c5735e10".to_owned(),
                 title: "Test".to_owned(),
@@ -716,6 +859,7 @@ mod tests {
         assert_eq!(json["name"], "Test");
         assert_eq!(json["issueCount"], 0);
         assert_eq!(json["facts"]["writable"], true);
+        assert_eq!(json["categories"][0]["status"], "active");
         assert!(json["guides"][0].get("body").is_none());
     }
 
@@ -785,6 +929,22 @@ mod tests {
         assert_eq!(
             category_create_message(CategoryCreateError::Incomplete),
             "Category creation was interrupted. Reopen the Workspace to inspect the empty residue."
+        );
+    }
+
+    #[test]
+    fn guide_create_errors_are_stable_and_keep_creation_draft_only() {
+        assert_eq!(
+            guide_create_code(GuideCreateError::CategoryArchived),
+            "categoryArchived"
+        );
+        assert_eq!(
+            guide_create_message(GuideCreateError::InvalidSummary),
+            "Enter a Guide summary between 1 and 500 characters."
+        );
+        assert_eq!(
+            guide_create_message(GuideCreateError::Incomplete),
+            "Guide creation was interrupted. Reopen the Workspace before trying again."
         );
     }
 }

@@ -7,7 +7,11 @@
 
 use crate::{
     domain::content::{
-        emission::{EmitFailureKind, EmitField, emit_new_category, emit_new_workspace_manifest},
+        CategoryStatus,
+        emission::{
+            EmitFailureKind, EmitField, emit_new_category, emit_new_guide,
+            emit_new_workspace_manifest,
+        },
         guide::bind_guide,
         mutation::{
             GuideMutation, MutationFailureKind, MutationOutcome, MutationStamp, plan_guide_mutation,
@@ -16,12 +20,13 @@ use crate::{
     parsing::parse_guide_source,
     protocol::{
         CategoryId, GuideId, OperationId, Revision, Timestamp, current_timestamp, new_category_id,
-        new_operation_id, new_workspace_id,
+        new_guide_id, new_operation_id, new_workspace_id,
     },
     storage::{
-        CategoryCreateStorageError, DocumentUpdateError, EmptyWorkspaceTarget,
-        WorkspaceInitializeError, WorkspaceView, execute_category_create, execute_document_update,
-        execute_workspace_initialize, open_initialized_workspace, refresh_workspace,
+        CategoryCreateStorageError, DocumentCreateError, DocumentUpdateError, EmptyWorkspaceTarget,
+        WorkspaceInitializeError, WorkspaceView, execute_category_create, execute_document_create,
+        execute_document_update, execute_workspace_initialize, open_initialized_workspace,
+        refresh_workspace,
     },
 };
 use std::path::Path;
@@ -154,6 +159,155 @@ fn map_category_create_error(error: CategoryCreateStorageError) -> CategoryCreat
         CategoryCreateStorageError::TooLarge => CategoryCreateError::ResourceLimit,
         CategoryCreateStorageError::Io => CategoryCreateError::Io,
         CategoryCreateStorageError::Incomplete => CategoryCreateError::Incomplete,
+    }
+}
+
+const NEW_GUIDE_BODY: &[u8] = b"## Steps\n\n1. Describe the first step.\n";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GuideCreateError {
+    CategoryNotFound,
+    CategoryArchived,
+    InvalidTitle,
+    InvalidSummary,
+    Busy,
+    Conflict,
+    UnsafeStorage,
+    UnsupportedFilesystem,
+    ResourceLimit,
+    Io,
+    Incomplete,
+    CommittedRefreshRequired {
+        guide_id: GuideId,
+        revision: Revision,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GuideCreateOutcome {
+    guide_id: GuideId,
+    revision: Revision,
+}
+
+impl GuideCreateOutcome {
+    pub fn guide_id(self) -> GuideId {
+        self.guide_id
+    }
+
+    pub fn revision(self) -> Revision {
+        self.revision
+    }
+}
+
+pub fn create_guide(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    category_id: CategoryId,
+    title: &str,
+    summary: &str,
+) -> Result<GuideCreateOutcome, GuideCreateError> {
+    if workspace
+        .categories()
+        .iter()
+        .map(|category| category.guides().len())
+        .sum::<usize>()
+        >= 10_000
+    {
+        return Err(GuideCreateError::ResourceLimit);
+    }
+    let category = workspace
+        .categories()
+        .iter()
+        .find(|loaded| loaded.category().id() == &category_id)
+        .ok_or(GuideCreateError::CategoryNotFound)?;
+    if category.category().status() != CategoryStatus::Active {
+        return Err(GuideCreateError::CategoryArchived);
+    }
+    let relative_directory = category.relative_directory().to_owned();
+    let guide_id = new_guide_id();
+    let operation_id = new_operation_id();
+    let timestamp = current_timestamp();
+    let document = emit_new_guide(
+        &guide_id,
+        title,
+        summary,
+        &category_id,
+        &timestamp,
+        NEW_GUIDE_BODY,
+    )
+    .map_err(|error| match (error.kind(), error.field()) {
+        (EmitFailureKind::ResourceLimit, _) => GuideCreateError::ResourceLimit,
+        (EmitFailureKind::InvalidValue, EmitField::Summary) => GuideCreateError::InvalidSummary,
+        (EmitFailureKind::InvalidValue, EmitField::Title) => GuideCreateError::InvalidTitle,
+        (EmitFailureKind::InvalidValue, _) | (EmitFailureKind::CandidateMismatch, _) => {
+            GuideCreateError::Io
+        }
+    })?;
+    let relative_path = format!("{relative_directory}/{}", guide_file_name(title, &guide_id));
+    let result = execute_document_create(
+        workspace,
+        state_home,
+        runtime_directory,
+        &relative_path,
+        operation_id,
+        timestamp,
+        document.source_bytes(),
+    )
+    .map_err(map_guide_create_error)?;
+    if refresh_workspace(workspace).is_err()
+        || !workspace.categories().iter().any(|category| {
+            category.guides().iter().any(|loaded| {
+                loaded.guide().id() == &guide_id && loaded.revision() == result.revision()
+            })
+        })
+    {
+        return Err(GuideCreateError::CommittedRefreshRequired {
+            guide_id,
+            revision: result.revision(),
+        });
+    }
+    Ok(GuideCreateOutcome {
+        guide_id,
+        revision: result.revision(),
+    })
+}
+
+fn guide_file_name(title: &str, guide_id: &GuideId) -> String {
+    let mut slug = String::new();
+    let mut separator = false;
+    for character in title.chars() {
+        if character.is_ascii_alphanumeric() {
+            if separator && !slug.is_empty() && slug.len() < 80 {
+                slug.push('-');
+            }
+            separator = false;
+            if slug.len() < 80 {
+                slug.push(character.to_ascii_lowercase());
+            }
+        } else {
+            separator = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        slug.push_str("guide");
+    }
+    let id = guide_id.to_string();
+    format!("{slug}--{}.md", &id[id.len() - 10..])
+}
+
+fn map_guide_create_error(error: DocumentCreateError) -> GuideCreateError {
+    match error {
+        DocumentCreateError::Busy => GuideCreateError::Busy,
+        DocumentCreateError::Conflict => GuideCreateError::Conflict,
+        DocumentCreateError::Unsafe => GuideCreateError::UnsafeStorage,
+        DocumentCreateError::Unsupported => GuideCreateError::UnsupportedFilesystem,
+        DocumentCreateError::TooLarge => GuideCreateError::ResourceLimit,
+        DocumentCreateError::Io => GuideCreateError::Io,
+        DocumentCreateError::Incomplete => GuideCreateError::Incomplete,
     }
 }
 
@@ -652,6 +806,85 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn creates_a_canonical_draft_guide_in_an_active_category() {
+        let (workspace, state, mut view) = initialized_workspace("guide-create");
+        let category = create_category(&mut view, state.path(), None, "Linux System", None)
+            .unwrap()
+            .category_id();
+        let created = create_guide(
+            &mut view,
+            state.path(),
+            None,
+            category,
+            "Install a Tarball",
+            "Install a downloaded archive.",
+        )
+        .unwrap();
+
+        let loaded_category = &view.categories()[0];
+        let loaded = &loaded_category.guides()[0];
+        assert_eq!(loaded.guide().id(), &created.guide_id());
+        assert_eq!(loaded.guide().title(), "Install a Tarball");
+        assert_eq!(loaded.guide().summary(), "Install a downloaded archive.");
+        assert_eq!(loaded.guide().category_id(), &category);
+        assert_eq!(loaded.guide().declared_status(), GuideStatus::Draft);
+        assert_eq!(loaded.guide().body(), NEW_GUIDE_BODY);
+        assert_eq!(loaded.revision(), created.revision());
+        assert!(loaded.relative_path().starts_with(&format!(
+            "{}/install-a-tarball--",
+            loaded_category.relative_directory()
+        )));
+        assert_eq!(
+            fs::metadata(workspace.path().join(loaded.relative_path()))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn guide_creation_validates_before_writing() {
+        let guide_id = GuideId::from_str("0199a1d7-7b0d-7d8e-a38d-f936c5735e10").unwrap();
+        assert_eq!(guide_file_name("系统", &guide_id), "guide--36c5735e10.md");
+        let (workspace, state, mut view) = initialized_workspace("guide-create-invalid");
+        let category = create_category(&mut view, state.path(), None, "Linux System", None)
+            .unwrap()
+            .category_id();
+        let category_path = workspace
+            .path()
+            .join(view.categories()[0].relative_directory());
+        assert!(matches!(
+            create_guide(&mut view, state.path(), None, category, " ", "Summary"),
+            Err(GuideCreateError::InvalidTitle)
+        ));
+        assert!(matches!(
+            create_guide(
+                &mut view,
+                state.path(),
+                None,
+                category,
+                "Valid",
+                &"x".repeat(501)
+            ),
+            Err(GuideCreateError::InvalidSummary)
+        ));
+        assert!(matches!(
+            create_guide(
+                &mut view,
+                state.path(),
+                None,
+                CategoryId::from_str("0199a1c2-d334-7d17-bd9c-f8b6ba3a5552").unwrap(),
+                "Valid",
+                "Summary"
+            ),
+            Err(GuideCreateError::CategoryNotFound)
+        ));
+        assert_eq!(fs::read_dir(category_path).unwrap().count(), 1);
     }
 
     #[test]

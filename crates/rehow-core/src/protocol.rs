@@ -131,6 +131,10 @@ pub(crate) fn new_category_id() -> CategoryId {
     CategoryId(Uuid::now_v7())
 }
 
+pub(crate) fn new_guide_id() -> GuideId {
+    GuideId(Uuid::now_v7())
+}
+
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct RecentWorkspaceId(Uuid);
 string_ts!(RecentWorkspaceId);
