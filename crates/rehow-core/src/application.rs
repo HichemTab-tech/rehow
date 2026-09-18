@@ -26,15 +26,39 @@ use crate::{
     storage::{
         CategoryCreateStorageError, CategoryRemoveStorageError, DocumentCreateError,
         DocumentRemoveError, DocumentUpdateError, DocumentUpdateRequest, EmptyWorkspaceTarget,
-        MultiDocumentUpdateError, WorkspaceInitializeError, WorkspaceView, execute_category_create,
-        execute_category_remove, execute_document_create, execute_document_move,
-        execute_document_remove, execute_document_update, execute_multi_document_update,
-        execute_workspace_initialize, open_initialized_workspace, refresh_workspace,
+        MultiDocumentUpdateError, WorkspaceInitializeError, WorkspaceInspectError, WorkspaceView,
+        execute_category_create, execute_category_remove, execute_document_create,
+        execute_document_move, execute_document_remove, execute_document_update,
+        execute_multi_document_update, execute_workspace_initialize, open_initialized_workspace,
+        refresh_workspace,
     },
 };
 use std::{collections::HashSet, path::Path};
 
 pub const GUIDE_BODY_INPUT_LIMIT: usize = 2 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceRefreshError {
+    NotFound,
+    NotDirectory,
+    PermissionDenied,
+    UnsafeStorage,
+    ResourceLimit,
+    ChangedDuringRead,
+    Io,
+}
+
+pub fn refresh_open_workspace(workspace: &mut WorkspaceView) -> Result<(), WorkspaceRefreshError> {
+    refresh_workspace(workspace).map_err(|error| match error {
+        WorkspaceInspectError::NotFound => WorkspaceRefreshError::NotFound,
+        WorkspaceInspectError::NotDirectory => WorkspaceRefreshError::NotDirectory,
+        WorkspaceInspectError::PermissionDenied => WorkspaceRefreshError::PermissionDenied,
+        WorkspaceInspectError::UnsafeRoot => WorkspaceRefreshError::UnsafeStorage,
+        WorkspaceInspectError::ResourceLimit => WorkspaceRefreshError::ResourceLimit,
+        WorkspaceInspectError::ChangedDuringRead => WorkspaceRefreshError::ChangedDuringRead,
+        WorkspaceInspectError::Io => WorkspaceRefreshError::Io,
+    })
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CategoryCreateError {
@@ -1487,6 +1511,76 @@ mod tests {
                 .mode()
                 & 0o777,
             0o700
+        );
+    }
+
+    #[test]
+    fn manual_refresh_reconciles_external_changes_and_isolates_malformed_guides() {
+        let (workspace, _state, mut view) = fixture("manual-refresh", GUIDE);
+        let category = workspace.path().join("categories/linux-system--b6ba3a5551");
+        let original_path = category.join("install--36c5735e10.md");
+        let original_revision = revision(&view);
+        fs::write(
+            &original_path,
+            GUIDE.replace("title: Install a Tarball", "title: Updated Externally"),
+        )
+        .unwrap();
+        let second_id = "0199a1d7-7b0d-7d8e-a38d-f936c5735e11";
+        let second_path = category.join("second--36c5735e11.md");
+        fs::write(
+            &second_path,
+            GUIDE
+                .replace(GUIDE_ID, second_id)
+                .replace("title: Install a Tarball", "title: Added Externally"),
+        )
+        .unwrap();
+        fs::set_permissions(&second_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let malformed_path = category.join("broken.md");
+        fs::write(&malformed_path, "not Guide frontmatter\n").unwrap();
+        fs::set_permissions(&malformed_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        refresh_open_workspace(&mut view).unwrap();
+        let guides = view.categories()[0].guides();
+        assert_eq!(guides.len(), 2);
+        assert_eq!(view.issues().len(), 1);
+        let updated = guides
+            .iter()
+            .find(|guide| guide.guide().id() == &GuideId::from_str(GUIDE_ID).unwrap())
+            .unwrap();
+        assert_eq!(updated.guide().title(), "Updated Externally");
+        assert_ne!(updated.revision(), original_revision);
+        assert!(
+            guides
+                .iter()
+                .any(|guide| guide.guide().title() == "Added Externally")
+        );
+
+        fs::remove_file(original_path).unwrap();
+        refresh_open_workspace(&mut view).unwrap();
+        assert_eq!(view.categories()[0].guides().len(), 1);
+        assert_eq!(
+            view.categories()[0].guides()[0].guide().title(),
+            "Added Externally"
+        );
+        assert_eq!(view.issues().len(), 1);
+    }
+
+    #[test]
+    fn failed_manual_refresh_retains_the_last_compatible_view() {
+        let (workspace, _state, mut view) = fixture("manual-refresh-failure", GUIDE);
+        let manifest_revision = view.manifest_revision();
+        fs::remove_file(workspace.path().join("rehow.yaml")).unwrap();
+
+        assert_eq!(
+            refresh_open_workspace(&mut view),
+            Err(WorkspaceRefreshError::ChangedDuringRead)
+        );
+        assert_eq!(view.manifest_revision(), manifest_revision);
+        assert_eq!(view.categories().len(), 1);
+        assert_eq!(view.categories()[0].guides().len(), 1);
+        assert_eq!(
+            view.categories()[0].guides()[0].guide().title(),
+            "Install a Tarball"
         );
     }
 

@@ -169,7 +169,8 @@ textarea:focus-visible,
   background: var(--rail);
 }
 .workspace-switcher:disabled,
-.button:disabled {
+.button:disabled,
+.icon-button:disabled {
   cursor: default;
   opacity: 0.58;
 }

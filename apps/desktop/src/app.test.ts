@@ -17,6 +17,7 @@ import {
   normalizedGuideTerms,
   normalizedWorkspaceName,
   rankedGuides,
+  refreshedGuideId,
   resultCountLabel,
 } from "./App";
 import { MarkdownDocument } from "./MarkdownDocument";
@@ -61,6 +62,13 @@ describe("application identity", () => {
   it("detects exact Guide editor dirty state", () => {
     expect(hasUnsavedChanges("same\n", "same\n")).toBe(false);
     expect(hasUnsavedChanges("same\n", "changed\n")).toBe(true);
+  });
+
+  it("preserves or safely falls back after Workspace refresh", () => {
+    const guides = [{ id: "one" }, { id: "two" }];
+    expect(refreshedGuideId("two", guides)).toBe("two");
+    expect(refreshedGuideId("removed", guides)).toBe("one");
+    expect(refreshedGuideId("removed", [])).toBe("");
   });
 
   it("labels Guide archive and restore states explicitly", () => {
@@ -187,6 +195,7 @@ describe("application shell semantics", () => {
     expect(markup).toContain('aria-controls="workspace-navigation"');
     expect(markup).toContain("Open Workspace");
     expect(markup).toContain("No Workspace open");
+    expect(markup).toContain('aria-label="Refresh Workspace"');
     expect(markup).toContain('translate="no"');
   });
 });

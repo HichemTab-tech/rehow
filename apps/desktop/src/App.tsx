@@ -90,6 +90,7 @@ type IconName =
   | "folder"
   | "tag"
   | "archive"
+  | "refresh"
   | "settings";
 
 function Icon({ name }: { name: IconName }) {
@@ -125,6 +126,14 @@ function Icon({ name }: { name: IconName }) {
       <>
         <path d="M4 7h16v13H4zM3 4h18v4H3z" />
         <path d="M9 12h6" />
+      </>
+    ),
+    refresh: (
+      <>
+        <path d="M20 7v5h-5" />
+        <path d="M4 17v-5h5" />
+        <path d="M6.1 9a7 7 0 0 1 11.6-2L20 9" />
+        <path d="m4 15 2.3 2a7 7 0 0 0 11.6-2" />
       </>
     ),
     settings: (
@@ -181,6 +190,15 @@ export function guideLifecycleLabel(
 ) {
   if (status === "Archived") return busy ? "Restoring…" : "Restore Guide";
   return busy ? "Archiving…" : "Archive Guide";
+}
+
+export function refreshedGuideId(
+  currentId: string,
+  guides: ReadonlyArray<{ id: string }>,
+) {
+  return guides.some(({ id }) => id === currentId)
+    ? currentId
+    : (guides[0]?.id ?? "");
 }
 
 export function rankedGuides(
@@ -370,6 +388,7 @@ export function App() {
   );
   const [announcement, setAnnouncement] = useState("");
   const [openingWorkspace, setOpeningWorkspace] = useState(false);
+  const [refreshingWorkspace, setRefreshingWorkspace] = useState(false);
   const [pendingWorkspace, setPendingWorkspace] = useState<FolderFacts | null>(
     null,
   );
@@ -425,6 +444,7 @@ export function App() {
   const resultListRef = useRef<HTMLUListElement>(null);
   const lastResultRef = useRef<HTMLButtonElement | null>(null);
   const railToggleRef = useRef<HTMLButtonElement>(null);
+  const workspaceRefreshRef = useRef<HTMLButtonElement>(null);
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const editDetailsButtonRef = useRef<HTMLButtonElement>(null);
   const guideStatusButtonRef = useRef<HTMLButtonElement>(null);
@@ -479,6 +499,21 @@ export function App() {
     categoryBeingRenamed !== null &&
     (categoryRenameValue !== categoryBeingRenamed.name ||
       categoryRenameSummary !== (categoryBeingRenamed.summary ?? ""));
+  const dirtyCategoryCreate =
+    creatingCategory &&
+    (categoryName.trim() !== "" || categorySummary.trim() !== "");
+  const workspaceOperationBusy =
+    savingGuide ||
+    savingNewGuide ||
+    savingGuideDetails ||
+    savingCategory ||
+    savingCategoryRename ||
+    updatingGuideStatus ||
+    updatingCategoryStatusId !== "" ||
+    reorderingCategoryId !== "" ||
+    removingCategoryId !== "" ||
+    removingGuide ||
+    refreshingWorkspace;
 
   useEffect(() => {
     const theme = initialParameter("theme");
@@ -533,14 +568,20 @@ export function App() {
   }, [editingGuide, editingGuideDetails, railOpen, readerOpen]);
 
   useEffect(() => {
-    if (!dirtyGuide && !dirtyGuideDetails && !dirtyCategoryRename) return;
+    if (
+      !dirtyGuide &&
+      !dirtyGuideDetails &&
+      !dirtyCategoryRename &&
+      !dirtyCategoryCreate
+    )
+      return;
     function warnBeforeUnload(event: BeforeUnloadEvent) {
       event.preventDefault();
       event.returnValue = "";
     }
     window.addEventListener("beforeunload", warnBeforeUnload);
     return () => window.removeEventListener("beforeunload", warnBeforeUnload);
-  }, [dirtyCategoryRename, dirtyGuide, dirtyGuideDetails]);
+  }, [dirtyCategoryCreate, dirtyCategoryRename, dirtyGuide, dirtyGuideDetails]);
 
   useEffect(() => {
     if (workspace === null || selectedId === "") {
@@ -605,15 +646,7 @@ export function App() {
   }, [query, workspace]);
 
   function confirmDiscard() {
-    if (
-      savingGuide ||
-      savingNewGuide ||
-      savingGuideDetails ||
-      savingCategoryRename ||
-      updatingGuideStatus ||
-      updatingCategoryStatusId !== ""
-    )
-      return false;
+    if (workspaceOperationBusy) return false;
     if (dirtyGuide && !window.confirm("Discard your unsaved Guide changes?")) {
       return false;
     }
@@ -626,6 +659,12 @@ export function App() {
     if (
       dirtyCategoryRename &&
       !window.confirm("Discard this Category name change?")
+    ) {
+      return false;
+    }
+    if (
+      dirtyCategoryCreate &&
+      !window.confirm("Discard this unfinished Category?")
     ) {
       return false;
     }
@@ -742,6 +781,58 @@ export function App() {
       setAnnouncement("The native Workspace picker is unavailable.");
     } finally {
       setOpeningWorkspace(false);
+    }
+  }
+
+  async function refreshWorkspace() {
+    if (workspace === null || refreshingWorkspace || !confirmDiscard()) return;
+    const previousSelectedId = selectedId;
+    const previousSelectedTitle = selected?.title ?? "The selected Guide";
+    setRefreshingWorkspace(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const refreshed = await invoke<WorkspacePayload>(
+        "refresh_open_workspace",
+      );
+      const selectedRemoved =
+        previousSelectedId !== "" &&
+        !refreshed.guides.some(({ id }) => id === previousSelectedId);
+      const nextGuideId = refreshedGuideId(
+        previousSelectedId,
+        refreshed.guides,
+      );
+      setWorkspace(refreshed);
+      setSelectedId(nextGuideId);
+      setEditingGuide(false);
+      setEditingGuideDetails(false);
+      setCreatingGuide(false);
+      setCreatingCategory(false);
+      setRenamingCategoryId("");
+      setGuideCreateError("");
+      setCategoryError("");
+      setCategoryRenameError("");
+      if (selectedRemoved) {
+        setReaderOpen(false);
+        setAnnouncement(
+          `${previousSelectedTitle} was removed or is unavailable. Workspace refreshed with ${resultCountLabel(refreshed.guides.length)}.`,
+        );
+        requestAnimationFrame(() => searchRef.current?.focus());
+      } else {
+        const issueMessage =
+          refreshed.issueCount === 0
+            ? "No issues found."
+            : `${refreshed.issueCount} item${refreshed.issueCount === 1 ? "" : "s"} need attention.`;
+        setAnnouncement(
+          `Workspace refreshed with ${resultCountLabel(refreshed.guides.length)}. ${issueMessage}`,
+        );
+        requestAnimationFrame(() => workspaceRefreshRef.current?.focus());
+      }
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => workspaceRefreshRef.current?.focus());
+    } finally {
+      setRefreshingWorkspace(false);
     }
   }
 
@@ -1386,6 +1477,28 @@ export function App() {
           <Icon name="chevron" />
         </button>
         <div className="toolbar-actions">
+          <button
+            ref={workspaceRefreshRef}
+            className="icon-button"
+            type="button"
+            aria-label={
+              refreshingWorkspace ? "Refreshing Workspace" : "Refresh Workspace"
+            }
+            aria-busy={refreshingWorkspace}
+            title={
+              workspace === null
+                ? "Open a Workspace to refresh"
+                : refreshingWorkspace
+                  ? "Refreshing Workspace…"
+                  : "Refresh Workspace"
+            }
+            disabled={
+              workspace === null || workspaceOperationBusy || openingWorkspace
+            }
+            onClick={() => void refreshWorkspace()}
+          >
+            <Icon name="refresh" />
+          </button>
           <button
             ref={guideCreateButtonRef}
             className="button button-primary"

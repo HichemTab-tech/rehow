@@ -4,10 +4,10 @@ use rehow_core::{
     application::{
         CategoryCreateError, CategoryOrderRevision, CategoryRemoveError, CategoryReorderError,
         CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError, GuideEdit, GuideRemoveError,
-        GuideUpdateError, WorkspaceInitializationError, create_category, create_guide,
-        initialize_workspace, remove_category, remove_guide, reorder_categories,
-        set_category_archived, set_guide_archived, update_category_details, update_guide,
-        update_guide_details,
+        GuideUpdateError, WorkspaceInitializationError, WorkspaceRefreshError, create_category,
+        create_guide, initialize_workspace, refresh_open_workspace as refresh_workspace_view,
+        remove_category, remove_guide, reorder_categories, set_category_archived,
+        set_guide_archived, update_category_details, update_guide, update_guide_details,
     },
     domain::GuideStatus,
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -300,6 +300,70 @@ fn search_open_workspace(
                 "Search query has too many terms".to_owned()
             }
         })
+}
+
+#[tauri::command]
+fn refresh_open_workspace(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<WorkspacePayload, NativeCommandError> {
+    let mut guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_mut().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+    })?;
+    refresh_workspace_view(&mut workspace.view).map_err(|error| {
+        native_command_error(
+            workspace_refresh_code(error),
+            workspace_refresh_message(error),
+        )
+    })?;
+    Ok(WorkspacePayload::from_view(
+        &workspace.view,
+        FolderFactsPayload::from(workspace.facts),
+    ))
+}
+
+fn workspace_refresh_code(error: WorkspaceRefreshError) -> &'static str {
+    match error {
+        WorkspaceRefreshError::NotFound => "notFound",
+        WorkspaceRefreshError::NotDirectory => "notDirectory",
+        WorkspaceRefreshError::PermissionDenied => "permissionDenied",
+        WorkspaceRefreshError::UnsafeStorage => "unsafeStorage",
+        WorkspaceRefreshError::ResourceLimit => "resourceLimit",
+        WorkspaceRefreshError::ChangedDuringRead => "changedDuringRead",
+        WorkspaceRefreshError::Io => "io",
+    }
+}
+
+fn workspace_refresh_message(error: WorkspaceRefreshError) -> String {
+    match error {
+        WorkspaceRefreshError::NotFound => {
+            "The Workspace folder is no longer available. Reopen it when it returns.".to_owned()
+        }
+        WorkspaceRefreshError::NotDirectory => {
+            "The Workspace location is no longer a folder. Choose another Workspace.".to_owned()
+        }
+        WorkspaceRefreshError::PermissionDenied => {
+            "Rehow no longer has permission to read this Workspace.".to_owned()
+        }
+        WorkspaceRefreshError::UnsafeStorage => {
+            "The Workspace path is unsafe or changed type. Rehow kept the previous view.".to_owned()
+        }
+        WorkspaceRefreshError::ResourceLimit => {
+            "The Workspace exceeds Rehow’s safe refresh limits.".to_owned()
+        }
+        WorkspaceRefreshError::ChangedDuringRead => {
+            "The Workspace changed while refreshing. Try again after file activity settles."
+                .to_owned()
+        }
+        WorkspaceRefreshError::Io => {
+            "The Workspace could not be refreshed. Check folder access and try again.".to_owned()
+        }
+    }
 }
 
 #[tauri::command]
@@ -1629,6 +1693,7 @@ pub fn run() {
             create_open_guide,
             initialize_selected_workspace,
             read_open_guide,
+            refresh_open_workspace,
             remove_open_category,
             remove_open_guide,
             reorder_open_categories,
@@ -1652,11 +1717,13 @@ mod tests {
         category_update_code, category_update_message, guide_create_code, guide_create_message,
         guide_remove_code, guide_remove_confirmation, guide_remove_message, guide_update_code,
         guide_update_message, native_command_error, workspace_initialization_message,
+        workspace_refresh_code, workspace_refresh_message,
     };
     use rehow_core::{
         application::{
             CategoryCreateError, CategoryRemoveError, CategoryReorderError, CategoryUpdateError,
             GuideCreateError, GuideRemoveError, GuideUpdateError, WorkspaceInitializationError,
+            WorkspaceRefreshError,
         },
         markdown::parse_safe_markdown,
     };
@@ -1799,6 +1866,22 @@ mod tests {
             ))
             .unwrap(),
             serde_json::json!({ "code": "conflict", "message": "Folder changed." })
+        );
+    }
+
+    #[test]
+    fn workspace_refresh_errors_are_stable_and_actionable() {
+        assert_eq!(
+            workspace_refresh_code(WorkspaceRefreshError::ChangedDuringRead),
+            "changedDuringRead"
+        );
+        assert_eq!(
+            workspace_refresh_message(WorkspaceRefreshError::UnsafeStorage),
+            "The Workspace path is unsafe or changed type. Rehow kept the previous view."
+        );
+        assert_eq!(
+            workspace_refresh_message(WorkspaceRefreshError::NotFound),
+            "The Workspace folder is no longer available. Reopen it when it returns."
         );
     }
 
