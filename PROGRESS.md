@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 1E-A / 2B — read-only Workspace and safe Markdown reader checkpoints; independent security acceptance remains open.
+Phase 1E-A / 2B / 4A — read-only Workspace, safe Markdown, and ranked-search checkpoints; independent security acceptance remains open.
 
 ## Current task
 
-Implement the atomic/revision-checked storage mutation foundation needed for create/edit Guide workflows. Complete one combined Security Reviewer and native portal/manual UI gate later, when agent quota and an interactive display are available.
+Implement ADR 0009's atomic/revision-checked storage and recovery foundation needed for create/edit Guide workflows. Complete one combined Security Reviewer and native portal/manual UI gate later, when agent quota and an interactive display are available.
 
 ## Overall status
 
-In progress. Phase 0 through Phase 1C and Phase 1D-A/B are accepted; Phase 1D-C1/C2a are checkpointed. The Reference Desk has a tested real-data read path and now renders Guide CommonMark/GFM through a bounded Rust-generated safe AST. HTML, media, links, and commands remain inert; code copy is the only Guide action. Phase 1E-A/2B remain implementation checkpoints until the deferred combined independent security and manual native/visual gates run.
+In progress. Phase 0 through Phase 1C and Phase 1D-A/B are accepted; Phase 1D-C1/C2a are checkpointed. The Reference Desk has a tested real-data read path, bounded safe Markdown rendering, and backend-ranked search across required Guide fields. HTML, media, links, and commands remain inert; code copy is the only Guide action. Phase 1E-A/2B/4A remain implementation checkpoints until the deferred combined independent security and manual native/visual gates run.
 
 ## Completed work
 
@@ -57,10 +57,11 @@ In progress. Phase 0 through Phase 1C and Phase 1D-A/B are accepted; Phase 1D-C1
 - Replaced the inert UI with the responsive Reference Desk shell: three/two/one-pane layouts, incremental search, result selection, keyboard search/results/Escape behavior, responsive Workspace drawer, deterministic focus restoration, Guide reading, command copy, empty results, live announcements, light/dark themes, and current-guideline accessibility. The combined Design Reviewer closure reports no remaining finding; signed checkpoint `df95874` verifies.
 - Implemented Phase 1E-A read-only Workspace loading: Linux descriptor confinement, bounded classification and scanning, BLAKE3 revisions, symlink/hardlink/special-file denial, changed-during-read refusal, duplicate/malformed isolation, a native Rust folder dialog with no renderer path argument, retained native session state, bounded metadata IPC, validated per-Guide body IPC, and real-data Reference Desk states. Full tests/Clippy/build/native build pass; independent security and manual UI closure remain open.
 - Implemented the safe Markdown reader: exact-pinned `pulldown-cmark 0.13.4` produces a versioned, bounded typed event AST; strict canonical URL policy is shared with Guide references; image sources are omitted; raw HTML is literal; React uses no HTML injection, navigation, or media source; code blocks provide a user-gesture copy action. Generated contracts and adversarial Rust/React/IPC tests pass at signed checkpoint `9594c51`.
+- Implemented Phase 4A ranked search at signed checkpoint `0d0bf40`: an 80 ms debounced Tauri command searches title, aliases, commands, affected/inline paths, error lines/warnings, Tags, Category, summary, headings, body, and remaining known content. NFKC/lowercase normalization, quoted phrases, all-term coverage, documented boosts, status tie-breaking, archived exclusion, stable ordering, and input/result caps are tested. It scans the already loaded view; disposable indexing, watchers, snippets, and production performance acceptance remain open.
 
 ## Work in progress
 
-- The read-only vertical slice and safe Markdown reader are green locally. Effective writability and Git-folder facts are surfaced. The next active boundary is atomic revision-checked storage mutation; C2b remains required before broad edit support. Independent security and manual native/visual closure are deferred to one combined major checkpoint.
+- The read-only vertical slice, safe Markdown reader, and ranked full-content search are green locally. Effective writability and Git-folder facts are surfaced. The next active boundary is ADR 0009 atomic revision-checked storage/recovery; C2b remains required before broad edit support. Independent security and manual native/visual closure are deferred to one combined major checkpoint.
 
 ## Remaining work
 
@@ -74,7 +75,7 @@ In progress. Phase 0 through Phase 1C and Phase 1D-A/B are accepted; Phase 1D-C1
 
 ## Known bugs
 
-No known regression in accepted phases. Phase 1E-A currently retains all parsed Guide bodies in native memory for the session; broad IPC is bounded, but streaming/lazy native reread is still required before claiming the 2 GiB worst-case scan budget is production-memory-safe. External changes after the initial scan are not watched/reloaded yet. Safe links are intentionally inert until the guarded native opener exists. Bare repositories and Git command/status facts remain Phase 5.
+No known regression in accepted phases. Phase 1E-A currently retains all parsed Guide bodies in native memory for the session; broad IPC is bounded, but streaming/lazy native reread is still required before claiming the 2 GiB worst-case scan budget is production-memory-safe. Phase 4A scans and normalizes the loaded view per query, so it does not yet claim the 5,000-Guide latency/RSS budgets; the disposable index and benchmark remain required. External changes are not watched/reloaded. Safe links are intentionally inert until the guarded native opener exists.
 
 ## Design and accessibility findings
 
@@ -114,10 +115,11 @@ No known regression in accepted phases. Phase 1E-A currently retains all parsed 
 
 ## Latest verified commit
 
-`9594c51` — signed safe Markdown reader checkpoint atop the read-only Workspace implementation. Independent security/manual acceptance remains open.
+`0d0bf40` — signed ranked-search checkpoint atop the read-only Workspace and safe Markdown implementation. Independent security/manual acceptance remains open.
 
 ## Tests last run and results
 
+- 2026-09-18: ranked-search checkpoint: focused relevance tests, locked core/desktop Clippy with warnings denied, 3 desktop Rust tests, `pnpm check`, 10 Vitest tests, Vite production build, bootstrap, formatting, and whitespace checks pass. Fixtures prove exact title over repeated body text, alias/command/path/error treatment, cross-field terms, Unicode/case normalization, quoted phrases, archived scope, caps, deterministic ordering, and UI rank mapping. Production performance is explicitly not yet accepted.
 - 2026-09-18: safe Markdown checkpoint: `pnpm check`, 9 Vitest tests, Vite production build, locked core/desktop Clippy with warnings denied, 195 core library tests plus all 18 error/13 protocol/11 unknown-YAML/public-API suites, 3 desktop Rust tests, contract drift, bootstrap, formatting, and whitespace checks pass. Focused tests cover input/node/nesting limits, HTML literal handling, strict links, omitted image sources, safe IPC shape, unsupported AST versions, absent `href`/`src`, and code-copy controls.
 - 2026-09-18: dependency audit: exact `pulldown-cmark 0.13.4` is MIT, Rust 1.71.1 minimum, under 1 MiB unpacked, unsafe-forbidden with selected features, and reaches only `unicase` plus already-used `bitflags`/`memchr`; default and generation features are disabled.
 - 2026-09-18: Phase 1E-A folder-facts gate: locked full Workspace tests (core 188 library plus all integration/public suites, desktop 2, MCP 1), full Workspace Clippy with warnings denied, `pnpm check`, 7 Vitest tests, Vite production build, optimized Tauri no-bundle build, bootstrap, and whitespace checks pass. It covers writable/read-only folders, root `.git` directory and worktree file, ancestor/nested repository, unsafe symlink/invalid marker, incomplete probes, and UI Git labels.
@@ -236,7 +238,7 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 
 ## Next recommended action
 
-Implement the smallest atomic, revision-checked Guide write boundary, then expose create-draft/edit workflows without allowing automation to create `tested`. Follow with lazy rereads/watch invalidation. At the next major checkpoint, run exactly one Security Reviewer/xhigh closure over the combined filesystem/renderer boundary and capture native real-data/error states.
+Implement ADR 0009's storage foundation as a dedicated major phase: XDG state identity/layout, cooperating lock, durable objects/journal generations, Linux no-replace/exchange, revision recheck, recovery classification, and injected-stage tests. Only then expose create-draft/edit workflows. At that major checkpoint, run exactly one Security Reviewer/xhigh closure and capture native real-data/error states.
 
 ## Recommended agent role and reasoning effort
 
@@ -245,8 +247,8 @@ Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents for routine work; us
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read `docs/task-packets/phase-1e-a-readonly-workspace.md`, `docs/task-packets/phase-2b-safe-markdown.md`, `docs/architecture.md`, `docs/threat-model.md`, and ADRs 0002/0003/0005/0009/0014.
+2. Read `docs/task-packets/phase-1e-a-readonly-workspace.md`, `docs/task-packets/phase-2b-safe-markdown.md`, `docs/task-packets/phase-4a-ranked-search.md`, `docs/architecture.md`, `docs/threat-model.md`, and ADRs 0002/0003/0005/0009/0014.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `2339c48`, `3b071b4`, and `9594c51`; the following commit should change only `PROGRESS.md`.
+4. Verify signed checkpoints `2339c48`, `3b071b4`, `9594c51`, and `0d0bf40`; the following commit should change only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Run the smallest storage/desktop checks. Resume with atomic revision-checked Guide storage writes; do not send or accept arbitrary paths over IPC and do not permit a write to create `tested`.
