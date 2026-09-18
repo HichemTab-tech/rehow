@@ -17,7 +17,7 @@ pub(crate) use recovery::{
 compile_error!("Rehow's confined Workspace storage currently requires Linux");
 
 use crate::{
-    domain::{Category, Guide, WorkspaceManifest},
+    domain::{Category, Guide, GuideStatus, WorkspaceManifest},
     protocol::Revision,
 };
 use std::{collections::HashSet, fmt, path::Path};
@@ -33,6 +33,7 @@ pub enum WorkspaceIssueKind {
     CategoryMismatch,
     DuplicateCategoryId,
     DuplicateGuideId,
+    VerificationMismatch,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -141,6 +142,7 @@ pub struct LoadedGuide {
     relative_path: String,
     revision: Revision,
     guide: Guide,
+    effective_status: GuideStatus,
 }
 
 impl WorkspaceView {
@@ -190,6 +192,10 @@ impl LoadedGuide {
 
     pub fn guide(&self) -> &Guide {
         &self.guide
+    }
+
+    pub fn effective_status(&self) -> GuideStatus {
+        self.effective_status
     }
 }
 
@@ -709,10 +715,42 @@ fn inspect_open_root(
                 )?;
                 continue;
             }
+            let effective_status = if bound_guide.record().declared_status() == GuideStatus::Tested
+            {
+                let calculated = crate::domain::content::verification::verification_hash(
+                    &bound_guide,
+                )
+                .map_err(|error| match error {
+                    crate::domain::content::verification::VerificationFailure::ResourceLimit => {
+                        WorkspaceInspectError::ResourceLimit
+                    }
+                    crate::domain::content::verification::VerificationFailure::Invariant => {
+                        WorkspaceInspectError::Io
+                    }
+                })?;
+                if bound_guide
+                    .record()
+                    .verification()
+                    .and_then(|verification| verification.verified_content_hash())
+                    == Some(&calculated)
+                {
+                    GuideStatus::Tested
+                } else {
+                    push_issue(
+                        &mut issues,
+                        guide_path.clone(),
+                        WorkspaceIssueKind::VerificationMismatch,
+                    )?;
+                    GuideStatus::Stale
+                }
+            } else {
+                bound_guide.record().declared_status()
+            };
             guides.push(LoadedGuide {
                 relative_path: guide_path,
                 revision,
                 guide: bound_guide.into_record(),
+                effective_status,
             });
         }
         guides.sort_by(|left, right| {

@@ -69,7 +69,7 @@ pub fn search_workspace(
 
     for category in workspace.categories() {
         for loaded in category.guides() {
-            if !include_archived && loaded.guide().declared_status() == GuideStatus::Archived {
+            if !include_archived && loaded.effective_status() == GuideStatus::Archived {
                 continue;
             }
             let fields = SearchFields::extract(category, loaded);
@@ -87,7 +87,7 @@ pub fn search_workspace(
             }
             matched_fields.sort_unstable();
             matched_fields.dedup();
-            let status_tie = match loaded.guide().declared_status() {
+            let status_tie = match loaded.effective_status() {
                 GuideStatus::Tested => 3,
                 GuideStatus::Draft => 2,
                 GuideStatus::Stale => 1,

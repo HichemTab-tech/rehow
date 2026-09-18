@@ -192,6 +192,10 @@ export function guideLifecycleLabel(
   return busy ? "Archiving…" : "Archive Guide";
 }
 
+export function canMarkGuideTested(status: GuideSummary["status"]) {
+  return status === "Draft" || status === "Stale";
+}
+
 export function refreshedGuideId(
   currentId: string,
   guides: ReadonlyArray<{ id: string }>,
@@ -436,6 +440,7 @@ export function App() {
   const [savingGuide, setSavingGuide] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [updatingGuideStatus, setUpdatingGuideStatus] = useState(false);
+  const [verifyingGuide, setVerifyingGuide] = useState(false);
   const [removingGuide, setRemovingGuide] = useState(false);
   const [guideStatusError, setGuideStatusError] = useState("");
   const [rankedGuideIds, setRankedGuideIds] = useState<string[] | null>(null);
@@ -448,6 +453,7 @@ export function App() {
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const editDetailsButtonRef = useRef<HTMLButtonElement>(null);
   const guideStatusButtonRef = useRef<HTMLButtonElement>(null);
+  const guideVerifyButtonRef = useRef<HTMLButtonElement>(null);
   const guideRemoveButtonRef = useRef<HTMLButtonElement>(null);
   const guideStatusErrorRef = useRef<HTMLParagraphElement>(null);
   const detailTitleRef = useRef<HTMLInputElement>(null);
@@ -509,6 +515,7 @@ export function App() {
     savingCategory ||
     savingCategoryRename ||
     updatingGuideStatus ||
+    verifyingGuide ||
     updatingCategoryStatusId !== "" ||
     reorderingCategoryId !== "" ||
     removingCategoryId !== "" ||
@@ -1360,6 +1367,7 @@ export function App() {
       selected === null ||
       guideBody?.id !== selected.id ||
       updatingGuideStatus ||
+      verifyingGuide ||
       removingGuide ||
       editingGuide ||
       editingGuideDetails
@@ -1396,12 +1404,60 @@ export function App() {
     }
   }
 
+  async function markGuideTested() {
+    if (
+      selected === null ||
+      !canMarkGuideTested(selected.status) ||
+      guideBody?.id !== selected.id ||
+      verifyingGuide ||
+      updatingGuideStatus ||
+      removingGuide ||
+      editingGuide ||
+      editingGuideDetails
+    )
+      return;
+    setVerifyingGuide(true);
+    setGuideStatusError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<SaveGuidePayload>(
+        "approve_open_guide_tested",
+        {
+          guideId: selected.id,
+          expectedRevision: guideBody.revision,
+        },
+      );
+      setWorkspace(result.workspace);
+      setGuideBody(result.guide);
+      setDraftBody(result.guide.body);
+      setAnnouncement(
+        result.changed
+          ? `${selected.title} marked tested.`
+          : "Tested confirmation cancelled.",
+      );
+      requestAnimationFrame(() =>
+        (result.changed
+          ? guideStatusButtonRef.current
+          : guideVerifyButtonRef.current
+        )?.focus(),
+      );
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setGuideStatusError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => guideStatusErrorRef.current?.focus());
+    } finally {
+      setVerifyingGuide(false);
+    }
+  }
+
   async function removeGuide() {
     if (
       selected === null ||
       guideBody?.id !== selected.id ||
       removingGuide ||
       updatingGuideStatus ||
+      verifyingGuide ||
       editingGuide ||
       editingGuideDetails
     )
@@ -2207,6 +2263,7 @@ export function App() {
                         disabled={
                           guideBody?.id !== selected.id ||
                           updatingGuideStatus ||
+                          verifyingGuide ||
                           removingGuide
                         }
                       >
@@ -2220,11 +2277,28 @@ export function App() {
                         disabled={
                           guideBody?.id !== selected.id ||
                           updatingGuideStatus ||
+                          verifyingGuide ||
                           removingGuide
                         }
                       >
                         Edit Content
                       </button>
+                      {canMarkGuideTested(selected.status) && (
+                        <button
+                          ref={guideVerifyButtonRef}
+                          className="button guide-verify-button"
+                          type="button"
+                          onClick={() => void markGuideTested()}
+                          disabled={
+                            guideBody?.id !== selected.id ||
+                            verifyingGuide ||
+                            updatingGuideStatus ||
+                            removingGuide
+                          }
+                        >
+                          {verifyingGuide ? "Confirming…" : "Mark Tested"}
+                        </button>
+                      )}
                       <button
                         ref={guideStatusButtonRef}
                         className="button guide-status-button"
@@ -2233,6 +2307,7 @@ export function App() {
                         disabled={
                           guideBody?.id !== selected.id ||
                           updatingGuideStatus ||
+                          verifyingGuide ||
                           removingGuide
                         }
                       >
@@ -2249,6 +2324,7 @@ export function App() {
                         disabled={
                           guideBody?.id !== selected.id ||
                           updatingGuideStatus ||
+                          verifyingGuide ||
                           removingGuide
                         }
                       >

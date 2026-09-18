@@ -11,7 +11,7 @@ use crate::{
         CollectionPresentationStyle, CommentOwner, NodePresentation, ParsedYamlArtifact,
         ReconciledEntryKind, RoundTripStatus, parse_guide_source, parse_yaml_document,
     },
-    protocol::{CategoryId, Timestamp},
+    protocol::{CategoryId, Timestamp, VerificationHash},
 };
 
 use super::{
@@ -55,6 +55,7 @@ pub(crate) enum GuideMutation {
     ReplaceTags(Vec<String>),
     ReplaceAliases(Vec<String>),
     ReplaceBody(Vec<u8>),
+    MarkTested(VerificationHash),
     MarkStale,
     Archive,
     Restore,
@@ -71,6 +72,8 @@ pub(crate) enum MutationEffect {
     Tags,
     Aliases,
     UpdatedAt,
+    LastVerifiedAt,
+    VerifiedContentHash,
     ArchivedFromStatus,
     ArchivedAt,
     Body,
@@ -99,6 +102,8 @@ pub(crate) enum MutationField {
     Tags,
     Aliases,
     UpdatedAt,
+    LastVerifiedAt,
+    VerifiedContentHash,
     ArchivedFromStatus,
     ArchivedAt,
     Body,
@@ -516,6 +521,24 @@ pub(crate) fn plan_guide_mutation(
             explicit_mark_stale = true;
             lifecycle_edit = GuideLifecycleEdit::None;
         }
+        GuideMutation::MarkTested(hash) => {
+            if record.declared_status() == GuideStatus::Archived {
+                return Err(failure(
+                    MutationFailureKind::InvalidTransition,
+                    MutationField::Status,
+                ));
+            }
+            if record.declared_status() == GuideStatus::Tested
+                && record
+                    .verification()
+                    .and_then(|verification| verification.verified_content_hash())
+                    == Some(hash)
+            {
+                return Ok(MutationOutcome::NoOp);
+            }
+            explicit_mark_stale = false;
+            lifecycle_edit = GuideLifecycleEdit::Tested(*hash);
+        }
         GuideMutation::Archive => {
             let archived_from = match record.declared_status() {
                 GuideStatus::Draft => RestorableGuideStatus::Draft,
@@ -555,9 +578,9 @@ pub(crate) fn plan_guide_mutation(
 
     let updated_at = max(*record.updated_at(), stamp.at);
     let mut effects = Vec::new();
-    reserve(&mut effects, 4, MutationField::Document)?;
+    reserve(&mut effects, 8, MutationField::Document)?;
     let mut edits = Vec::new();
-    reserve(&mut edits, 4, MutationField::Document)?;
+    reserve(&mut edits, 8, MutationField::Document)?;
 
     if let Some((key, replacement, effect, field)) = target_edit {
         replace_root_value(
@@ -597,6 +620,12 @@ pub(crate) fn plan_guide_mutation(
         effects.push(MutationEffect::Body);
     }
 
+    let mut expected_verification = record.verification().map(|verification| {
+        (
+            *verification.last_verified_at(),
+            verification.verified_content_hash().copied(),
+        )
+    });
     let (expected_status, expected_archived_from, expected_archived_at) = match lifecycle_edit {
         GuideLifecycleEdit::None => {
             let (status, archived_from) =
@@ -628,6 +657,52 @@ pub(crate) fn plan_guide_mutation(
             effects.push(MutationEffect::ArchivedFromStatus);
             effects.push(MutationEffect::ArchivedAt);
             (GuideStatus::Archived, Some(archived_from), Some(updated_at))
+        }
+        GuideLifecycleEdit::Tested(hash) => {
+            replace_root_value(
+                bound.parsed().yaml(),
+                bound.source_bytes(),
+                "status",
+                Box::<[u8]>::from(b"tested".as_slice()),
+                MutationEffect::Status,
+                MutationField::Status,
+                &mut edits,
+            )?;
+            effects.push(MutationEffect::Status);
+            if record.verification().is_some() {
+                replace_root_value(
+                    bound.parsed().yaml(),
+                    bound.source_bytes(),
+                    "last_verified_at",
+                    emit_yaml_display(updated_at)
+                        .map_err(|error| map_emit(error, MutationField::LastVerifiedAt))?,
+                    MutationEffect::LastVerifiedAt,
+                    MutationField::LastVerifiedAt,
+                    &mut edits,
+                )?;
+                replace_root_value(
+                    bound.parsed().yaml(),
+                    bound.source_bytes(),
+                    "verified_content_hash",
+                    emit_yaml_display(hash)
+                        .map_err(|error| map_emit(error, MutationField::VerifiedContentHash))?,
+                    MutationEffect::VerifiedContentHash,
+                    MutationField::VerifiedContentHash,
+                    &mut edits,
+                )?;
+            } else {
+                insert_verification_metadata_before(
+                    bound.parsed().yaml(),
+                    bound.source_bytes(),
+                    updated_at,
+                    &hash,
+                    &mut edits,
+                )?;
+            }
+            effects.push(MutationEffect::LastVerifiedAt);
+            effects.push(MutationEffect::VerifiedContentHash);
+            expected_verification = Some((updated_at, Some(hash)));
+            (GuideStatus::Tested, None, None)
         }
         GuideLifecycleEdit::Restore(restored_status) => {
             let status = match restored_status {
@@ -697,7 +772,7 @@ pub(crate) fn plan_guide_mutation(
         || candidate_record.created_at() != record.created_at()
         || candidate_record.updated_at() != &updated_at
         || candidate_record.body() != expected_body
-        || !same_verification(candidate_record, record)
+        || !same_expected_verification(candidate_record, expected_verification.as_ref())
         || !same_archive(
             candidate_record,
             expected_archived_from,
@@ -723,6 +798,20 @@ enum GuideLifecycleEdit {
     None,
     Archive(RestorableGuideStatus),
     Restore(GuideStatus),
+    Tested(VerificationHash),
+}
+
+fn same_expected_verification(
+    guide: &super::Guide,
+    expected: Option<&(Timestamp, Option<VerificationHash>)>,
+) -> bool {
+    match (guide.verification(), expected) {
+        (None, None) => true,
+        (Some(actual), Some((at, hash))) => {
+            actual.last_verified_at() == at && actual.verified_content_hash().copied() == *hash
+        }
+        _ => false,
+    }
 }
 
 fn stale_guide_if_required(
@@ -1202,6 +1291,95 @@ fn insert_archive_metadata_before(
         MutationField::ArchivedAt,
         edits,
     )
+}
+
+fn insert_verification_metadata_before(
+    artifact: &ParsedYamlArtifact,
+    source: &[u8],
+    verified_at: Timestamp,
+    hash: &VerificationHash,
+    edits: &mut Vec<Edit>,
+) -> Result<(), MutationFailure> {
+    let timestamp = emit_yaml_display(verified_at)
+        .map_err(|error| map_emit(error, MutationField::LastVerifiedAt))?;
+    let hash = emit_yaml_display(hash)
+        .map_err(|error| map_emit(error, MutationField::VerifiedContentHash))?;
+    let newline: &[u8] = source
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .filter(|offset| *offset > 0 && source[*offset - 1] == b'\r')
+        .map_or(b"\n", |_| b"\r\n");
+    let mut value = Vec::new();
+    value
+        .try_reserve_exact(47 + timestamp.len() + hash.len() + newline.len() * 2)
+        .map_err(|_| {
+            failure(
+                MutationFailureKind::ResourceLimit,
+                MutationField::VerifiedContentHash,
+            )
+        })?;
+    value.extend_from_slice(b"last_verified_at: ");
+    value.extend_from_slice(&timestamp);
+    value.extend_from_slice(newline);
+    value.extend_from_slice(b"verified_content_hash: ");
+    value.extend_from_slice(&hash);
+    value.extend_from_slice(newline);
+    insert_raw_root_entries_before(
+        artifact,
+        source,
+        "created_at",
+        value.into_boxed_slice(),
+        MutationEffect::VerifiedContentHash,
+        MutationField::VerifiedContentHash,
+        edits,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_raw_root_entries_before(
+    artifact: &ParsedYamlArtifact,
+    source: &[u8],
+    anchor_name: &str,
+    replacement: Box<[u8]>,
+    effect: MutationEffect,
+    field: MutationField,
+    edits: &mut Vec<Edit>,
+) -> Result<(), MutationFailure> {
+    let anchor = artifact
+        .entries()
+        .iter()
+        .find(|entry| {
+            if entry.parent() != artifact.root_id() {
+                return false;
+            }
+            let ReconciledEntryKind::Mapping { key, .. } = entry.kind() else {
+                return false;
+            };
+            artifact.node(key).and_then(|node| node.decoded_scalar()) == Some(anchor_name)
+        })
+        .ok_or_else(|| failure(MutationFailureKind::BindingInvariant, field))?;
+    if anchor.collection_style() != CollectionPresentationStyle::Block {
+        return Err(failure(MutationFailureKind::PresentationUnsafe, field));
+    }
+    let start = anchor.file_range().start().get() as usize;
+    if start > source.len() || (start != 0 && source.get(start - 1) != Some(&b'\n')) {
+        return Err(failure(MutationFailureKind::PresentationUnsafe, field));
+    }
+    let gap_start = artifact
+        .entries()
+        .iter()
+        .filter(|entry| entry.parent() == artifact.root_id() && entry.index() < anchor.index())
+        .max_by_key(|entry| entry.index())
+        .map_or(0, |entry| entry.file_range().end().get() as usize);
+    if gap_start > start
+        || artifact.comments().iter().any(|comment| {
+            let range = comment.file_range();
+            (range.start().get() as usize) < start && (range.end().get() as usize) > gap_start
+        })
+    {
+        return Err(failure(MutationFailureKind::CommentUnsafe, field));
+    }
+    push_edit(source, start, start, replacement, effect, field, edits)
 }
 
 #[allow(clippy::too_many_arguments)]

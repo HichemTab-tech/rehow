@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   APPLICATION_NAME,
   App,
+  canMarkGuideTested,
   filterGuides,
   gitFactLabel,
   guideLifecycleLabel,
@@ -76,6 +77,13 @@ describe("application identity", () => {
     expect(guideLifecycleLabel("Stale", true)).toBe("Archiving…");
     expect(guideLifecycleLabel("Archived", false)).toBe("Restore Guide");
     expect(guideLifecycleLabel("Archived", true)).toBe("Restoring…");
+  });
+
+  it("offers tested approval only for active unverified Guides", () => {
+    expect(canMarkGuideTested("Draft")).toBe(true);
+    expect(canMarkGuideTested("Stale")).toBe(true);
+    expect(canMarkGuideTested("Tested")).toBe(false);
+    expect(canMarkGuideTested("Archived")).toBe(false);
   });
 
   it("normalizes and bounds Workspace names", () => {

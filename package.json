@@ -9,7 +9,8 @@
   "scripts": {
     "check:engines": "node -e \"const { execFileSync } = require('node:child_process'); if (process.version !== 'v26.2.0') process.exit(1); if (execFileSync('pnpm', ['--version'], { encoding: 'utf8' }).trim() !== '11.20.0') process.exit(1)\"",
     "check": "pnpm check:engines && biome check . && pnpm --filter @rehow/desktop typecheck && pnpm --filter @rehow/contracts typecheck && pnpm contracts:check",
-    "test": "pnpm check:engines && pnpm --filter @rehow/desktop test && cargo test --workspace --all-targets --locked",
+    "test": "pnpm check:engines && pnpm test:verification-vectors && pnpm --filter @rehow/desktop test && cargo test --workspace --all-targets --locked",
+    "test:verification-vectors": "node scripts/verify-guide-hash-vectors.mjs",
     "test:integration": "pnpm check:engines && pnpm contracts:check",
     "build": "pnpm check:engines && pnpm contracts:check && pnpm --filter @rehow/contracts build && pnpm --filter @rehow/desktop build && cargo build --workspace --locked",
     "tauri:dev": "pnpm check:engines && pnpm --filter @rehow/desktop tauri dev",
@@ -20,6 +21,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.12",
+    "@noble/hashes": "2.4.0",
     "typescript": "6.0.3"
   }
 }

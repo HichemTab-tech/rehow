@@ -878,6 +878,9 @@ h1 {
 .guide-status-button {
   color: var(--warning);
 }
+.guide-verify-button {
+  color: var(--tested);
+}
 .guide-remove-button {
   color: var(--warning);
 }

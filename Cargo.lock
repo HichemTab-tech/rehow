@@ -2486,6 +2486,8 @@ dependencies = [
  "focaccia",
  "libc",
  "pulldown-cmark",
+ "raw-window-handle",
+ "rfd",
  "rowan",
  "saphyr-parser",
  "serde",

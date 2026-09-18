@@ -4,10 +4,11 @@ use rehow_core::{
     application::{
         CategoryCreateError, CategoryOrderRevision, CategoryRemoveError, CategoryReorderError,
         CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError, GuideEdit, GuideRemoveError,
-        GuideUpdateError, WorkspaceInitializationError, WorkspaceRefreshError, create_category,
-        create_guide, initialize_workspace, refresh_open_workspace as refresh_workspace_view,
-        remove_category, remove_guide, reorder_categories, set_category_archived,
-        set_guide_archived, update_category_details, update_guide, update_guide_details,
+        GuideUpdateError, WorkspaceInitializationError, WorkspaceRefreshError,
+        confirm_and_approve_guide_tested, create_category, create_guide, initialize_workspace,
+        refresh_open_workspace as refresh_workspace_view, remove_category, remove_guide,
+        reorder_categories, set_category_archived, set_guide_archived, update_category_details,
+        update_guide, update_guide_details,
     },
     domain::GuideStatus,
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -203,7 +204,7 @@ impl WorkspacePayload {
                     summary: guide.summary().to_owned(),
                     category_id: category.id().to_string(),
                     category: category.name().to_owned(),
-                    status: match guide.declared_status() {
+                    status: match loaded_guide.effective_status() {
                         GuideStatus::Draft => "Draft",
                         GuideStatus::Tested => "Tested",
                         GuideStatus::Stale => "Stale",
@@ -564,6 +565,89 @@ fn set_open_guide_archived(
 }
 
 #[tauri::command]
+fn approve_open_guide_tested(
+    guide_id: String,
+    expected_revision: String,
+    window: tauri::Window,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<SaveGuidePayload, NativeCommandError> {
+    if guide_id.len() > 64 || expected_revision.len() > 96 {
+        return Err(native_command_error(
+            "invalidInput",
+            "Guide identity is too long.".to_owned(),
+        ));
+    }
+    let guide_id = GuideId::from_str(&guide_id)
+        .map_err(|_| native_command_error("invalidGuide", "Guide ID is invalid.".to_owned()))?;
+    let expected_revision = Revision::from_str(&expected_revision).map_err(|_| {
+        native_command_error(
+            "invalidRevision",
+            "Guide revision is invalid. Reopen the Guide and try again.".to_owned(),
+        )
+    })?;
+    let mut guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_mut().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let loaded = workspace
+        .view
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides())
+        .find(|guide| guide.guide().id() == &guide_id)
+        .ok_or_else(|| native_command_error("notFound", "Guide was not found.".to_owned()))?;
+    if loaded.revision() != expected_revision {
+        return Err(native_command_error(
+            "revisionConflict",
+            "This Guide changed on disk. Reopen it before marking it tested.".to_owned(),
+        ));
+    }
+    if loaded.effective_status() == GuideStatus::Archived {
+        return Err(native_command_error(
+            "invalidEdit",
+            "Restore this Guide before marking it tested.".to_owned(),
+        ));
+    }
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    fs::create_dir_all(&state_home).map_err(|_| {
+        native_command_error(
+            "stateUnavailable",
+            "Rehow could not prepare its private recovery folder.".to_owned(),
+        )
+    })?;
+    let outcome = confirm_and_approve_guide_tested(
+        &window,
+        &mut workspace.view,
+        &state_home,
+        runtime_directory.as_deref(),
+        guide_id,
+        expected_revision,
+    )
+    .map_err(|error| native_command_error(guide_update_code(error), guide_update_message(error)))?;
+    Ok(SaveGuidePayload {
+        workspace: WorkspacePayload::from_view(
+            &workspace.view,
+            FolderFactsPayload::from(workspace.facts),
+        ),
+        guide: guide_body_payload(&workspace.view, &guide_id)
+            .map_err(|message| native_command_error("refreshRequired", message))?,
+        changed: outcome.changed(),
+    })
+}
+
+#[tauri::command]
 fn remove_open_guide(
     guide_id: String,
     expected_revision: String,
@@ -678,7 +762,14 @@ fn guide_remove_code(error: GuideRemoveError) -> &'static str {
 }
 
 fn guide_remove_confirmation(title: &str, guide_id: &str) -> String {
-    let safe_title = title
+    let safe_title = safe_dialog_text(title);
+    format!(
+        "Delete this Guide?\n\nTitle: {safe_title}\nID: {guide_id}\n\nThe Guide will move to Rehow Trash."
+    )
+}
+
+fn safe_dialog_text(value: &str) -> String {
+    value
         .chars()
         .map(|character| {
             let value = character as u32;
@@ -692,10 +783,7 @@ fn guide_remove_confirmation(title: &str, guide_id: &str) -> String {
                 character
             }
         })
-        .collect::<String>();
-    format!(
-        "Delete this Guide?\n\nTitle: {safe_title}\nID: {guide_id}\n\nThe Guide will move to Rehow Trash."
-    )
+        .collect()
 }
 
 fn guide_remove_message(error: GuideRemoveError) -> String {
@@ -765,6 +853,9 @@ fn guide_update_message(error: GuideUpdateError) -> String {
             "The requested Guide change is invalid. Check limits and duplicate Tags or aliases."
                 .to_owned()
         }
+        GuideUpdateError::NotReady => {
+            "Add one nonempty “## Steps” section before marking this Guide tested.".to_owned()
+        }
         GuideUpdateError::UnsafeRoundTrip => {
             "Rehow cannot preserve this Guide’s formatting safely. Edit the underlying file instead."
                 .to_owned()
@@ -799,6 +890,7 @@ fn guide_update_code(error: GuideUpdateError) -> &'static str {
         GuideUpdateError::RevisionConflict => "revisionConflict",
         GuideUpdateError::InvalidGuide => "invalidGuide",
         GuideUpdateError::InvalidEdit => "invalidEdit",
+        GuideUpdateError::NotReady => "notReady",
         GuideUpdateError::UnsafeRoundTrip => "unsafeRoundTrip",
         GuideUpdateError::Busy => "busy",
         GuideUpdateError::UnsafeStorage => "unsafeStorage",
@@ -1687,6 +1779,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(DesktopState::default())
         .invoke_handler(tauri::generate_handler![
+            approve_open_guide_tested,
             cancel_selected_workspace_initialization,
             choose_workspace,
             create_open_category,
@@ -1827,6 +1920,11 @@ mod tests {
         assert_eq!(
             guide_update_message(GuideUpdateError::DestinationCategoryArchived),
             "Choose an active destination Category before moving this Guide."
+        );
+        assert_eq!(guide_update_code(GuideUpdateError::NotReady), "notReady");
+        assert_eq!(
+            guide_update_message(GuideUpdateError::NotReady),
+            "Add one nonempty “## Steps” section before marking this Guide tested."
         );
         assert_eq!(
             guide_remove_code(GuideRemoveError::HasAttachments),

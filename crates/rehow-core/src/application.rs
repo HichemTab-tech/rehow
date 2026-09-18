@@ -17,7 +17,9 @@ use crate::{
             CategoryMutation, GuideMutation, MutationFailureKind, MutationField, MutationOutcome,
             MutationStamp, plan_category_mutation, plan_guide_mutation,
         },
+        verification::{VerificationFailure, verification_hash},
     },
+    markdown::{GuideReadinessError, validate_tested_readiness},
     parsing::{parse_guide_source, parse_yaml_document},
     protocol::{
         CategoryId, GuideId, OperationId, Revision, Timestamp, current_timestamp, new_category_id,
@@ -33,6 +35,7 @@ use crate::{
         refresh_workspace,
     },
 };
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::{collections::HashSet, path::Path};
 
 pub const GUIDE_BODY_INPUT_LIMIT: usize = 2 * 1024 * 1024;
@@ -652,7 +655,9 @@ impl From<PlanError> for CategoryPlanError {
     fn from(error: PlanError) -> Self {
         match error {
             PlanError::ResourceLimit => Self::ResourceLimit,
-            PlanError::InvalidGuide | PlanError::InvalidEdit => Self::InvalidCategory,
+            PlanError::InvalidGuide | PlanError::InvalidEdit | PlanError::NotReady => {
+                Self::InvalidCategory
+            }
             PlanError::UnsafeRoundTrip => Self::UnsafeRoundTrip,
         }
     }
@@ -949,6 +954,7 @@ pub enum GuideUpdateError {
     RevisionConflict,
     InvalidGuide,
     InvalidEdit,
+    NotReady,
     UnsafeRoundTrip,
     Busy,
     UnsafeStorage,
@@ -1031,6 +1037,147 @@ pub fn set_guide_archived(
             GuideEdit::Restore
         },
     )
+}
+
+pub fn confirm_and_approve_guide_tested<W: HasWindowHandle + HasDisplayHandle + ?Sized>(
+    parent: &W,
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_id: GuideId,
+    expected_revision: Revision,
+) -> Result<GuideUpdateOutcome, GuideUpdateError> {
+    let loaded = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides())
+        .find(|guide| guide.guide().id() == &guide_id)
+        .ok_or(GuideUpdateError::NotFound)?;
+    if loaded.revision() != expected_revision {
+        return Err(GuideUpdateError::RevisionConflict);
+    }
+    if loaded.effective_status() == crate::domain::GuideStatus::Archived {
+        return Err(GuideUpdateError::InvalidEdit);
+    }
+    let body =
+        core::str::from_utf8(loaded.guide().body()).map_err(|_| GuideUpdateError::InvalidGuide)?;
+    validate_tested_readiness(body).map_err(|error| match error {
+        GuideReadinessError::MissingSteps
+        | GuideReadinessError::EmptySteps
+        | GuideReadinessError::DuplicateReservedHeading => GuideUpdateError::NotReady,
+        GuideReadinessError::ParseLimit => GuideUpdateError::ResourceLimit,
+    })?;
+    let confirmed = rfd::MessageDialog::new()
+        .set_parent(parent)
+        .set_level(rfd::MessageLevel::Info)
+        .set_title("Mark Guide Tested?")
+        .set_description(guide_tested_confirmation(
+            loaded.guide().title(),
+            &guide_id.to_string(),
+        ))
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes;
+    if !confirmed {
+        return Ok(GuideUpdateOutcome {
+            revision: expected_revision,
+            changed: false,
+        });
+    }
+    approve_guide_tested_with_context(
+        workspace,
+        state_home,
+        runtime_directory,
+        guide_id,
+        expected_revision,
+        new_operation_id(),
+        current_timestamp(),
+    )
+}
+
+fn guide_tested_confirmation(title: &str, guide_id: &str) -> String {
+    let safe_title = title
+        .chars()
+        .map(|character| {
+            let value = character as u32;
+            if character.is_control()
+                || matches!(value, 0x061c | 0x200e | 0x200f | 0x2028..=0x202e | 0x2066..=0x2069 | 0xfeff)
+                || matches!(value, 0xfdd0..=0xfdef)
+                || matches!(value & 0xffff, 0xfffe | 0xffff)
+            {
+                '\u{fffd}'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    format!(
+        "Confirm that you tried these instructions successfully.\n\nTitle: {safe_title}\nID: {guide_id}\n\nRehow will bind Tested status to the exact current content."
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn approve_guide_tested_with_context(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_id: GuideId,
+    expected_revision: Revision,
+    operation_id: OperationId,
+    at: Timestamp,
+) -> Result<GuideUpdateOutcome, GuideUpdateError> {
+    let loaded = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides().iter().map(move |guide| (category, guide)))
+        .find(|(_, guide)| guide.guide().id() == &guide_id)
+        .ok_or(GuideUpdateError::NotFound)?;
+    if loaded.1.revision() != expected_revision {
+        return Err(GuideUpdateError::RevisionConflict);
+    }
+    let relative_path = loaded.1.relative_path().to_owned();
+    let category_id = *loaded.0.category().id();
+    let stamp = MutationStamp::from_trusted_time(at);
+    let outcome = execute_document_update(
+        workspace,
+        state_home,
+        runtime_directory,
+        &relative_path,
+        expected_revision,
+        operation_id,
+        at,
+        |bytes| {
+            let parsed =
+                parse_guide_source(copy_bytes(bytes)?).map_err(|_| PlanError::InvalidGuide)?;
+            let bound = bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
+            if bound.record().id() != &guide_id || bound.record().category_id() != &category_id {
+                return Err(PlanError::InvalidGuide);
+            }
+            let body =
+                core::str::from_utf8(bound.record().body()).map_err(|_| PlanError::InvalidGuide)?;
+            validate_tested_readiness(body).map_err(|error| match error {
+                GuideReadinessError::MissingSteps
+                | GuideReadinessError::EmptySteps
+                | GuideReadinessError::DuplicateReservedHeading => PlanError::NotReady,
+                GuideReadinessError::ParseLimit => PlanError::ResourceLimit,
+            })?;
+            let hash = verification_hash(&bound).map_err(|error| match error {
+                VerificationFailure::Invariant => PlanError::InvalidGuide,
+                VerificationFailure::ResourceLimit => PlanError::ResourceLimit,
+            })?;
+            apply_guide_mutation(&bound, GuideMutation::MarkTested(hash), &stamp)
+        },
+    )
+    .map_err(map_update_error)?;
+    if outcome.changed() && refresh_workspace(workspace).is_err() {
+        return Err(GuideUpdateError::CommittedRefreshRequired {
+            revision: outcome.revision(),
+        });
+    }
+    Ok(GuideUpdateOutcome {
+        revision: outcome.revision(),
+        changed: outcome.changed(),
+    })
 }
 
 pub fn remove_guide(
@@ -1327,6 +1474,7 @@ fn apply_guide_mutation(
 enum PlanError {
     InvalidGuide,
     InvalidEdit,
+    NotReady,
     UnsafeRoundTrip,
     ResourceLimit,
 }
@@ -1358,6 +1506,7 @@ fn map_update_error(error: DocumentUpdateError<PlanError>) -> GuideUpdateError {
     match error {
         DocumentUpdateError::Prepare(PlanError::InvalidGuide) => GuideUpdateError::InvalidGuide,
         DocumentUpdateError::Prepare(PlanError::InvalidEdit) => GuideUpdateError::InvalidEdit,
+        DocumentUpdateError::Prepare(PlanError::NotReady) => GuideUpdateError::NotReady,
         DocumentUpdateError::Prepare(PlanError::UnsafeRoundTrip) => {
             GuideUpdateError::UnsafeRoundTrip
         }
@@ -1377,6 +1526,7 @@ fn map_move_error(error: MultiDocumentUpdateError<PlanError>) -> GuideUpdateErro
         MultiDocumentUpdateError::Prepare(PlanError::InvalidGuide)
         | MultiDocumentUpdateError::InvalidPlan => GuideUpdateError::InvalidGuide,
         MultiDocumentUpdateError::Prepare(PlanError::InvalidEdit) => GuideUpdateError::InvalidEdit,
+        MultiDocumentUpdateError::Prepare(PlanError::NotReady) => GuideUpdateError::NotReady,
         MultiDocumentUpdateError::Prepare(PlanError::UnsafeRoundTrip) => {
             GuideUpdateError::UnsafeRoundTrip
         }
@@ -2395,6 +2545,244 @@ mod tests {
 
         assert!(outcome.changed());
         assert_eq!(revision(&view), outcome.revision());
+    }
+
+    #[test]
+    fn native_approval_binds_exact_content_and_external_change_is_effectively_stale() {
+        let (workspace, state, mut view) = fixture("tested-approval", GUIDE);
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let original_revision = revision(&view);
+        let approved = approve_guide_tested_with_context(
+            &mut view,
+            state.path(),
+            None,
+            guide_id,
+            original_revision,
+            operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e30"),
+            at(),
+        )
+        .unwrap();
+        assert!(approved.changed());
+        let loaded = &view.categories()[0].guides()[0];
+        assert_eq!(loaded.guide().declared_status(), GuideStatus::Tested);
+        assert_eq!(loaded.effective_status(), GuideStatus::Tested);
+        let verification = loaded.guide().verification().expect("verification pair");
+        assert_eq!(verification.last_verified_at(), &at());
+        let approved_hash = *verification
+            .verified_content_hash()
+            .expect("recognized approval hash");
+        assert!(
+            fs::read_to_string(workspace.path().join(GUIDE_PATH))
+                .unwrap()
+                .contains(&approved_hash.to_string())
+        );
+
+        let no_op = approve_guide_tested_with_context(
+            &mut view,
+            state.path(),
+            None,
+            guide_id,
+            approved.revision(),
+            operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e31"),
+            at(),
+        )
+        .unwrap();
+        assert!(!no_op.changed());
+        assert_eq!(no_op.revision(), approved.revision());
+        assert_eq!(
+            approve_guide_tested_with_context(
+                &mut view,
+                state.path(),
+                None,
+                guide_id,
+                original_revision,
+                operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e32"),
+                at(),
+            ),
+            Err(GuideUpdateError::RevisionConflict)
+        );
+
+        let path = workspace.path().join(GUIDE_PATH);
+        let changed = fs::read_to_string(&path)
+            .unwrap()
+            .replace("Extract the archive.", "Extract a different archive.");
+        fs::write(&path, changed).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let inspection = inspect_workspace(workspace.path()).unwrap().into_parts().1;
+        let WorkspaceInspection::Compatible(mut reopened) = inspection else {
+            panic!("expected compatible Workspace");
+        };
+        let loaded = &reopened.categories()[0].guides()[0];
+        assert_eq!(loaded.guide().declared_status(), GuideStatus::Tested);
+        assert_eq!(loaded.effective_status(), GuideStatus::Stale);
+        assert!(reopened.issues().iter().any(|issue| {
+            issue.kind() == crate::storage::WorkspaceIssueKind::VerificationMismatch
+        }));
+        let changed_revision = loaded.revision();
+        let reapproved = approve_guide_tested_with_context(
+            &mut reopened,
+            state.path(),
+            None,
+            guide_id,
+            changed_revision,
+            operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e36"),
+            at(),
+        )
+        .unwrap();
+        assert!(reapproved.changed());
+        assert_eq!(
+            reopened.categories()[0].guides()[0].effective_status(),
+            GuideStatus::Tested
+        );
+    }
+
+    #[test]
+    fn tested_approval_refuses_archived_guides() {
+        let (_workspace, state, mut view) = fixture("tested-approval-archived", GUIDE);
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let expected = revision(&view);
+        let archived =
+            set_guide_archived(&mut view, state.path(), None, guide_id, expected, true).unwrap();
+        assert_eq!(
+            approve_guide_tested_with_context(
+                &mut view,
+                state.path(),
+                None,
+                guide_id,
+                archived.revision(),
+                operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e33"),
+                at(),
+            ),
+            Err(GuideUpdateError::InvalidEdit)
+        );
+        assert_eq!(
+            view.categories()[0].guides()[0].effective_status(),
+            GuideStatus::Archived
+        );
+    }
+
+    #[test]
+    fn tested_approval_refuses_guides_without_ready_steps() {
+        let not_ready = GUIDE.replace("## Steps", "## Notes");
+        let (workspace, state, mut view) = fixture("tested-approval-not-ready", &not_ready);
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let expected = revision(&view);
+        let before = fs::read(workspace.path().join(GUIDE_PATH)).unwrap();
+        assert_eq!(
+            approve_guide_tested_with_context(
+                &mut view,
+                state.path(),
+                None,
+                guide_id,
+                expected,
+                operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e34"),
+                at(),
+            ),
+            Err(GuideUpdateError::NotReady)
+        );
+        assert_eq!(fs::read(workspace.path().join(GUIDE_PATH)).unwrap(), before);
+    }
+
+    #[test]
+    fn future_verification_hash_loads_as_effectively_stale() {
+        let future = GUIDE.replace(
+            "status: draft\n",
+            &format!(
+                "status: tested\nlast_verified_at: \"2026-09-05T10:03:00Z\"\nverified_content_hash: verify:v2:{}\n",
+                "1a".repeat(32)
+            ),
+        );
+        let (_workspace, _state, view) = fixture("future-verification", &future);
+        let loaded = &view.categories()[0].guides()[0];
+        assert_eq!(loaded.guide().declared_status(), GuideStatus::Tested);
+        assert_eq!(loaded.effective_status(), GuideStatus::Stale);
+        assert!(
+            loaded
+                .guide()
+                .verification()
+                .is_some_and(|verification| verification.verified_content_hash().is_none())
+        );
+        assert!(view.issues().iter().any(|issue| {
+            issue.kind() == crate::storage::WorkspaceIssueKind::VerificationMismatch
+        }));
+    }
+
+    #[test]
+    fn tested_approval_preserves_crlf_line_endings() {
+        let crlf = GUIDE.replace('\n', "\r\n");
+        let (workspace, state, mut view) = fixture("tested-approval-crlf", &crlf);
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let expected = revision(&view);
+        let approved = approve_guide_tested_with_context(
+            &mut view,
+            state.path(),
+            None,
+            guide_id,
+            expected,
+            operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e35"),
+            at(),
+        )
+        .unwrap();
+        assert!(approved.changed());
+        let bytes = fs::read(workspace.path().join(GUIDE_PATH)).unwrap();
+        assert!(bytes.windows(2).any(|window| window == b"\r\n"));
+        assert!(
+            !bytes
+                .iter()
+                .enumerate()
+                .any(|(index, byte)| *byte == b'\n' && (index == 0 || bytes[index - 1] != b'\r'))
+        );
+    }
+
+    #[test]
+    fn stale_approval_succeeds_and_unsafe_insertion_is_atomic() {
+        let stale = GUIDE.replace("status: draft", "status: stale");
+        let (_workspace, state, mut view) = fixture("tested-approval-stale", &stale);
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let expected = revision(&view);
+        approve_guide_tested_with_context(
+            &mut view,
+            state.path(),
+            None,
+            guide_id,
+            expected,
+            operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e37"),
+            at(),
+        )
+        .unwrap();
+        assert_eq!(
+            view.categories()[0].guides()[0].effective_status(),
+            GuideStatus::Tested
+        );
+
+        let commented = GUIDE.replace("created_at:", "# approval boundary\ncreated_at:");
+        let (workspace, state, mut view) = fixture("tested-approval-comment", &commented);
+        let expected = revision(&view);
+        let before = fs::read(workspace.path().join(GUIDE_PATH)).unwrap();
+        assert_eq!(
+            approve_guide_tested_with_context(
+                &mut view,
+                state.path(),
+                None,
+                guide_id,
+                expected,
+                operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e38"),
+                at(),
+            ),
+            Err(GuideUpdateError::UnsafeRoundTrip)
+        );
+        assert_eq!(fs::read(workspace.path().join(GUIDE_PATH)).unwrap(), before);
+    }
+
+    #[test]
+    fn tested_confirmation_text_neutralizes_spoofing_controls() {
+        assert_eq!(
+            guide_tested_confirmation(
+                "bad\nline\u{202e}name",
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e10"
+            ),
+            "Confirm that you tried these instructions successfully.\n\nTitle: bad�line�name\nID: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\n\nRehow will bind Tested status to the exact current content."
+        );
     }
 
     #[test]

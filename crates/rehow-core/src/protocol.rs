@@ -351,6 +351,12 @@ impl Revision {
     }
 }
 
+impl VerificationHash {
+    pub(crate) fn from_digest_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+}
+
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct PlanToken([u8; 32]);
 string_ts!(PlanToken);

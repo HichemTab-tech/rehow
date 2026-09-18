@@ -66,7 +66,7 @@ pub struct Attachment {
 }
 pub struct VerificationMetadata {
     last_verified_at: Timestamp,
-    verified_content_hash: VerificationHash,
+    verified_content_hash: Option<VerificationHash>,
 }
 pub struct ArchiveMetadata {
     archived_from_status: RestorableGuideStatus,
@@ -138,8 +138,8 @@ impl VerificationMetadata {
     pub fn last_verified_at(&self) -> &Timestamp {
         &self.last_verified_at
     }
-    pub fn verified_content_hash(&self) -> &VerificationHash {
-        &self.verified_content_hash
+    pub fn verified_content_hash(&self) -> Option<&VerificationHash> {
+        self.verified_content_hash.as_ref()
     }
 }
 impl ArchiveMetadata {
@@ -400,7 +400,11 @@ fn bind_guide_inner(parsed: ParsedGuideSource) -> Result<BoundGuide, GuideBindFa
         GuideField::VerifiedContentHash,
     )?
     .map(|value| {
-        VerificationHash::from_str(value).map_err(|_| invalid(GuideField::VerifiedContentHash))
+        VerificationHash::from_str(value).map(Some).or_else(|_| {
+            valid_future_verification_hash(value)
+                .then_some(None)
+                .ok_or_else(|| invalid(GuideField::VerifiedContentHash))
+        })
     })
     .transpose()?;
     let verification = match (last_verified_at, verified_content_hash) {
@@ -503,6 +507,23 @@ fn bind_guide_inner(parsed: ParsedGuideSource) -> Result<BoundGuide, GuideBindFa
             attachments: attachment_unknown.into_boxed_slice(),
         },
     })
+}
+
+fn valid_future_verification_hash(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("verify:v") else {
+        return false;
+    };
+    let Some((version, digest)) = rest.split_once(':') else {
+        return false;
+    };
+    !version.is_empty()
+        && version != "1"
+        && !version.starts_with('0')
+        && version.bytes().all(|byte| byte.is_ascii_digit())
+        && digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn validate_status_companions(

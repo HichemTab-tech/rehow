@@ -86,6 +86,101 @@ pub enum SafeMarkdownError {
     NestingLimit,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GuideReadinessError {
+    MissingSteps,
+    EmptySteps,
+    DuplicateReservedHeading,
+    ParseLimit,
+}
+
+pub(crate) fn validate_tested_readiness(source: &str) -> Result<(), GuideReadinessError> {
+    let document = parse_safe_markdown(source).map_err(|_| GuideReadinessError::ParseLimit)?;
+    let mut depth = 0usize;
+    let mut heading_depth = None;
+    let mut heading_level = 0u8;
+    let mut heading_text = [0u8; 15];
+    let mut heading_text_len = 0usize;
+    let mut heading_text_overflow = false;
+    let mut seen_reserved = [false; 4];
+    let mut in_steps = false;
+    let mut steps_seen = false;
+    let mut steps_nonempty = false;
+
+    for event in &document.events {
+        match event {
+            SafeMarkdownEvent::Start { node } => {
+                if let SafeMarkdownContainer::Heading { level } = node {
+                    if *level <= 2 && in_steps {
+                        in_steps = false;
+                    }
+                    heading_level = *level;
+                    heading_text_len = 0;
+                    heading_text_overflow = false;
+                    heading_depth = Some(depth + 1);
+                }
+                depth = depth.saturating_add(1);
+            }
+            SafeMarkdownEvent::End => {
+                if heading_depth == Some(depth) {
+                    if heading_level == 2 {
+                        let label = &heading_text[..heading_text_len];
+                        let reserved = match label {
+                            b"Steps" => Some(0),
+                            b"Verification" => Some(1),
+                            b"Rollback" => Some(2),
+                            b"Troubleshooting" => Some(3),
+                            _ => None,
+                        };
+                        if !heading_text_overflow && let Some(index) = reserved {
+                            if seen_reserved[index] {
+                                return Err(GuideReadinessError::DuplicateReservedHeading);
+                            }
+                            seen_reserved[index] = true;
+                            if index == 0 {
+                                steps_seen = true;
+                                in_steps = true;
+                            }
+                        }
+                    }
+                    heading_depth = None;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            SafeMarkdownEvent::Text { value }
+            | SafeMarkdownEvent::InlineCode { value }
+            | SafeMarkdownEvent::HtmlLiteral { value } => {
+                if heading_depth.is_some() {
+                    let bytes = value.as_bytes();
+                    let Some(end) = heading_text_len.checked_add(bytes.len()) else {
+                        heading_text_overflow = true;
+                        continue;
+                    };
+                    if end > heading_text.len() {
+                        heading_text_overflow = true;
+                    } else {
+                        heading_text[heading_text_len..end].copy_from_slice(bytes);
+                        heading_text_len = end;
+                    }
+                } else if in_steps && value.chars().any(|character| !character.is_whitespace()) {
+                    steps_nonempty = true;
+                }
+            }
+            SafeMarkdownEvent::SoftBreak
+            | SafeMarkdownEvent::HardBreak
+            | SafeMarkdownEvent::Rule
+            | SafeMarkdownEvent::TaskMarker { .. } => {}
+        }
+    }
+    if !steps_seen {
+        Err(GuideReadinessError::MissingSteps)
+    } else if !steps_nonempty {
+        Err(GuideReadinessError::EmptySteps)
+    } else {
+        Ok(())
+    }
+}
+
 impl fmt::Display for SafeMarkdownError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -376,5 +471,28 @@ mod tests {
             parse_safe_markdown(&source),
             Err(SafeMarkdownError::NestingLimit)
         );
+    }
+
+    #[test]
+    fn tested_readiness_requires_one_nonempty_steps_section() {
+        assert_eq!(
+            validate_tested_readiness("## Verification\n\nWorks.\n"),
+            Err(GuideReadinessError::MissingSteps)
+        );
+        assert_eq!(
+            validate_tested_readiness("## Steps\n\n## Verification\n\nWorks.\n"),
+            Err(GuideReadinessError::EmptySteps)
+        );
+        assert_eq!(
+            validate_tested_readiness("## Steps\n\nRun it.\n\n## **Steps**\n\nAgain.\n"),
+            Err(GuideReadinessError::DuplicateReservedHeading)
+        );
+        assert!(
+            validate_tested_readiness(
+                "# Guide\n\n## **Steps**\n\n```sh\nprintf ok\n```\n\n## Verification\n\nCheck it.\n"
+            )
+            .is_ok()
+        );
+        assert!(validate_tested_readiness("## steps\n\nNo exact Steps heading.\n").is_err());
     }
 }
