@@ -1004,6 +1004,10 @@ mod linux {
             Err(MutationIoError::Unsafe)
         }
 
+        pub(super) fn identity(&self) -> Result<(u64, u64), MutationIoError> {
+            descriptor_identity(&self.descriptor).map_err(|_| MutationIoError::Io)
+        }
+
         fn duplicate(&self) -> Result<Self, io::Error> {
             // SAFETY: `fcntl` duplicates a valid retained descriptor.
             let raw = unsafe { libc::fcntl(self.descriptor.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
