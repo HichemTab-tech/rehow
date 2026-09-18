@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 3A — first visible Guide editor vertical slice over the accepted private mutation boundary.
+Phase 3A — Guide body editor checkpoint accepted; next is Workspace initialization.
 
 ## Current task
 
-Expose only the bounded existing-Guide save contract through native Tauri state, then add body editing, stale-revision handling, and post-save refresh to the Reference Desk. MCP remains read-only.
+Implement safe initialization for a user-selected empty folder, then connect the existing onboarding state to that native operation. MCP remains read-only.
 
 ## Overall status
 
-In progress. The Reference Desk read path, safe Markdown, ranked search, and private revision-checked Guide update path are green. Existing Guide edits now re-read under the writer lock, preserve unknown metadata, journal atomically, stale tested content, and refresh the retained Workspace. No mutation authority is exposed to UI or MCP yet.
+In progress. Existing Guides can now be edited and saved in the native desktop app through a bounded revision-checked command. Saves are atomic and recoverable, unknown metadata is preserved, tested content becomes stale, conflicts refuse overwrite, and the refreshed Guide is returned to the reader. MCP remains read-only.
 
 ## Completed work
 
@@ -64,10 +64,11 @@ In progress. The Reference Desk read path, safe Markdown, ranked search, and pri
 - Implemented the journal-driven create/update executor and resume path at signed checkpoint `1dd646e`. It binds root identity and stored objects, advances durable whole generations, resumes a post-exchange/pre-journal crash, and records external neither-state conflicts without overwrite.
 - Completed and security-accepted ADR 0009 deletion/trash/recovery at signed checkpoint `dbf4230`: exact on-disk replay classification, fsynced reused temps, exact trash paths, no-replace before-image quarantine, hostile hierarchy denial, and interruption coverage across create/update/delete/trash.
 - Added the crate-private application Guide update proof at signed checkpoint `e28cf48`: random open-capability epochs, stable root identity, expected-revision enforcement, fresh parse/bind/typed planning under the writer lock, recoverable update execution, unknown-metadata preservation, tested-to-stale behavior, and retained-view refresh.
+- Shipped the first native Guide body editor at signed checkpoint `4e0e9da`: bounded raw-body IPC, revision conflicts, atomic recovery, post-save refresh, tested-to-stale warning, dirty-discard protection, error focus, and narrow-window actions. One combined review found no blocker/high issue; its blank narrow Save-label finding was corrected.
 
 ## Work in progress
 
-- The application update boundary is green and crate-private. The next batch promotes a deliberately bounded public core request/result, adds one native save command, and wires the existing Guide reader to an editor; it will receive one combined security/design review.
+- The Guide body editor is committed at signed checkpoint `4e0e9da`. The next bounded batch is safe Workspace initialization for an empty selected folder and its onboarding action.
 
 ## Remaining work
 
@@ -89,6 +90,7 @@ No known regression in accepted phases. Phase 1E-A currently retains all parsed 
 - The first Design Reviewer pass found 2 high, 7 medium, and 3 low issues. Search naming, focus restoration, responsive navigation, Arrow/Escape behavior, contrast, announcements, command accessibility, tests, screenshots, repeated skip behavior, tooltips, and path translation were corrected.
 - Final current-guideline closure: pass with no blocker, high, medium, or low finding.
 - A fresh real-data/onboarding screenshot and interaction pass, rendered Markdown, edit/conflict/error states, and manual screen-reader verification remain Phase 2 acceptance gates.
+- The current-guideline self-review and combined checkpoint review pass the editor structure/focus/responsive design. Browser-level editor interaction tests remain open because the current Vitest setup has no DOM/browser harness; do not add one without a bounded dependency decision.
 
 ## Security findings
 
@@ -114,6 +116,7 @@ No known regression in accepted phases. Phase 1E-A currently retains all parsed 
 - Safe Markdown adds exact `pulldown-cmark 0.13.4` with default/HTML/CLI/SIMD features disabled. The selected build forbids unsafe code; its build script is a no-op without disabled `gen-tests`. Rust owns the typed AST and limits; React has no raw-HTML, `href`, image `src`, opener, filesystem, process, or execution path. Independent closure is intentionally combined with the existing Phase 1E-A review.
 - ADR 0009 recovery closure passed the single combined Security Reviewer after correcting skipped-state trust, transition jumps, pre-rename durability probes, exact trash binding, reused-temp fsync, and path-identity cleanup. Final verdict: no blocker, high, or medium finding; before-images are quarantined with no unlink.
 - The `e28cf48` application proof adds no adapter command or arbitrary path/YAML authority. It accepts closed typed edits, validates the loaded Guide ID/Category and expected revision, derives a random launch capability hash with Linux `getrandom`, and rejects stale, reused-operation, hardlink, and unsafe-round-trip states.
+- The `4e0e9da` Tauri adapter accepts only Guide ID, expected revision, and bounded body text against native retained Workspace state. It exposes no path/YAML/status/time/operation authority; combined review reports no blocker/high security finding.
 
 ## Blockers and human checkpoints
 
@@ -123,10 +126,11 @@ No known regression in accepted phases. Phase 1E-A currently retains all parsed 
 
 ## Latest verified commit
 
-`e28cf48` — signed private application Guide update proof over the accepted recovery executor.
+`4e0e9da` — signed native Guide body editor and bounded recoverable save command.
 
 ## Tests last run and results
 
+- 2026-09-18: Guide editor checkpoint at `4e0e9da`: full `pnpm check/test/build`, locked full Workspace Rust tests, locked core/desktop Clippy with warnings denied, public API compile tests, formatting, contract drift, whitespace checks, and optimized Tauri no-bundle build pass. Counts include 229 core library tests, 4 desktop Rust tests, and 11 Vitest tests. The native binary built at `target/release/rehow-desktop`; the existing `.app` identifier warning remains informational for Linux.
 - 2026-09-18: final ADR 0009 gate at `dbf4230`: 14 focused Workspace-recovery tests and 225 full core library tests pass, plus all 18 error-contract, 13 protocol, 11 unknown-YAML, doc, and public API/compile-fail suites. Locked core Clippy denies warnings; formatting, contract drift, bootstrap validation, and whitespace checks pass. Fault coverage includes temp write/fsync/reuse, journal durability, create/update/delete/trash renames, source/destination directory sync, quarantine replay, hostile path types, mixed targets, and forged Complete/Committed state.
 - 2026-09-18: private application update gate at `e28cf48`: 3 focused application tests and 228 full core library tests pass, plus all 18 error-contract, 13 protocol, 11 unknown-YAML, doc, and public API/compile-fail suites. Locked core Clippy denies warnings; formatting, contract drift, bootstrap validation, and whitespace checks pass. Coverage proves save/no-op, stale/external conflict, operation-ID reuse refusal, unknown preservation, tested-to-stale, hardlink refusal, journal execution, and retained-view refresh.
 - 2026-09-18: ranked-search checkpoint: focused relevance tests, locked core/desktop Clippy with warnings denied, 3 desktop Rust tests, `pnpm check`, 10 Vitest tests, Vite production build, bootstrap, formatting, and whitespace checks pass. Fixtures prove exact title over repeated body text, alias/command/path/error treatment, cross-field terms, Unicode/case normalization, quoted phrases, archived scope, caps, deterministic ordering, and UI rank mapping. Production performance is explicitly not yet accepted.
@@ -247,10 +251,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - Phase 1E-A adds `crates/rehow-core/src/storage.rs`, BLAKE3/libc pins, domain record extraction, native dialog/session commands, the real-data React states, updated locks, the revision vector, `docs/task-packets/phase-1e-a-readonly-workspace.md`, and `docs/evidence/phase-1e-a-readonly-workspace.md`. It is green but awaits independent security/manual acceptance.
 - Recovery work adds `crates/rehow-core/src/storage/recovery.rs`, `recovery/store.rs`, `recovery/workspace.rs`, ADR 0009's exact codec/state behavior, and packets `phase-1e-b1` through `phase-1e-b3c`; signed checkpoints are `e810658`, `f26a868`, `dede741`, `1dd646e`, and accepted closure `dbf4230`.
 - `crates/rehow-core/src/application.rs` and `docs/task-packets/phase-1e-c1-guide-update-application.md` connect closed Guide edits to confined storage at signed checkpoint `e28cf48`; adapter exposure is intentionally absent.
+- `apps/desktop/src-tauri/src/lib.rs`, `apps/desktop/src/App.tsx`, `apps/desktop/src/index.css`, and `docs/task-packets/phase-3a-guide-body-editor.md` implement the accepted editor/save slice at `4e0e9da`.
 
 ## Next recommended action
 
-Implement one bounded Tauri existing-Guide save command and Reference Desk body editor over `e28cf48`, including revision conflicts, dirty state, cancel/save focus behavior, and post-save refreshed payloads. Keep MCP read-only and run one combined security/design review after the vertical slice.
+Implement safe Workspace initialization for a user-selected empty folder, then wire the existing empty-folder onboarding state to it. Do not adopt or modify nonempty folders, and keep MCP read-only.
 
 ## Recommended agent role and reasoning effort
 
@@ -259,8 +264,8 @@ Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents for routine work; us
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read `docs/task-packets/phase-1e-c1-guide-update-application.md`, ADR 0009, the design direction, content model, and threat model.
+2. Read the Workspace initialization portions of `docs/content-model.md`, `docs/architecture.md`, ADR 0009, and the threat model.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `dbf4230` and `e28cf48`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `4e0e9da`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Run the focused application tests. Resume with the bounded native save command and Guide body editor; do not add generic paths/YAML, tested approval, or MCP writes.
+6. Resume with safe empty-folder Workspace initialization; do not adopt nonempty folders or add renderer-selected paths, generic YAML, Git, or MCP writes.
