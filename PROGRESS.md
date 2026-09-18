@@ -5,11 +5,11 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 3G — Category details editing accepted; next is Category reordering.
+Phase 3H — Category reordering accepted; next is safe empty-Category removal.
 
 ## Current task
 
-Add deterministic revision-checked Category reordering without moving directories or Guides. MCP remains read-only.
+Add recoverable removal for an empty non-default Category, with explicit confirmation and no cascade behavior. MCP remains read-only.
 
 ## Overall status
 
@@ -72,10 +72,11 @@ In progress. A user can open or initialize a Workspace, create/edit/archive/rest
 - Added Category renaming at signed checkpoint `959a239`: typed revision-checked descriptor mutation preserves summary/order/status/unknown metadata, every Guide, and the stable directory path; no-ops preserve revision; bounded structured IPC and an accessible inline rail form handle validation, conflict, focus, and discard behavior.
 - Added reversible Category archive/restore at signed checkpoint `4e77979`: typed revision-checked status transitions preserve directories and Guides, archived Categories reject new Guides, configured default Categories fail with actionable replacement guidance, and the Reference Desk exposes explicit busy/status/error states. Current-guideline review also added `content-visibility` containment for large Category and Guide lists.
 - Added atomic Category name/optional-summary editing at signed checkpoint `4c55c60`: typed safe replacement/insertion/removal preserves comments or refuses ambiguity, unknown metadata, order/status, stable paths, and Guides. Native/UI revisions remain enforced, and the narrow toolbar label regression is corrected.
+- Added deterministic Category reordering at signed checkpoint `936dc85`: the complete Category ID/revision effect set and exact directory inventory are checked under one writer lock, changed descriptors commit through one recoverable multi-file journal, Rust derives spaced order values, and named Move Up/Down controls expose busy/error states without moving directories or Guides.
 
 ## Work in progress
 
-- Category details editing is committed at signed checkpoint `4c55c60`. The next bounded batch is deterministic Category reorder using the existing typed `SetOrder` planner.
+- Category reordering is committed at signed checkpoint `936dc85`. The next bounded batch is safe removal of an empty, non-default Category through the existing recoverable trash boundary.
 
 ## Remaining work
 
@@ -105,6 +106,7 @@ No known regression in accepted phases. If the process is killed after the initi
 - The current upstream guidelines were re-fetched for Category rename. The compact rail form has a real label/name/autocomplete policy, visible focus, submit-time validation, inline focused errors, loading copy, discard/beforeunload protection, named semantic buttons, truncation, and narrow-safe wrapping. Static review found no blocking issue; the combined visual/browser gate remains open.
 - The current upstream guidelines were re-fetched for Category lifecycle controls. Archive/Restore remains immediately reversible in place, loading/error/status text is explicit, controls are semantic and keyboard-visible, and large Category/Guide lists now use `content-visibility: auto` with intrinsic sizes. Static review found no blocking issue; the combined visual/browser gate remains open.
 - The current upstream guidelines were re-fetched for Category details. The labeled bounded fields, focused inline error, submit/loading behavior, discard guard, visible narrow toolbar icon, and keyboard focus restoration pass static review. The stopped review agent's toolbar-label finding is fixed; its request for browser interaction coverage remains deferred to the already documented combined UI gate because no DOM harness is approved.
+- The current upstream guidelines were re-fetched for Category reorder. Move Up/Down use named native buttons, boundary/busy disabling, visible moving/error feedback, the shared live region, stable keyed focus behavior, and no gesture-only interaction. Static review found no issue; screenshots/browser interaction remain in the combined UI gate.
 
 ## Security findings
 
@@ -138,6 +140,7 @@ No known regression in accepted phases. If the process is killed after the initi
 - The `959a239` Category adapter accepts only Category ID, expected descriptor revision, and name. Rust reparses under the writer lock, verifies stable identity, applies only typed `SetName`, journals one atomic replacement, verifies the directory did not move, and refreshes native state. It adds no generic YAML/path/time/operation/Git/MCP authority.
 - The `4e77979` lifecycle adapter accepts only Category ID, expected revision, and a Boolean intent mapped to closed Archive/Restore mutations. It refuses archiving the manifest's default Category, preserves every path/Guide/unknown field, and performs one journaled replacement. It adds no delete/move/generic status/Git/MCP authority.
 - The `4c55c60` details adapter accepts only Category ID, expected revision, bounded name, and optional bounded summary. Rust applies closed typed mutations under one writer lock and one recoverable replacement; optional-field insertion/removal refuses flow layouts or ambiguous comments and preserves unknown metadata, order/status, paths, and Guides. It adds no generic YAML/path/Git/MCP authority.
+- The `936dc85` reorder adapter accepts the complete bounded Category ID/revision set only. Rust rechecks the exact `categories/` directory inventory and every descriptor revision under one writer lock, derives all order numbers, prepares typed `SetOrder` candidates, and commits only changed descriptors in one `MultiFile` recovery journal. Missing/duplicate/stale/malformed/unsafe sets fail closed; no path, YAML, numeric-order, delete, Git, or MCP authority crosses IPC.
 
 ## Blockers and human checkpoints
 
@@ -147,11 +150,12 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Latest verified commit
 
-`4c55c60` — signed atomic Category name/optional-summary editing across core, native adapter, and Reference Desk UI.
+`936dc85` — signed effect-set-checked, recoverable multi-document Category reordering across core, native adapter, and Reference Desk UI.
 
 ## Tests last run and results
 
 - 2026-09-18: Category details checkpoint at `4c55c60`: Cargo formatting, `pnpm check/test/build`, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 244 core library tests, 8 desktop Rust tests, 16 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Current upstream guideline review found no remaining issue in the changed UI; the stopped review agent's narrow toolbar-label finding was corrected before acceptance.
+- 2026-09-18: Category reorder checkpoint at `936dc85`: Cargo formatting, `pnpm check/test/build`, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 246 core library tests, 9 desktop Rust tests, 17 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused evidence covers exact/duplicate/stale effect sets, unexpected directory residue, deterministic order normalization, stable paths/Guides, no-op behavior, and native error stability. Fresh current-guideline static review found no issue in the named keyboard-native reorder controls or their busy/error states.
 - 2026-09-18: Category rename checkpoint at `959a239`: Cargo formatting, `pnpm check/test/build`, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 239 core library tests, 8 desktop Rust tests, 17 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused evidence covers rename/path stability, no-op revision stability, invalid/stale refusal, native revision payload/codes, UI normalization, error/focus/discard behavior, and current-guideline static review.
 - 2026-09-18: Guide details checkpoint at `66af3d0`: Cargo formatting, `pnpm check/test/build`, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 237 core library tests, 7 desktop Rust tests, 16 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused evidence covers atomic title+summary, body/unknown/path preservation, no-op revision stability, tested-to-stale, hardlink refusal, stable native conflict codes, UI normalization, focus/error/discard behavior, and current-guideline static review.
 - 2026-09-18: draft Guide creation checkpoint at `94d2f4e`: Cargo formatting, `pnpm check/test/build`, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 236 core library tests, 7 desktop Rust tests, 15 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused coverage proves canonical draft/frontmatter/body/path, Unicode slug fallback, active Category correlation, no-write validation, `0600` mode, structured native errors/category status, UI normalization, and static accessible form semantics.
@@ -286,10 +290,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `docs/task-packets/phase-3e-category-rename.md` plus the Category application update, descriptor revision payload, native command/error mapping, inline rail form, styles, and tests implement Category renaming at `959a239`.
 - `docs/task-packets/phase-3f-category-archive-restore.md` plus the typed lifecycle application path, default-Category safeguard, native Boolean command, rail controls, list containment, and tests implement Category archive/restore at `4e77979`.
 - `docs/task-packets/phase-3g-category-details-edit.md` plus typed optional summary insertion/removal, atomic detail update, refreshed payload, inline details form, and tests implement Category details editing at `4c55c60`.
+- `docs/task-packets/phase-3h-category-reorder.md` plus the exact-inventory multi-document recovery boundary, typed reorder application flow, native command, rail controls, and tests implement Category reordering at `936dc85`.
 
 ## Next recommended action
 
-Specify and implement Category reorder as a bounded multi-descriptor revision-checked operation. Preserve directories, Guides, status, unknown metadata, and stable ordering under failure. Keep MCP read-only.
+Specify and implement empty Category removal using recoverable trash. Refuse the default Category, nonempty Categories, stale revisions, unsafe inventory, and every cascade. Require explicit UI confirmation. Keep MCP read-only.
 
 ## Recommended agent role and reasoning effort
 
@@ -300,6 +305,6 @@ Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents for routine work; us
 1. Read `AGENTS.md` and this file.
 2. Read the Category mutation sections of `docs/content-model.md`, ADR 0009/0014, and the threat model.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `4c55c60`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `936dc85`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Resume with bounded Category reorder; do not move/delete content, add generic YAML, or add Git/MCP writes.
+6. Resume with safe empty Category removal; do not cascade, remove a default/nonempty Category, add generic YAML, or add Git/MCP writes.
