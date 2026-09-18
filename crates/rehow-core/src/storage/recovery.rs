@@ -33,6 +33,19 @@ pub(crate) struct DocumentMoveOutcome {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DocumentRemoveError {
+    Busy,
+    Conflict,
+    Unsafe,
+    Unsupported,
+    TooLarge,
+    Io,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DocumentRemoveOutcome;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MultiDocumentUpdateError<E> {
     Prepare(E),
     InvalidPlan,
@@ -748,6 +761,102 @@ where
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_document_remove(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    relative_path: &str,
+    expected_revision: Revision,
+    operation_id: OperationId,
+    created_at: Timestamp,
+) -> Result<DocumentRemoveOutcome, DocumentRemoveError> {
+    let components = relative_path.split('/').collect::<Vec<_>>();
+    if !matches!(
+        components.as_slice(),
+        ["categories", directory, guide]
+            if super::valid_category_directory(directory) && super::valid_guide_filename(guide)
+    ) {
+        return Err(DocumentRemoveError::Unsafe);
+    }
+    let store = store::RecoveryStore::open(
+        state_home,
+        workspace_id,
+        root.root_hash(),
+        root.capability_hash(),
+    )
+    .map_err(map_store_document_remove)?;
+    let lock = store
+        .acquire_lock(runtime_directory)
+        .map_err(map_store_document_remove)?;
+    let target = root
+        .open_managed_target(relative_path)
+        .map_err(map_io_document_remove)?;
+    let current = match target
+        .state(super::GUIDE_LIMIT)
+        .map_err(map_io_document_remove)?
+    {
+        super::linux::ManagedState::Missing => return Err(DocumentRemoveError::Conflict),
+        super::linux::ManagedState::Regular(state) => state,
+    };
+    if super::document_revision(relative_path, &current.bytes) != expected_revision {
+        return Err(DocumentRemoveError::Conflict);
+    }
+    let object_hash = store
+        .store_object(&lock, &current.bytes)
+        .map_err(map_store_document_remove)?;
+    let destination = format!(".rehow/trash/{operation_id}/{relative_path}");
+    let (root_device, root_inode) = root.identity().map_err(map_io_document_remove)?;
+    let mut plan = blake3::Hasher::new();
+    plan.update(b"rehow-document-remove-plan-v1\0");
+    hash_plan_field(&mut plan, relative_path.as_bytes());
+    hash_plan_field(&mut plan, expected_revision.to_string().as_bytes());
+    plan.update(&object_hash);
+    plan.update(&current.mode.to_be_bytes());
+    let journal = Journal {
+        generation: 1,
+        operation_id,
+        operation_kind: OperationKind::Delete,
+        workspace_id,
+        root_hash: root.root_hash(),
+        root_device,
+        root_inode,
+        created_at,
+        plan_hash: *plan.finalize().as_bytes(),
+        targets: vec![Target {
+            relative_path: relative_path.to_owned(),
+            expected: ExpectedState::Existing {
+                revision: expected_revision,
+                object_hash,
+                mode: current.mode,
+            },
+            intended: IntendedState::Trash {
+                object_hash,
+                mode: current.mode,
+                destination,
+            },
+            temp_name: format!(".rehow-tmp-{operation_id}"),
+            step: TargetStep::Prepared,
+        }],
+        stage: JournalStage::Prepared,
+        completion: false,
+    };
+    let execution = workspace::execute_new_journal(root, &store, &lock, journal.clone());
+    if let Err(error) = execution {
+        let committed = store
+            .read_journal(&lock, operation_id)
+            .is_ok_and(|persisted| {
+                committed_matches(&persisted, &journal)
+                    && workspace::resume_journal(root, &store, &lock, operation_id).is_ok()
+            });
+        if !committed {
+            return Err(map_workspace_document_remove(error));
+        }
+    }
+    Ok(DocumentRemoveOutcome)
+}
+
 struct CurrentDocument {
     relative_path: String,
     revision: Revision,
@@ -1023,6 +1132,39 @@ fn map_workspace_update<E>(error: workspace::WorkspaceMutationError) -> Document
         workspace::WorkspaceMutationError::Unsupported => DocumentUpdateError::Unsupported,
         workspace::WorkspaceMutationError::TooLarge => DocumentUpdateError::TooLarge,
         workspace::WorkspaceMutationError::Io => DocumentUpdateError::Io,
+    }
+}
+
+fn map_store_document_remove(error: store::StoreError) -> DocumentRemoveError {
+    match error {
+        store::StoreError::Busy => DocumentRemoveError::Busy,
+        store::StoreError::Conflict | store::StoreError::Corrupt => DocumentRemoveError::Conflict,
+        store::StoreError::Unsafe => DocumentRemoveError::Unsafe,
+        store::StoreError::Unsupported => DocumentRemoveError::Unsupported,
+        store::StoreError::TooLarge => DocumentRemoveError::TooLarge,
+        store::StoreError::Io => DocumentRemoveError::Io,
+        #[cfg(test)]
+        store::StoreError::Injected => DocumentRemoveError::Io,
+    }
+}
+
+fn map_io_document_remove(error: super::linux::MutationIoError) -> DocumentRemoveError {
+    match error {
+        super::linux::MutationIoError::Unsafe => DocumentRemoveError::Unsafe,
+        super::linux::MutationIoError::Conflict => DocumentRemoveError::Conflict,
+        super::linux::MutationIoError::Unsupported => DocumentRemoveError::Unsupported,
+        super::linux::MutationIoError::TooLarge => DocumentRemoveError::TooLarge,
+        super::linux::MutationIoError::Io => DocumentRemoveError::Io,
+    }
+}
+
+fn map_workspace_document_remove(error: workspace::WorkspaceMutationError) -> DocumentRemoveError {
+    match error {
+        workspace::WorkspaceMutationError::Unsafe => DocumentRemoveError::Unsafe,
+        workspace::WorkspaceMutationError::Conflict => DocumentRemoveError::Conflict,
+        workspace::WorkspaceMutationError::Unsupported => DocumentRemoveError::Unsupported,
+        workspace::WorkspaceMutationError::TooLarge => DocumentRemoveError::TooLarge,
+        workspace::WorkspaceMutationError::Io => DocumentRemoveError::Io,
     }
 }
 

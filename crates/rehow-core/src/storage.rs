@@ -8,9 +8,9 @@ pub(crate) mod recovery;
 pub(crate) use recovery::{
     CategoryCreateStorageError, CategoryCreateStorageOutcome, CategoryRemoveStorageError,
     CategoryRemoveStorageOutcome, DocumentCreateError, DocumentCreateOutcome, DocumentMoveOutcome,
-    DocumentUpdateError, DocumentUpdateOutcome, MultiDocumentUpdateError,
-    MultiDocumentUpdateOutcome, PreparedDocument, WorkspaceInitializeError,
-    WorkspaceInitializeOutcome,
+    DocumentRemoveError, DocumentRemoveOutcome, DocumentUpdateError, DocumentUpdateOutcome,
+    MultiDocumentUpdateError, MultiDocumentUpdateOutcome, PreparedDocument,
+    WorkspaceInitializeError, WorkspaceInitializeOutcome,
 };
 
 #[cfg(not(target_os = "linux"))]
@@ -312,6 +312,28 @@ where
         operation_id,
         created_at,
         prepare,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_document_remove(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    relative_path: &str,
+    expected_revision: Revision,
+    operation_id: crate::protocol::OperationId,
+    created_at: crate::protocol::Timestamp,
+) -> Result<DocumentRemoveOutcome, DocumentRemoveError> {
+    recovery::execute_document_remove(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        relative_path,
+        expected_revision,
+        operation_id,
+        created_at,
     )
 }
 

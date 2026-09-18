@@ -62,6 +62,11 @@ type SaveGuidePayload = {
   changed: boolean;
 };
 
+type RemoveGuidePayload = {
+  workspace: WorkspacePayload;
+  removed: boolean;
+};
+
 type CreateCategoryPayload = {
   workspace: WorkspacePayload;
   categoryId: string;
@@ -412,6 +417,7 @@ export function App() {
   const [savingGuide, setSavingGuide] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [updatingGuideStatus, setUpdatingGuideStatus] = useState(false);
+  const [removingGuide, setRemovingGuide] = useState(false);
   const [guideStatusError, setGuideStatusError] = useState("");
   const [rankedGuideIds, setRankedGuideIds] = useState<string[] | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -422,6 +428,7 @@ export function App() {
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const editDetailsButtonRef = useRef<HTMLButtonElement>(null);
   const guideStatusButtonRef = useRef<HTMLButtonElement>(null);
+  const guideRemoveButtonRef = useRef<HTMLButtonElement>(null);
   const guideStatusErrorRef = useRef<HTMLParagraphElement>(null);
   const detailTitleRef = useRef<HTMLInputElement>(null);
   const detailSummaryRef = useRef<HTMLTextAreaElement>(null);
@@ -1262,6 +1269,7 @@ export function App() {
       selected === null ||
       guideBody?.id !== selected.id ||
       updatingGuideStatus ||
+      removingGuide ||
       editingGuide ||
       editingGuideDetails
     )
@@ -1294,6 +1302,48 @@ export function App() {
       requestAnimationFrame(() => guideStatusErrorRef.current?.focus());
     } finally {
       setUpdatingGuideStatus(false);
+    }
+  }
+
+  async function removeGuide() {
+    if (
+      selected === null ||
+      guideBody?.id !== selected.id ||
+      removingGuide ||
+      updatingGuideStatus ||
+      editingGuide ||
+      editingGuideDetails
+    )
+      return;
+    const removedTitle = selected.title;
+    setRemovingGuide(true);
+    setGuideStatusError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<RemoveGuidePayload>("remove_open_guide", {
+        guideId: selected.id,
+        expectedRevision: guideBody.revision,
+      });
+      if (!result.removed) {
+        setAnnouncement("Guide deletion cancelled.");
+        requestAnimationFrame(() => guideRemoveButtonRef.current?.focus());
+        return;
+      }
+      const nextGuideId = result.workspace.guides[0]?.id ?? "";
+      setWorkspace(result.workspace);
+      setGuideBody(null);
+      setDraftBody("");
+      setSelectedId(nextGuideId);
+      setReaderOpen(false);
+      setAnnouncement(`${removedTitle} moved to Rehow Trash.`);
+      requestAnimationFrame(() => searchRef.current?.focus());
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setGuideStatusError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => guideStatusErrorRef.current?.focus());
+    } finally {
+      setRemovingGuide(false);
     }
   }
 
@@ -2042,7 +2092,9 @@ export function App() {
                         type="button"
                         onClick={beginEditingGuideDetails}
                         disabled={
-                          guideBody?.id !== selected.id || updatingGuideStatus
+                          guideBody?.id !== selected.id ||
+                          updatingGuideStatus ||
+                          removingGuide
                         }
                       >
                         Edit Details
@@ -2053,7 +2105,9 @@ export function App() {
                         type="button"
                         onClick={beginEditing}
                         disabled={
-                          guideBody?.id !== selected.id || updatingGuideStatus
+                          guideBody?.id !== selected.id ||
+                          updatingGuideStatus ||
+                          removingGuide
                         }
                       >
                         Edit Content
@@ -2064,13 +2118,28 @@ export function App() {
                         type="button"
                         onClick={() => void changeGuideArchived()}
                         disabled={
-                          guideBody?.id !== selected.id || updatingGuideStatus
+                          guideBody?.id !== selected.id ||
+                          updatingGuideStatus ||
+                          removingGuide
                         }
                       >
                         {guideLifecycleLabel(
                           selected.status,
                           updatingGuideStatus,
                         )}
+                      </button>
+                      <button
+                        ref={guideRemoveButtonRef}
+                        className="button guide-remove-button"
+                        type="button"
+                        onClick={() => void removeGuide()}
+                        disabled={
+                          guideBody?.id !== selected.id ||
+                          updatingGuideStatus ||
+                          removingGuide
+                        }
+                      >
+                        {removingGuide ? "Deleting…" : "Delete Guide"}
                       </button>
                     </div>
                   )}

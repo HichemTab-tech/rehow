@@ -25,11 +25,11 @@ use crate::{
     },
     storage::{
         CategoryCreateStorageError, CategoryRemoveStorageError, DocumentCreateError,
-        DocumentUpdateError, DocumentUpdateRequest, EmptyWorkspaceTarget, MultiDocumentUpdateError,
-        WorkspaceInitializeError, WorkspaceView, execute_category_create, execute_category_remove,
-        execute_document_create, execute_document_move, execute_document_update,
-        execute_multi_document_update, execute_workspace_initialize, open_initialized_workspace,
-        refresh_workspace,
+        DocumentRemoveError, DocumentUpdateError, DocumentUpdateRequest, EmptyWorkspaceTarget,
+        MultiDocumentUpdateError, WorkspaceInitializeError, WorkspaceView, execute_category_create,
+        execute_category_remove, execute_document_create, execute_document_move,
+        execute_document_remove, execute_document_update, execute_multi_document_update,
+        execute_workspace_initialize, open_initialized_workspace, refresh_workspace,
     },
 };
 use std::{collections::HashSet, path::Path};
@@ -935,6 +935,22 @@ pub enum GuideUpdateError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GuideRemoveError {
+    NotFound,
+    HasAttachments,
+    RevisionConflict,
+    Busy,
+    UnsafeStorage,
+    UnsupportedFilesystem,
+    ResourceLimit,
+    Io,
+    CommittedRefreshRequired,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GuideRemoveOutcome;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GuideUpdateOutcome {
     revision: Revision,
     changed: bool,
@@ -991,6 +1007,63 @@ pub fn set_guide_archived(
             GuideEdit::Restore
         },
     )
+}
+
+pub fn remove_guide(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_id: GuideId,
+    expected_revision: Revision,
+) -> Result<GuideRemoveOutcome, GuideRemoveError> {
+    let loaded = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides())
+        .find(|guide| guide.guide().id() == &guide_id)
+        .ok_or(GuideRemoveError::NotFound)?;
+    if loaded.revision() != expected_revision {
+        return Err(GuideRemoveError::RevisionConflict);
+    }
+    if loaded
+        .guide()
+        .attachments()
+        .is_some_and(|attachments| !attachments.is_empty())
+    {
+        return Err(GuideRemoveError::HasAttachments);
+    }
+    let relative_path = loaded.relative_path().to_owned();
+    execute_document_remove(
+        workspace,
+        state_home,
+        runtime_directory,
+        &relative_path,
+        expected_revision,
+        new_operation_id(),
+        current_timestamp(),
+    )
+    .map_err(map_guide_remove_error)?;
+    if refresh_workspace(workspace).is_err()
+        || workspace
+            .categories()
+            .iter()
+            .flat_map(|category| category.guides())
+            .any(|guide| guide.guide().id() == &guide_id)
+    {
+        return Err(GuideRemoveError::CommittedRefreshRequired);
+    }
+    Ok(GuideRemoveOutcome)
+}
+
+fn map_guide_remove_error(error: DocumentRemoveError) -> GuideRemoveError {
+    match error {
+        DocumentRemoveError::Busy => GuideRemoveError::Busy,
+        DocumentRemoveError::Conflict => GuideRemoveError::RevisionConflict,
+        DocumentRemoveError::Unsafe => GuideRemoveError::UnsafeStorage,
+        DocumentRemoveError::Unsupported => GuideRemoveError::UnsupportedFilesystem,
+        DocumentRemoveError::TooLarge => GuideRemoveError::ResourceLimit,
+        DocumentRemoveError::Io => GuideRemoveError::Io,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2627,6 +2700,100 @@ mod tests {
                 .windows(19)
                 .any(|value| value == b"future_key: keep-me")
         );
+    }
+
+    #[test]
+    fn removes_an_attachment_free_guide_to_operation_bound_trash() {
+        let (workspace, state, mut view) = initialized_workspace("guide-remove");
+        let category_id = create_category(&mut view, state.path(), None, "Guides", None)
+            .unwrap()
+            .category_id();
+        let created = create_guide(
+            &mut view,
+            state.path(),
+            None,
+            category_id,
+            "Remove This Guide",
+            "Recoverable deletion.",
+        )
+        .unwrap();
+        let guide_id = created.guide_id();
+        let relative_path = view
+            .categories()
+            .iter()
+            .flat_map(|category| category.guides())
+            .find(|guide| guide.guide().id() == &guide_id)
+            .unwrap()
+            .relative_path()
+            .to_owned();
+        let original = fs::read(workspace.path().join(&relative_path)).unwrap();
+
+        remove_guide(&mut view, state.path(), None, guide_id, created.revision()).unwrap();
+
+        assert!(!workspace.path().join(&relative_path).exists());
+        assert!(
+            !view
+                .categories()
+                .iter()
+                .flat_map(|category| category.guides())
+                .any(|guide| guide.guide().id() == &guide_id)
+        );
+        let operations = fs::read_dir(workspace.path().join(".rehow/trash"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(operations.len(), 1);
+        assert_eq!(
+            fs::read(operations[0].path().join(relative_path)).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn guide_remove_refuses_stale_revision_and_attachment_metadata() {
+        let with_attachment = GUIDE.replacen(
+            "status: draft\n",
+            "attachments:\n  - id: 0199a264-ef5f-73b4-a238-a71ba1509898\n    path: attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/example.desktop\n    title: Example desktop entry\n    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\nstatus: draft\n",
+            1,
+        );
+        let (workspace, state, mut view) = fixture("guide-remove-refusal", &with_attachment);
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let expected = revision(&view);
+        assert_eq!(
+            remove_guide(
+                &mut view,
+                state.path(),
+                None,
+                guide_id,
+                Revision::from_str(&format!("rev:v1:{}", "11".repeat(32))).unwrap(),
+            ),
+            Err(GuideRemoveError::RevisionConflict)
+        );
+        assert_eq!(
+            remove_guide(&mut view, state.path(), None, guide_id, expected),
+            Err(GuideRemoveError::HasAttachments)
+        );
+        assert!(workspace.path().join(GUIDE_PATH).is_file());
+        assert!(!workspace.path().join(".rehow/trash").exists());
+    }
+
+    #[test]
+    fn guide_remove_refuses_a_hardlinked_target() {
+        let (workspace, state, mut view) = fixture("guide-remove-hardlink", GUIDE);
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let expected = revision(&view);
+        fs::hard_link(
+            workspace.path().join(GUIDE_PATH),
+            workspace.path().join("unexpected-hardlink"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            remove_guide(&mut view, state.path(), None, guide_id, expected),
+            Err(GuideRemoveError::UnsafeStorage)
+        );
+        assert!(workspace.path().join(GUIDE_PATH).is_file());
+        assert!(!workspace.path().join(".rehow/trash").exists());
     }
 
     #[test]

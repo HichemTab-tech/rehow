@@ -3,10 +3,11 @@ pub const APPLICATION_NAME: &str = "Rehow";
 use rehow_core::{
     application::{
         CategoryCreateError, CategoryOrderRevision, CategoryRemoveError, CategoryReorderError,
-        CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError, GuideEdit, GuideUpdateError,
-        WorkspaceInitializationError, create_category, create_guide, initialize_workspace,
-        remove_category, reorder_categories, set_category_archived, set_guide_archived,
-        update_category_details, update_guide, update_guide_details,
+        CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError, GuideEdit, GuideRemoveError,
+        GuideUpdateError, WorkspaceInitializationError, create_category, create_guide,
+        initialize_workspace, remove_category, remove_guide, reorder_categories,
+        set_category_archived, set_guide_archived, update_category_details, update_guide,
+        update_guide_details,
     },
     domain::GuideStatus,
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -123,6 +124,13 @@ struct SaveGuidePayload {
     workspace: WorkspacePayload,
     guide: GuideBodyPayload,
     changed: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoveGuidePayload {
+    workspace: WorkspacePayload,
+    removed: bool,
 }
 
 #[derive(Serialize)]
@@ -489,6 +497,172 @@ fn set_open_guide_archived(
             .map_err(|message| native_command_error("refreshRequired", message))?,
         changed: outcome.changed(),
     })
+}
+
+#[tauri::command]
+fn remove_open_guide(
+    guide_id: String,
+    expected_revision: String,
+    window: tauri::Window,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<RemoveGuidePayload, NativeCommandError> {
+    if guide_id.len() > 64 || expected_revision.len() > 96 {
+        return Err(native_command_error(
+            "invalidInput",
+            "Guide identity is too long.".to_owned(),
+        ));
+    }
+    let guide_id = GuideId::from_str(&guide_id)
+        .map_err(|_| native_command_error("invalidGuide", "Guide ID is invalid.".to_owned()))?;
+    let expected_revision = Revision::from_str(&expected_revision).map_err(|_| {
+        native_command_error(
+            "invalidRevision",
+            "Guide revision is invalid. Reopen the Guide and try again.".to_owned(),
+        )
+    })?;
+    let mut guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_mut().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let loaded_guide = workspace
+        .view
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides())
+        .find(|guide| guide.guide().id() == &guide_id)
+        .ok_or_else(|| {
+            native_command_error(
+                "notFound",
+                "Guide was not found. Reopen the Workspace.".to_owned(),
+            )
+        })?;
+    if loaded_guide.revision() != expected_revision {
+        return Err(native_command_error(
+            "revisionConflict",
+            "This Guide changed on disk. Reopen it before deleting it.".to_owned(),
+        ));
+    }
+    let guide_title = loaded_guide.guide().title().to_owned();
+    let confirmed = rfd::MessageDialog::new()
+        .set_parent(&window)
+        .set_level(rfd::MessageLevel::Warning)
+        .set_title("Delete Guide?")
+        .set_description(guide_remove_confirmation(
+            &guide_title,
+            &guide_id.to_string(),
+        ))
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes;
+    if !confirmed {
+        return Ok(RemoveGuidePayload {
+            workspace: WorkspacePayload::from_view(
+                &workspace.view,
+                FolderFactsPayload::from(workspace.facts),
+            ),
+            removed: false,
+        });
+    }
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    fs::create_dir_all(&state_home).map_err(|_| {
+        native_command_error(
+            "stateUnavailable",
+            "Rehow could not prepare its private recovery folder.".to_owned(),
+        )
+    })?;
+    remove_guide(
+        &mut workspace.view,
+        &state_home,
+        runtime_directory.as_deref(),
+        guide_id,
+        expected_revision,
+    )
+    .map_err(|error| native_command_error(guide_remove_code(error), guide_remove_message(error)))?;
+    Ok(RemoveGuidePayload {
+        workspace: WorkspacePayload::from_view(
+            &workspace.view,
+            FolderFactsPayload::from(workspace.facts),
+        ),
+        removed: true,
+    })
+}
+
+fn guide_remove_code(error: GuideRemoveError) -> &'static str {
+    match error {
+        GuideRemoveError::NotFound => "notFound",
+        GuideRemoveError::HasAttachments => "hasAttachments",
+        GuideRemoveError::RevisionConflict => "revisionConflict",
+        GuideRemoveError::Busy => "busy",
+        GuideRemoveError::UnsafeStorage => "unsafeStorage",
+        GuideRemoveError::UnsupportedFilesystem => "unsupportedFilesystem",
+        GuideRemoveError::ResourceLimit => "resourceLimit",
+        GuideRemoveError::Io => "io",
+        GuideRemoveError::CommittedRefreshRequired => "committedRefresh",
+    }
+}
+
+fn guide_remove_confirmation(title: &str, guide_id: &str) -> String {
+    let safe_title = title
+        .chars()
+        .map(|character| {
+            let value = character as u32;
+            if character.is_control()
+                || matches!(value, 0x061c | 0x200e | 0x200f | 0x2028..=0x202e | 0x2066..=0x2069 | 0xfeff)
+                || matches!(value, 0xfdd0..=0xfdef)
+                || matches!(value & 0xffff, 0xfffe | 0xffff)
+            {
+                '\u{fffd}'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    format!(
+        "Delete this Guide?\n\nTitle: {safe_title}\nID: {guide_id}\n\nThe Guide will move to Rehow Trash."
+    )
+}
+
+fn guide_remove_message(error: GuideRemoveError) -> String {
+    match error {
+        GuideRemoveError::NotFound => "Guide was not found. Reopen the Workspace.".to_owned(),
+        GuideRemoveError::HasAttachments => {
+            "Remove this Guide’s Attachments before deleting the Guide.".to_owned()
+        }
+        GuideRemoveError::RevisionConflict => {
+            "This Guide changed on disk. Reopen it before deleting it.".to_owned()
+        }
+        GuideRemoveError::Busy => {
+            "Another Rehow writer is active. Wait a moment and try again.".to_owned()
+        }
+        GuideRemoveError::UnsafeStorage => {
+            "The Guide path is unsafe or changed type. Rehow deleted nothing.".to_owned()
+        }
+        GuideRemoveError::UnsupportedFilesystem => {
+            "This filesystem cannot provide the durable deletion Rehow requires.".to_owned()
+        }
+        GuideRemoveError::ResourceLimit => {
+            "The Guide exceeds Rehow’s safe deletion limits.".to_owned()
+        }
+        GuideRemoveError::Io => {
+            "The Guide could not be deleted. Check folder access and try again.".to_owned()
+        }
+        GuideRemoveError::CommittedRefreshRequired => {
+            "The Guide moved to Rehow Trash, but the view could not refresh. Reopen the Workspace."
+                .to_owned()
+        }
+    }
 }
 
 fn native_recovery_locations() -> Result<(PathBuf, Option<PathBuf>), String> {
@@ -1456,6 +1630,7 @@ pub fn run() {
             initialize_selected_workspace,
             read_open_guide,
             remove_open_category,
+            remove_open_guide,
             reorder_open_categories,
             save_open_category_details,
             save_open_guide_body,
@@ -1475,13 +1650,13 @@ mod tests {
         WorkspacePayload, category_create_code, category_create_message, category_remove_code,
         category_remove_message, category_reorder_code, category_reorder_message,
         category_update_code, category_update_message, guide_create_code, guide_create_message,
-        guide_update_code, guide_update_message, native_command_error,
-        workspace_initialization_message,
+        guide_remove_code, guide_remove_confirmation, guide_remove_message, guide_update_code,
+        guide_update_message, native_command_error, workspace_initialization_message,
     };
     use rehow_core::{
         application::{
             CategoryCreateError, CategoryRemoveError, CategoryReorderError, CategoryUpdateError,
-            GuideCreateError, GuideUpdateError, WorkspaceInitializationError,
+            GuideCreateError, GuideRemoveError, GuideUpdateError, WorkspaceInitializationError,
         },
         markdown::parse_safe_markdown,
     };
@@ -1585,6 +1760,21 @@ mod tests {
         assert_eq!(
             guide_update_message(GuideUpdateError::DestinationCategoryArchived),
             "Choose an active destination Category before moving this Guide."
+        );
+        assert_eq!(
+            guide_remove_code(GuideRemoveError::HasAttachments),
+            "hasAttachments"
+        );
+        assert_eq!(
+            guide_remove_message(GuideRemoveError::RevisionConflict),
+            "This Guide changed on disk. Reopen it before deleting it."
+        );
+        assert_eq!(
+            guide_remove_confirmation(
+                "bad\nline\u{202e}name “quoted”",
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e10"
+            ),
+            "Delete this Guide?\n\nTitle: bad�line�name “quoted”\nID: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\n\nThe Guide will move to Rehow Trash."
         );
     }
 
