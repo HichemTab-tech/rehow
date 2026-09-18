@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 3C — draft Guide creation accepted; next is Guide title/summary editing.
+Phase 3D — Guide title/summary editing accepted; next is Category renaming.
 
 ## Current task
 
-Expose bounded Guide title and summary editing through the existing mutation/revision boundary. MCP remains read-only.
+Expose bounded Category renaming through the existing mutation/revision boundary. MCP remains read-only.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace, create active Categories, create draft Guides, and immediately edit their body through descriptor-confined recoverable writes. MCP remains read-only.
+In progress. A user can open or initialize a Workspace, create active Categories, create draft Guides, and edit Guide title, summary, and body through descriptor-confined recoverable writes. MCP remains read-only.
 
 ## Completed work
 
@@ -68,10 +68,11 @@ In progress. A user can open or initialize a Workspace, create active Categories
 - Added safe empty-folder Workspace initialization at signed checkpoint `b2dac91`: retained descriptor selection, one-shot native authority, canonical internal IDs/time/YAML, no-replace manifest journaling, exclusive private `categories/`, changed-folder refusal, structured actionable errors, and an accessible onboarding form. The work also fixed repeated directory scans incorrectly sharing an exhausted stream offset.
 - Added active Category creation at signed checkpoint `98e2501`: canonical core-owned IDs/time/order/YAML and directory names, descriptor-confined private directories, recovery-journaled no-replace descriptors, bounded structured Tauri IPC, refreshed Workspace state, accessible Reference Desk creation UI, and focused failure/mode tests.
 - Added draft Guide creation at signed checkpoint `94d2f4e`: active-Category validation, canonical core-owned ID/time/path/frontmatter/body, journaled no-replace `0600` Markdown, refreshed native state, bounded structured IPC, and a keyboard-accessible create flow that opens directly in the existing editor. Creation cannot set `tested`.
+- Added atomic Guide title/summary editing at signed checkpoint `66af3d0`: one revision-checked recovery update preserves body, unknown metadata, and filename; no-ops preserve revision; tested Guides become stale; structured native errors and an accessible inline details editor handle validation, conflicts, focus, and unsaved changes.
 
 ## Work in progress
 
-- Draft Guide creation is committed at signed checkpoint `94d2f4e`. The next bounded batch is Guide title/summary editing through the already accepted mutation planner.
+- Guide details editing is committed at signed checkpoint `66af3d0`. The next bounded batch is Category renaming through the already accepted Category mutation planner.
 
 ## Remaining work
 
@@ -97,6 +98,7 @@ No known regression in accepted phases. If the process is killed after the initi
 - The current upstream web-interface guidelines were re-fetched for Workspace onboarding. The implemented form has a real label/name/autocomplete policy, bounded controlled input, inline focused errors, live updates, loading copy, visible focus, responsive action wrapping, and a truthful zero-Guide state; static review found no remaining issue. Screenshot/manual portal coverage remains open.
 - The current upstream guidelines were re-fetched for Category creation. Both fields are labeled/named, bounded, and associated with focused inline errors; the icon action is named, loading copy uses an ellipsis, focus restores predictably, and narrow actions wrap. Static self-review found no remaining issue; screenshot/browser interaction coverage remains part of the later combined UI gate.
 - The draft Guide form follows the freshly fetched guideline set: labeled/named bounded fields, explicit active-Category select styling, inline focused errors, loading copy, discard warning, narrow reflow, and direct editor focus after success. Static self-review found no remaining issue; a rendered screenshot/browser interaction pass remains for the combined UI gate.
+- The current upstream guidelines were re-fetched for Guide details editing. The form has labeled/named bounded controls, visible focus, submit-time validation, inline focused errors, loading copy, tested-to-stale warning, discard/beforeunload protection, and narrow reflow. Static review found no blocking issue; browser-level interaction and screenshots remain for the combined UI gate.
 
 ## Security findings
 
@@ -126,6 +128,7 @@ No known regression in accepted phases. If the process is killed after the initi
 - The `b2dac91` initialization adapter stores the selected empty-folder capability only in native state and accepts only a bounded name. The core re-scans the retained descriptor under its writer lock, rejects every new entry, generates all authority internally, journals `rehow.yaml` no-replace at `0600`, and creates `categories/` exclusively at `0700`. No path, ID, timestamp, operation ID, or YAML crosses IPC.
 - The `98e2501` Category adapter accepts only bounded name/summary text against retained native Workspace state. The core generates ID/time/order/path, creates a no-follow exclusive `0700` directory, journals a no-replace `0600` descriptor, refreshes the retained view, and reports interrupted residue without deleting or auto-adopting it. MCP gains no mutation authority.
 - The `94d2f4e` Guide-create adapter accepts only a Category ID plus bounded title/summary against retained native state. Rust verifies the Category is active, generates every authoritative field/path, emits only `draft`, opens the direct managed target without following links, journals a no-replace `0600` write, and refreshes before returning. No generic path, YAML, status, shell, Git, or MCP authority was added.
+- The `66af3d0` details adapter accepts only Guide ID, expected revision, title, and summary. Rust reparses under the writer lock, applies both typed mutations before one journaled replacement, preserves unknown/body/path bytes, rejects stale revisions and unsafe presentation, and refreshes native state. It adds no generic YAML/path/status/Git/MCP authority.
 
 ## Blockers and human checkpoints
 
@@ -135,10 +138,11 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Latest verified commit
 
-`94d2f4e` — signed draft Guide creation across core, native adapter, and Reference Desk UI.
+`66af3d0` — signed atomic Guide title/summary editing across core, native adapter, and Reference Desk UI.
 
 ## Tests last run and results
 
+- 2026-09-18: Guide details checkpoint at `66af3d0`: Cargo formatting, `pnpm check/test/build`, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 237 core library tests, 7 desktop Rust tests, 16 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused evidence covers atomic title+summary, body/unknown/path preservation, no-op revision stability, tested-to-stale, hardlink refusal, stable native conflict codes, UI normalization, focus/error/discard behavior, and current-guideline static review.
 - 2026-09-18: draft Guide creation checkpoint at `94d2f4e`: Cargo formatting, `pnpm check/test/build`, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 236 core library tests, 7 desktop Rust tests, 15 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused coverage proves canonical draft/frontmatter/body/path, Unicode slug fallback, active Category correlation, no-write validation, `0600` mode, structured native errors/category status, UI normalization, and static accessible form semantics.
 - 2026-09-18: Category creation checkpoint at `98e2501`: `pnpm check`, full `pnpm test`, locked all-target/all-feature Workspace Clippy with warnings denied, production web/Rust builds, optimized Tauri no-bundle build, bootstrap validation, formatting, contract drift, and whitespace checks pass. Counts include 234 core library tests, 6 desktop Rust tests, 14 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused coverage proves canonical IDs/order/paths, Unicode slug fallback, `0700`/`0600` modes, validation no-write, stable native errors, and UI normalization.
 - 2026-09-18: Workspace initialization checkpoint at `b2dac91`: full `pnpm check/test/build`, locked Workspace Rust tests, all-target/all-feature Clippy with warnings denied, contracts, bootstrap, formatting, whitespace, and optimized Tauri no-bundle build pass. Counts include 232 core library tests, 5 desktop Rust tests, 13 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused coverage proves canonical create/open, `0600`/`0700` modes, invalid-name no-write, file/directory change refusal, missing-categories classification, structured IPC errors, and exact name bounds.
@@ -267,10 +271,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `docs/task-packets/phase-2b-workspace-initialize.md` plus the core storage/application, Tauri session, and onboarding UI changes implement the accepted empty-folder creation slice at `b2dac91`.
 - `docs/task-packets/phase-3b-category-create.md` plus the core storage/application, Tauri adapter, Category form, styles, and tests implement active Category creation at `98e2501`.
 - `docs/task-packets/phase-3c-guide-create.md` plus the generic confined create boundary, Guide application flow, Tauri adapter, create/editor handoff, styles, and tests implement draft Guide creation at `94d2f4e`.
+- `docs/task-packets/phase-3d-guide-details-edit.md` plus the combined application edit, native command/error mapping, inline details UI, styles, and tests implement Guide title/summary editing at `66af3d0`.
 
 ## Next recommended action
 
-Expose Guide title and summary edits through the existing revision-checked mutation planner and native session, with inline accessible UI and stale/conflict behavior preserved. Keep MCP read-only.
+Expose Category renaming through the existing revision-checked mutation planner and native session. Keep the Category directory stable and MCP read-only.
 
 ## Recommended agent role and reasoning effort
 
@@ -279,8 +284,8 @@ Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents for routine work; us
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read the Guide mutation sections of `docs/content-model.md`, ADR 0009/0014, and the threat model.
+2. Read the Category mutation sections of `docs/content-model.md`, ADR 0009/0014, and the threat model.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `94d2f4e`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `66af3d0`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Resume with bounded Guide title/summary editing; do not add generic YAML, status elevation, broad lifecycle actions, Git, or MCP writes.
+6. Resume with bounded Category renaming; do not rename directories, add generic YAML, broaden lifecycle actions, or add Git/MCP writes.
