@@ -1,0 +1,11 @@
+error[E0599]: no method named `set_name` found for mutable reference `&mut Category` in the current scope
+ --> tests/ui/private_content_mutation.rs:4:11
+  |
+4 |     value.set_name("changed".to_owned());
+  |           ^^^^^^^^
+  |
+help: there is a method `name` with a similar name, but with different arguments
+ --> src/domain/content.rs
+  |
+  |     pub fn name(&self) -> &str {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^

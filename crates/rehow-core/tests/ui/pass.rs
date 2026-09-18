@@ -1,6 +1,7 @@
 use rehow_core::{
     domain::{
-        CanonicalYamlFloat, CanonicalYamlInteger, UnknownYamlDocumentBuilder, UnknownYamlEvent,
+        CanonicalYamlFloat, CanonicalYamlInteger, Category, CategoryStatus,
+        UnknownYamlDocumentBuilder, UnknownYamlEvent, WorkspaceManifest, WorkspaceSettings,
     },
     protocol::{
         BoundedList, ErrorDto, GuideId, PlanToken, PortableEntityId, SafeRelativePath, Timestamp,
@@ -11,6 +12,32 @@ use std::str::FromStr;
 use ts_rs::TS;
 
 fn main() {
+    fn inspect_manifest(value: &WorkspaceManifest) {
+        let _ = (
+            value.schema_version(),
+            value.workspace_id(),
+            value.name(),
+            value.created_at(),
+            value.updated_at(),
+            value.settings(),
+        );
+    }
+    fn inspect_settings(value: &WorkspaceSettings) {
+        let _ = value.default_category_id();
+    }
+    fn inspect_category(value: &Category) {
+        let _: CategoryStatus = value.status();
+        let _ = (
+            value.schema_version(),
+            value.id(),
+            value.name(),
+            value.summary(),
+            value.order(),
+            value.created_at(),
+            value.updated_at(),
+        );
+    }
+    let _ = (inspect_manifest, inspect_settings, inspect_category);
     let id = WorkspaceId::from_str("0199a1d7-7b0d-7d8e-a38d-f936c5735e10").unwrap();
     let _: WorkspaceId = "0199a1d7-7b0d-7d8e-a38d-f936c5735e10"
         .try_into()

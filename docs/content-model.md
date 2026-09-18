@@ -1,7 +1,7 @@
 # Workspace and Guide Content Model
 
-Status: schema v1 design baseline
-Last updated: 2026-09-06
+Status: schema v1 baseline; Phase 1D-A accepted and 1D-B/1D-C proposed in ADR 0014
+Last updated: 2026-09-07
 
 ## Principles
 
@@ -178,7 +178,7 @@ Check the executable bit and mount options.
 
 Unknown keys are retained as concrete-syntax nodes within depth/size/type limits. Reserved keys with invalid values are errors, not treated as unknown.
 
-These collection/member descriptions establish product intent but are not yet an implementation contract for the aggregate types. Phase 1B explicitly excludes Manifest, Category, Guide, and Attachment aggregate construction. Before Phase 1D, an Architect packet must freeze cardinality; empty/trim/Unicode-scalar limits; the exact case-insensitive comparison algorithm and Unicode data version; per-member rules for `applies_to`, references, and Attachments; exact `sha256` and `size_bytes` forms; URL policy; cross-field invariants; and exact-limit/one-over fixtures. A Worker must not infer any of those rules from examples or generic YAML caps.
+ADR 0014 is normative now for Phase 1D-A Manifest/Category read-only binding. Its Guide/nested-value and mutation sections record the proposed 1D-B/1D-C contract and are not implementation authority until their combined review passes. This document remains the human-readable schema overview; accepted ADR text controls where it is more specific.
 
 ### Unknown YAML semantic values
 
@@ -227,11 +227,11 @@ Semantic key equality is tag/type-aware: alternate spellings within one scalar t
 
 This semantic tree has no `Serialize`, `Deserialize`, TypeScript, parser, CST, comment, whitespace, scalar-style, BOM, line-ending, or byte-offset commitment in Phase 1B. It does not satisfy concrete-syntax preservation by itself and is never used to rewrite canonical content. Existing source bytes plus the reconciled presentation/span artifact defined by ADR 0011 remain authoritative for later edits.
 
-Timestamp ownership is per document: the core supplies `created_at` and updates that document's `updated_at` only when it changes. Child edits do not rewrite the Workspace manifest timestamp. Import may retain valid source timestamps as provenance only; newly managed timestamps are core-generated. `archived` requires `archived_from_status` and `archived_at`; every other status forbids both. `tested` requires a matching verification hash; `stale` may retain one; `draft` has neither unless an explicit migration preserves legacy verification as an extension.
+Timestamp ownership is per document: the core supplies `created_at` and updates that document's `updated_at` only when it changes. Child edits do not rewrite the Workspace manifest timestamp. Import may retain valid source timestamps as provenance only; newly managed timestamps are core-generated. `archived` requires `archived_from_status` and `archived_at`; every other status forbids both. A stored `tested` declaration requires a verification pair, `stale` may retain one, and `draft` has neither. Binding never proves tested trust: until Phase 3 recomputes the accepted content hash, trust consumers treat the declaration as unverified/effectively stale without silently rewriting source.
 
 ### Body sections
 
-`## Steps` is required and nonempty for `tested`; draft Guides may temporarily omit it with an actionable validation warning. `## Verification`, `## Rollback`, and `## Troubleshooting` are strongly recommended and required by the UI's “ready to mark tested” check. Duplicate reserved H2 sections are validation errors because programmatic edits would be ambiguous. Other headings/sections are preserved.
+Phase 1D treats the entire body as opaque bytes and does not enforce headings or readiness. In Phase 3, `## Steps` becomes required and nonempty before native tested approval; `## Verification`, `## Rollback`, and `## Troubleshooting` are strongly recommended and participate in the UI readiness check. Phase 3 will freeze duplicate reserved-heading behavior before it parses or edits sections. Other headings/sections remain preserved.
 
 Commands are fenced code blocks, optionally with a language such as `bash`, `sh`, `fish`, `ini`, or `text`. They are indexed and copyable but never executable. Error messages are indexed from headings/paragraphs under Troubleshooting plus quoted/inline/fenced content recognized by deterministic extraction.
 
@@ -246,7 +246,7 @@ Commands are fenced code blocks, optionally with a language such as `bash`, `sh`
 | any active | archived | Explicit reversible action; write prior state to `archived_from_status` and set `archived_at`. |
 | archived | prior status | Restore from `archived_from_status` if Category/filename constraints remain valid; clear archive fields. |
 
-All create/import/adoption paths produce `draft`, including MCP; creation cannot set `tested`. A separate status operation is the only route to `tested`. Any change to body, title, summary, applicability, prerequisites, warnings, files affected, related Guides, references, Attachment metadata, or unknown metadata automatically changes a tested Guide to `stale` while retaining its prior verification fields. Category, Tags, aliases, path tidying, and archive/restore are organizational and do not invalidate verification.
+All create/import/adoption paths produce `draft`, including MCP; creation cannot set `tested`. A separate Phase 3 native approval operation is the only route to effective tested trust. Any change to body, title, summary, applicability, prerequisites, warnings, files affected, related Guides, references, or Attachment metadata automatically changes a tested declaration to `stale` while retaining its prior verification fields. Unknown metadata has no schema-v1 mutation API. Category, Tags, aliases, path tidying, and archive/restore are organizational only for a future trusted native origin; automation/MCP edits stale a tested declaration even for those fields. ADR 0014 defines the pre-Phase-3 declared-status rules.
 
 `verified_content_hash` is `verify:v1:<hex>`, BLAKE3 over a domain separator plus length-framed exact body bytes and canonical encodings of all verification-relevant known/unknown frontmatter fields; organization/status/timestamp/verification fields are excluded. It never encodes unknown YAML through JSON.
 

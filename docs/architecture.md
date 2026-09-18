@@ -66,7 +66,9 @@ Rust request/response schemas are authoritative. Generate TypeScript definitions
 
 Portable storage/domain records and JSON protocol DTOs are deliberately distinct mapped types. This prevents serializer-dependent ambiguity and keeps YAML-specific unknown values out of an accidental JSON-shaped model. Category `order`, for example, is domain `i64` and a YAML integer, while its JSON DTO is a validated canonical decimal string generated to TypeScript as `string`; JSON numbers and JavaScript `bigint` are not the wire form. `ErrorDto` uses a code-correlated discriminated Rust enum with private constructors rather than an open details map. Exact shapes and bounded lists are in `docs/error-contract.md`.
 
-Accepted ADR 0011 owns the dual semantic/presentation YAML strategy. Phase 1C may implement only its generic parser/reconciliation artifact; Phase 1D alone binds product known fields and creates typed metadata-edit authority.
+Accepted ADR 0011 owns the dual semantic/presentation YAML strategy. Phase 1C implements only its generic parser/reconciliation artifact. ADR 0014 accepts Phase 1D-A's read-only Manifest/Category binding and records the proposed 1D-B/1D-C Guide and mutation direction. Product binders own the exact artifact and partition known/unknown entries; read-only artifacts receive no edit authority.
+
+Phase 1D has no filesystem, revision, inventory, clock, entropy, process, network, logging, Markdown-rendering, adapter, Tauri, or MCP authority. Phase 1E must reread and revision-check current confined bytes, reparse, regenerate/revalidate the candidate, and only then use the atomic recovery primitive; cached caller-visible byte-range plans are never applied.
 
 ## Runtime data flow
 

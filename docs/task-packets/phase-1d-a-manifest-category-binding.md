@@ -1,0 +1,17 @@
+# Task Packet: Phase 1D-A Manifest and Category Binding
+
+- **Objective:** Bind accepted YAML artifacts into read-only Workspace Manifest and Category records without adding mutation or I/O authority.
+- **Required reasoning level:** high; this is executed directly by the Orchestrator to reduce handoffs.
+- **Prerequisites:** signed Phase 1C checkpoint `cf8341f`; ADR 0014 Phase 1D-A decision.
+- **Allowed files or subsystem:** `crates/rehow-core/src/domain.rs`, new `crates/rehow-core/src/domain/content.rs`, the narrow parsed-document position/read-only test seam in `crates/rehow-core/src/parsing/reconcile.rs`, `crates/rehow-core/src/lib.rs`, focused core tests/UI compile-fail tests, and this packet's evidence note. No manifest, lockfile, adapter, desktop, MCP, storage, Git, or `x` changes.
+- **Relevant specifications and ADRs:** `docs/content-model.md`; ADRs 0011–0014; `docs/error-contract.md`.
+- **Exact required behavior:** expose read-only records/accessors from ADR 0014; consume `ParsedYamlDocument`; classify Manifest schema 1 as current and 2..u32-max as newer unsupported; validate exact required/optional fields, types, UUIDv7, timestamps, text bounds/trim/noncharacters, Category i64 order/status, `updated_at >= created_at`; preserve the complete parsed artifact and unknown-entry identities internally. Exact reserved bad values fail rather than becoming unknown.
+- **Important states and edge cases:** absent/unknown-only `settings`; explicit null; unknown root/settings keys; wrong root/member kind; missing fields; noncanonical IDs/timestamps/integers; exact and one-over text bounds; newer Manifest; Category schema not 1; read-only parser artifact still produces a read view but no edit capability.
+- **Security constraints:** crate-private parser/binders/failures/bound wrappers; no content-bearing Debug/Display/Serde/TS; no filesystem, path, revision, process, network, logging, mutation, Tauri, or MCP authority; failures contain only closed field/kind/position and optional validated identity.
+- **Tests to add or update:** focused production-parser tests for valid/unknown/absent settings, malformed field matrix, timestamp order, schema classification, text boundaries, unknown partition completeness, read-only view; public API positives and compile-fail negatives for constructors/fields/mutation/Serde.
+- **Commands to run:** `cargo fmt --all --check`; focused `cargo test -p rehow-core content --locked`; `cargo clippy -p rehow-core --all-targets --all-features --locked -- -D warnings`; `cargo test -p rehow-core --all-features --locked`; `git diff --check`.
+- **Required reviews and artifacts:** one combined Reviewer/high checkpoint after implementation; Security Reviewer only if the diff adds authority beyond this packet.
+- **Explicit non-goals:** Guide/nested binding, new dependencies, schema-path protocol expansion, emission, mutation, filesystem/revision/inventory checks, TypeScript aggregate contracts.
+- **Definition of done:** focused and full core gates pass; actual diff stays in scope; docs describe verified state; coherent signed checkpoint.
+- **Expected commit boundary:** ADR 0014 sequencing, aligned docs, packet, and the small read-only implementation may be committed together after review.
+- **Conditions requiring escalation:** need for a new dependency/public adapter API, inability to preserve unknown partition, parser contract change, authority expansion, or unrelated failure.

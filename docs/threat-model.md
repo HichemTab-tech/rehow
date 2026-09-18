@@ -38,6 +38,8 @@ Out of scope as a hard boundary: protection against a fully compromised same-use
 - Markdown cannot execute; raw HTML/remote media are disabled; external URLs are scheme checked and explicit.
 - Mutations are revision-checked and recoverable; broad/destructive mutations require plan/effect checks, startup capability, and native out-of-band approval.
 - `tested` is a native user trust assertion for an exact verification-content hash, never an MCP/client boolean or inferred validation.
+- Before Phase 3 hash verification, a stored `tested` token is only an untrusted declaration. Phase 1D exposes no effective-tested accessor and no mutation/emitter route to create tested trust.
+- Planned Phase 1D-C mutation capability remains private, tied to one owned reconciled artifact, accepts only closed typed intents, and returns a fully reparsed/rebound candidate rather than reusable offsets or edits. Phase 1E will reread and replan against the current revision before applying anything.
 - Git actions use an audited primitive, never user/Guide-generated arguments or a shell.
 - Secrets/content are excluded from logs and errors by default.
 

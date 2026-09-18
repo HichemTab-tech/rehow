@@ -7,8 +7,8 @@ use crate::domain::UnknownMetadataDocument;
 use super::presentation::{Presentation, PresentationEntry, PresentationNode};
 use super::semantic::SemanticTrace;
 use super::source::{
-    FileByteOffset, FileByteRange, GuideEnvelope, ParseFailure, ParseFailureKind,
-    WholeYamlEnvelope, YamlByteOffset, YamlByteRange, file_offset, rebase, slice,
+    FileByteOffset, FileByteRange, GuideEnvelope, ParseFailure, ParseFailureKind, SourcePosition,
+    WholeYamlEnvelope, YamlByteOffset, YamlByteRange, file_offset, position, rebase, slice,
 };
 
 #[cfg(test)]
@@ -378,6 +378,21 @@ impl ParsedYamlDocument {
     }
     pub(crate) fn yaml(&self) -> &ParsedYamlArtifact {
         &self.yaml
+    }
+    pub(crate) fn position_at_file_offset(&self, offset: FileByteOffset) -> Option<SourcePosition> {
+        position(
+            core::str::from_utf8(&self.source).ok()?,
+            offset.get() as usize,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_read_only_for_content_test(&mut self) {
+        self.yaml.round_trip = RoundTripStatus::ReadOnly(RoundTripReport {
+            issues: Box::new([]),
+            total_issues: 0,
+            truncated: false,
+        });
     }
 }
 impl ParsedGuideSource {
