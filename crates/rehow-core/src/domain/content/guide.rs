@@ -301,6 +301,9 @@ impl BoundGuide {
     pub(crate) fn parsed(&self) -> &ParsedGuideSource {
         &self.parsed
     }
+    pub(crate) fn into_record(self) -> Guide {
+        self.record
+    }
 
     #[cfg(test)]
     pub(crate) fn parsed_mut_for_content_test(&mut self) -> &mut ParsedGuideSource {

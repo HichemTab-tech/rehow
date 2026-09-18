@@ -1,0 +1,1018 @@
+//! Descriptor-confined, read-only Workspace inspection.
+//!
+//! Mutating storage is deliberately not part of this module yet. The retained
+//! root descriptor prevents later reads from being redirected by renaming the
+//! path that the user selected.
+
+#[cfg(not(target_os = "linux"))]
+compile_error!("Rehow's confined Workspace storage currently requires Linux");
+
+use crate::{
+    domain::{Category, Guide, WorkspaceManifest},
+    protocol::Revision,
+};
+use std::{collections::HashSet, fmt, path::Path};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceIssueKind {
+    UnsafeEntry,
+    UnsupportedEntry,
+    MissingCategoryDescriptor,
+    MalformedCategory,
+    MalformedGuide,
+    FileTooLarge,
+    CategoryMismatch,
+    DuplicateCategoryId,
+    DuplicateGuideId,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct WorkspaceIssue {
+    relative_path: String,
+    kind: WorkspaceIssueKind,
+}
+
+impl WorkspaceIssue {
+    pub fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+
+    pub fn kind(&self) -> WorkspaceIssueKind {
+        self.kind
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MalformedWorkspaceReason {
+    Manifest,
+    CategoriesMissing,
+    CategoriesUnsafe,
+}
+
+pub enum WorkspaceInspection {
+    Empty,
+    Compatible(Box<WorkspaceView>),
+    NewerUnsupported { version: u32 },
+    OrdinaryMarkdown,
+    UnrelatedNonempty,
+    Malformed { reason: MalformedWorkspaceReason },
+}
+
+pub struct WorkspaceView {
+    // Keep the root capability alive for the lifetime of every loaded record.
+    _root: linux::DirectoryCapability,
+    manifest: WorkspaceManifest,
+    manifest_revision: Revision,
+    categories: Vec<LoadedCategory>,
+    issues: Vec<WorkspaceIssue>,
+}
+
+pub struct LoadedCategory {
+    relative_directory: String,
+    descriptor_revision: Revision,
+    category: Category,
+    guides: Vec<LoadedGuide>,
+}
+
+pub struct LoadedGuide {
+    relative_path: String,
+    revision: Revision,
+    guide: Guide,
+}
+
+impl WorkspaceView {
+    pub fn manifest(&self) -> &WorkspaceManifest {
+        &self.manifest
+    }
+
+    pub fn manifest_revision(&self) -> Revision {
+        self.manifest_revision
+    }
+
+    pub fn categories(&self) -> &[LoadedCategory] {
+        &self.categories
+    }
+
+    pub fn issues(&self) -> &[WorkspaceIssue] {
+        &self.issues
+    }
+}
+
+impl LoadedCategory {
+    pub fn relative_directory(&self) -> &str {
+        &self.relative_directory
+    }
+
+    pub fn descriptor_revision(&self) -> Revision {
+        self.descriptor_revision
+    }
+
+    pub fn category(&self) -> &Category {
+        &self.category
+    }
+
+    pub fn guides(&self) -> &[LoadedGuide] {
+        &self.guides
+    }
+}
+
+impl LoadedGuide {
+    pub fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+
+    pub fn revision(&self) -> Revision {
+        self.revision
+    }
+
+    pub fn guide(&self) -> &Guide {
+        &self.guide
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceInspectError {
+    NotFound,
+    NotDirectory,
+    PermissionDenied,
+    UnsafeRoot,
+    ResourceLimit,
+    ChangedDuringRead,
+    Io,
+}
+
+impl fmt::Display for WorkspaceInspectError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::NotFound => "Workspace folder was not found",
+            Self::NotDirectory => "Workspace selection is not a folder",
+            Self::PermissionDenied => "Workspace folder cannot be read",
+            Self::UnsafeRoot => "Workspace folder is unsafe to inspect",
+            Self::ResourceLimit => "Workspace exceeds a safe inspection limit",
+            Self::ChangedDuringRead => "Workspace changed during inspection; try again",
+            Self::Io => "Workspace inspection failed",
+        })
+    }
+}
+
+impl std::error::Error for WorkspaceInspectError {}
+
+const DESCRIPTOR_LIMIT: usize = 256 * 1024;
+const GUIDE_LIMIT: usize = 2 * 1024 * 1024;
+const CATEGORY_LIMIT: usize = 1_000;
+const GUIDE_COUNT_LIMIT: usize = 10_000;
+const MANAGED_BYTES_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
+
+pub fn inspect_workspace(path: &Path) -> Result<WorkspaceInspection, WorkspaceInspectError> {
+    let root = linux::DirectoryCapability::open_root(path)?;
+    let root_entries = root.entries(20_000)?;
+    if root_entries.is_empty() {
+        return Ok(WorkspaceInspection::Empty);
+    }
+    if !root_entries.iter().any(|name| name == "rehow.yaml") {
+        let mut remaining_entries = 20_000usize.saturating_sub(root_entries.len());
+        return Ok(
+            if contains_safe_markdown(&root, &root_entries, 4, &mut remaining_entries)? {
+                WorkspaceInspection::OrdinaryMarkdown
+            } else {
+                WorkspaceInspection::UnrelatedNonempty
+            },
+        );
+    }
+
+    let manifest_bytes = match root.read_regular("rehow.yaml", DESCRIPTOR_LIMIT) {
+        Ok(bytes) => bytes,
+        Err(linux::EntryReadError::Unsafe) => {
+            return Ok(WorkspaceInspection::Malformed {
+                reason: MalformedWorkspaceReason::Manifest,
+            });
+        }
+        Err(linux::EntryReadError::TooLarge) => {
+            return Ok(WorkspaceInspection::Malformed {
+                reason: MalformedWorkspaceReason::Manifest,
+            });
+        }
+        Err(linux::EntryReadError::Changed) => {
+            return Err(WorkspaceInspectError::ChangedDuringRead);
+        }
+        Err(linux::EntryReadError::Io(error)) => return Err(map_io(error)),
+    };
+    let manifest_revision = document_revision("rehow.yaml", &manifest_bytes);
+    let manifest_bytes_len = manifest_bytes.len();
+    let manifest = match crate::parsing::parse_yaml_document(manifest_bytes.into_boxed_slice())
+        .ok()
+        .and_then(|parsed| crate::domain::content::bind_workspace_manifest(parsed).ok())
+    {
+        Some(crate::domain::content::ManifestBindingOutcome::Current(bound)) => bound.into_record(),
+        Some(crate::domain::content::ManifestBindingOutcome::NewerUnsupported {
+            version, ..
+        }) => return Ok(WorkspaceInspection::NewerUnsupported { version }),
+        None => {
+            return Ok(WorkspaceInspection::Malformed {
+                reason: MalformedWorkspaceReason::Manifest,
+            });
+        }
+    };
+
+    let categories_dir = match root.open_directory("categories") {
+        Ok(dir) => dir,
+        Err(linux::OpenDirectoryError::Missing) => {
+            return Ok(WorkspaceInspection::Malformed {
+                reason: MalformedWorkspaceReason::CategoriesMissing,
+            });
+        }
+        Err(linux::OpenDirectoryError::Unsafe) => {
+            return Ok(WorkspaceInspection::Malformed {
+                reason: MalformedWorkspaceReason::CategoriesUnsafe,
+            });
+        }
+        Err(linux::OpenDirectoryError::Io(error)) => return Err(map_io(error)),
+    };
+
+    let mut category_names = categories_dir.entries(CATEGORY_LIMIT)?;
+    category_names.sort_unstable();
+
+    let mut managed_bytes =
+        u64::try_from(manifest_bytes_len).map_err(|_| WorkspaceInspectError::ResourceLimit)?;
+    let mut categories = Vec::new();
+    let mut issues = Vec::new();
+    let mut category_ids = HashSet::new();
+    let mut guide_ids = HashSet::new();
+    let mut guide_candidates = 0usize;
+    categories
+        .try_reserve_exact(category_names.len())
+        .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
+    issues
+        .try_reserve(category_names.len())
+        .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
+
+    for category_name in category_names {
+        if !valid_category_directory(&category_name) {
+            push_issue(
+                &mut issues,
+                "categories/<unsupported>".to_owned(),
+                WorkspaceIssueKind::UnsupportedEntry,
+            )?;
+            continue;
+        }
+        let category_dir = match categories_dir.open_directory(&category_name) {
+            Ok(dir) => dir,
+            Err(linux::OpenDirectoryError::Missing) => continue,
+            Err(linux::OpenDirectoryError::Unsafe) => {
+                push_issue(
+                    &mut issues,
+                    format!("categories/{category_name}"),
+                    WorkspaceIssueKind::UnsafeEntry,
+                )?;
+                continue;
+            }
+            Err(linux::OpenDirectoryError::Io(error)) => return Err(map_io(error)),
+        };
+        let descriptor_path = format!("categories/{category_name}/category.yaml");
+        let descriptor = match category_dir.read_regular("category.yaml", DESCRIPTOR_LIMIT) {
+            Ok(bytes) => bytes,
+            Err(linux::EntryReadError::Unsafe | linux::EntryReadError::TooLarge) => {
+                push_issue(
+                    &mut issues,
+                    descriptor_path,
+                    WorkspaceIssueKind::MalformedCategory,
+                )?;
+                continue;
+            }
+            Err(linux::EntryReadError::Changed) => {
+                return Err(WorkspaceInspectError::ChangedDuringRead);
+            }
+            Err(linux::EntryReadError::Io(error))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                push_issue(
+                    &mut issues,
+                    descriptor_path,
+                    WorkspaceIssueKind::MissingCategoryDescriptor,
+                )?;
+                continue;
+            }
+            Err(linux::EntryReadError::Io(error)) => return Err(map_io(error)),
+        };
+        add_managed_bytes(&mut managed_bytes, descriptor.len())?;
+        let descriptor_revision = document_revision(&descriptor_path, &descriptor);
+        let bound = match crate::parsing::parse_yaml_document(descriptor.into_boxed_slice())
+            .ok()
+            .and_then(|parsed| crate::domain::content::bind_category(parsed).ok())
+        {
+            Some(bound) => bound,
+            None => {
+                push_issue(
+                    &mut issues,
+                    descriptor_path,
+                    WorkspaceIssueKind::MalformedCategory,
+                )?;
+                continue;
+            }
+        };
+        category_ids
+            .try_reserve(1)
+            .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
+        if !category_ids.insert(*bound.record().id()) {
+            push_issue(
+                &mut issues,
+                format!("categories/{category_name}/category.yaml"),
+                WorkspaceIssueKind::DuplicateCategoryId,
+            )?;
+            continue;
+        }
+        let category = bound.into_record();
+
+        let mut guide_names = category_dir.entries(GUIDE_COUNT_LIMIT.saturating_add(1))?;
+        guide_names.sort_unstable();
+        let mut guides = Vec::new();
+        guides
+            .try_reserve(guide_names.len().min(128))
+            .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
+        for guide_name in guide_names {
+            if guide_name == "category.yaml" {
+                continue;
+            }
+            if !valid_guide_filename(&guide_name) {
+                push_issue(
+                    &mut issues,
+                    format!("categories/{category_name}/<unsupported>"),
+                    WorkspaceIssueKind::UnsupportedEntry,
+                )?;
+                continue;
+            }
+            if guide_candidates >= GUIDE_COUNT_LIMIT {
+                return Err(WorkspaceInspectError::ResourceLimit);
+            }
+            guide_candidates += 1;
+            let guide_path = format!("categories/{category_name}/{guide_name}");
+            let bytes = match category_dir.read_regular(&guide_name, GUIDE_LIMIT) {
+                Ok(bytes) => bytes,
+                Err(linux::EntryReadError::Unsafe) => {
+                    push_issue(&mut issues, guide_path, WorkspaceIssueKind::UnsafeEntry)?;
+                    continue;
+                }
+                Err(linux::EntryReadError::TooLarge) => {
+                    push_issue(&mut issues, guide_path, WorkspaceIssueKind::FileTooLarge)?;
+                    continue;
+                }
+                Err(linux::EntryReadError::Changed) => {
+                    return Err(WorkspaceInspectError::ChangedDuringRead);
+                }
+                Err(linux::EntryReadError::Io(error))
+                    if error.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    continue;
+                }
+                Err(linux::EntryReadError::Io(error)) => return Err(map_io(error)),
+            };
+            add_managed_bytes(&mut managed_bytes, bytes.len())?;
+            let revision = document_revision(&guide_path, &bytes);
+            let bound_guide = match crate::parsing::parse_guide_source(bytes.into_boxed_slice())
+                .ok()
+                .and_then(|parsed| crate::domain::content::guide::bind_guide(parsed).ok())
+            {
+                Some(bound) => bound,
+                None => {
+                    push_issue(&mut issues, guide_path, WorkspaceIssueKind::MalformedGuide)?;
+                    continue;
+                }
+            };
+            if bound_guide.record().category_id() != category.id() {
+                push_issue(
+                    &mut issues,
+                    guide_path,
+                    WorkspaceIssueKind::CategoryMismatch,
+                )?;
+                continue;
+            }
+            guide_ids
+                .try_reserve(1)
+                .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
+            if !guide_ids.insert(*bound_guide.record().id()) {
+                push_issue(
+                    &mut issues,
+                    guide_path.clone(),
+                    WorkspaceIssueKind::DuplicateGuideId,
+                )?;
+                continue;
+            }
+            guides.push(LoadedGuide {
+                relative_path: guide_path,
+                revision,
+                guide: bound_guide.into_record(),
+            });
+        }
+        guides.sort_by(|left, right| {
+            left.guide()
+                .title()
+                .cmp(right.guide().title())
+                .then_with(|| left.relative_path.cmp(&right.relative_path))
+        });
+        categories.push(LoadedCategory {
+            relative_directory: format!("categories/{category_name}"),
+            descriptor_revision,
+            category,
+            guides,
+        });
+    }
+
+    categories.sort_by(|left, right| {
+        left.category()
+            .order()
+            .cmp(&right.category().order())
+            .then_with(|| left.category().name().cmp(right.category().name()))
+            .then_with(|| left.relative_directory.cmp(&right.relative_directory))
+    });
+
+    Ok(WorkspaceInspection::Compatible(Box::new(WorkspaceView {
+        _root: root,
+        manifest,
+        manifest_revision,
+        categories,
+        issues,
+    })))
+}
+
+fn contains_safe_markdown(
+    directory: &linux::DirectoryCapability,
+    names: &[String],
+    remaining_depth: usize,
+    remaining_entries: &mut usize,
+) -> Result<bool, WorkspaceInspectError> {
+    for name in names {
+        if name.ends_with(".md") {
+            match directory.read_regular(name, GUIDE_LIMIT) {
+                Ok(_) | Err(linux::EntryReadError::TooLarge) => return Ok(true),
+                Err(linux::EntryReadError::Unsafe) => {}
+                Err(linux::EntryReadError::Changed) => {
+                    return Err(WorkspaceInspectError::ChangedDuringRead);
+                }
+                Err(linux::EntryReadError::Io(error))
+                    if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(linux::EntryReadError::Io(error)) => return Err(map_io(error)),
+            }
+        }
+        if remaining_depth == 0 {
+            continue;
+        }
+        let child = match directory.open_directory(name) {
+            Ok(child) => child,
+            Err(linux::OpenDirectoryError::Missing | linux::OpenDirectoryError::Unsafe) => {
+                continue;
+            }
+            Err(linux::OpenDirectoryError::Io(error)) => return Err(map_io(error)),
+        };
+        if *remaining_entries == 0 {
+            return Err(WorkspaceInspectError::ResourceLimit);
+        }
+        let children = child.entries(*remaining_entries)?;
+        *remaining_entries = (*remaining_entries).saturating_sub(children.len());
+        if contains_safe_markdown(&child, &children, remaining_depth - 1, remaining_entries)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn valid_category_directory(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && value != "."
+        && value != ".."
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+fn valid_guide_filename(value: &str) -> bool {
+    value
+        .strip_suffix(".md")
+        .is_some_and(valid_category_directory)
+}
+
+fn add_managed_bytes(total: &mut u64, amount: usize) -> Result<(), WorkspaceInspectError> {
+    *total = total
+        .checked_add(u64::try_from(amount).map_err(|_| WorkspaceInspectError::ResourceLimit)?)
+        .ok_or(WorkspaceInspectError::ResourceLimit)?;
+    if *total > MANAGED_BYTES_LIMIT {
+        return Err(WorkspaceInspectError::ResourceLimit);
+    }
+    Ok(())
+}
+
+fn push_issue(
+    issues: &mut Vec<WorkspaceIssue>,
+    relative_path: String,
+    kind: WorkspaceIssueKind,
+) -> Result<(), WorkspaceInspectError> {
+    issues
+        .try_reserve(1)
+        .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
+    issues.push(WorkspaceIssue {
+        relative_path,
+        kind,
+    });
+    Ok(())
+}
+
+fn document_revision(relative_path: &str, bytes: &[u8]) -> Revision {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"rehow-document-revision-v1\0");
+    hash_frame(&mut hasher, relative_path.as_bytes());
+    hash_frame(&mut hasher, bytes);
+    Revision::from_digest_bytes(*hasher.finalize().as_bytes())
+}
+
+fn hash_frame(hasher: &mut blake3::Hasher, value: &[u8]) {
+    hasher.update(&(value.len() as u64).to_be_bytes());
+    hasher.update(value);
+}
+
+fn map_io(error: std::io::Error) -> WorkspaceInspectError {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => WorkspaceInspectError::NotFound,
+        std::io::ErrorKind::NotADirectory => WorkspaceInspectError::NotDirectory,
+        std::io::ErrorKind::PermissionDenied => WorkspaceInspectError::PermissionDenied,
+        _ => WorkspaceInspectError::Io,
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use super::WorkspaceInspectError;
+    use std::{
+        ffi::{CStr, CString, OsStr},
+        fs::File,
+        io::{self, Read},
+        os::{
+            fd::{AsRawFd, FromRawFd, OwnedFd},
+            unix::{ffi::OsStrExt, fs::MetadataExt},
+        },
+        path::Path,
+    };
+
+    pub(super) struct DirectoryCapability {
+        descriptor: OwnedFd,
+    }
+
+    pub(super) enum OpenDirectoryError {
+        Missing,
+        Unsafe,
+        Io(io::Error),
+    }
+
+    pub(super) enum EntryReadError {
+        Unsafe,
+        TooLarge,
+        Changed,
+        Io(io::Error),
+    }
+
+    impl DirectoryCapability {
+        pub(super) fn open_root(path: &Path) -> Result<Self, WorkspaceInspectError> {
+            let canonical = std::fs::canonicalize(path).map_err(super::map_io)?;
+            let path = CString::new(canonical.as_os_str().as_bytes())
+                .map_err(|_| WorkspaceInspectError::UnsafeRoot)?;
+            // SAFETY: `path` is NUL-terminated and valid for the duration of the call.
+            let raw = unsafe {
+                libc::open(
+                    path.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
+            if raw < 0 {
+                return Err(super::map_io(io::Error::last_os_error()));
+            }
+            // SAFETY: a successful `open` returns a newly owned descriptor.
+            let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
+            Ok(Self { descriptor })
+        }
+
+        pub(super) fn entries(&self, limit: usize) -> Result<Vec<String>, WorkspaceInspectError> {
+            // SAFETY: `fcntl` duplicates a valid retained descriptor.
+            let duplicate =
+                unsafe { libc::fcntl(self.descriptor.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+            if duplicate < 0 {
+                return Err(super::map_io(io::Error::last_os_error()));
+            }
+            // SAFETY: `duplicate` is a newly owned directory descriptor; `fdopendir`
+            // consumes it on success.
+            let raw_stream = unsafe { libc::fdopendir(duplicate) };
+            if raw_stream.is_null() {
+                // SAFETY: `fdopendir` did not consume the descriptor on failure.
+                unsafe { libc::close(duplicate) };
+                return Err(super::map_io(io::Error::last_os_error()));
+            }
+            let stream = DirectoryStream(raw_stream);
+            let mut names = Vec::new();
+            loop {
+                // SAFETY: this thread exclusively owns `stream` until `closedir`.
+                unsafe { *libc::__errno_location() = 0 };
+                // SAFETY: `stream` is valid and open.
+                let entry = unsafe { libc::readdir(stream.0) };
+                if entry.is_null() {
+                    // SAFETY: Linux exposes thread-local errno through this pointer.
+                    let errno = unsafe { *libc::__errno_location() };
+                    if errno != 0 {
+                        return Err(super::map_io(io::Error::from_raw_os_error(errno)));
+                    }
+                    break;
+                }
+                // SAFETY: `d_name` is a NUL-terminated array owned by `stream` until
+                // the next `readdir`; it is copied before then.
+                let bytes = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+                if bytes == b"." || bytes == b".." {
+                    continue;
+                }
+                if names.len() >= limit {
+                    return Err(WorkspaceInspectError::ResourceLimit);
+                }
+                let name =
+                    std::str::from_utf8(bytes).map_err(|_| WorkspaceInspectError::UnsafeRoot)?;
+                names
+                    .try_reserve(1)
+                    .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
+                names.push(name.to_owned());
+            }
+            Ok(names)
+        }
+
+        pub(super) fn open_directory(&self, name: &str) -> Result<Self, OpenDirectoryError> {
+            let name = component(name).map_err(|_| OpenDirectoryError::Unsafe)?;
+            // SAFETY: the directory descriptor and NUL-terminated component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
+            if raw < 0 {
+                let error = io::Error::last_os_error();
+                return match error.raw_os_error() {
+                    Some(libc::ENOENT) => Err(OpenDirectoryError::Missing),
+                    Some(libc::ELOOP) | Some(libc::ENOTDIR) => Err(OpenDirectoryError::Unsafe),
+                    _ => Err(OpenDirectoryError::Io(error)),
+                };
+            }
+            // SAFETY: a successful `openat` returns a newly owned descriptor.
+            Ok(Self {
+                descriptor: unsafe { OwnedFd::from_raw_fd(raw) },
+            })
+        }
+
+        pub(super) fn read_regular(
+            &self,
+            name: &str,
+            limit: usize,
+        ) -> Result<Vec<u8>, EntryReadError> {
+            let name = component(name).map_err(|_| EntryReadError::Unsafe)?;
+            // SAFETY: the directory descriptor and NUL-terminated component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+                )
+            };
+            if raw < 0 {
+                let error = io::Error::last_os_error();
+                return match error.raw_os_error() {
+                    Some(libc::ELOOP) | Some(libc::ENXIO) | Some(libc::ENODEV) => {
+                        Err(EntryReadError::Unsafe)
+                    }
+                    _ => Err(EntryReadError::Io(error)),
+                };
+            }
+            // SAFETY: a successful `openat` returns a newly owned descriptor.
+            let mut file = unsafe { File::from_raw_fd(raw) };
+            let metadata = file.metadata().map_err(EntryReadError::Io)?;
+            if !metadata.file_type().is_file() || metadata.nlink() != 1 {
+                return Err(EntryReadError::Unsafe);
+            }
+            if metadata.len() > limit as u64 {
+                return Err(EntryReadError::TooLarge);
+            }
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(metadata.len() as usize)
+                .map_err(|_| EntryReadError::TooLarge)?;
+            file.by_ref()
+                .take((limit as u64).saturating_add(1))
+                .read_to_end(&mut bytes)
+                .map_err(EntryReadError::Io)?;
+            if bytes.len() > limit {
+                return Err(EntryReadError::TooLarge);
+            }
+            let final_metadata = file.metadata().map_err(EntryReadError::Io)?;
+            if !final_metadata.file_type().is_file() || final_metadata.nlink() != 1 {
+                return Err(EntryReadError::Unsafe);
+            }
+            if metadata.dev() != final_metadata.dev()
+                || metadata.ino() != final_metadata.ino()
+                || metadata.len() != final_metadata.len()
+                || metadata.mtime() != final_metadata.mtime()
+                || metadata.mtime_nsec() != final_metadata.mtime_nsec()
+                || metadata.ctime() != final_metadata.ctime()
+                || metadata.ctime_nsec() != final_metadata.ctime_nsec()
+            {
+                return Err(EntryReadError::Changed);
+            }
+            Ok(bytes)
+        }
+    }
+
+    struct DirectoryStream(*mut libc::DIR);
+
+    impl Drop for DirectoryStream {
+        fn drop(&mut self) {
+            // SAFETY: `DirectoryStream` exclusively owns a successful `fdopendir`
+            // result and closes it exactly once.
+            unsafe { libc::closedir(self.0) };
+        }
+    }
+
+    fn component(value: &str) -> Result<CString, ()> {
+        let bytes = OsStr::new(value).as_bytes();
+        if bytes.is_empty()
+            || bytes.len() > 255
+            || bytes == b"."
+            || bytes == b".."
+            || bytes.contains(&b'/')
+            || bytes.contains(&b'\\')
+        {
+            return Err(());
+        }
+        CString::new(bytes).map_err(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let number = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "rehow-storage-test-{}-{number}",
+                std::process::id()
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn manifest(version: u32) -> String {
+        format!(
+            "schema_version: {version}\nworkspace_id: 0199a19f-4d15-7ca7-a645-e75311caa710\nname: Test Workspace\ncreated_at: \"2026-09-05T10:00:00Z\"\nupdated_at: \"2026-09-05T10:00:00Z\"\n"
+        )
+    }
+
+    const CATEGORY: &str = "schema_version: 1\nid: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5551\nname: Linux System\norder: 1000\nstatus: active\ncreated_at: \"2026-09-05T10:01:00Z\"\nupdated_at: \"2026-09-05T10:01:00Z\"\n";
+    const GUIDE: &str = "---\nschema_version: 1\nid: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\ntitle: Install a Tarball\nsummary: Install a downloaded archive.\ncategory_id: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5551\ntags:\n  - linux\naliases:\n  - manual install\nstatus: draft\ncreated_at: \"2026-09-05T10:03:00Z\"\nupdated_at: \"2026-09-05T10:03:00Z\"\n---\n\n## Steps\n\nExtract the archive.\n";
+
+    fn write_compatible(root: &Path) {
+        fs::write(root.join("rehow.yaml"), manifest(1)).unwrap();
+        let category = root.join("categories/linux-system--b6ba3a5551");
+        fs::create_dir_all(&category).unwrap();
+        fs::write(category.join("category.yaml"), CATEGORY).unwrap();
+        fs::write(category.join("install--36c5735e10.md"), GUIDE).unwrap();
+    }
+
+    #[test]
+    fn classifies_empty_and_unrelated_folders() {
+        let empty = TestDirectory::new();
+        assert!(matches!(
+            inspect_workspace(empty.path()).unwrap(),
+            WorkspaceInspection::Empty
+        ));
+        fs::write(empty.path().join("notes.txt"), "hello").unwrap();
+        assert!(matches!(
+            inspect_workspace(empty.path()).unwrap(),
+            WorkspaceInspection::UnrelatedNonempty
+        ));
+    }
+
+    #[test]
+    fn classifies_root_markdown_collection() {
+        let root = TestDirectory::new();
+        fs::write(root.path().join("notes.md"), "# Notes\n").unwrap();
+        assert!(matches!(
+            inspect_workspace(root.path()).unwrap(),
+            WorkspaceInspection::OrdinaryMarkdown
+        ));
+    }
+
+    #[test]
+    fn classifies_nested_markdown_without_following_a_symlink() {
+        let root = TestDirectory::new();
+        let nested = root.path().join("notes/linux");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("install.md"), "# Install\n").unwrap();
+        assert!(matches!(
+            inspect_workspace(root.path()).unwrap(),
+            WorkspaceInspection::OrdinaryMarkdown
+        ));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let links = TestDirectory::new();
+            symlink(nested.join("install.md"), links.path().join("outside.md")).unwrap();
+            assert!(matches!(
+                inspect_workspace(links.path()).unwrap(),
+                WorkspaceInspection::UnrelatedNonempty
+            ));
+        }
+    }
+
+    #[test]
+    fn loads_a_compatible_workspace_and_revisions() {
+        let root = TestDirectory::new();
+        write_compatible(root.path());
+        let WorkspaceInspection::Compatible(view) = inspect_workspace(root.path()).unwrap() else {
+            panic!("expected compatible Workspace");
+        };
+        assert_eq!(view.manifest().name(), "Test Workspace");
+        assert_eq!(view.categories().len(), 1);
+        assert_eq!(view.categories()[0].guides().len(), 1);
+        assert_eq!(
+            view.categories()[0].guides()[0].guide().title(),
+            "Install a Tarball"
+        );
+        assert!(view.issues().is_empty());
+        assert_eq!(
+            view.manifest_revision().to_string(),
+            document_revision("rehow.yaml", manifest(1).as_bytes()).to_string()
+        );
+    }
+
+    #[test]
+    fn detects_newer_and_malformed_manifests() {
+        let newer = TestDirectory::new();
+        fs::write(newer.path().join("rehow.yaml"), manifest(2)).unwrap();
+        assert!(matches!(
+            inspect_workspace(newer.path()).unwrap(),
+            WorkspaceInspection::NewerUnsupported { version: 2 }
+        ));
+
+        let malformed = TestDirectory::new();
+        fs::write(malformed.path().join("rehow.yaml"), "not: [valid").unwrap();
+        assert!(matches!(
+            inspect_workspace(malformed.path()).unwrap(),
+            WorkspaceInspection::Malformed {
+                reason: MalformedWorkspaceReason::Manifest
+            }
+        ));
+    }
+
+    #[test]
+    fn isolates_a_guide_in_the_wrong_category() {
+        let root = TestDirectory::new();
+        write_compatible(root.path());
+        let path = root
+            .path()
+            .join("categories/linux-system--b6ba3a5551/install--36c5735e10.md");
+        let changed = GUIDE.replace(
+            "0199a1c2-d334-7d17-bd9c-f8b6ba3a5551",
+            "0199a1c2-d334-7d17-bd9c-f8b6ba3a5552",
+        );
+        fs::write(path, changed).unwrap();
+        let WorkspaceInspection::Compatible(view) = inspect_workspace(root.path()).unwrap() else {
+            panic!("expected compatible Workspace");
+        };
+        assert!(view.categories()[0].guides().is_empty());
+        assert_eq!(
+            view.issues()[0].kind(),
+            WorkspaceIssueKind::CategoryMismatch
+        );
+    }
+
+    #[test]
+    fn isolates_oversize_and_duplicate_guides() {
+        let root = TestDirectory::new();
+        write_compatible(root.path());
+        let category = root.path().join("categories/linux-system--b6ba3a5551");
+        fs::write(category.join("duplicate--0000000001.md"), GUIDE).unwrap();
+        fs::write(
+            category.join("oversize--0000000002.md"),
+            vec![b'x'; GUIDE_LIMIT + 1],
+        )
+        .unwrap();
+        let WorkspaceInspection::Compatible(view) = inspect_workspace(root.path()).unwrap() else {
+            panic!("expected compatible Workspace");
+        };
+        assert_eq!(view.categories()[0].guides().len(), 1);
+        assert!(
+            view.issues()
+                .iter()
+                .any(|issue| issue.kind() == WorkspaceIssueKind::DuplicateGuideId)
+        );
+        assert!(
+            view.issues()
+                .iter()
+                .any(|issue| issue.kind() == WorkspaceIssueKind::FileTooLarge)
+        );
+    }
+
+    #[test]
+    fn bounded_enumeration_refuses_one_over() {
+        let root = TestDirectory::new();
+        fs::write(root.path().join("a"), "a").unwrap();
+        fs::write(root.path().join("b"), "b").unwrap();
+        let capability = linux::DirectoryCapability::open_root(root.path()).unwrap();
+        assert_eq!(
+            capability.entries(1).unwrap_err(),
+            WorkspaceInspectError::ResourceLimit
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_socket_disguised_as_a_guide_without_blocking() {
+        use std::os::unix::net::UnixListener;
+
+        let root = TestDirectory::new();
+        write_compatible(root.path());
+        let guide = root
+            .path()
+            .join("categories/linux-system--b6ba3a5551/install--36c5735e10.md");
+        fs::remove_file(&guide).unwrap();
+        let _listener = UnixListener::bind(&guide).unwrap();
+        let WorkspaceInspection::Compatible(view) = inspect_workspace(root.path()).unwrap() else {
+            panic!("expected compatible Workspace");
+        };
+        assert!(view.categories()[0].guides().is_empty());
+        assert_eq!(view.issues()[0].kind(), WorkspaceIssueKind::UnsafeEntry);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn never_follows_managed_symlinks_or_accepts_hardlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = TestDirectory::new();
+        let outside = TestDirectory::new();
+        fs::write(outside.path().join("manifest"), manifest(1)).unwrap();
+        symlink(
+            outside.path().join("manifest"),
+            root.path().join("rehow.yaml"),
+        )
+        .unwrap();
+        assert!(matches!(
+            inspect_workspace(root.path()).unwrap(),
+            WorkspaceInspection::Malformed {
+                reason: MalformedWorkspaceReason::Manifest
+            }
+        ));
+
+        fs::remove_file(root.path().join("rehow.yaml")).unwrap();
+        fs::hard_link(
+            outside.path().join("manifest"),
+            root.path().join("rehow.yaml"),
+        )
+        .unwrap();
+        assert!(matches!(
+            inspect_workspace(root.path()).unwrap(),
+            WorkspaceInspection::Malformed {
+                reason: MalformedWorkspaceReason::Manifest
+            }
+        ));
+    }
+
+    #[test]
+    fn revision_is_path_and_byte_sensitive() {
+        let first = document_revision("rehow.yaml", b"abc");
+        let same = document_revision("rehow.yaml", b"abc");
+        let moved = document_revision("other.yaml", b"abc");
+        let changed = document_revision("rehow.yaml", b"abd");
+        assert_eq!(first, same);
+        assert_ne!(first, moved);
+        assert_ne!(first, changed);
+        assert_eq!(
+            first.to_string(),
+            "rev:v1:ec918848dad4d31267309c57c165f16c9d725f0d6eebfae93ec1d60212eea0c2"
+        );
+    }
+}

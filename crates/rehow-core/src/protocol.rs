@@ -326,6 +326,12 @@ digest!(Revision, "rev:v1:");
 digest!(Snapshot, "snapshot:v1:");
 digest!(VerificationHash, "verify:v1:");
 
+impl Revision {
+    pub(crate) fn from_digest_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+}
+
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct PlanToken([u8; 32]);
 string_ts!(PlanToken);

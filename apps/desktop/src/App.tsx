@@ -7,69 +7,33 @@ type GuideSummary = {
   title: string;
   summary: string;
   category: string;
-  status: "Tested" | "Draft" | "Stale";
+  status: "Tested" | "Draft" | "Stale" | "Archived";
   updatedAt: string;
   matches: string;
 };
 
-const DEFAULT_GUIDE: GuideSummary = {
-  id: "install-tarball",
-  title: "Install a Downloaded Tarball",
-  summary:
-    "Place a portable application in ~/Programs and expose its executable safely.",
-  category: "Linux Setup",
-  status: "Tested",
-  updatedAt: "2026-09-16T18:42:00Z",
-  matches: "tarball tar.gz Programs archive executable install",
+type GuideBodyPayload = { id: string; body: string };
+
+type WorkspacePayload = {
+  name: string;
+  categories: Array<{ id: string; name: string; guideCount: number }>;
+  guides: GuideSummary[];
+  issueCount: number;
 };
 
-const GUIDES: GuideSummary[] = [
-  DEFAULT_GUIDE,
-  {
-    id: "desktop-launcher",
-    title: "Create a Desktop Launcher",
-    summary:
-      "Add a user-level .desktop entry and refresh the application database.",
-    category: "Desktop",
-    status: "Tested",
-    updatedAt: "2026-09-11T09:15:00Z",
-    matches: "desktop launcher application menu icon Exec",
-  },
-  {
-    id: "hyprland-keybinding",
-    title: "Change an Omarchy Keybinding",
-    summary:
-      "Override a Hyprland binding without editing Omarchy-managed files.",
-    category: "Omarchy",
-    status: "Stale",
-    updatedAt: "2026-08-29T21:08:00Z",
-    matches: "hyprland keybind omarchy shortcut bind.conf",
-  },
-  {
-    id: "udev-rule",
-    title: "Add a udev Rule for a USB Device",
-    summary:
-      "Identify a device, write a focused rule, reload it, and verify the result.",
-    category: "Hardware",
-    status: "Draft",
-    updatedAt: "2026-08-22T12:20:00Z",
-    matches: "udev usb vendor product rule hardware",
-  },
-];
-
-const CATEGORY_COUNTS = [
-  ["Linux Setup", 12],
-  ["Desktop", 8],
-  ["Omarchy", 7],
-  ["Hardware", 4],
-] as const;
+type OpenWorkspaceResult =
+  | { kind: "cancelled" }
+  | { kind: "empty" }
+  | { kind: "compatible"; workspace: WorkspacePayload }
+  | { kind: "newerUnsupported"; version: number }
+  | { kind: "ordinaryMarkdown" }
+  | { kind: "unrelatedNonempty" }
+  | { kind: "malformed"; reason: string };
 
 type IconName =
   | "book"
   | "search"
   | "plus"
-  | "copy"
-  | "check"
   | "chevron"
   | "folder"
   | "tag"
@@ -95,13 +59,6 @@ function Icon({ name }: { name: IconName }) {
         <path d="M12 5v14M5 12h14" />
       </>
     ),
-    copy: (
-      <>
-        <rect x="8" y="8" width="11" height="11" rx="1.5" />
-        <path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8" />
-      </>
-    ),
-    check: <path d="m5 12 4 4L19 6" />,
     chevron: <path d="m9 18 6-6-6-6" />,
     folder: (
       <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" />
@@ -204,8 +161,9 @@ function Status({ value }: { value: GuideSummary["status"] }) {
 
 export function App() {
   const [query, setQuery] = useState(() => initialParameter("q") ?? "");
+  const [workspace, setWorkspace] = useState<WorkspacePayload | null>(null);
   const [selectedId, setSelectedId] = useState(
-    () => initialParameter("guide") ?? DEFAULT_GUIDE.id,
+    () => initialParameter("guide") ?? "",
   );
   const [readerOpen, setReaderOpen] = useState(
     () => initialParameter("guide") !== null,
@@ -214,16 +172,20 @@ export function App() {
     () => initialParameter("rail") === "open",
   );
   const [announcement, setAnnouncement] = useState("");
+  const [openingWorkspace, setOpeningWorkspace] = useState(false);
+  const [guideBody, setGuideBody] = useState<GuideBodyPayload | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const readerRef = useRef<HTMLElement>(null);
   const resultListRef = useRef<HTMLUListElement>(null);
   const lastResultRef = useRef<HTMLButtonElement | null>(null);
   const railToggleRef = useRef<HTMLButtonElement>(null);
-  const visibleGuides = useMemo(() => filterGuides(GUIDES, query), [query]);
+  const guides = workspace?.guides ?? [];
+  const visibleGuides = useMemo(
+    () => filterGuides(guides, query),
+    [guides, query],
+  );
   const selected =
-    GUIDES.find((guide) => guide.id === selectedId) ??
-    visibleGuides[0] ??
-    DEFAULT_GUIDE;
+    guides.find((guide) => guide.id === selectedId) ?? visibleGuides[0] ?? null;
 
   useEffect(() => {
     const theme = initialParameter("theme");
@@ -276,6 +238,32 @@ export function App() {
     return () => window.removeEventListener("keydown", handleShortcut);
   }, [railOpen, readerOpen]);
 
+  useEffect(() => {
+    if (workspace === null || selectedId === "") {
+      setGuideBody(null);
+      return;
+    }
+    let active = true;
+    setGuideBody(null);
+    import("@tauri-apps/api/core")
+      .then(({ invoke }) =>
+        invoke<GuideBodyPayload>("read_open_guide", { guideId: selectedId }),
+      )
+      .then((payload) => {
+        if (active) setGuideBody(payload);
+      })
+      .catch(() => {
+        if (active) {
+          setAnnouncement(
+            "This Guide could not be read from the open Workspace.",
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedId, workspace]);
+
   function openGuide(id: string, trigger?: HTMLButtonElement) {
     if (trigger) lastResultRef.current = trigger;
     setSelectedId(id);
@@ -311,14 +299,39 @@ export function App() {
       .focus();
   }
 
-  async function copyCommand(command: string) {
+  async function openWorkspace() {
+    setOpeningWorkspace(true);
     try {
-      await navigator.clipboard.writeText(command);
-      setAnnouncement("Command copied.");
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<OpenWorkspaceResult>("choose_workspace");
+      if (result.kind === "compatible") {
+        setWorkspace(result.workspace);
+        setSelectedId(result.workspace.guides[0]?.id ?? "");
+        setReaderOpen(false);
+        setQuery("");
+        setAnnouncement(
+          `${result.workspace.name} opened with ${resultCountLabel(result.workspace.guides.length)}.`,
+        );
+        requestAnimationFrame(() => searchRef.current?.focus());
+      } else if (result.kind !== "cancelled") {
+        const messages: Record<
+          Exclude<OpenWorkspaceResult["kind"], "compatible" | "cancelled">,
+          string
+        > = {
+          empty: "That folder is empty. Workspace creation is coming next.",
+          newerUnsupported:
+            "That Workspace was created by a newer Rehow version.",
+          ordinaryMarkdown:
+            "That folder is a Markdown collection. Safe import is coming next.",
+          unrelatedNonempty: "That nonempty folder is not a Rehow Workspace.",
+          malformed: "That Workspace is malformed and was not opened.",
+        };
+        setAnnouncement(messages[result.kind]);
+      }
     } catch {
-      setAnnouncement(
-        "Couldn’t copy the command. Select it and copy manually.",
-      );
+      setAnnouncement("The native Workspace picker is unavailable.");
+    } finally {
+      setOpeningWorkspace(false);
     }
   }
 
@@ -348,16 +361,24 @@ export function App() {
         >
           <Icon name="folder" />
         </button>
-        <button className="workspace-switcher" type="button">
+        <button
+          className="workspace-switcher"
+          type="button"
+          onClick={openWorkspace}
+          disabled={openingWorkspace}
+        >
           <span className="workspace-dot" aria-hidden="true" />
-          Personal Notes
+          {openingWorkspace
+            ? "Opening…"
+            : (workspace?.name ?? "Open Workspace")}
           <Icon name="chevron" />
         </button>
         <div className="toolbar-actions">
           <button
             className="button button-primary"
             type="button"
-            title="New Guide"
+            title="Guide editing is enabled in the next phase"
+            disabled
           >
             <Icon name="plus" />
             New Guide
@@ -380,23 +401,40 @@ export function App() {
       >
         <nav>
           <p className="rail-label">Library</p>
-          <RailItem icon="book" label="All Guides" count={31} active />
-          <RailItem icon="folder" label="Categories" count={6} />
-          <RailItem icon="tag" label="Tags" count={18} />
-          <RailItem icon="archive" label="Archive" count={3} />
+          <RailItem
+            icon="book"
+            label="All Guides"
+            count={guides.length}
+            active
+          />
+          <RailItem
+            icon="folder"
+            label="Categories"
+            count={workspace?.categories.length ?? 0}
+          />
+          <RailItem icon="tag" label="Tags" count={0} />
+          <RailItem
+            icon="archive"
+            label="Archive"
+            count={guides.filter((guide) => guide.status === "Archived").length}
+          />
         </nav>
         <div className="category-list">
           <p className="rail-label">Categories</p>
-          {CATEGORY_COUNTS.map(([label, count]) => (
-            <button className="category-item" type="button" key={label}>
-              <span>{label}</span>
-              <span className="count">{count}</span>
+          {(workspace?.categories ?? []).map((category) => (
+            <button className="category-item" type="button" key={category.id}>
+              <span>{category.name}</span>
+              <span className="count">{category.guideCount}</span>
             </button>
           ))}
         </div>
         <div className="rail-footer">
           <span className="sync-indicator" aria-hidden="true" />
-          Workspace ready
+          {workspace === null
+            ? "No Workspace open"
+            : workspace.issueCount === 0
+              ? "Workspace ready"
+              : `${workspace.issueCount} item${workspace.issueCount === 1 ? "" : "s"} need attention`}
         </div>
       </aside>
 
@@ -427,6 +465,11 @@ export function App() {
               Recently Updated <span aria-hidden="true">⌄</span>
             </button>
           </div>
+          {announcement !== "" && (
+            <p className="workspace-message" role="status">
+              {announcement}
+            </p>
+          )}
         </div>
         <ul ref={resultListRef} className="result-list" aria-label="Guides">
           {visibleGuides.length > 0 ? (
@@ -434,8 +477,8 @@ export function App() {
               <li key={guide.id}>
                 <button
                   type="button"
-                  className={`result-row ${guide.id === selected.id ? "is-selected" : ""}`}
-                  aria-current={guide.id === selected.id ? "true" : undefined}
+                  className={`result-row ${guide.id === selected?.id ? "is-selected" : ""}`}
+                  aria-current={guide.id === selected?.id ? "true" : undefined}
                   onClick={(event) => openGuide(guide.id, event.currentTarget)}
                   onKeyDown={(event) => handleResultKey(event, index)}
                 >
@@ -454,17 +497,31 @@ export function App() {
           ) : (
             <li className="empty-results">
               <Icon name="search" />
-              <h2>No Matching Guides</h2>
+              <h2>
+                {workspace === null ? "Open a Workspace" : "No Matching Guides"}
+              </h2>
               <p>
-                Try fewer words or search for a command, path, or error message.
+                {workspace === null
+                  ? "Choose a Rehow Workspace to load its Guides securely."
+                  : "Try fewer words or search for a command, path, or error message."}
               </p>
-              <button
-                className="button"
-                type="button"
-                onClick={() => setQuery("")}
-              >
-                Clear Search
-              </button>
+              {workspace === null ? (
+                <button
+                  className="button"
+                  type="button"
+                  onClick={openWorkspace}
+                >
+                  Open Workspace
+                </button>
+              ) : (
+                <button
+                  className="button"
+                  type="button"
+                  onClick={() => setQuery("")}
+                >
+                  Clear Search
+                </button>
+              )}
             </li>
           )}
         </ul>
@@ -476,114 +533,60 @@ export function App() {
         id="guide-content"
         tabIndex={-1}
       >
-        <article className="guide-reader">
-          <button className="back-button" type="button" onClick={closeReader}>
-            ← Back to Results
-          </button>
-          <header className="guide-header">
-            <div className="breadcrumbs">
-              <span>{selected.category}</span>
-              <span aria-hidden="true">/</span>
-              <span>Installation</span>
-            </div>
-            <div className="title-line">
-              <h1>{selected.title}</h1>
-              <Status value={selected.status} />
-            </div>
-            <p className="guide-summary">{selected.summary}</p>
-            <dl className="guide-meta">
-              <div>
-                <dt>Last Verified</dt>
-                <dd>{formatLongDate(selected.updatedAt)}</dd>
+        {selected === null ? (
+          <article className="guide-reader reader-placeholder">
+            <Icon name="book" />
+            <h1>No Guide Selected</h1>
+            <p>Open a Workspace, then choose a Guide from the results.</p>
+          </article>
+        ) : (
+          <article className="guide-reader">
+            <button className="back-button" type="button" onClick={closeReader}>
+              ← Back to Results
+            </button>
+            <header className="guide-header">
+              <div className="breadcrumbs">
+                <span>{selected.category}</span>
               </div>
-              <div>
-                <dt>Applies To</dt>
-                <dd>Arch Linux · Wayland</dd>
+              <div className="title-line">
+                <h1>{selected.title}</h1>
+                <Status value={selected.status} />
               </div>
-              <div>
-                <dt>Files Affected</dt>
-                <dd>
-                  <code translate="no">~/Programs</code>
-                </dd>
-              </div>
-            </dl>
-          </header>
-          <section aria-labelledby="before-heading">
-            <h2 id="before-heading">Before You Start</h2>
-            <div className="callout callout-warning">
-              <strong>Keep the extracted directory.</strong>
-              <p>
-                The launcher points into this folder. Moving it later will break
-                the command path.
-              </p>
-            </div>
-            <ul className="check-list">
-              <li>
-                Download the Linux tarball from the project’s official release
-                page.
-              </li>
-              <li>Confirm the archive matches your CPU architecture.</li>
-            </ul>
-          </section>
-          <section aria-labelledby="steps-heading">
-            <h2 id="steps-heading">Steps</h2>
-            <ol className="steps">
-              <Step
-                title="Create the Programs Directory"
-                copy="Keep manually installed applications separate from system packages."
-                command="mkdir -p ~/Programs"
-                onCopy={copyCommand}
-              />
-              <Step
-                title="Extract the Archive"
-                copy="Replace the archive name with the file you downloaded."
-                command="tar -xvf ~/Downloads/example-linux-x86_64.tar.gz -C ~/Programs"
-                onCopy={copyCommand}
-              />
-              <Step
-                title="Verify the Executable"
-                copy="Run the application directly before creating a launcher."
-                command="~/Programs/example/example"
-                onCopy={copyCommand}
-              />
-            </ol>
-          </section>
-          <section aria-labelledby="verify-heading">
-            <h2 id="verify-heading">Verification</h2>
-            <div className="verification">
-              <Icon name="check" />
-              <div>
-                <strong>The application opens without terminal errors.</strong>
-                <p>
-                  Close it normally, then continue with the related desktop
-                  launcher Guide.
-                </p>
-              </div>
-            </div>
-          </section>
-          <section aria-labelledby="rollback-heading">
-            <h2 id="rollback-heading">Rollback</h2>
-            <p>
-              Remove the extracted application directory. This does not affect
-              packages managed by pacman.
-            </p>
-            <CommandBlock
-              command="rm -r ~/Programs/example"
-              onCopy={copyCommand}
-            />
-          </section>
-        </article>
+              <p className="guide-summary">{selected.summary}</p>
+              <dl className="guide-meta">
+                <div>
+                  <dt>Updated</dt>
+                  <dd>{formatLongDate(selected.updatedAt)}</dd>
+                </div>
+                <div>
+                  <dt>Mode</dt>
+                  <dd>Read-only</dd>
+                </div>
+              </dl>
+            </header>
+            <section aria-labelledby="guide-body-heading">
+              <h2 className="sr-only" id="guide-body-heading">
+                Guide content
+              </h2>
+              <pre className="guide-markdown">
+                {guideBody?.id === selected.id
+                  ? guideBody.body
+                  : "Loading Guide…"}
+              </pre>
+            </section>
+          </article>
+        )}
       </main>
 
       <footer className="status-bar">
         <span>
           <span className="sync-indicator" aria-hidden="true" />
-          31 Guides indexed
+          {resultCountLabel(guides.length)} loaded
         </span>
         <span className="status-path" translate="no">
-          ~/Documents/Rehow
+          {workspace?.name ?? "No Workspace"}
         </span>
-        <span>Git: 2 changes</span>
+        <span>Read-only</span>
       </footer>
       <div className="sr-only" aria-live="polite">
         {announcement}
@@ -609,59 +612,5 @@ function RailItem({
       <span>{label}</span>
       <span className="count">{count}</span>
     </button>
-  );
-}
-
-function Step({
-  title,
-  copy,
-  command,
-  onCopy,
-}: {
-  title: string;
-  copy: string;
-  command: string;
-  onCopy: (value: string) => void;
-}) {
-  return (
-    <li>
-      <div className="step-copy">
-        <h3>{title}</h3>
-        <p>{copy}</p>
-      </div>
-      <CommandBlock command={command} onCopy={onCopy} />
-    </li>
-  );
-}
-
-function CommandBlock({
-  command,
-  onCopy,
-}: {
-  command: string;
-  onCopy: (command: string) => void;
-}) {
-  return (
-    <div className="command-block">
-      <input
-        className="command-scroll"
-        aria-label="Command, horizontally scrollable"
-        name="documented-command"
-        type="text"
-        autoComplete="off"
-        spellCheck={false}
-        readOnly
-        translate="no"
-        value={command}
-      />
-      <button
-        type="button"
-        onClick={() => onCopy(command)}
-        aria-label="Copy command"
-        title="Copy command"
-      >
-        <Icon name="copy" />
-      </button>
-    </div>
   );
 }

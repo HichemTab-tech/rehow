@@ -163,6 +163,11 @@ input:focus-visible,
 .workspace-switcher:hover {
   background: var(--rail);
 }
+.workspace-switcher:disabled,
+.button:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
 .workspace-switcher .icon {
   width: 14px;
   height: 14px;
@@ -383,6 +388,15 @@ kbd {
 .results-meta button:hover {
   color: var(--text);
 }
+.workspace-message {
+  margin: 8px 0 0;
+  padding: 7px 9px;
+  border-left: 2px solid var(--accent);
+  background: var(--selection);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
+}
 .result-list {
   min-height: 0;
   flex: 1;
@@ -474,6 +488,9 @@ kbd {
 }
 .status-draft {
   color: var(--draft);
+}
+.status-archived {
+  color: var(--faint);
 }
 .empty-results {
   display: flex;
@@ -598,6 +615,33 @@ h1 {
 .guide-reader section {
   max-width: 74ch;
   padding-top: 27px;
+}
+.reader-placeholder {
+  display: grid;
+  min-height: 55vh;
+  place-content: center;
+  justify-items: center;
+  color: var(--muted);
+  text-align: center;
+}
+.reader-placeholder > .icon {
+  width: 28px;
+  height: 28px;
+  margin-bottom: 12px;
+}
+.reader-placeholder p {
+  margin: 8px 0 0;
+}
+.guide-markdown {
+  max-width: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  color: var(--text);
+  font-family: ui-monospace, "JetBrains Mono", "DejaVu Sans Mono", monospace;
+  font-size: 12px;
+  line-height: 1.65;
+  tab-size: 2;
 }
 .guide-reader h2 {
   margin: 0 0 13px;

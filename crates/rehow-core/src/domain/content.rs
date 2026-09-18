@@ -4,7 +4,7 @@
 )]
 
 mod emission;
-mod guide;
+pub(crate) mod guide;
 mod mutation;
 
 pub use guide::{
@@ -247,6 +247,9 @@ impl BoundWorkspaceManifest {
     pub(crate) fn unknown_settings_entries(&self) -> &[u32] {
         &self.unknown_settings_entries
     }
+    pub(crate) fn into_record(self) -> WorkspaceManifest {
+        self.record
+    }
 }
 
 impl BoundCategory {
@@ -258,6 +261,9 @@ impl BoundCategory {
     }
     pub(crate) fn unknown_root_entries(&self) -> &[u32] {
         &self.unknown_root_entries
+    }
+    pub(crate) fn into_record(self) -> Category {
+        self.record
     }
 }
 

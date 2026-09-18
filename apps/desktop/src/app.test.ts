@@ -29,12 +29,13 @@ describe("application identity", () => {
 });
 
 describe("application shell semantics", () => {
-  it("renders named search, live results, navigation toggle, and focusable commands", () => {
+  it("renders named search, live results, navigation toggle, and Workspace onboarding", () => {
     const markup = renderToStaticMarkup(createElement(App));
     expect(markup).toContain("Search Guides</span>");
     expect(markup).toContain('aria-live="polite"');
     expect(markup).toContain('aria-controls="workspace-navigation"');
-    expect(markup).toContain('aria-label="Command, horizontally scrollable"');
+    expect(markup).toContain("Open Workspace");
+    expect(markup).toContain("No Workspace open");
     expect(markup).toContain('translate="no"');
   });
 });

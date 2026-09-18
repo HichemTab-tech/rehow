@@ -4,7 +4,7 @@ pub mod git {}
 pub mod markdown {}
 pub mod protocol;
 pub mod search {}
-pub mod storage {}
+pub mod storage;
 
 #[allow(
     dead_code,
