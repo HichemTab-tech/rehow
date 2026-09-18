@@ -97,6 +97,20 @@ pub(crate) struct CategoryCreateStorageOutcome {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CategoryRemoveStorageError {
+    Busy,
+    Conflict,
+    NotEmpty,
+    Unsafe,
+    Unsupported,
+    TooLarge,
+    Io,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CategoryRemoveStorageOutcome;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DocumentCreateError {
     Busy,
     Conflict,
@@ -391,6 +405,113 @@ pub(super) fn execute_document_create(
     Ok(DocumentCreateOutcome {
         revision: super::document_revision(relative_path, content),
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_category_remove(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    relative_directory: &str,
+    expected_revision: Revision,
+    operation_id: OperationId,
+    created_at: Timestamp,
+) -> Result<CategoryRemoveStorageOutcome, CategoryRemoveStorageError> {
+    let Some(directory_name) = relative_directory.strip_prefix("categories/") else {
+        return Err(CategoryRemoveStorageError::Unsafe);
+    };
+    if !super::valid_category_directory(directory_name) {
+        return Err(CategoryRemoveStorageError::Unsafe);
+    }
+    let store = store::RecoveryStore::open(
+        state_home,
+        workspace_id,
+        root.root_hash(),
+        root.capability_hash(),
+    )
+    .map_err(map_store_category_remove)?;
+    let lock = store
+        .acquire_lock(runtime_directory)
+        .map_err(map_store_category_remove)?;
+    let categories = root
+        .open_private_directory("categories")
+        .map_err(map_io_category_remove)?;
+    let category = categories
+        .open_private_directory(directory_name)
+        .map_err(map_io_category_remove)?;
+    let entries = category.entries(2).map_err(map_inspect_category_remove)?;
+    if entries.len() != 1 || entries[0] != "category.yaml" {
+        return Err(CategoryRemoveStorageError::NotEmpty);
+    }
+    let relative_path = format!("{relative_directory}/category.yaml");
+    let target = root
+        .open_managed_target(&relative_path)
+        .map_err(map_io_category_remove)?;
+    let current = match target
+        .state(super::GUIDE_LIMIT)
+        .map_err(map_io_category_remove)?
+    {
+        super::linux::ManagedState::Missing => {
+            return Err(CategoryRemoveStorageError::Conflict);
+        }
+        super::linux::ManagedState::Regular(state) => state,
+    };
+    if super::document_revision(&relative_path, &current.bytes) != expected_revision {
+        return Err(CategoryRemoveStorageError::Conflict);
+    }
+    let object_hash = store
+        .store_object(&lock, &current.bytes)
+        .map_err(map_store_category_remove)?;
+    let destination = format!(".rehow/trash/{operation_id}/{relative_path}");
+    let (root_device, root_inode) = root.identity().map_err(map_io_category_remove)?;
+    let mut plan = blake3::Hasher::new();
+    plan.update(b"rehow-category-remove-plan-v1\0");
+    hash_plan_field(&mut plan, relative_directory.as_bytes());
+    hash_plan_field(&mut plan, expected_revision.to_string().as_bytes());
+    plan.update(&object_hash);
+    plan.update(&current.mode.to_be_bytes());
+    let journal = Journal {
+        generation: 1,
+        operation_id,
+        operation_kind: OperationKind::Delete,
+        workspace_id,
+        root_hash: root.root_hash(),
+        root_device,
+        root_inode,
+        created_at,
+        plan_hash: *plan.finalize().as_bytes(),
+        targets: vec![Target {
+            relative_path,
+            expected: ExpectedState::Existing {
+                revision: expected_revision,
+                object_hash,
+                mode: current.mode,
+            },
+            intended: IntendedState::Trash {
+                object_hash,
+                mode: current.mode,
+                destination,
+            },
+            temp_name: format!(".rehow-tmp-{operation_id}"),
+            step: TargetStep::Prepared,
+        }],
+        stage: JournalStage::Prepared,
+        completion: false,
+    };
+    let execution = workspace::execute_new_journal(root, &store, &lock, journal.clone());
+    if let Err(error) = execution {
+        let committed = store
+            .read_journal(&lock, operation_id)
+            .is_ok_and(|persisted| {
+                committed_matches(&persisted, &journal)
+                    && workspace::resume_journal(root, &store, &lock, operation_id).is_ok()
+            });
+        if !committed {
+            return Err(map_workspace_category_remove(error));
+        }
+    }
+    Ok(CategoryRemoveStorageOutcome)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -854,6 +975,55 @@ fn map_io_document_create(error: super::linux::MutationIoError) -> DocumentCreat
         super::linux::MutationIoError::Unsupported => DocumentCreateError::Unsupported,
         super::linux::MutationIoError::TooLarge => DocumentCreateError::TooLarge,
         super::linux::MutationIoError::Io => DocumentCreateError::Io,
+    }
+}
+
+fn map_store_category_remove(error: store::StoreError) -> CategoryRemoveStorageError {
+    match error {
+        store::StoreError::Busy => CategoryRemoveStorageError::Busy,
+        store::StoreError::Conflict | store::StoreError::Corrupt => {
+            CategoryRemoveStorageError::Conflict
+        }
+        store::StoreError::Unsafe => CategoryRemoveStorageError::Unsafe,
+        store::StoreError::Unsupported => CategoryRemoveStorageError::Unsupported,
+        store::StoreError::TooLarge => CategoryRemoveStorageError::TooLarge,
+        store::StoreError::Io => CategoryRemoveStorageError::Io,
+        #[cfg(test)]
+        store::StoreError::Injected => CategoryRemoveStorageError::Io,
+    }
+}
+
+fn map_io_category_remove(error: super::linux::MutationIoError) -> CategoryRemoveStorageError {
+    match error {
+        super::linux::MutationIoError::Unsafe => CategoryRemoveStorageError::Unsafe,
+        super::linux::MutationIoError::Conflict => CategoryRemoveStorageError::Conflict,
+        super::linux::MutationIoError::Unsupported => CategoryRemoveStorageError::Unsupported,
+        super::linux::MutationIoError::TooLarge => CategoryRemoveStorageError::TooLarge,
+        super::linux::MutationIoError::Io => CategoryRemoveStorageError::Io,
+    }
+}
+
+fn map_inspect_category_remove(error: super::WorkspaceInspectError) -> CategoryRemoveStorageError {
+    match error {
+        super::WorkspaceInspectError::UnsafeRoot => CategoryRemoveStorageError::Unsafe,
+        super::WorkspaceInspectError::ResourceLimit => CategoryRemoveStorageError::NotEmpty,
+        super::WorkspaceInspectError::ChangedDuringRead => CategoryRemoveStorageError::Conflict,
+        super::WorkspaceInspectError::NotFound
+        | super::WorkspaceInspectError::NotDirectory
+        | super::WorkspaceInspectError::PermissionDenied
+        | super::WorkspaceInspectError::Io => CategoryRemoveStorageError::Io,
+    }
+}
+
+fn map_workspace_category_remove(
+    error: workspace::WorkspaceMutationError,
+) -> CategoryRemoveStorageError {
+    match error {
+        workspace::WorkspaceMutationError::Unsafe => CategoryRemoveStorageError::Unsafe,
+        workspace::WorkspaceMutationError::Conflict => CategoryRemoveStorageError::Conflict,
+        workspace::WorkspaceMutationError::Unsupported => CategoryRemoveStorageError::Unsupported,
+        workspace::WorkspaceMutationError::TooLarge => CategoryRemoveStorageError::TooLarge,
+        workspace::WorkspaceMutationError::Io => CategoryRemoveStorageError::Io,
     }
 }
 

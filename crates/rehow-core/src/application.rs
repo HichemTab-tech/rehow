@@ -24,11 +24,11 @@ use crate::{
         new_guide_id, new_operation_id, new_workspace_id,
     },
     storage::{
-        CategoryCreateStorageError, DocumentCreateError, DocumentUpdateError,
-        DocumentUpdateRequest, EmptyWorkspaceTarget, MultiDocumentUpdateError,
-        WorkspaceInitializeError, WorkspaceView, execute_category_create, execute_document_create,
-        execute_document_update, execute_multi_document_update, execute_workspace_initialize,
-        open_initialized_workspace, refresh_workspace,
+        CategoryCreateStorageError, CategoryRemoveStorageError, DocumentCreateError,
+        DocumentUpdateError, DocumentUpdateRequest, EmptyWorkspaceTarget, MultiDocumentUpdateError,
+        WorkspaceInitializeError, WorkspaceView, execute_category_create, execute_category_remove,
+        execute_document_create, execute_document_update, execute_multi_document_update,
+        execute_workspace_initialize, open_initialized_workspace, refresh_workspace,
     },
 };
 use std::{collections::HashSet, path::Path};
@@ -389,6 +389,83 @@ fn map_category_reorder_error(
         MultiDocumentUpdateError::Unsafe => CategoryReorderError::UnsafeStorage,
         MultiDocumentUpdateError::Unsupported => CategoryReorderError::UnsupportedFilesystem,
         MultiDocumentUpdateError::Io => CategoryReorderError::Io,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CategoryRemoveError {
+    NotFound,
+    DefaultCategory,
+    NotEmpty,
+    RevisionConflict,
+    Busy,
+    UnsafeStorage,
+    UnsupportedFilesystem,
+    ResourceLimit,
+    Io,
+    CommittedRefreshRequired,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CategoryRemoveOutcome;
+
+pub fn remove_category(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    category_id: CategoryId,
+    expected_revision: Revision,
+) -> Result<CategoryRemoveOutcome, CategoryRemoveError> {
+    let loaded = workspace
+        .categories()
+        .iter()
+        .find(|category| category.category().id() == &category_id)
+        .ok_or(CategoryRemoveError::NotFound)?;
+    if loaded.descriptor_revision() != expected_revision {
+        return Err(CategoryRemoveError::RevisionConflict);
+    }
+    if workspace
+        .manifest()
+        .settings()
+        .and_then(|settings| settings.default_category_id())
+        == Some(&category_id)
+    {
+        return Err(CategoryRemoveError::DefaultCategory);
+    }
+    if !loaded.guides().is_empty() {
+        return Err(CategoryRemoveError::NotEmpty);
+    }
+    let relative_directory = loaded.relative_directory().to_owned();
+    execute_category_remove(
+        workspace,
+        state_home,
+        runtime_directory,
+        &relative_directory,
+        expected_revision,
+        new_operation_id(),
+        current_timestamp(),
+    )
+    .map_err(map_category_remove_error)?;
+    if refresh_workspace(workspace).is_err()
+        || workspace
+            .categories()
+            .iter()
+            .any(|category| category.category().id() == &category_id)
+    {
+        return Err(CategoryRemoveError::CommittedRefreshRequired);
+    }
+    Ok(CategoryRemoveOutcome)
+}
+
+fn map_category_remove_error(error: CategoryRemoveStorageError) -> CategoryRemoveError {
+    match error {
+        CategoryRemoveStorageError::Busy => CategoryRemoveError::Busy,
+        CategoryRemoveStorageError::Conflict => CategoryRemoveError::RevisionConflict,
+        CategoryRemoveStorageError::NotEmpty => CategoryRemoveError::NotEmpty,
+        CategoryRemoveStorageError::Unsafe => CategoryRemoveError::UnsafeStorage,
+        CategoryRemoveStorageError::Unsupported => CategoryRemoveError::UnsupportedFilesystem,
+        CategoryRemoveStorageError::TooLarge => CategoryRemoveError::ResourceLimit,
+        CategoryRemoveStorageError::Io => CategoryRemoveError::Io,
     }
 }
 
@@ -1516,6 +1593,149 @@ mod tests {
             reorder_categories(&mut view, state.path(), None, &current),
             Err(CategoryReorderError::RevisionConflict)
         );
+    }
+
+    #[test]
+    fn removes_empty_category_to_trash_without_touching_others() {
+        let (workspace, state, mut view) = initialized_workspace("category-remove");
+        let removed = create_category(&mut view, state.path(), None, "Remove Me", None).unwrap();
+        let kept = create_category(&mut view, state.path(), None, "Keep Me", None).unwrap();
+        let loaded = view
+            .categories()
+            .iter()
+            .find(|category| category.category().id() == &removed.category_id())
+            .unwrap();
+        let relative_directory = loaded.relative_directory().to_owned();
+        let descriptor = fs::read(
+            workspace
+                .path()
+                .join(&relative_directory)
+                .join("category.yaml"),
+        )
+        .unwrap();
+        remove_category(
+            &mut view,
+            state.path(),
+            None,
+            removed.category_id(),
+            removed.revision(),
+        )
+        .unwrap();
+        assert!(!workspace.path().join(&relative_directory).exists());
+        assert_eq!(view.categories().len(), 1);
+        assert_eq!(view.categories()[0].category().id(), &kept.category_id());
+        let operations = fs::read_dir(workspace.path().join(".rehow/trash"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(operations.len(), 1);
+        assert_eq!(
+            fs::read(
+                operations[0]
+                    .path()
+                    .join(&relative_directory)
+                    .join("category.yaml")
+            )
+            .unwrap(),
+            descriptor
+        );
+    }
+
+    #[test]
+    fn category_remove_refuses_nonempty_stale_and_extra_entries() {
+        let (workspace, state, mut view) = initialized_workspace("category-remove-refuse");
+        let nonempty = create_category(&mut view, state.path(), None, "Guides", None).unwrap();
+        create_guide(
+            &mut view,
+            state.path(),
+            None,
+            nonempty.category_id(),
+            "Keep Guide",
+            "Removal must never cascade.",
+        )
+        .unwrap();
+        assert_eq!(
+            remove_category(
+                &mut view,
+                state.path(),
+                None,
+                nonempty.category_id(),
+                nonempty.revision(),
+            ),
+            Err(CategoryRemoveError::NotEmpty)
+        );
+
+        let extra = create_category(&mut view, state.path(), None, "Extra", None).unwrap();
+        let extra_directory = view
+            .categories()
+            .iter()
+            .find(|category| category.category().id() == &extra.category_id())
+            .unwrap()
+            .relative_directory()
+            .to_owned();
+        fs::write(
+            workspace.path().join(&extra_directory).join("unknown.txt"),
+            b"keep",
+        )
+        .unwrap();
+        assert_eq!(
+            remove_category(
+                &mut view,
+                state.path(),
+                None,
+                extra.category_id(),
+                extra.revision(),
+            ),
+            Err(CategoryRemoveError::NotEmpty)
+        );
+        assert_eq!(
+            fs::read(workspace.path().join(extra_directory).join("unknown.txt")).unwrap(),
+            b"keep"
+        );
+
+        assert_eq!(
+            remove_category(
+                &mut view,
+                state.path(),
+                None,
+                extra.category_id(),
+                Revision::from_str(&format!("rev:v1:{}", "22".repeat(32))).unwrap(),
+            ),
+            Err(CategoryRemoveError::RevisionConflict)
+        );
+    }
+
+    #[test]
+    fn refuses_to_remove_the_default_category() {
+        let workspace = TestDirectory::new("default-category-remove");
+        let state = TestDirectory::new("default-category-remove-state");
+        fs::write(
+            workspace.path().join("rehow.yaml"),
+            format!(
+                "{MANIFEST}settings:\n  default_category_id: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5551\n"
+            ),
+        )
+        .unwrap();
+        let category = workspace.path().join("categories/linux-system--b6ba3a5551");
+        fs::create_dir_all(&category).unwrap();
+        fs::write(category.join("category.yaml"), CATEGORY).unwrap();
+        let WorkspaceInspection::Compatible(mut view) =
+            inspect_workspace(workspace.path()).unwrap().into_parts().1
+        else {
+            panic!("expected compatible Workspace");
+        };
+        let revision = view.categories()[0].descriptor_revision();
+        assert_eq!(
+            remove_category(
+                &mut view,
+                state.path(),
+                None,
+                CategoryId::from_str("0199a1c2-d334-7d17-bd9c-f8b6ba3a5551").unwrap(),
+                revision,
+            ),
+            Err(CategoryRemoveError::DefaultCategory)
+        );
+        assert!(category.join("category.yaml").is_file());
     }
 
     #[test]

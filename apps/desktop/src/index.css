@@ -469,6 +469,9 @@ textarea:focus-visible,
 .category-order-button:hover {
   text-decoration: none;
 }
+.category-remove-button {
+  color: var(--warning);
+}
 .category-status-error {
   margin: 0 8px 7px 27px;
   padding: 6px 8px;

@@ -1,5 +1,5 @@
 use super::{
-    ExpectedState, IntendedState, Journal, JournalStage, TargetStep,
+    ExpectedState, IntendedState, Journal, JournalStage, OperationKind, TargetStep,
     store::{RecoveryStore, StoreError, WriterLock},
     valid_temp,
 };
@@ -353,12 +353,43 @@ fn continue_journal(
         journal.targets[index].step = TargetStep::Complete;
         advance(store, lock, &mut journal)?;
     }
+    if let Err(error) = remove_committed_category_directories(root, &journal) {
+        return match error {
+            WorkspaceMutationError::Conflict | WorkspaceMutationError::Unsafe => {
+                mark_conflict(store, lock, &mut journal)
+            }
+            other => Err(other),
+        };
+    }
     journal.stage = JournalStage::Committed;
     journal.completion = true;
     advance(store, lock, &mut journal)?;
     verify_journal_applied(root, store, lock, &journal)?;
     cleanup_committed(root, store, lock, &journal)?;
     Ok(journal)
+}
+
+fn remove_committed_category_directories(
+    root: &DirectoryCapability,
+    journal: &Journal,
+) -> Result<(), WorkspaceMutationError> {
+    if journal.operation_kind != OperationKind::Delete {
+        return Ok(());
+    }
+    for target in &journal.targets {
+        if !matches!(target.intended, IntendedState::Trash { .. }) {
+            continue;
+        }
+        let Some(relative_directory) = target.relative_path.strip_suffix("/category.yaml") else {
+            continue;
+        };
+        if !relative_directory.starts_with("categories/") {
+            continue;
+        }
+        root.remove_empty_category_directory(relative_directory)
+            .map_err(map_io)?;
+    }
+    Ok(())
 }
 
 fn apply_prepared_target(
@@ -455,6 +486,34 @@ fn verify_applied_target(
     target: &super::Target,
     expected: Option<(&[u8], u32)>,
 ) -> Result<(), WorkspaceMutationError> {
+    if let IntendedState::Trash {
+        destination,
+        object_hash,
+        mode,
+    } = &target.intended
+        && let Some(relative_directory) = target.relative_path.strip_suffix("/category.yaml")
+        && relative_directory.starts_with("categories/")
+        && !root
+            .category_directory_exists(relative_directory)
+            .map_err(map_io)?
+    {
+        let Some((old, old_mode)) = expected else {
+            return Err(WorkspaceMutationError::Conflict);
+        };
+        if *object_hash != *blake3::hash(old).as_bytes() || *mode != old_mode {
+            return Err(WorkspaceMutationError::Conflict);
+        }
+        let trash = root.open_trash_target(destination).map_err(map_io)?;
+        trash.sync_directory().map_err(map_io)?;
+        if !matches!(
+            trash.state(TARGET_LIMIT).map_err(map_io)?,
+            ManagedState::Regular(ref state)
+                if state.bytes == old && state.mode == old_mode
+        ) {
+            return Err(WorkspaceMutationError::Conflict);
+        }
+        return Ok(());
+    }
     let active = root
         .open_managed_target(&target.relative_path)
         .map_err(map_io)?;
@@ -676,17 +735,29 @@ fn cleanup_committed(
                 if intended_hash != object_hash || intended_mode != mode {
                     return Err(WorkspaceMutationError::Conflict);
                 }
-                let active = root
-                    .open_managed_target(&target.relative_path)
-                    .map_err(map_io)?;
                 let trash = root.open_trash_target(destination).map_err(map_io)?;
                 if !matches!(
-                    active.state(TARGET_LIMIT).map_err(map_io)?,
-                    ManagedState::Missing
-                ) || !matches!(
                     trash.state(TARGET_LIMIT).map_err(map_io)?,
                     ManagedState::Regular(ref saved)
                         if saved.bytes == old && saved.mode == *mode
+                ) {
+                    return Err(WorkspaceMutationError::Conflict);
+                }
+                if let Some(relative_directory) =
+                    target.relative_path.strip_suffix("/category.yaml")
+                    && relative_directory.starts_with("categories/")
+                    && !root
+                        .category_directory_exists(relative_directory)
+                        .map_err(map_io)?
+                {
+                    continue;
+                }
+                let active = root
+                    .open_managed_target(&target.relative_path)
+                    .map_err(map_io)?;
+                if !matches!(
+                    active.state(TARGET_LIMIT).map_err(map_io)?,
+                    ManagedState::Missing
                 ) {
                     return Err(WorkspaceMutationError::Conflict);
                 }
@@ -1470,6 +1541,66 @@ mod tests {
             )))
             .unwrap(),
             b"old"
+        );
+    }
+
+    #[test]
+    fn category_delete_replay_removes_only_the_verified_empty_directory() {
+        let (workspace, state, capability) = journal_fixture("category-delete-replay");
+        let category = workspace.0.join("categories/linux");
+        fs::set_permissions(
+            workspace.0.join("categories"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        fs::set_permissions(&category, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::rename(category.join("guide.md"), category.join("category.yaml")).unwrap();
+        let store = RecoveryStore::open(
+            &state.0,
+            "0199a19f-4d15-7ca7-a645-e75311caa710".parse().unwrap(),
+            [0x11; 32],
+            [0x22; 32],
+        )
+        .unwrap();
+        let lock = store.acquire_lock(None).unwrap();
+        let mut journal = delete_journal(&capability, &store, &lock, true);
+        let operation_id = journal.operation_id;
+        journal.targets[0].relative_path = "categories/linux/category.yaml".to_owned();
+        let ExpectedState::Existing { revision, .. } = &mut journal.targets[0].expected else {
+            panic!("existing target")
+        };
+        *revision = crate::storage::document_revision("categories/linux/category.yaml", b"old");
+        let IntendedState::Trash { destination, .. } = &mut journal.targets[0].intended else {
+            panic!("trash target")
+        };
+        *destination = format!(".rehow/trash/{operation_id}/categories/linux/category.yaml");
+
+        WORKSPACE_FAULT.set(Some(WorkspaceFault::AfterSourceDirectorySync));
+        assert_eq!(
+            execute_new_journal(&capability, &store, &lock, journal).err(),
+            Some(WorkspaceMutationError::Unsupported)
+        );
+        assert!(category.is_dir());
+        assert!(!category.join("category.yaml").exists());
+        assert!(
+            workspace
+                .0
+                .join(format!(
+                    ".rehow/trash/{operation_id}/categories/linux/category.yaml"
+                ))
+                .is_file()
+        );
+
+        let committed = resume_journal(&capability, &store, &lock, operation_id).unwrap();
+        assert_eq!(committed.stage, JournalStage::Committed);
+        assert!(!category.exists());
+        assert!(
+            workspace
+                .0
+                .join(format!(
+                    ".rehow/trash/{operation_id}/categories/linux/category.yaml"
+                ))
+                .is_file()
         );
     }
 

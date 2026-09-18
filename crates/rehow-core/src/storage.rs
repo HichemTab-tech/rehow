@@ -6,10 +6,10 @@
 
 pub(crate) mod recovery;
 pub(crate) use recovery::{
-    CategoryCreateStorageError, CategoryCreateStorageOutcome, DocumentCreateError,
-    DocumentCreateOutcome, DocumentUpdateError, DocumentUpdateOutcome, MultiDocumentUpdateError,
-    MultiDocumentUpdateOutcome, PreparedDocument, WorkspaceInitializeError,
-    WorkspaceInitializeOutcome,
+    CategoryCreateStorageError, CategoryCreateStorageOutcome, CategoryRemoveStorageError,
+    CategoryRemoveStorageOutcome, DocumentCreateError, DocumentCreateOutcome, DocumentUpdateError,
+    DocumentUpdateOutcome, MultiDocumentUpdateError, MultiDocumentUpdateOutcome, PreparedDocument,
+    WorkspaceInitializeError, WorkspaceInitializeOutcome,
 };
 
 #[cfg(not(target_os = "linux"))]
@@ -311,6 +311,28 @@ where
         operation_id,
         created_at,
         prepare,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_category_remove(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    relative_directory: &str,
+    expected_revision: Revision,
+    operation_id: crate::protocol::OperationId,
+    created_at: crate::protocol::Timestamp,
+) -> Result<CategoryRemoveStorageOutcome, CategoryRemoveStorageError> {
+    recovery::execute_category_remove(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        relative_directory,
+        expected_revision,
+        operation_id,
+        created_at,
     )
 }
 
@@ -1272,15 +1294,62 @@ mod linux {
             if !super::valid_category_directory(name) {
                 return Err(MutationIoError::Unsafe);
             }
-            let categories = self
-                .open_directory("categories")
-                .map_err(|error| match error {
-                    OpenDirectoryError::Missing => MutationIoError::Conflict,
-                    OpenDirectoryError::Unsafe => MutationIoError::Unsafe,
-                    OpenDirectoryError::Io(_) => MutationIoError::Io,
-                })?;
+            let categories = self.open_private_directory("categories")?;
             categories.create_private_directory_exclusive(name)?;
             Ok(())
+        }
+
+        pub(super) fn remove_empty_category_directory(
+            &self,
+            relative_directory: &str,
+        ) -> Result<(), MutationIoError> {
+            let Some(name) = relative_directory.strip_prefix("categories/") else {
+                return Err(MutationIoError::Unsafe);
+            };
+            if !super::valid_category_directory(name) {
+                return Err(MutationIoError::Unsafe);
+            }
+            let categories = self.open_private_directory("categories")?;
+            let name = component(name).map_err(|_| MutationIoError::Unsafe)?;
+            // SAFETY: `categories` is retained and `name` is a validated component.
+            if unsafe {
+                libc::unlinkat(
+                    categories.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::AT_REMOVEDIR,
+                )
+            } != 0
+            {
+                return match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::ENOENT) => Ok(()),
+                    Some(libc::ENOTEMPTY) | Some(libc::EEXIST) => Err(MutationIoError::Conflict),
+                    Some(libc::ENOTDIR) | Some(libc::ELOOP) => Err(MutationIoError::Unsafe),
+                    _ => Err(MutationIoError::Io),
+                };
+            }
+            // SAFETY: the retained `categories` descriptor is valid.
+            if unsafe { libc::fsync(categories.descriptor.as_raw_fd()) } != 0 {
+                return Err(MutationIoError::Unsupported);
+            }
+            Ok(())
+        }
+
+        pub(super) fn category_directory_exists(
+            &self,
+            relative_directory: &str,
+        ) -> Result<bool, MutationIoError> {
+            let Some(name) = relative_directory.strip_prefix("categories/") else {
+                return Err(MutationIoError::Unsafe);
+            };
+            if !super::valid_category_directory(name) {
+                return Err(MutationIoError::Unsafe);
+            }
+            let categories = self.open_private_directory("categories")?;
+            match categories.open_private_directory(name) {
+                Ok(_) => Ok(true),
+                Err(MutationIoError::Conflict) => Ok(false),
+                Err(error) => Err(error),
+            }
         }
 
         pub(super) fn open_trash_target(

@@ -2,10 +2,11 @@ pub const APPLICATION_NAME: &str = "Rehow";
 
 use rehow_core::{
     application::{
-        CategoryCreateError, CategoryOrderRevision, CategoryReorderError, CategoryUpdateError,
-        GUIDE_BODY_INPUT_LIMIT, GuideCreateError, GuideEdit, GuideUpdateError,
+        CategoryCreateError, CategoryOrderRevision, CategoryRemoveError, CategoryReorderError,
+        CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError, GuideEdit, GuideUpdateError,
         WorkspaceInitializationError, create_category, create_guide, initialize_workspace,
-        reorder_categories, set_category_archived, update_category_details, update_guide,
+        remove_category, reorder_categories, set_category_archived, update_category_details,
+        update_guide,
     },
     domain::GuideStatus,
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -965,6 +966,122 @@ fn category_reorder_message(error: CategoryReorderError) -> String {
     }
 }
 
+#[tauri::command]
+fn remove_open_category(
+    category_id: String,
+    expected_revision: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<SaveCategoryPayload, NativeCommandError> {
+    if category_id.len() > 64 || expected_revision.len() > 96 {
+        return Err(native_command_error(
+            "invalidInput",
+            "Category identity is too long.".to_owned(),
+        ));
+    }
+    let category_id = CategoryId::from_str(&category_id).map_err(|_| {
+        native_command_error("invalidCategory", "Category ID is invalid.".to_owned())
+    })?;
+    let expected_revision = Revision::from_str(&expected_revision).map_err(|_| {
+        native_command_error(
+            "invalidRevision",
+            "Category revision is invalid. Reopen the Workspace and try again.".to_owned(),
+        )
+    })?;
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    fs::create_dir_all(&state_home).map_err(|_| {
+        native_command_error(
+            "stateUnavailable",
+            "Rehow could not prepare its private recovery folder.".to_owned(),
+        )
+    })?;
+    let mut guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_mut().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    remove_category(
+        &mut workspace.view,
+        &state_home,
+        runtime_directory.as_deref(),
+        category_id,
+        expected_revision,
+    )
+    .map_err(|error| {
+        native_command_error(category_remove_code(error), category_remove_message(error))
+    })?;
+    Ok(SaveCategoryPayload {
+        workspace: WorkspacePayload::from_view(
+            &workspace.view,
+            FolderFactsPayload::from(workspace.facts),
+        ),
+        changed: true,
+    })
+}
+
+fn category_remove_code(error: CategoryRemoveError) -> &'static str {
+    match error {
+        CategoryRemoveError::NotFound => "notFound",
+        CategoryRemoveError::DefaultCategory => "defaultCategory",
+        CategoryRemoveError::NotEmpty => "notEmpty",
+        CategoryRemoveError::RevisionConflict => "revisionConflict",
+        CategoryRemoveError::Busy => "busy",
+        CategoryRemoveError::UnsafeStorage => "unsafeStorage",
+        CategoryRemoveError::UnsupportedFilesystem => "unsupportedFilesystem",
+        CategoryRemoveError::ResourceLimit => "resourceLimit",
+        CategoryRemoveError::Io => "io",
+        CategoryRemoveError::CommittedRefreshRequired => "committedRefresh",
+    }
+}
+
+fn category_remove_message(error: CategoryRemoveError) -> String {
+    match error {
+        CategoryRemoveError::NotFound => {
+            "Category was not found. Reopen the Workspace.".to_owned()
+        }
+        CategoryRemoveError::DefaultCategory => {
+            "Choose a different default Category before removing this one.".to_owned()
+        }
+        CategoryRemoveError::NotEmpty => {
+            "This Category is not empty. Move its Guides or inspect unexpected files before removing it."
+                .to_owned()
+        }
+        CategoryRemoveError::RevisionConflict => {
+            "This Category changed on disk. Reopen the Workspace before removing it.".to_owned()
+        }
+        CategoryRemoveError::Busy => {
+            "Another Rehow writer is active. Wait a moment and try again.".to_owned()
+        }
+        CategoryRemoveError::UnsafeStorage => {
+            "The Category folder is unsafe or contains unexpected entries. Rehow removed nothing."
+                .to_owned()
+        }
+        CategoryRemoveError::UnsupportedFilesystem => {
+            "This filesystem cannot provide the durable removal Rehow requires.".to_owned()
+        }
+        CategoryRemoveError::ResourceLimit => {
+            "The Category exceeds Rehow’s safe removal limits.".to_owned()
+        }
+        CategoryRemoveError::Io => {
+            "The Category could not be removed. Check folder access and try again.".to_owned()
+        }
+        CategoryRemoveError::CommittedRefreshRequired => {
+            "The Category moved to Rehow Trash, but the view could not refresh. Reopen the Workspace."
+                .to_owned()
+        }
+    }
+}
+
 fn category_update_code(error: CategoryUpdateError) -> &'static str {
     match error {
         CategoryUpdateError::NotFound => "notFound",
@@ -1240,6 +1357,7 @@ pub fn run() {
             create_open_guide,
             initialize_selected_workspace,
             read_open_guide,
+            remove_open_category,
             reorder_open_categories,
             save_open_category_details,
             save_open_guide_body,
@@ -1255,15 +1373,16 @@ pub fn run() {
 mod tests {
     use super::{
         APPLICATION_NAME, CategoryPayload, FolderFactsPayload, GuideBodyPayload, GuidePayload,
-        WorkspacePayload, category_create_code, category_create_message, category_reorder_code,
-        category_reorder_message, category_update_code, category_update_message, guide_create_code,
-        guide_create_message, guide_update_code, guide_update_message, native_command_error,
+        WorkspacePayload, category_create_code, category_create_message, category_remove_code,
+        category_remove_message, category_reorder_code, category_reorder_message,
+        category_update_code, category_update_message, guide_create_code, guide_create_message,
+        guide_update_code, guide_update_message, native_command_error,
         workspace_initialization_message,
     };
     use rehow_core::{
         application::{
-            CategoryCreateError, CategoryReorderError, CategoryUpdateError, GuideCreateError,
-            GuideUpdateError, WorkspaceInitializationError,
+            CategoryCreateError, CategoryRemoveError, CategoryReorderError, CategoryUpdateError,
+            GuideCreateError, GuideUpdateError, WorkspaceInitializationError,
         },
         markdown::parse_safe_markdown,
     };
@@ -1422,6 +1541,18 @@ mod tests {
         assert_eq!(
             category_reorder_message(CategoryReorderError::RevisionConflict),
             "A Category changed on disk. Reopen the Workspace before reordering."
+        );
+    }
+
+    #[test]
+    fn category_remove_errors_are_stable_and_actionable() {
+        assert_eq!(
+            category_remove_code(CategoryRemoveError::NotEmpty),
+            "notEmpty"
+        );
+        assert_eq!(
+            category_remove_message(CategoryRemoveError::DefaultCategory),
+            "Choose a different default Category before removing this one."
         );
     }
 

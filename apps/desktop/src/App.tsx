@@ -356,6 +356,7 @@ export function App() {
     message: string;
   } | null>(null);
   const [reorderingCategoryId, setReorderingCategoryId] = useState("");
+  const [removingCategoryId, setRemovingCategoryId] = useState("");
   const [categoryReorderError, setCategoryReorderError] = useState<{
     id: string;
     message: string;
@@ -787,7 +788,8 @@ export function App() {
     if (
       workspace === null ||
       !workspace.facts.writable ||
-      reorderingCategoryId !== ""
+      reorderingCategoryId !== "" ||
+      removingCategoryId !== ""
     )
       return;
     setRenamingCategoryId(category.id);
@@ -866,7 +868,12 @@ export function App() {
   async function changeCategoryArchived(
     category: WorkspacePayload["categories"][number],
   ) {
-    if (updatingCategoryStatusId !== "" || reorderingCategoryId !== "") return;
+    if (
+      updatingCategoryStatusId !== "" ||
+      reorderingCategoryId !== "" ||
+      removingCategoryId !== ""
+    )
+      return;
     const archived = category.status === "active";
     setUpdatingCategoryStatusId(category.id);
     setCategoryStatusError(null);
@@ -905,7 +912,8 @@ export function App() {
     if (
       workspace === null ||
       reorderingCategoryId !== "" ||
-      updatingCategoryStatusId !== ""
+      updatingCategoryStatusId !== "" ||
+      removingCategoryId !== ""
     )
       return;
     const moved = movedCategoryOrder(
@@ -940,6 +948,44 @@ export function App() {
       requestAnimationFrame(() => categoryReorderErrorRef.current?.focus());
     } finally {
       setReorderingCategoryId("");
+    }
+  }
+
+  async function removeEmptyCategory(
+    category: WorkspacePayload["categories"][number],
+  ) {
+    if (
+      workspace === null ||
+      category.guideCount !== 0 ||
+      removingCategoryId !== "" ||
+      reorderingCategoryId !== "" ||
+      updatingCategoryStatusId !== ""
+    )
+      return;
+    if (
+      !window.confirm(
+        `Remove the “${category.name}” Category? Its descriptor will move to Rehow Trash. This cannot remove Guides.`,
+      )
+    )
+      return;
+    setRemovingCategoryId(category.id);
+    setCategoryStatusError(null);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<SaveCategoryPayload>("remove_open_category", {
+        categoryId: category.id,
+        expectedRevision: category.revision,
+      });
+      setWorkspace(result.workspace);
+      setAnnouncement(`${category.name} Category moved to Rehow Trash.`);
+      requestAnimationFrame(() => categoryCreateButtonRef.current?.focus());
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setCategoryStatusError({ id: category.id, message: failure.message });
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => categoryStatusErrorRef.current?.focus());
+    } finally {
+      setRemovingCategoryId("");
     }
   }
 
@@ -1427,7 +1473,10 @@ export function App() {
               <div
                 className="category-entry"
                 key={category.id}
-                aria-busy={reorderingCategoryId === category.id}
+                aria-busy={
+                  reorderingCategoryId === category.id ||
+                  removingCategoryId === category.id
+                }
               >
                 <div className="category-item">
                   <span>{category.name}</span>
@@ -1436,6 +1485,9 @@ export function App() {
                   )}
                   {reorderingCategoryId === category.id && (
                     <span className="category-state">Moving…</span>
+                  )}
+                  {removingCategoryId === category.id && (
+                    <span className="category-state">Removing…</span>
                   )}
                   <span className="count">{category.guideCount}</span>
                   {workspace?.facts.writable && (
@@ -1459,7 +1511,8 @@ export function App() {
                         title="Edit Category details"
                         disabled={
                           updatingCategoryStatusId !== "" ||
-                          reorderingCategoryId !== ""
+                          reorderingCategoryId !== "" ||
+                          removingCategoryId !== ""
                         }
                         onClick={() => beginCategoryRename(category)}
                       >
@@ -1473,7 +1526,8 @@ export function App() {
                         disabled={
                           categoryIndex === 0 ||
                           updatingCategoryStatusId !== "" ||
-                          reorderingCategoryId !== ""
+                          reorderingCategoryId !== "" ||
+                          removingCategoryId !== ""
                         }
                         onClick={() => void moveCategory(category, "up")}
                       >
@@ -1488,7 +1542,8 @@ export function App() {
                           categoryIndex ===
                             (workspace?.categories.length ?? 0) - 1 ||
                           updatingCategoryStatusId !== "" ||
-                          reorderingCategoryId !== ""
+                          reorderingCategoryId !== "" ||
+                          removingCategoryId !== ""
                         }
                         onClick={() => void moveCategory(category, "down")}
                       >
@@ -1499,7 +1554,8 @@ export function App() {
                         type="button"
                         disabled={
                           updatingCategoryStatusId !== "" ||
-                          reorderingCategoryId !== ""
+                          reorderingCategoryId !== "" ||
+                          removingCategoryId !== ""
                         }
                         onClick={() => void changeCategoryArchived(category)}
                       >
@@ -1511,6 +1567,22 @@ export function App() {
                             ? "Archive"
                             : "Restore"}
                       </button>
+                      {category.guideCount === 0 && (
+                        <button
+                          className="category-rename-button category-remove-button"
+                          type="button"
+                          disabled={
+                            updatingCategoryStatusId !== "" ||
+                            reorderingCategoryId !== "" ||
+                            removingCategoryId !== ""
+                          }
+                          onClick={() => void removeEmptyCategory(category)}
+                        >
+                          {removingCategoryId === category.id
+                            ? "Removing…"
+                            : "Remove"}
+                        </button>
+                      )}
                     </span>
                   )}
                 </div>
