@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 3I — Safe empty-Category removal accepted; next is Guide archive/restore.
+Phase 3J — Guide archive/restore accepted; next is Guide Tag/Alias editing.
 
 ## Current task
 
-Specify and implement reversible Guide archive/restore without path, Git, or MCP mutation authority.
+Specify and implement atomic Guide Tag/Alias editing while preserving tested-state and unknown-metadata rules.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace, create/edit/archive/restore Categories, create draft Guides, and edit Guide title, summary, and body through descriptor-confined recoverable writes. MCP remains read-only.
+In progress. A user can open or initialize a Workspace; create/edit/archive/restore/remove Categories; create draft Guides; edit Guide title, summary, and body; and archive/restore Guides through descriptor-confined recoverable writes. MCP remains read-only.
 
 ## Completed work
 
@@ -74,10 +74,11 @@ In progress. A user can open or initialize a Workspace, create/edit/archive/rest
 - Added atomic Category name/optional-summary editing at signed checkpoint `4c55c60`: typed safe replacement/insertion/removal preserves comments or refuses ambiguity, unknown metadata, order/status, stable paths, and Guides. Native/UI revisions remain enforced, and the narrow toolbar label regression is corrected.
 - Added deterministic Category reordering at signed checkpoint `936dc85`: the complete Category ID/revision effect set and exact directory inventory are checked under one writer lock, changed descriptors commit through one recoverable multi-file journal, Rust derives spaced order values, and named Move Up/Down controls expose busy/error states without moving directories or Guides.
 - Added safe empty-Category removal at signed checkpoint `dac22e4`: default/nonempty/stale/unsafe Categories fail closed; the descriptor moves to an exact recoverable-trash path; only its verified-empty parent directory is removed nonrecursively; and the UI requires explicit confirmation.
+- Added reversible Guide archive/restore at signed checkpoint `34f7fe9`: the exact draft/stale/tested lifecycle matrix is applied through typed revision-checked recovery; path, body, verification, nested data, Attachments, and unknown metadata remain preserved; and the Reference Desk exposes named busy/error/live controls.
 
 ## Work in progress
 
-- Category removal is committed at signed checkpoint `dac22e4`. The next bounded batch is reversible Guide archive/restore.
+- Guide archive/restore is committed at signed checkpoint `34f7fe9`. The next bounded batch is atomic Guide Tag/Alias editing.
 
 ## Remaining work
 
@@ -109,6 +110,7 @@ No known regression in accepted phases. If the process is killed after the initi
 - The current upstream guidelines were re-fetched for Category details. The labeled bounded fields, focused inline error, submit/loading behavior, discard guard, visible narrow toolbar icon, and keyboard focus restoration pass static review. The stopped review agent's toolbar-label finding is fixed; its request for browser interaction coverage remains deferred to the already documented combined UI gate because no DOM harness is approved.
 - The current upstream guidelines were re-fetched for Category reorder. Move Up/Down use named native buttons, boundary/busy disabling, visible moving/error feedback, the shared live region, stable keyed focus behavior, and no gesture-only interaction. Static review found no issue; screenshots/browser interaction remain in the combined UI gate.
 - The current upstream guidelines were re-fetched for Category removal. Removal uses a named native button, explicit consequence-focused confirmation, visible busy/error/live states, and predictable focus restoration. Static review found no issue; screenshots/browser interaction remain in the combined UI gate.
+- The current upstream guidelines were re-fetched for Guide archive/restore. Named native controls expose explicit Archive/Restore and loading labels, disable conflicting edits, report focused errors and polite live updates, and restore focus predictably. Static review found no issue; screenshots/browser interaction remain in the combined UI gate.
 
 ## Security findings
 
@@ -144,6 +146,7 @@ No known regression in accepted phases. If the process is killed after the initi
 - The `4c55c60` details adapter accepts only Category ID, expected revision, bounded name, and optional bounded summary. Rust applies closed typed mutations under one writer lock and one recoverable replacement; optional-field insertion/removal refuses flow layouts or ambiguous comments and preserves unknown metadata, order/status, paths, and Guides. It adds no generic YAML/path/Git/MCP authority.
 - The `936dc85` reorder adapter accepts the complete bounded Category ID/revision set only. Rust rechecks the exact `categories/` directory inventory and every descriptor revision under one writer lock, derives all order numbers, prepares typed `SetOrder` candidates, and commits only changed descriptors in one `MultiFile` recovery journal. Missing/duplicate/stale/malformed/unsafe sets fail closed; no path, YAML, numeric-order, delete, Git, or MCP authority crosses IPC.
 - The `dac22e4` removal adapter accepts only Category ID and expected revision. Rust refuses the default Category, loaded Guides, and every unexpected directory entry; moves only `category.yaml` to its operation-bound trash path; and removes only the now-empty Category directory with nonrecursive `unlinkat`. Replay verifies exact trash bytes before accepting the missing parent. No cascade, arbitrary path, recursive delete, Git, or MCP authority was added.
+- The `34f7fe9` Guide lifecycle adapter accepts only Guide ID, expected revision, and Boolean archive intent. Rust maps it to closed Archive/Restore mutations, changes tested/legacy archived-tested states only to stale, preserves the confined path and all content, and commits through existing recovery. Unknown metadata is compared semantically after known-field insertion shifts parser indexes. No generic status/YAML/path, delete, Git, or MCP authority was added.
 
 ## Blockers and human checkpoints
 
@@ -153,10 +156,11 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Latest verified commit
 
-`dac22e4` — signed recoverable empty-Category removal across core, native adapter, and Reference Desk UI.
+`34f7fe9` — signed revision-checked, recoverable Guide archive/restore across planner, application, native adapter, and Reference Desk UI.
 
 ## Tests last run and results
 
+- 2026-09-18: Guide archive/restore checkpoint at `34f7fe9`: `pnpm check/test/build`, Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 253 core library tests, 10 desktop Rust tests, 18 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused evidence covers draft/stale/tested transitions, invalid restore, no-op archive, revision conflict, path/body/unknown preservation, native bounds, and explicit UI labels. Fresh current-guideline static review found no issue.
 - 2026-09-18: Category removal checkpoint at `dac22e4`: `pnpm check/test/build`, Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 250 core library tests, 10 desktop Rust tests, 17 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused evidence covers default/nonempty/stale/unexpected-entry refusal, exact trash bytes, preservation of unrelated Categories, nonrecursive empty-directory cleanup, and interrupted replay. Fresh current-guideline static review found no issue.
 - 2026-09-18: Category details checkpoint at `4c55c60`: Cargo formatting, `pnpm check/test/build`, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 244 core library tests, 8 desktop Rust tests, 16 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Current upstream guideline review found no remaining issue in the changed UI; the stopped review agent's narrow toolbar-label finding was corrected before acceptance.
 - 2026-09-18: Category reorder checkpoint at `936dc85`: Cargo formatting, `pnpm check/test/build`, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 246 core library tests, 9 desktop Rust tests, 17 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused evidence covers exact/duplicate/stale effect sets, unexpected directory residue, deterministic order normalization, stable paths/Guides, no-op behavior, and native error stability. Fresh current-guideline static review found no issue in the named keyboard-native reorder controls or their busy/error states.
@@ -296,10 +300,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `docs/task-packets/phase-3g-category-details-edit.md` plus typed optional summary insertion/removal, atomic detail update, refreshed payload, inline details form, and tests implement Category details editing at `4c55c60`.
 - `docs/task-packets/phase-3h-category-reorder.md` plus the exact-inventory multi-document recovery boundary, typed reorder application flow, native command, rail controls, and tests implement Category reordering at `936dc85`.
 - `docs/task-packets/phase-3i-category-remove.md` plus exact-trash deletion recovery, verified-empty nonrecursive directory cleanup, the closed application/native command, confirmation UI, and adversarial tests implement Category removal at `dac22e4`.
+- `docs/task-packets/phase-3j-guide-archive-restore.md` plus the closed lifecycle planner, semantic unknown-metadata preservation proof, application/native command, Reference Desk controls, and tests implement Guide archive/restore at `34f7fe9`.
 
 ## Next recommended action
 
-Specify and implement Guide archive/restore as a closed revision-checked status transition. Preserve the Guide path, content, unknown metadata, Category, and attachments; keep MCP read-only.
+Specify and implement atomic Guide Tag/Alias editing with bounded normalized lists, duplicate refusal, revision checking, unknown-metadata preservation, and tested-to-stale behavior. Keep MCP read-only.
 
 ## Recommended agent role and reasoning effort
 
@@ -308,8 +313,8 @@ Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents for routine work; us
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read the Category mutation sections of `docs/content-model.md`, ADR 0009/0014, and the threat model.
+2. Read the Guide metadata sections of `docs/content-model.md`, ADR 0009/0014, and the threat model.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `dac22e4`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `34f7fe9`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Resume with Guide archive/restore; do not move paths, delete content, add generic status/YAML authority, or add Git/MCP writes.
+6. Resume with Guide Tag/Alias editing; do not move paths, add generic YAML authority, preserve a tested declaration after change, or add Git/MCP writes.
