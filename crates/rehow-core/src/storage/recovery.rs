@@ -8,6 +8,7 @@ use std::{collections::HashSet, str::FromStr};
 use unicode_normalization::UnicodeNormalization;
 
 mod store;
+mod workspace;
 
 pub(crate) const JOURNAL_VERSION: u64 = 1;
 pub(crate) const MAX_JOURNAL_BYTES: usize = 4 * 1024 * 1024;
@@ -796,7 +797,7 @@ fn valid_mode(mode: u32) -> bool {
     mode <= 0o777
 }
 
-fn valid_active_path(path: &str) -> bool {
+pub(super) fn valid_active_path(path: &str) -> bool {
     if path.len() > MAX_PATH_BYTES {
         return false;
     }
