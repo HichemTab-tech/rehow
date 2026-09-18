@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 1D — Typed content binding.
+Phase 2A — Reference Desk shell checkpoint; next is the read-only Workspace vertical slice.
 
 ## Current task
 
-Implement Phase 1D-C2b optional-field, collection, and Guide archive/restore mutation candidates. C1 and C2a are checkpointed; the combined 1D-C review remains pending.
+Implement the smallest safe Phase 1E/2 read-only Workspace inspection and Guide-list vertical slice, then replace shell fixtures with real bound Workspace data. Advanced Phase 1D-C2b mutations remain required but no longer block read-only product progress.
 
 ## Overall status
 
-In progress. Phase 0 through Phase 1C and Phase 1D-A/B are accepted; Phase 1D-C1 and C2a are implemented in signed checkpoints. C1 emits new documents; C2a plans validated, byte-preserving required-field/body/status mutations without I/O or public authority. The worktree after signed commit `539c29a` contains only the preserved unrelated untracked executable `x`.
+In progress. Phase 0 through Phase 1C and Phase 1D-A/B are accepted; Phase 1D-C1/C2a are checkpointed. The fixture-backed Reference Desk desktop shell is implemented, visually inspected across wide/narrow/light/dark/focus/empty/2× states, independently reviewed, and native-built at signed commit `df95874`. Real Workspace integration, editing, and advanced C2b mutations remain.
 
 ## Completed work
 
@@ -54,10 +54,11 @@ In progress. Phase 0 through Phase 1C and Phase 1D-A/B are accepted; Phase 1D-C1
 - Corrected the combined review's URL alias, diagnostic-position/type, allocation/resource, bounded-work, and filename-policy findings. The same Security Reviewer passed the correction closure. Signed checkpoint `0b5fb11` verifies.
 - Implemented private canonical emitters for new Workspace manifests, active Categories, and draft Guides with exact ADR 0011 escaping, schema order, LF/no-BOM envelopes, fallible retained growth, production parse/rebind comparison, golden tests, invalid-input/resource tests, and public-absence evidence. Signed checkpoint `92e4c93` verifies.
 - Implemented private existing-document mutation planning for Workspace name; Category name/order/archive/restore; and Guide title/summary/Category/body/stale transitions. Valid no-ops preserve exact bytes, actual changes require proven spans, candidates reparse/rebind, unknown data remains preserved, timestamps are monotonic, and tested content becomes stale. Signed checkpoint `539c29a` verifies.
+- Replaced the inert UI with the responsive Reference Desk shell: three/two/one-pane layouts, incremental search, result selection, keyboard search/results/Escape behavior, responsive Workspace drawer, deterministic focus restoration, Guide reading, command copy, empty results, live announcements, light/dark themes, and current-guideline accessibility. The combined Design Reviewer closure reports no remaining finding; signed checkpoint `df95874` verifies.
 
 ## Work in progress
 
-- Phase 1D-C1 and C2a are checkpointed and green. C2b optional-field, collection, and Guide archive/restore behavior remains; combined Phase 1D-C review follows once.
+- The desktop shell is checkpointed and green but uses explicit fixture data. The next implementation replaces fixtures with confined read-only Workspace inspection/list/read data. C2b optional-field/collection/Guide archive mutations remain deferred, not cancelled.
 
 ## Remaining work
 
@@ -71,14 +72,14 @@ In progress. Phase 0 through Phase 1C and Phase 1D-A/B are accepted; Phase 1D-C1
 
 ## Known bugs
 
-None known in accepted Phase 1A, Phase 1B, Phase 1C, or Phase 1D-A/B. The shell remains intentionally inert and is not yet product functionality.
+None known in accepted core phases or the Phase 2A shell. Shell actions that require storage are intentionally not connected yet; fixture data must not be mistaken for Workspace integration.
 
 ## Design and accessibility findings
 
-- Planning review selected Reference Desk and incorporated the current guideline rules.
-- No implemented UI exists, so no source-level or screenshot pass has occurred.
-- Phase 1A intentionally renders only the semantic `Rehow`/`Scaffold ready.` smoke state; formal UI design review remains a Phase 2 gate.
-- First mandatory implementation review: after the complete Phase 2 application shell, with 4 target sizes, light/dark, keyboard focus, error/empty states, 200% scaling, and reduced motion.
+- Reference Desk is implemented as the Phase 2A fixture-backed shell. Captures cover 1440, 1024, 720, and 480 widths; light/dark, visible focus, empty results, narrow reader/back, responsive navigation, and 2× effective reflow.
+- The first Design Reviewer pass found 2 high, 7 medium, and 3 low issues. Search naming, focus restoration, responsive navigation, Arrow/Escape behavior, contrast, announcements, command accessibility, tests, screenshots, repeated skip behavior, tooltips, and path translation were corrected.
+- Final current-guideline closure: pass with no blocker, high, medium, or low finding.
+- Workspace onboarding, real data, edit/conflict/error states, and manual screen-reader verification remain Phase 2 acceptance gates.
 
 ## Security findings
 
@@ -107,7 +108,7 @@ None known in accepted Phase 1A, Phase 1B, Phase 1C, or Phase 1D-A/B. The shell 
 
 ## Latest verified commit
 
-`539c29a` — signed Phase 1D-C2a required-field mutation checkpoint; `git verify-commit 539c29a` passes with the configured project key. This progress-only recovery update follows that implementation commit.
+`df95874` — signed Phase 2A Reference Desk shell checkpoint. Verification of its signature is recorded below; this progress-only recovery update follows it.
 
 ## Tests last run and results
 
@@ -119,6 +120,7 @@ None known in accepted Phase 1A, Phase 1B, Phase 1C, or Phase 1D-A/B. The shell 
 - 2026-09-18: Phase 1D-B gate: formatting, locked all-feature core Clippy with warnings denied, bootstrap validation, whitespace checks, and all core suites pass — 164 library, 18 error-contract, 13 protocol, 11 unknown-YAML, one public API positive, and 30 compile-fail cases. The combined Security Reviewer closure passes all three prior high findings. `git verify-commit 0b5fb11` passes.
 - 2026-09-18: Phase 1D-C1 gate: formatting, locked all-feature core Clippy with warnings denied, bootstrap validation, whitespace checks, and all core suites pass — 169 library, 18 error-contract, 13 protocol, 11 unknown-YAML, one public API positive, and 31 compile-fail cases. Forbidden-authority source audit passes. `git verify-commit 92e4c93` passes.
 - 2026-09-18: Phase 1D-C2a gate: formatting and locked all-feature core Clippy with warnings denied pass; all core suites pass — 175 library, 18 error-contract, 13 protocol, 11 unknown-YAML, one public API positive, and 32 compile-fail cases. Forbidden-authority and whitespace audits pass. `git verify-commit 539c29a` passes.
+- 2026-09-18: Phase 2A shell gate: root Biome/type/contracts checks; 6 desktop Vitest checks; Vite production build; complete Workspace Rust test suite; optimized native Tauri no-bundle build; bootstrap and whitespace checks pass. Current Web Interface Guidelines fetched and applied; combined Design Reviewer closure passes with no remaining finding. Eight inspected PNGs cover the documented visual matrix.
 
 - 2026-09-05: `python3` `tomllib` parsed `.codex/config.toml` plus all 8 `.codex/agents/*.toml`: pass (9 files).
 - 2026-09-05: `python3 scripts/check_bootstrap.py`: pass — 17 required files, 10 ADRs, 8 pinned agents.
@@ -217,10 +219,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - Phase 1D-B Guide/nested binders, dependency/review evidence, task packet, API privacy tests, and accepted ADR 0014 binding delta are checkpointed at signed commit `0b5fb11`.
 - Phase 1D-C1 private canonical emitters, golden/resource/API tests, packet, and evidence are checkpointed at signed commit `92e4c93`; full 1D-C acceptance waits for C2 and one combined review.
 - Phase 1D-C2a required-field/body/status mutation planning, adversarial/API tests, packet, and evidence are checkpointed at signed commit `539c29a`; full 1D-C acceptance waits for C2b and one combined review.
+- Phase 2A React/CSS shell, interaction tests, task packet, current-guideline review evidence, and screenshots are checkpointed at signed commit `df95874`; it adds no IPC or filesystem authority.
 
 ## Next recommended action
 
-Implement the narrow Phase 1D-C2b remainder: optional fields, bounded collections, Workspace default Category, Category summary, and Guide archive/restore; then run one combined Phase 1D-C review.
+Implement a narrow read-only Workspace vertical slice: confined folder selection/inspection, compatible manifest/Category/Guide loading through the existing binders, bounded list/read DTOs, and minimal Tauri session commands. Replace UI fixtures only after those tests pass. Return to C2b before enabling advanced edits.
 
 ## Recommended agent role and reasoning effort
 
@@ -231,6 +234,6 @@ Orchestrator — `gpt-5.6-sol`, high. Keep routine work single-agent; use one in
 1. Read `AGENTS.md` and this file.
 2. Read `docs/product-spec.md`, `docs/architecture.md`, `docs/implementation-plan.md`, `docs/threat-model.md`, `docs/error-contract.md`, and accepted ADRs 0011–0013.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `cf8341f`, `4d26e8f`, `0b5fb11`, `92e4c93`, and Phase 1D-C2a implementation `539c29a`; if `HEAD` is a later progress-only ledger, confirm its parent is `539c29a` and only `PROGRESS.md` changed.
+4. Verify signed checkpoints `cf8341f`, `4d26e8f`, `0b5fb11`, `92e4c93`, `539c29a`, and Phase 2A shell `df95874`; if `HEAD` is a later progress-only ledger, confirm its parent is `df95874` and only `PROGRESS.md` changed.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Read ADR 0014, `docs/task-packets/phase-1d-c2a-required-field-mutations.md`, and its evidence; verify `539c29a`. Resume with the narrow C2b mutation remainder without adding storage or adapter authority.
+6. Read `docs/task-packets/phase-2a-reference-desk-shell.md`, its evidence, ADRs 0003/0009/0014, and the Phase 1E requirements. Resume with a narrow read-only Workspace-inspection packet; do not expose renderer-selected paths or write authority.
