@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 3P — managed Attachment inventory accepted; next is native Attachment import.
+Phase 3Q — native Attachment import accepted; next is recoverable Attachment removal.
 
 ## Current task
 
-Freeze and implement native Attachment import without arbitrary renderer paths, whole-file allocation, or silent replacement.
+Specify the next narrow slice: recoverable Attachment removal with exact Guide revision, native confirmation, and no broad filesystem authority.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace; create/edit/archive/restore/remove Categories; create, edit, move, archive, restore, recoverably delete Attachment-free Guides; explicitly mark ready Guides tested; manually refresh external changes; and safely validate/correlate managed Attachment files. Attachment import/removal UI and MCP mutation remain unimplemented; MCP remains read-only.
+In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; manually refresh external changes; validate managed Attachment files; and import a native-selected Attachment through a confined, recoverable file-plus-metadata operation. Attachment removal/opening and MCP mutation remain unimplemented; MCP remains read-only.
 
 ## Completed work
 
@@ -81,10 +81,11 @@ In progress. A user can open or initialize a Workspace; create/edit/archive/rest
 - Added manual Workspace refresh at signed checkpoint `0a7856a`: a pathless native command rescans through the retained capability, atomically retains the prior view on failure, isolates malformed files, protects dirty forms, preserves or safely replaces selection, and announces changed counts/issues.
 - Added explicit tested approval at signed checkpoint `b599396`: the core owns mandatory native confirmation, exact-revision approval, readiness checks, a versioned verification hash, effective-stale drift behavior, cross-language fixed vectors, atomic metadata updates, and the Reference Desk action. MCP cannot assert tested.
 - Added managed Attachment inventory at signed checkpoint `843cc51`: descriptor-confined streaming SHA-256 correlation validates declared/actual paths, hashes, optional sizes, symlinks, hardlinks, special files, stability, count/file/aggregate limits, and orphan/missing/mismatch diagnostics without loading Attachment bytes into the retained view.
+- Added native Attachment import at signed checkpoint `2469a9a`: renderer IPC supplies only Guide ID/revision; native selection and exact effect-bound confirmation precede a bounded stable-descriptor stream; collision-safe `0600` content and Guide metadata commit through one recoverable journal; duplicate/changed/unsafe sources fail closed; tested Guides become stale and unknown metadata is preserved.
 
 ## Work in progress
 
-- Attachment inventory is committed at signed checkpoint `843cc51`. The next batch is native-selected, recoverable Attachment import; removal follows after import metadata/write semantics are proven.
+- Native Attachment import is committed at signed checkpoint `2469a9a`. The next batch is recoverable Attachment removal; external opening, rename, MIME preview, and MCP mutation remain deferred.
 
 ## Remaining work
 
@@ -164,19 +165,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - The `0a7856a` refresh adapter accepts no arguments and duplicates only the retained Workspace root capability. It performs the existing bounded read-only scan, swaps the in-memory view only after compatible success, and exposes structured content-free errors. It adds no path, write, recovery, watcher, shell, Git, or MCP authority.
 - The `b599396` tested path exposes no public headless transition: the core requires an actual native window parent and owns the confirmation before invoking its private exact-revision mutation. It computes `verify:v1` from exact body bytes plus verification-relevant canonical metadata, treats mismatched or future hashes as effectively stale, preserves unknown metadata, and writes the verification pair atomically. Independent Security Reviewer/xhigh passed after cross-language fixed-vector evidence; no blocker/high/medium finding remains.
 - The `843cc51` inventory follows only retained descriptors, streams an already-locked pure-Rust SHA-256 implementation, enforces 10,000 declared/actual candidate and diagnostic caps plus 64 MiB/4 GiB byte caps, and refuses unstable/symlink/hardlink/special candidates. Security review found and closed metadata-exhaustion, oversized-aggregate, and growth-race issues; final verdict is PASS.
+- The `2469a9a` import boundary keeps source paths out of IPC, binds confirmation to the exact Guide/candidate/destination/source identity and hashes, revalidates under the writer lock, streams with fixed memory, and journals Attachment creation before Guide metadata. The initial review's confused-deputy, source-change, and orphan-object findings were corrected; Security Reviewer/xhigh re-review is PASS with no blocker/high/medium finding.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 3P used one mandatory Security Reviewer/xhigh for the Attachment boundary.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 3Q used one mandatory Security Reviewer/xhigh and it is complete.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`843cc51` — signed and verified managed Attachment inventory/correlation.
+`2469a9a` — signed and verified native Attachment import. This progress-only ledger update follows that feature commit.
 
 ## Tests last run and results
 
+- 2026-09-18: native Attachment import checkpoint at `2469a9a`: `pnpm check/test/build`, Cargo formatting, all-target/all-feature Workspace Clippy with warnings denied, all-feature core tests, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 289 core library tests, 11 desktop Rust tests, and 21 Vitest tests. Focused evidence covers collision/duplicate handling, exact confirmation binding, source changes before/during copy, symlink/hardlink/special/oversize refusal, tested-to-stale and unknown preservation, and two-target replay. Security Reviewer/xhigh final verdict: PASS.
 - 2026-09-18: Attachment inventory checkpoint at `843cc51`: `pnpm check/test/test:integration/build`, Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, all-feature Workspace tests, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 284 core library tests, 11 desktop Rust tests, and 21 Vitest tests. Adversarial evidence covers missing/orphan/hash/size mismatches, invalid hierarchy/filenames, symlinks, hardlinks, FIFO/socket candidates, exact/one-over count/file/aggregate limits, oversized accounting, and changed-during-read retention. Security Reviewer/xhigh final verdict: PASS.
 - 2026-09-18: native tested approval checkpoint at `b599396`: `pnpm check/test/test:integration/build`, Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, all-feature Workspace tests, optimized Tauri no-bundle build, bootstrap validation, contract drift, whitespace checks, and zero-byte MCP EOF smoke pass. Counts include 278 core library tests, 11 desktop Rust tests, 21 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and three independently generated JavaScript/Rust hash vectors. Security Reviewer/xhigh reports no blocker/high/medium finding. The Tauri `.app` suffix warning remains informational.
 - 2026-09-18: manual Workspace refresh checkpoint at `0a7856a`: `pnpm check/test/build`, Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 264 core library tests, 11 desktop Rust tests, 20 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Evidence covers external add/change/remove, malformed isolation, failed-refresh view retention, stable native errors, selection preservation/fallback, named refresh control, dirty Category/Guide protection, and focus/live behavior. Current upstream guideline review found no issue.
@@ -330,20 +333,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `docs/task-packets/phase-3n-workspace-refresh.md` plus the read-only application refresh boundary, pathless native command, toolbar action, dirty-state protection, selection reconciliation, and external-change tests implement manual Workspace refresh at `0a7856a`.
 - ADR 0015, `docs/task-packets/phase-3o-native-tested-approval.md`, the core verification module/private approval path, native/UI control, and JavaScript compatibility vectors implement explicit tested approval at `b599396`.
 - `docs/task-packets/phase-3p-attachment-inventory.md`, the streamed Attachment scanner/correlator, bounded diagnostics, SHA-256 dependency edge, and recovery-retention tests implement managed inventory at `843cc51`.
+- ADR 0016, `docs/task-packets/phase-3q-native-attachment-import.md`, the streamed source/recovery boundary, Attachment metadata mutation, native command/dialogs, Reference Desk action/list, and adversarial tests implement native Attachment import at `2469a9a`.
 
 ## Next recommended action
 
-Implement native Attachment import: core-owned file selection and preview/confirmation, bounded streamed source copy to a fresh `0600` inode, collision-safe confined destination, exact Guide revision, and one recoverable file-plus-metadata operation. Do not implement external opening or MCP mutation.
+Implement recoverable Attachment removal: select by stable Attachment ID, bind native confirmation to Guide/Attachment/path/revision, remove metadata and move exact confined bytes to operation-bound trash in one recoverable operation. Do not implement external opening or MCP mutation.
 
 ## Recommended agent role and reasoning effort
 
-Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents during implementation; use one Security Reviewer/xhigh only for the final import boundary.
+Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents during routine implementation; use one Security Reviewer/xhigh only at the final removal boundary.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read the Attachment sections of `docs/content-model.md`, `docs/architecture.md`, ADRs 0004/0009/0014, and the threat model.
+2. Read the Attachment sections of `docs/content-model.md`, `docs/architecture.md`, ADRs 0004/0009/0014/0016, and the threat model.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `843cc51`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `2469a9a`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Resume with native Attachment import. Core/native code must own source selection; reject traversal/symlink/hardlink/special-file/oversize cases, stream rather than buffer, and never replace an existing Attachment silently.
+6. Resume with recoverable Attachment removal. Bind stable Attachment ID/path/hash plus exact Guide revision; use operation-bound trash and never recursively delete or expose arbitrary paths.
