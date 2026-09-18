@@ -298,6 +298,14 @@ impl BoundGuide {
     pub(crate) fn unknown_partition(&self) -> &GuideUnknownPartition {
         &self.unknown
     }
+    pub(crate) fn parsed(&self) -> &ParsedGuideSource {
+        &self.parsed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn parsed_mut_for_content_test(&mut self) -> &mut ParsedGuideSource {
+        &mut self.parsed
+    }
 }
 impl GuideUnknownPartition {
     pub(crate) fn root(&self) -> &[u32] {

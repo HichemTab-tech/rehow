@@ -5,6 +5,7 @@
 
 mod emission;
 mod guide;
+mod mutation;
 
 pub use guide::{
     Applicability, ArchiveMetadata, Attachment, Guide, GuideReference, GuideStatus,

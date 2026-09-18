@@ -47,6 +47,24 @@ impl EmitFailure {
     }
 }
 
+pub(super) fn emit_yaml_string(value: &str) -> Result<Box<[u8]>, EmitFailure> {
+    let mut output = EmitBuffer::new();
+    output.quoted(value)?;
+    Ok(output.finish())
+}
+
+pub(super) fn emit_yaml_display(value: impl fmt::Display) -> Result<Box<[u8]>, EmitFailure> {
+    let mut output = EmitBuffer::new();
+    output.quoted_display(value)?;
+    Ok(output.finish())
+}
+
+pub(super) fn emit_plain_display(value: impl fmt::Display) -> Result<Box<[u8]>, EmitFailure> {
+    let mut output = EmitBuffer::new();
+    output.display(value)?;
+    Ok(output.finish())
+}
+
 pub(crate) fn emit_new_workspace_manifest(
     workspace_id: &WorkspaceId,
     name: &str,
@@ -318,7 +336,7 @@ fn mismatch(field: EmitField) -> EmitFailure {
     }
 }
 
-fn map_parse_failure(error: ParseFailure) -> EmitFailure {
+pub(super) fn map_parse_failure(error: ParseFailure) -> EmitFailure {
     match error.kind() {
         ParseFailureKind::SourceTooLarge
         | ParseFailureKind::FrontmatterTooLarge

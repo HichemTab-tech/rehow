@@ -1,0 +1,7 @@
+error[E0432]: unresolved import `rehow_core::domain::plan_guide_mutation`
+ --> tests/ui/private_mutation_planner.rs:1:5
+  |
+1 | use rehow_core::domain::plan_guide_mutation;
+  |     ^^^^^^^^^^^^^^^^^^^^-------------------
+  |                         |
+  |                         no `plan_guide_mutation` in `domain`
