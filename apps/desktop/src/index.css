@@ -459,6 +459,16 @@ textarea:focus-visible,
   color: var(--accent-strong);
   text-decoration: underline;
 }
+.category-order-button {
+  min-width: 22px;
+  min-height: 24px;
+  font-size: 13px;
+  line-height: 1;
+  text-decoration: none;
+}
+.category-order-button:hover {
+  text-decoration: none;
+}
 .category-status-error {
   margin: 0 8px 7px 27px;
   padding: 6px 8px;

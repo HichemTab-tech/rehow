@@ -189,6 +189,23 @@ export function hasUnsavedChanges(original: string, draft: string) {
   return original !== draft;
 }
 
+export function movedCategoryOrder<T extends { id: string }>(
+  categories: readonly T[],
+  categoryId: string,
+  direction: "up" | "down",
+) {
+  const index = categories.findIndex((category) => category.id === categoryId);
+  const target = direction === "up" ? index - 1 : index + 1;
+  if (index < 0 || target < 0 || target >= categories.length) return null;
+  const moved = [...categories];
+  const current = moved[index];
+  const neighbor = moved[target];
+  if (current === undefined || neighbor === undefined) return null;
+  moved[index] = neighbor;
+  moved[target] = current;
+  return moved;
+}
+
 export function normalizedWorkspaceName(value: string) {
   const name = value.trim();
   const length = Array.from(name).length;
@@ -338,6 +355,11 @@ export function App() {
     id: string;
     message: string;
   } | null>(null);
+  const [reorderingCategoryId, setReorderingCategoryId] = useState("");
+  const [categoryReorderError, setCategoryReorderError] = useState<{
+    id: string;
+    message: string;
+  } | null>(null);
   const [creatingGuide, setCreatingGuide] = useState(false);
   const [guideTitle, setGuideTitle] = useState("");
   const [guideSummary, setGuideSummary] = useState("");
@@ -374,6 +396,7 @@ export function App() {
   const categoryRenameInputRef = useRef<HTMLInputElement>(null);
   const categoryRenameErrorRef = useRef<HTMLParagraphElement>(null);
   const categoryStatusErrorRef = useRef<HTMLParagraphElement>(null);
+  const categoryReorderErrorRef = useRef<HTMLParagraphElement>(null);
   const categoryRenameButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const guideCreateButtonRef = useRef<HTMLButtonElement>(null);
   const guideTitleRef = useRef<HTMLInputElement>(null);
@@ -761,7 +784,12 @@ export function App() {
   function beginCategoryRename(
     category: WorkspacePayload["categories"][number],
   ) {
-    if (workspace === null || !workspace.facts.writable) return;
+    if (
+      workspace === null ||
+      !workspace.facts.writable ||
+      reorderingCategoryId !== ""
+    )
+      return;
     setRenamingCategoryId(category.id);
     setCategoryRenameValue(category.name);
     setCategoryRenameSummary(category.summary ?? "");
@@ -838,7 +866,7 @@ export function App() {
   async function changeCategoryArchived(
     category: WorkspacePayload["categories"][number],
   ) {
-    if (updatingCategoryStatusId !== "") return;
+    if (updatingCategoryStatusId !== "" || reorderingCategoryId !== "") return;
     const archived = category.status === "active";
     setUpdatingCategoryStatusId(category.id);
     setCategoryStatusError(null);
@@ -867,6 +895,51 @@ export function App() {
       requestAnimationFrame(() => categoryStatusErrorRef.current?.focus());
     } finally {
       setUpdatingCategoryStatusId("");
+    }
+  }
+
+  async function moveCategory(
+    category: WorkspacePayload["categories"][number],
+    direction: "up" | "down",
+  ) {
+    if (
+      workspace === null ||
+      reorderingCategoryId !== "" ||
+      updatingCategoryStatusId !== ""
+    )
+      return;
+    const moved = movedCategoryOrder(
+      workspace.categories,
+      category.id,
+      direction,
+    );
+    if (moved === null) return;
+    setReorderingCategoryId(category.id);
+    setCategoryReorderError(null);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<SaveCategoryPayload>(
+        "reorder_open_categories",
+        {
+          ordered: moved.map((item) => ({
+            id: item.id,
+            expectedRevision: item.revision,
+          })),
+        },
+      );
+      setWorkspace(result.workspace);
+      setAnnouncement(
+        result.changed
+          ? `${category.name} Category moved ${direction}.`
+          : "Category order is unchanged.",
+      );
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setCategoryReorderError({ id: category.id, message: failure.message });
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => categoryReorderErrorRef.current?.focus());
+    } finally {
+      setReorderingCategoryId("");
     }
   }
 
@@ -1267,7 +1340,7 @@ export function App() {
               </div>
             </form>
           )}
-          {(workspace?.categories ?? []).map((category) =>
+          {(workspace?.categories ?? []).map((category, categoryIndex) =>
             renamingCategoryId === category.id ? (
               <form
                 className="category-rename-form"
@@ -1351,11 +1424,18 @@ export function App() {
                 </div>
               </form>
             ) : (
-              <div className="category-entry" key={category.id}>
+              <div
+                className="category-entry"
+                key={category.id}
+                aria-busy={reorderingCategoryId === category.id}
+              >
                 <div className="category-item">
                   <span>{category.name}</span>
                   {category.status === "archived" && (
                     <span className="category-state">Archived</span>
+                  )}
+                  {reorderingCategoryId === category.id && (
+                    <span className="category-state">Moving…</span>
                   )}
                   <span className="count">{category.guideCount}</span>
                   {workspace?.facts.writable && (
@@ -1377,15 +1457,50 @@ export function App() {
                         type="button"
                         aria-label={`Edit ${category.name} Category details`}
                         title="Edit Category details"
-                        disabled={updatingCategoryStatusId !== ""}
+                        disabled={
+                          updatingCategoryStatusId !== "" ||
+                          reorderingCategoryId !== ""
+                        }
                         onClick={() => beginCategoryRename(category)}
                       >
                         Edit
                       </button>
                       <button
+                        className="category-rename-button category-order-button"
+                        type="button"
+                        aria-label={`Move ${category.name} Category up`}
+                        title="Move Category up"
+                        disabled={
+                          categoryIndex === 0 ||
+                          updatingCategoryStatusId !== "" ||
+                          reorderingCategoryId !== ""
+                        }
+                        onClick={() => void moveCategory(category, "up")}
+                      >
+                        <span aria-hidden="true">↑</span>
+                      </button>
+                      <button
+                        className="category-rename-button category-order-button"
+                        type="button"
+                        aria-label={`Move ${category.name} Category down`}
+                        title="Move Category down"
+                        disabled={
+                          categoryIndex ===
+                            (workspace?.categories.length ?? 0) - 1 ||
+                          updatingCategoryStatusId !== "" ||
+                          reorderingCategoryId !== ""
+                        }
+                        onClick={() => void moveCategory(category, "down")}
+                      >
+                        <span aria-hidden="true">↓</span>
+                      </button>
+                      <button
                         className="category-rename-button"
                         type="button"
-                        disabled={updatingCategoryStatusId !== ""}
+                        disabled={
+                          updatingCategoryStatusId !== "" ||
+                          reorderingCategoryId !== ""
+                        }
                         onClick={() => void changeCategoryArchived(category)}
                       >
                         {updatingCategoryStatusId === category.id
@@ -1407,6 +1522,16 @@ export function App() {
                     tabIndex={-1}
                   >
                     {categoryStatusError.message}
+                  </p>
+                )}
+                {categoryReorderError?.id === category.id && (
+                  <p
+                    ref={categoryReorderErrorRef}
+                    className="category-status-error"
+                    role="alert"
+                    tabIndex={-1}
+                  >
+                    {categoryReorderError.message}
                   </p>
                 )}
               </div>

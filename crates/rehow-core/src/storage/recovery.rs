@@ -28,6 +28,43 @@ pub(crate) struct DocumentUpdateOutcome {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MultiDocumentUpdateError<E> {
+    Prepare(E),
+    InvalidPlan,
+    Busy,
+    Conflict,
+    Unsafe,
+    Unsupported,
+    TooLarge,
+    Io,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MultiDocumentUpdateOutcome {
+    changed: bool,
+}
+
+pub(crate) struct PreparedDocument<'a> {
+    relative_path: &'a str,
+    revision: Revision,
+    bytes: &'a [u8],
+}
+
+impl PreparedDocument<'_> {
+    pub(crate) fn relative_path(&self) -> &str {
+        self.relative_path
+    }
+
+    pub(crate) fn revision(&self) -> Revision {
+        self.revision
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        self.bytes
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WorkspaceInitializeError {
     Busy,
     Conflict,
@@ -98,6 +135,12 @@ impl DocumentUpdateOutcome {
         self.revision
     }
 
+    pub(crate) fn changed(self) -> bool {
+        self.changed
+    }
+}
+
+impl MultiDocumentUpdateOutcome {
     pub(crate) fn changed(self) -> bool {
         self.changed
     }
@@ -453,6 +496,180 @@ where
     })
 }
 
+struct CurrentDocument {
+    relative_path: String,
+    revision: Revision,
+    bytes: Vec<u8>,
+    mode: u32,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_multi_document_update<E, F>(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    inventory_directory: &str,
+    expected_inventory_entries: &[String],
+    requests: &[super::DocumentUpdateRequest],
+    operation_id: OperationId,
+    created_at: Timestamp,
+    prepare: F,
+) -> Result<MultiDocumentUpdateOutcome, MultiDocumentUpdateError<E>>
+where
+    F: FnOnce(&[PreparedDocument<'_>]) -> Result<Vec<Box<[u8]>>, E>,
+{
+    if requests.is_empty() || requests.len() > MAX_TARGETS {
+        return Err(MultiDocumentUpdateError::InvalidPlan);
+    }
+    let store = store::RecoveryStore::open(
+        state_home,
+        workspace_id,
+        root.root_hash(),
+        root.capability_hash(),
+    )
+    .map_err(map_store_multi)?;
+    let lock = store
+        .acquire_lock(runtime_directory)
+        .map_err(map_store_multi)?;
+    if expected_inventory_entries.len() > MAX_TARGETS {
+        return Err(MultiDocumentUpdateError::InvalidPlan);
+    }
+    let inventory = root
+        .open_private_directory(inventory_directory)
+        .map_err(map_io_multi)?;
+    let actual_entries = inventory.entries(MAX_TARGETS).map_err(map_inspect_multi)?;
+    let mut expected_entries = HashSet::new();
+    expected_entries
+        .try_reserve(expected_inventory_entries.len())
+        .map_err(|_| MultiDocumentUpdateError::TooLarge)?;
+    for entry in expected_inventory_entries {
+        if !expected_entries.insert(entry.as_str()) {
+            return Err(MultiDocumentUpdateError::InvalidPlan);
+        }
+    }
+    if actual_entries.len() != expected_entries.len()
+        || actual_entries
+            .iter()
+            .any(|entry| !expected_entries.contains(entry.as_str()))
+    {
+        return Err(MultiDocumentUpdateError::Conflict);
+    }
+    let mut paths = HashSet::new();
+    paths
+        .try_reserve(requests.len())
+        .map_err(|_| MultiDocumentUpdateError::TooLarge)?;
+    let mut current = Vec::new();
+    current
+        .try_reserve_exact(requests.len())
+        .map_err(|_| MultiDocumentUpdateError::TooLarge)?;
+    for request in requests {
+        if !paths.insert(request.relative_path()) {
+            return Err(MultiDocumentUpdateError::InvalidPlan);
+        }
+        let target = root
+            .open_managed_target(request.relative_path())
+            .map_err(map_io_multi)?;
+        let state = match target.state(super::GUIDE_LIMIT).map_err(map_io_multi)? {
+            super::linux::ManagedState::Missing => {
+                return Err(MultiDocumentUpdateError::Conflict);
+            }
+            super::linux::ManagedState::Regular(state) => state,
+        };
+        let revision = super::document_revision(request.relative_path(), &state.bytes);
+        if revision != request.expected_revision() {
+            return Err(MultiDocumentUpdateError::Conflict);
+        }
+        current.push(CurrentDocument {
+            relative_path: request.relative_path().to_owned(),
+            revision,
+            bytes: state.bytes,
+            mode: state.mode,
+        });
+    }
+    let prepared = current
+        .iter()
+        .map(|document| PreparedDocument {
+            relative_path: &document.relative_path,
+            revision: document.revision,
+            bytes: &document.bytes,
+        })
+        .collect::<Vec<_>>();
+    let candidates = prepare(&prepared).map_err(MultiDocumentUpdateError::Prepare)?;
+    if candidates.len() != current.len() {
+        return Err(MultiDocumentUpdateError::InvalidPlan);
+    }
+
+    let mut plan = blake3::Hasher::new();
+    plan.update(b"rehow-multi-document-update-plan-v1\0");
+    plan.update(&(current.len() as u64).to_be_bytes());
+    let mut targets = Vec::new();
+    targets
+        .try_reserve_exact(current.len())
+        .map_err(|_| MultiDocumentUpdateError::TooLarge)?;
+    for (index, (document, candidate)) in current.iter().zip(&candidates).enumerate() {
+        hash_plan_field(&mut plan, document.relative_path.as_bytes());
+        hash_plan_field(&mut plan, document.revision.to_string().as_bytes());
+        plan.update(blake3::hash(&document.bytes).as_bytes());
+        plan.update(blake3::hash(candidate).as_bytes());
+        plan.update(&document.mode.to_be_bytes());
+        if candidate.as_ref() == document.bytes {
+            continue;
+        }
+        let old_hash = store
+            .store_object(&lock, &document.bytes)
+            .map_err(map_store_multi)?;
+        let new_hash = store
+            .store_object(&lock, candidate)
+            .map_err(map_store_multi)?;
+        targets.push(Target {
+            relative_path: document.relative_path.clone(),
+            expected: ExpectedState::Existing {
+                revision: document.revision,
+                object_hash: old_hash,
+                mode: document.mode,
+            },
+            intended: IntendedState::Object {
+                object_hash: new_hash,
+                mode: document.mode,
+            },
+            temp_name: format!(".rehow-tmp-{operation_id}-{index}"),
+            step: TargetStep::Prepared,
+        });
+    }
+    if targets.is_empty() {
+        return Ok(MultiDocumentUpdateOutcome { changed: false });
+    }
+    let (root_device, root_inode) = root.identity().map_err(map_io_multi)?;
+    let journal = Journal {
+        generation: 1,
+        operation_id,
+        operation_kind: OperationKind::MultiFile,
+        workspace_id,
+        root_hash: root.root_hash(),
+        root_device,
+        root_inode,
+        created_at,
+        plan_hash: *plan.finalize().as_bytes(),
+        targets,
+        stage: JournalStage::Prepared,
+        completion: false,
+    };
+    let execution = workspace::execute_new_journal(root, &store, &lock, journal.clone());
+    if let Err(error) = execution {
+        let committed = store
+            .read_journal(&lock, operation_id)
+            .is_ok_and(|persisted| {
+                committed_matches(&persisted, &journal)
+                    && workspace::resume_journal(root, &store, &lock, operation_id).is_ok()
+            });
+        if !committed {
+            return Err(map_workspace_multi(error));
+        }
+    }
+    Ok(MultiDocumentUpdateOutcome { changed: true })
+}
+
 fn committed_matches(committed: &Journal, prepared: &Journal) -> bool {
     committed.stage == JournalStage::Committed
         && committed.completion
@@ -487,6 +704,53 @@ fn map_store_update<E>(error: store::StoreError) -> DocumentUpdateError<E> {
         store::StoreError::Io => DocumentUpdateError::Io,
         #[cfg(test)]
         store::StoreError::Injected => DocumentUpdateError::Io,
+    }
+}
+
+fn map_store_multi<E>(error: store::StoreError) -> MultiDocumentUpdateError<E> {
+    match error {
+        store::StoreError::Busy => MultiDocumentUpdateError::Busy,
+        store::StoreError::Conflict | store::StoreError::Corrupt => {
+            MultiDocumentUpdateError::Conflict
+        }
+        store::StoreError::Unsafe => MultiDocumentUpdateError::Unsafe,
+        store::StoreError::Unsupported => MultiDocumentUpdateError::Unsupported,
+        store::StoreError::TooLarge => MultiDocumentUpdateError::TooLarge,
+        store::StoreError::Io => MultiDocumentUpdateError::Io,
+        #[cfg(test)]
+        store::StoreError::Injected => MultiDocumentUpdateError::Io,
+    }
+}
+
+fn map_io_multi<E>(error: super::linux::MutationIoError) -> MultiDocumentUpdateError<E> {
+    match error {
+        super::linux::MutationIoError::Unsafe => MultiDocumentUpdateError::Unsafe,
+        super::linux::MutationIoError::Conflict => MultiDocumentUpdateError::Conflict,
+        super::linux::MutationIoError::Unsupported => MultiDocumentUpdateError::Unsupported,
+        super::linux::MutationIoError::TooLarge => MultiDocumentUpdateError::TooLarge,
+        super::linux::MutationIoError::Io => MultiDocumentUpdateError::Io,
+    }
+}
+
+fn map_inspect_multi<E>(error: super::WorkspaceInspectError) -> MultiDocumentUpdateError<E> {
+    match error {
+        super::WorkspaceInspectError::UnsafeRoot => MultiDocumentUpdateError::Unsafe,
+        super::WorkspaceInspectError::ResourceLimit => MultiDocumentUpdateError::TooLarge,
+        super::WorkspaceInspectError::ChangedDuringRead => MultiDocumentUpdateError::Conflict,
+        super::WorkspaceInspectError::NotFound
+        | super::WorkspaceInspectError::NotDirectory
+        | super::WorkspaceInspectError::PermissionDenied
+        | super::WorkspaceInspectError::Io => MultiDocumentUpdateError::Io,
+    }
+}
+
+fn map_workspace_multi<E>(error: workspace::WorkspaceMutationError) -> MultiDocumentUpdateError<E> {
+    match error {
+        workspace::WorkspaceMutationError::Unsafe => MultiDocumentUpdateError::Unsafe,
+        workspace::WorkspaceMutationError::Conflict => MultiDocumentUpdateError::Conflict,
+        workspace::WorkspaceMutationError::Unsupported => MultiDocumentUpdateError::Unsupported,
+        workspace::WorkspaceMutationError::TooLarge => MultiDocumentUpdateError::TooLarge,
+        workspace::WorkspaceMutationError::Io => MultiDocumentUpdateError::Io,
     }
 }
 

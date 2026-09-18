@@ -2,9 +2,10 @@ pub const APPLICATION_NAME: &str = "Rehow";
 
 use rehow_core::{
     application::{
-        CategoryCreateError, CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError,
-        GuideEdit, GuideUpdateError, WorkspaceInitializationError, create_category, create_guide,
-        initialize_workspace, set_category_archived, update_category_details, update_guide,
+        CategoryCreateError, CategoryOrderRevision, CategoryReorderError, CategoryUpdateError,
+        GUIDE_BODY_INPUT_LIMIT, GuideCreateError, GuideEdit, GuideUpdateError,
+        WorkspaceInitializationError, create_category, create_guide, initialize_workspace,
+        reorder_categories, set_category_archived, update_category_details, update_guide,
     },
     domain::GuideStatus,
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -15,7 +16,7 @@ use rehow_core::{
         inspect_workspace,
     },
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{env, fs, path::PathBuf, str::FromStr, sync::Mutex};
 
 #[derive(Default)]
@@ -132,6 +133,13 @@ struct CreateCategoryPayload {
 struct SaveCategoryPayload {
     workspace: WorkspacePayload,
     changed: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CategoryOrderInput {
+    id: String,
+    expected_revision: String,
 }
 
 #[derive(Serialize)]
@@ -821,6 +829,142 @@ fn set_open_category_archived(
     })
 }
 
+#[tauri::command]
+fn reorder_open_categories(
+    ordered: Vec<CategoryOrderInput>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<SaveCategoryPayload, NativeCommandError> {
+    if ordered.len() > 1_000
+        || ordered
+            .iter()
+            .any(|item| item.id.len() > 64 || item.expected_revision.len() > 96)
+    {
+        return Err(native_command_error(
+            "invalidEffectSet",
+            "Category order is incomplete or too large. Reopen the Workspace and try again."
+                .to_owned(),
+        ));
+    }
+    let mut parsed = Vec::new();
+    parsed.try_reserve_exact(ordered.len()).map_err(|_| {
+        native_command_error(
+            "resourceLimit",
+            "The Workspace reached a safe Category limit.".to_owned(),
+        )
+    })?;
+    for item in ordered {
+        let category_id = CategoryId::from_str(&item.id).map_err(|_| {
+            native_command_error(
+                "invalidEffectSet",
+                "Category order contains an invalid Category. Reopen the Workspace and try again."
+                    .to_owned(),
+            )
+        })?;
+        let revision = Revision::from_str(&item.expected_revision).map_err(|_| {
+            native_command_error(
+                "invalidEffectSet",
+                "Category order contains an invalid revision. Reopen the Workspace and try again."
+                    .to_owned(),
+            )
+        })?;
+        parsed.push(CategoryOrderRevision::new(category_id, revision));
+    }
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    fs::create_dir_all(&state_home).map_err(|_| {
+        native_command_error(
+            "stateUnavailable",
+            "Rehow could not prepare its private recovery folder.".to_owned(),
+        )
+    })?;
+    let mut guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_mut().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let outcome = reorder_categories(
+        &mut workspace.view,
+        &state_home,
+        runtime_directory.as_deref(),
+        &parsed,
+    )
+    .map_err(|error| {
+        native_command_error(
+            category_reorder_code(error),
+            category_reorder_message(error),
+        )
+    })?;
+    Ok(SaveCategoryPayload {
+        workspace: WorkspacePayload::from_view(
+            &workspace.view,
+            FolderFactsPayload::from(workspace.facts),
+        ),
+        changed: outcome.changed(),
+    })
+}
+
+fn category_reorder_code(error: CategoryReorderError) -> &'static str {
+    match error {
+        CategoryReorderError::InvalidEffectSet => "invalidEffectSet",
+        CategoryReorderError::RevisionConflict => "revisionConflict",
+        CategoryReorderError::InvalidCategory => "invalidCategory",
+        CategoryReorderError::UnsafeRoundTrip => "unsafeRoundTrip",
+        CategoryReorderError::Busy => "busy",
+        CategoryReorderError::UnsafeStorage => "unsafeStorage",
+        CategoryReorderError::UnsupportedFilesystem => "unsupportedFilesystem",
+        CategoryReorderError::ResourceLimit => "resourceLimit",
+        CategoryReorderError::Io => "io",
+        CategoryReorderError::CommittedRefreshRequired => "committedRefresh",
+    }
+}
+
+fn category_reorder_message(error: CategoryReorderError) -> String {
+    match error {
+        CategoryReorderError::InvalidEffectSet => {
+            "Category order is incomplete. Reopen the Workspace and try again.".to_owned()
+        }
+        CategoryReorderError::RevisionConflict => {
+            "A Category changed on disk. Reopen the Workspace before reordering.".to_owned()
+        }
+        CategoryReorderError::InvalidCategory => {
+            "A Category is malformed and cannot be reordered safely.".to_owned()
+        }
+        CategoryReorderError::UnsafeRoundTrip => {
+            "Rehow cannot preserve a Category’s formatting safely. Edit the underlying files instead."
+                .to_owned()
+        }
+        CategoryReorderError::Busy => {
+            "Another Rehow writer is active. Wait a moment and try again.".to_owned()
+        }
+        CategoryReorderError::UnsafeStorage => {
+            "A Category path is unsafe or changed type. Reopen the Workspace.".to_owned()
+        }
+        CategoryReorderError::UnsupportedFilesystem => {
+            "This filesystem cannot provide the atomic durability Rehow requires.".to_owned()
+        }
+        CategoryReorderError::ResourceLimit => {
+            "The Workspace reached a safe Category limit.".to_owned()
+        }
+        CategoryReorderError::Io => {
+            "Categories could not be reordered. Check folder access and try again.".to_owned()
+        }
+        CategoryReorderError::CommittedRefreshRequired => {
+            "Category order was saved, but Rehow could not refresh it. Reopen the Workspace."
+                .to_owned()
+        }
+    }
+}
+
 fn category_update_code(error: CategoryUpdateError) -> &'static str {
     match error {
         CategoryUpdateError::NotFound => "notFound",
@@ -1096,6 +1240,7 @@ pub fn run() {
             create_open_guide,
             initialize_selected_workspace,
             read_open_guide,
+            reorder_open_categories,
             save_open_category_details,
             save_open_guide_body,
             save_open_guide_details,
@@ -1110,14 +1255,15 @@ pub fn run() {
 mod tests {
     use super::{
         APPLICATION_NAME, CategoryPayload, FolderFactsPayload, GuideBodyPayload, GuidePayload,
-        WorkspacePayload, category_create_code, category_create_message, category_update_code,
-        category_update_message, guide_create_code, guide_create_message, guide_update_code,
-        guide_update_message, native_command_error, workspace_initialization_message,
+        WorkspacePayload, category_create_code, category_create_message, category_reorder_code,
+        category_reorder_message, category_update_code, category_update_message, guide_create_code,
+        guide_create_message, guide_update_code, guide_update_message, native_command_error,
+        workspace_initialization_message,
     };
     use rehow_core::{
         application::{
-            CategoryCreateError, CategoryUpdateError, GuideCreateError, GuideUpdateError,
-            WorkspaceInitializationError,
+            CategoryCreateError, CategoryReorderError, CategoryUpdateError, GuideCreateError,
+            GuideUpdateError, WorkspaceInitializationError,
         },
         markdown::parse_safe_markdown,
     };
@@ -1264,6 +1410,18 @@ mod tests {
         assert_eq!(
             category_update_message(CategoryUpdateError::DefaultCategory),
             "Choose a different default Category before archiving this one."
+        );
+    }
+
+    #[test]
+    fn category_reorder_errors_are_stable_and_actionable() {
+        assert_eq!(
+            category_reorder_code(CategoryReorderError::InvalidEffectSet),
+            "invalidEffectSet"
+        );
+        assert_eq!(
+            category_reorder_message(CategoryReorderError::RevisionConflict),
+            "A Category changed on disk. Reopen the Workspace before reordering."
         );
     }
 

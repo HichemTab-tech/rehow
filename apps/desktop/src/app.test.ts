@@ -7,6 +7,7 @@ import {
   filterGuides,
   gitFactLabel,
   hasUnsavedChanges,
+  movedCategoryOrder,
   nativeCommandError,
   nextResultIndex,
   normalizedCategoryDetails,
@@ -87,6 +88,18 @@ describe("application identity", () => {
     });
     expect(normalizedCategoryDetails("", "Summary")).toBeNull();
     expect(normalizedCategoryDetails("Linux", "x".repeat(501))).toBeNull();
+  });
+
+  it("moves Categories without changing their records", () => {
+    const categories = [{ id: "one" }, { id: "two" }, { id: "three" }];
+    expect(
+      movedCategoryOrder(categories, "two", "up")?.map(({ id }) => id),
+    ).toEqual(["two", "one", "three"]);
+    expect(
+      movedCategoryOrder(categories, "two", "down")?.map(({ id }) => id),
+    ).toEqual(["one", "three", "two"]);
+    expect(movedCategoryOrder(categories, "one", "up")).toBeNull();
+    expect(categories.map(({ id }) => id)).toEqual(["one", "two", "three"]);
   });
 
   it("normalizes bounded draft Guide details", () => {

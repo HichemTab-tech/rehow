@@ -7,7 +7,8 @@
 pub(crate) mod recovery;
 pub(crate) use recovery::{
     CategoryCreateStorageError, CategoryCreateStorageOutcome, DocumentCreateError,
-    DocumentCreateOutcome, DocumentUpdateError, DocumentUpdateOutcome, WorkspaceInitializeError,
+    DocumentCreateOutcome, DocumentUpdateError, DocumentUpdateOutcome, MultiDocumentUpdateError,
+    MultiDocumentUpdateOutcome, PreparedDocument, WorkspaceInitializeError,
     WorkspaceInitializeOutcome,
 };
 
@@ -225,6 +226,28 @@ const GUIDE_COUNT_LIMIT: usize = 10_000;
 const MANAGED_BYTES_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
 const GIT_ANCESTOR_LIMIT: usize = 64;
 
+pub(crate) struct DocumentUpdateRequest {
+    relative_path: String,
+    expected_revision: Revision,
+}
+
+impl DocumentUpdateRequest {
+    pub(crate) fn new(relative_path: String, expected_revision: Revision) -> Self {
+        Self {
+            relative_path,
+            expected_revision,
+        }
+    }
+
+    pub(crate) fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+
+    pub(crate) fn expected_revision(&self) -> Revision {
+        self.expected_revision
+    }
+}
+
 pub fn inspect_workspace(path: &Path) -> Result<WorkspaceInspectionReport, WorkspaceInspectError> {
     let root = linux::DirectoryCapability::open_root(path)?;
     let facts = inspect_folder_facts(&root)?;
@@ -256,6 +279,35 @@ where
         *workspace.manifest.workspace_id(),
         relative_path,
         expected_revision,
+        operation_id,
+        created_at,
+        prepare,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_multi_document_update<E, F>(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    inventory_directory: &str,
+    expected_inventory_entries: &[String],
+    requests: &[DocumentUpdateRequest],
+    operation_id: crate::protocol::OperationId,
+    created_at: crate::protocol::Timestamp,
+    prepare: F,
+) -> Result<MultiDocumentUpdateOutcome, MultiDocumentUpdateError<E>>
+where
+    F: FnOnce(&[PreparedDocument<'_>]) -> Result<Vec<Box<[u8]>>, E>,
+{
+    recovery::execute_multi_document_update(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        inventory_directory,
+        expected_inventory_entries,
+        requests,
         operation_id,
         created_at,
         prepare,
@@ -1413,7 +1465,7 @@ mod linux {
             })
         }
 
-        fn open_private_directory(&self, name: &str) -> Result<Self, MutationIoError> {
+        pub(super) fn open_private_directory(&self, name: &str) -> Result<Self, MutationIoError> {
             let name = component(name).map_err(|_| MutationIoError::Unsafe)?;
             // SAFETY: the retained parent and validated component are valid.
             let raw = unsafe {

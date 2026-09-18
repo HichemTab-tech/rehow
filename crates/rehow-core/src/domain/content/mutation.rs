@@ -1113,7 +1113,7 @@ mod tests {
 
     #[test]
     fn category_status_and_order_transitions_rebind() {
-        let source = "schema_version: 1\nid: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5551\nname: Linux\norder: 1\nstatus: active\ncreated_at: 2026-09-05T10:00:00Z\nupdated_at: 2026-09-05T10:00:00Z\n";
+        let source = "schema_version: 1\nid: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5551\nname: Linux\norder: 1\nstatus: active\ncreated_at: 2026-09-05T10:00:00Z\nupdated_at: 2026-09-05T10:00:00Z\nfuture: keep\n";
         let bound = category(source);
         let stamp = MutationStamp::from_trusted_time(timestamp("2026-09-05T11:00:00Z"));
         let MutationOutcome::Candidate(archived) =
@@ -1137,6 +1137,11 @@ mod tests {
             panic!("candidate")
         };
         assert_eq!(ordered.bound().record().order(), i64::MIN);
+        assert!(
+            core::str::from_utf8(ordered.bound().source_bytes())
+                .unwrap()
+                .contains("future: keep")
+        );
     }
 
     #[test]

@@ -24,13 +24,14 @@ use crate::{
         new_guide_id, new_operation_id, new_workspace_id,
     },
     storage::{
-        CategoryCreateStorageError, DocumentCreateError, DocumentUpdateError, EmptyWorkspaceTarget,
+        CategoryCreateStorageError, DocumentCreateError, DocumentUpdateError,
+        DocumentUpdateRequest, EmptyWorkspaceTarget, MultiDocumentUpdateError,
         WorkspaceInitializeError, WorkspaceView, execute_category_create, execute_document_create,
-        execute_document_update, execute_workspace_initialize, open_initialized_workspace,
-        refresh_workspace,
+        execute_document_update, execute_multi_document_update, execute_workspace_initialize,
+        open_initialized_workspace, refresh_workspace,
     },
 };
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 pub const GUIDE_BODY_INPUT_LIMIT: usize = 2 * 1024 * 1024;
 
@@ -193,6 +194,201 @@ impl CategoryUpdateOutcome {
 
     pub fn changed(self) -> bool {
         self.changed
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CategoryOrderRevision {
+    category_id: CategoryId,
+    revision: Revision,
+}
+
+impl CategoryOrderRevision {
+    pub fn new(category_id: CategoryId, revision: Revision) -> Self {
+        Self {
+            category_id,
+            revision,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CategoryReorderError {
+    InvalidEffectSet,
+    RevisionConflict,
+    InvalidCategory,
+    UnsafeRoundTrip,
+    Busy,
+    UnsafeStorage,
+    UnsupportedFilesystem,
+    ResourceLimit,
+    Io,
+    CommittedRefreshRequired,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CategoryReorderOutcome {
+    changed: bool,
+}
+
+impl CategoryReorderOutcome {
+    pub fn changed(self) -> bool {
+        self.changed
+    }
+}
+
+pub fn reorder_categories(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    ordered: &[CategoryOrderRevision],
+) -> Result<CategoryReorderOutcome, CategoryReorderError> {
+    if !workspace.issues().is_empty() || ordered.len() != workspace.categories().len() {
+        return Err(CategoryReorderError::InvalidEffectSet);
+    }
+    if ordered.is_empty() {
+        return Ok(CategoryReorderOutcome { changed: false });
+    }
+    let mut seen = HashSet::new();
+    seen.try_reserve(ordered.len())
+        .map_err(|_| CategoryReorderError::ResourceLimit)?;
+    let mut requests = Vec::new();
+    requests
+        .try_reserve_exact(ordered.len())
+        .map_err(|_| CategoryReorderError::ResourceLimit)?;
+    let mut expected_directories = Vec::new();
+    expected_directories
+        .try_reserve_exact(ordered.len())
+        .map_err(|_| CategoryReorderError::ResourceLimit)?;
+    for item in ordered {
+        if !seen.insert(item.category_id) {
+            return Err(CategoryReorderError::InvalidEffectSet);
+        }
+        let loaded = workspace
+            .categories()
+            .iter()
+            .find(|category| category.category().id() == &item.category_id)
+            .ok_or(CategoryReorderError::InvalidEffectSet)?;
+        if loaded.descriptor_revision() != item.revision {
+            return Err(CategoryReorderError::RevisionConflict);
+        }
+        requests.push(DocumentUpdateRequest::new(
+            format!("{}/category.yaml", loaded.relative_directory()),
+            item.revision,
+        ));
+        expected_directories.push(
+            loaded
+                .relative_directory()
+                .strip_prefix("categories/")
+                .ok_or(CategoryReorderError::InvalidCategory)?
+                .to_owned(),
+        );
+    }
+
+    let at = current_timestamp();
+    let stamp = MutationStamp::from_trusted_time(at);
+    let outcome = execute_multi_document_update(
+        workspace,
+        state_home,
+        runtime_directory,
+        "categories",
+        &expected_directories,
+        &requests,
+        new_operation_id(),
+        at,
+        |documents| {
+            if documents.len() != ordered.len() {
+                return Err(CategoryPlanError::InvalidCategory);
+            }
+            let mut candidates = Vec::new();
+            candidates
+                .try_reserve_exact(documents.len())
+                .map_err(|_| CategoryPlanError::ResourceLimit)?;
+            for (index, (document, item)) in documents.iter().zip(ordered).enumerate() {
+                if document.revision() != item.revision
+                    || document.relative_path() != requests[index].relative_path()
+                {
+                    return Err(CategoryPlanError::InvalidCategory);
+                }
+                let parsed = parse_yaml_document(copy_bytes(document.bytes())?)
+                    .map_err(|_| CategoryPlanError::InvalidCategory)?;
+                let bound =
+                    bind_category(parsed).map_err(|_| CategoryPlanError::InvalidCategory)?;
+                if bound.record().id() != &item.category_id {
+                    return Err(CategoryPlanError::InvalidCategory);
+                }
+                let ordinal = i64::try_from(index)
+                    .ok()
+                    .and_then(|value| value.checked_add(1))
+                    .and_then(|value| value.checked_mul(1_000))
+                    .ok_or(CategoryPlanError::ResourceLimit)?;
+                let bytes = match plan_category_mutation(
+                    &bound,
+                    CategoryMutation::SetOrder(ordinal),
+                    &stamp,
+                )
+                .map_err(map_category_plan_failure)?
+                {
+                    MutationOutcome::NoOp => copy_bytes(bound.source_bytes())?,
+                    MutationOutcome::Candidate(candidate) => {
+                        copy_bytes(candidate.bound().source_bytes())?
+                    }
+                };
+                candidates.push(bytes);
+            }
+            Ok(candidates)
+        },
+    )
+    .map_err(map_category_reorder_error)?;
+
+    if outcome.changed() && refresh_workspace(workspace).is_err() {
+        return Err(CategoryReorderError::CommittedRefreshRequired);
+    }
+    let matches =
+        workspace.categories().len() == ordered.len()
+            && workspace.categories().iter().zip(ordered).enumerate().all(
+                |(index, (loaded, item))| {
+                    let expected_order = i64::try_from(index)
+                        .ok()
+                        .and_then(|value| value.checked_add(1))
+                        .and_then(|value| value.checked_mul(1_000));
+                    loaded.category().id() == &item.category_id
+                        && Some(loaded.category().order()) == expected_order
+                },
+            );
+    if !matches {
+        return Err(if outcome.changed() {
+            CategoryReorderError::CommittedRefreshRequired
+        } else {
+            CategoryReorderError::InvalidEffectSet
+        });
+    }
+    Ok(CategoryReorderOutcome {
+        changed: outcome.changed(),
+    })
+}
+
+fn map_category_reorder_error(
+    error: MultiDocumentUpdateError<CategoryPlanError>,
+) -> CategoryReorderError {
+    match error {
+        MultiDocumentUpdateError::Prepare(CategoryPlanError::InvalidCategory) => {
+            CategoryReorderError::InvalidCategory
+        }
+        MultiDocumentUpdateError::Prepare(
+            CategoryPlanError::InvalidName | CategoryPlanError::InvalidSummary,
+        )
+        | MultiDocumentUpdateError::InvalidPlan => CategoryReorderError::InvalidEffectSet,
+        MultiDocumentUpdateError::Prepare(CategoryPlanError::UnsafeRoundTrip) => {
+            CategoryReorderError::UnsafeRoundTrip
+        }
+        MultiDocumentUpdateError::Prepare(CategoryPlanError::ResourceLimit)
+        | MultiDocumentUpdateError::TooLarge => CategoryReorderError::ResourceLimit,
+        MultiDocumentUpdateError::Busy => CategoryReorderError::Busy,
+        MultiDocumentUpdateError::Conflict => CategoryReorderError::RevisionConflict,
+        MultiDocumentUpdateError::Unsafe => CategoryReorderError::UnsafeStorage,
+        MultiDocumentUpdateError::Unsupported => CategoryReorderError::UnsupportedFilesystem,
+        MultiDocumentUpdateError::Io => CategoryReorderError::Io,
     }
 }
 
@@ -1156,6 +1352,169 @@ mod tests {
                 Some(" ".to_owned()),
             ),
             Err(CategoryUpdateError::InvalidSummary)
+        );
+    }
+
+    #[test]
+    fn reorders_complete_category_effect_set_and_preserves_content() {
+        let (workspace, state, mut view) = initialized_workspace("category-reorder");
+        let first = create_category(&mut view, state.path(), None, "One", None).unwrap();
+        let second = create_category(&mut view, state.path(), None, "Two", None).unwrap();
+        let third = create_category(&mut view, state.path(), None, "Three", None).unwrap();
+        create_guide(
+            &mut view,
+            state.path(),
+            None,
+            first.category_id(),
+            "First Guide",
+            "Keep this Guide in place.",
+        )
+        .unwrap();
+        let directories = view
+            .categories()
+            .iter()
+            .map(|category| {
+                (
+                    *category.category().id(),
+                    category.relative_directory().to_owned(),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let revision_for = |id: CategoryId, view: &WorkspaceView| {
+            view.categories()
+                .iter()
+                .find(|category| category.category().id() == &id)
+                .unwrap()
+                .descriptor_revision()
+        };
+        let ordered = [
+            CategoryOrderRevision::new(
+                third.category_id(),
+                revision_for(third.category_id(), &view),
+            ),
+            CategoryOrderRevision::new(
+                first.category_id(),
+                revision_for(first.category_id(), &view),
+            ),
+            CategoryOrderRevision::new(
+                second.category_id(),
+                revision_for(second.category_id(), &view),
+            ),
+        ];
+        let reordered = reorder_categories(&mut view, state.path(), None, &ordered).unwrap();
+        assert!(reordered.changed());
+        assert_eq!(
+            view.categories()
+                .iter()
+                .map(|category| category.category().name())
+                .collect::<Vec<_>>(),
+            ["Three", "One", "Two"]
+        );
+        assert_eq!(
+            view.categories()
+                .iter()
+                .map(|category| category.category().order())
+                .collect::<Vec<_>>(),
+            [1_000, 2_000, 3_000]
+        );
+        for category in view.categories() {
+            assert_eq!(
+                category.relative_directory(),
+                directories[category.category().id()]
+            );
+        }
+        assert_eq!(
+            view.categories()
+                .iter()
+                .find(|category| category.category().id() == &first.category_id())
+                .unwrap()
+                .guides()
+                .len(),
+            1
+        );
+
+        let current = view
+            .categories()
+            .iter()
+            .map(|category| {
+                CategoryOrderRevision::new(
+                    *category.category().id(),
+                    category.descriptor_revision(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !reorder_categories(&mut view, state.path(), None, &current)
+                .unwrap()
+                .changed()
+        );
+        assert!(
+            workspace
+                .path()
+                .join(directories.get(&first.category_id()).unwrap())
+                .is_dir()
+        );
+    }
+
+    #[test]
+    fn category_reorder_rejects_stale_or_incomplete_effect_sets() {
+        let (workspace, state, mut view) = initialized_workspace("category-reorder-conflict");
+        let first = create_category(&mut view, state.path(), None, "One", None).unwrap();
+        let second = create_category(&mut view, state.path(), None, "Two", None).unwrap();
+        let stale = [
+            CategoryOrderRevision::new(second.category_id(), second.revision()),
+            CategoryOrderRevision::new(first.category_id(), first.revision()),
+        ];
+        rename_category(
+            &mut view,
+            state.path(),
+            None,
+            first.category_id(),
+            first.revision(),
+            "First".to_owned(),
+        )
+        .unwrap();
+        assert_eq!(
+            reorder_categories(&mut view, state.path(), None, &stale),
+            Err(CategoryReorderError::RevisionConflict)
+        );
+        let duplicate = [
+            CategoryOrderRevision::new(
+                first.category_id(),
+                view.categories()
+                    .iter()
+                    .find(|category| category.category().id() == &first.category_id())
+                    .unwrap()
+                    .descriptor_revision(),
+            ),
+            CategoryOrderRevision::new(
+                first.category_id(),
+                view.categories()
+                    .iter()
+                    .find(|category| category.category().id() == &first.category_id())
+                    .unwrap()
+                    .descriptor_revision(),
+            ),
+        ];
+        assert_eq!(
+            reorder_categories(&mut view, state.path(), None, &duplicate),
+            Err(CategoryReorderError::InvalidEffectSet)
+        );
+
+        let current = view
+            .categories()
+            .iter()
+            .map(|category| {
+                CategoryOrderRevision::new(
+                    *category.category().id(),
+                    category.descriptor_revision(),
+                )
+            })
+            .collect::<Vec<_>>();
+        fs::create_dir(workspace.path().join("categories/external-residue")).unwrap();
+        assert_eq!(
+            reorder_categories(&mut view, state.path(), None, &current),
+            Err(CategoryReorderError::RevisionConflict)
         );
     }
 
