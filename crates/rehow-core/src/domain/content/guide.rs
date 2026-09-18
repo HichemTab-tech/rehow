@@ -950,7 +950,7 @@ impl MappingKey for UnknownYamlMappingEntry {
     }
 }
 
-fn valid_reference_url(value: &str) -> bool {
+pub(crate) fn valid_reference_url(value: &str) -> bool {
     if value.is_empty()
         || value.len() > 2_048
         || !value.is_ascii()

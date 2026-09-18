@@ -289,7 +289,7 @@ These are hard v1 defaults; whole-input caps are enforced before parser allocati
 - YAML nesting depth: 16 simultaneous collection frames with the root mapping at depth 1; mapping entries: 256 completed key/value pairs per map; sequence entries: 2,048 completed child values; total YAML nodes: 20,000 scalar/sequence-start/mapping-start events including parser-generated empty/null scalars; generic scalar: 64 KiB each for decoded UTF-8 bytes and raw source-span bytes (tighter field limits still apply);
 - YAML numeric normalization per document: 16 Mi checked closed-form work units computed exactly as ADR 0011's `R + 4*S + 4*C`, and 80 KiB total stored canonical numeric digits; one-over returns `yaml_numeric_work_limit` without a partial scalar/tree;
 - YAML semantic-key work per document: 8 MiB total cached canonical-key bytes and 32 MiB total bytes examined by fallible metered key sorting/indexing/comparison; one-over returns `yaml_semantic_work_limit` without a partial mapping;
-- Markdown AST: 100,000 nodes and heading depth per CommonMark; parser input remains capped at 2 MiB;
+- Markdown AST: 100,000 semantic nodes and 128 simultaneous container frames; parser input remains capped at 2 MiB;
 - managed path: 1,024 UTF-8 bytes; one filename: 255 bytes; only documented directory depths;
 - Workspace: 1,000 Categories, 10,000 Guides, and 2 GiB total managed Markdown/YAML bytes during a bounded scan;
 - Attachment inventory: 10,000 regular-file candidates, 64 MiB per candidate, and 4 GiB aggregate candidate bytes. Enumeration counts candidates before content hashing, hashes through a bounded stream, and never allocates a whole Attachment from its declared size.

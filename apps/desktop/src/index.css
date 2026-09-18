@@ -636,12 +636,69 @@ h1 {
   max-width: 100%;
   margin: 0;
   overflow-wrap: anywhere;
-  white-space: pre-wrap;
   color: var(--text);
-  font-family: ui-monospace, "JetBrains Mono", "DejaVu Sans Mono", monospace;
   font-size: 12px;
   line-height: 1.65;
   tab-size: 2;
+}
+.guide-markdown > :first-child {
+  margin-top: 0;
+}
+.guide-markdown p,
+.guide-markdown ul,
+.guide-markdown ol,
+.guide-markdown blockquote,
+.guide-markdown .table-scroll {
+  margin: 0 0 16px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.guide-markdown code {
+  font-family: ui-monospace, "JetBrains Mono", "DejaVu Sans Mono", monospace;
+}
+.guide-markdown :not(pre) > code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--code);
+  color: var(--text);
+}
+.guide-markdown blockquote {
+  padding-left: 13px;
+  border-left: 3px solid var(--divider-strong);
+}
+.markdown-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
+.markdown-link.blocked {
+  color: var(--warning);
+}
+.image-placeholder,
+.html-block {
+  display: block;
+  padding: 9px 11px;
+  border-left: 3px solid var(--warning);
+  background: var(--warning-bg);
+  color: var(--warning);
+  white-space: pre-wrap;
+}
+.guide-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.guide-markdown td {
+  padding: 7px 9px;
+  border: 1px solid var(--divider);
+  text-align: left;
+}
+.task-marker {
+  margin: 0 7px 0 0;
+  accent-color: var(--accent);
+}
+.guide-loading {
+  color: var(--muted);
 }
 .guide-reader h2 {
   margin: 0 0 13px;
@@ -755,6 +812,15 @@ h1 {
 .command-block button:hover {
   background: var(--selection);
   color: var(--accent);
+}
+.guide-markdown .command-block {
+  margin: 0 0 16px;
+}
+.guide-markdown .command-block button {
+  width: auto;
+  padding: 0 11px;
+  font-size: 10px;
+  font-weight: 700;
 }
 .verification {
   display: flex;

@@ -9,6 +9,7 @@ import {
   nextResultIndex,
   resultCountLabel,
 } from "./App";
+import { MarkdownDocument } from "./MarkdownDocument";
 
 describe("application identity", () => {
   it("uses the Rehow name", () => {
@@ -91,5 +92,56 @@ describe("Guide search", () => {
   it("returns the full list for whitespace and none for an absent term", () => {
     expect(filterGuides(guides, "   ")).toHaveLength(2);
     expect(filterGuides(guides, "limine")).toEqual([]);
+  });
+});
+
+describe("safe Guide rendering", () => {
+  it("fails closed for an unsupported safe-document version", () => {
+    const markup = renderToStaticMarkup(
+      createElement(MarkdownDocument, {
+        document: { version: 2, events: [] },
+        onAnnouncement: () => undefined,
+      }),
+    );
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain("unsupported content version");
+  });
+
+  it("escapes HTML, blocks navigation and media, and exposes code copy controls", () => {
+    const markup = renderToStaticMarkup(
+      createElement(MarkdownDocument, {
+        document: {
+          version: 1,
+          events: [
+            { kind: "start", node: { kind: "htmlBlock" } },
+            { kind: "htmlLiteral", value: "<script>alert(1)</script>" },
+            { kind: "end" },
+            {
+              kind: "start",
+              node: { kind: "link", destination: null, title: null },
+            },
+            { kind: "text", value: "bad link" },
+            { kind: "end" },
+            { kind: "start", node: { kind: "image", title: null } },
+            { kind: "text", value: "tracker" },
+            { kind: "end" },
+            {
+              kind: "start",
+              node: { kind: "codeBlock", language: "sh" },
+            },
+            { kind: "text", value: "printf ok" },
+            { kind: "end" },
+          ],
+        },
+        onAnnouncement: () => undefined,
+      }),
+    );
+    expect(markup).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(markup).toContain("Unsafe or unsupported link blocked");
+    expect(markup).toContain("Image blocked: ");
+    expect(markup).toContain('aria-label="Copy code"');
+    expect(markup).not.toContain("dangerouslySetInnerHTML");
+    expect(markup).not.toContain("href=");
+    expect(markup).not.toContain("src=");
   });
 });

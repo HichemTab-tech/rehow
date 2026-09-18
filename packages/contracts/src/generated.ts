@@ -1,4 +1,8 @@
 // This file is generated. Do not edit.
+export type SafeMarkdownAlignment = "none" | "left" | "center" | "right";
+export type SafeMarkdownContainer = { "kind": "paragraph" } | { "kind": "heading", level: number, } | { "kind": "blockQuote" } | { "kind": "codeBlock", language: string | null, } | { "kind": "list", start: number | null, } | { "kind": "item" } | { "kind": "emphasis" } | { "kind": "strong" } | { "kind": "strikethrough" } | { "kind": "link", destination: string | null, title: string | null, } | { "kind": "image", title: string | null, } | { "kind": "table", alignments: Array<SafeMarkdownAlignment>, } | { "kind": "tableHead" } | { "kind": "tableRow" } | { "kind": "tableCell" } | { "kind": "htmlBlock" };
+export type SafeMarkdownEvent = { "kind": "start", node: SafeMarkdownContainer, } | { "kind": "end" } | { "kind": "text", value: string, } | { "kind": "inlineCode", value: string, } | { "kind": "htmlLiteral", value: string, } | { "kind": "softBreak" } | { "kind": "hardBreak" } | { "kind": "rule" } | { "kind": "taskMarker", checked: boolean, };
+export type SafeMarkdownDocument = { version: number, events: Array<SafeMarkdownEvent>, };
 export type WorkspaceId = string;
 export type CategoryId = string;
 export type GuideId = string;

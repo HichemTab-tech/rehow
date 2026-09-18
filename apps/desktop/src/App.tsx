@@ -1,4 +1,6 @@
+import type { SafeMarkdownDocument } from "@rehow/contracts";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { MarkdownDocument } from "./MarkdownDocument";
 
 export const APPLICATION_NAME = "Rehow";
 
@@ -12,7 +14,7 @@ type GuideSummary = {
   matches: string;
 };
 
-type GuideBodyPayload = { id: string; body: string };
+type GuideBodyPayload = { id: string; document: SafeMarkdownDocument };
 
 type FolderFacts = {
   writable: boolean;
@@ -600,11 +602,14 @@ export function App() {
               <h2 className="sr-only" id="guide-body-heading">
                 Guide content
               </h2>
-              <pre className="guide-markdown">
-                {guideBody?.id === selected.id
-                  ? guideBody.body
-                  : "Loading Guide…"}
-              </pre>
+              {guideBody?.id === selected.id ? (
+                <MarkdownDocument
+                  document={guideBody.document}
+                  onAnnouncement={setAnnouncement}
+                />
+              ) : (
+                <p className="guide-loading">Loading Guide…</p>
+              )}
             </section>
           </article>
         )}

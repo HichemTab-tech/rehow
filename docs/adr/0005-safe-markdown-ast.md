@@ -13,6 +13,8 @@ Parse supported CommonMark/GFM in Rust and return a versioned typed block/inline
 
 Allow external `http`, `https`, and `mailto` links only after normalization; block `javascript`, `data`, `file`, `blob`, controls, and custom schemes. Opening is explicit through a guarded backend. Managed raster Attachments resolve by opaque ID through typed IPC into bounded, byte-sniffed bytes; the renderer creates short-lived Blob URLs and revokes them promptly. A custom protocol is deferred and would require its own ADR. CSP denies remote connections and inline/eval scripts except narrowly generated build requirements.
 
+The v1 wire format is a balanced, versioned safe-event AST generated with exact-pinned `pulldown-cmark 0.13.4` (MIT, default features disabled). It enables tables, strikethrough, and task lists, caps semantic nodes at 100,000 and nesting at 128, and contains no image source. Raw HTML is emitted only as literal text. Link destinations reuse the canonical Reference URL policy; the desktop renders them inert until the guarded native opener exists. The event representation avoids a recursive IPC payload while React still maps only closed known node kinds.
+
 ## Consequences
 
 - Strong predictable rendering and no hidden Markdown execution.

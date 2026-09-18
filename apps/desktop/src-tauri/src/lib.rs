@@ -2,6 +2,7 @@ pub const APPLICATION_NAME: &str = "Rehow";
 
 use rehow_core::{
     domain::GuideStatus,
+    markdown::{SafeMarkdownDocument, parse_safe_markdown},
     protocol::GuideId,
     storage::{WorkspaceFolderFacts, WorkspaceInspection, WorkspaceView, inspect_workspace},
 };
@@ -83,7 +84,7 @@ struct GuidePayload {
 #[serde(rename_all = "camelCase")]
 struct GuideBodyPayload {
     id: String,
-    body: String,
+    document: SafeMarkdownDocument,
 }
 
 impl WorkspacePayload {
@@ -167,9 +168,12 @@ fn read_open_guide(
         .find(|loaded| loaded.guide().id() == &guide_id)
         .ok_or_else(|| "Guide was not found".to_owned())?
         .guide();
+    let body = std::str::from_utf8(guide.body())
+        .map_err(|_| "Guide Markdown is not valid UTF-8".to_owned())?;
+    let document = parse_safe_markdown(body).map_err(|error| error.to_string())?;
     Ok(GuideBodyPayload {
         id: guide.id().to_string(),
-        body: String::from_utf8_lossy(guide.body()).into_owned(),
+        document,
     })
 }
 
@@ -230,7 +234,10 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{APPLICATION_NAME, FolderFactsPayload, GuidePayload, WorkspacePayload};
+    use super::{
+        APPLICATION_NAME, FolderFactsPayload, GuideBodyPayload, GuidePayload, WorkspacePayload,
+    };
+    use rehow_core::markdown::parse_safe_markdown;
 
     #[test]
     fn application_name_is_stable() {
@@ -265,5 +272,23 @@ mod tests {
         assert_eq!(json["issueCount"], 0);
         assert_eq!(json["facts"]["writable"], true);
         assert!(json["guides"][0].get("body").is_none());
+    }
+
+    #[test]
+    fn guide_read_payload_contains_only_the_safe_document() {
+        let payload = GuideBodyPayload {
+            id: "0199a1d7-7b0d-7d8e-a38d-f936c5735e10".to_owned(),
+            document: parse_safe_markdown("<script>no</script>").unwrap(),
+        };
+        let json = serde_json::to_value(payload).unwrap();
+        assert!(json.get("body").is_none());
+        assert_eq!(json["document"]["version"], 1);
+        assert!(
+            json["document"]["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event["kind"] == "htmlLiteral")
+        );
     }
 }
