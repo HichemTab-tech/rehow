@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 3K — Guide Tag/Alias editing accepted; next is Guide Category move.
+Phase 3L — Guide Category move accepted; next is recoverable Guide deletion.
 
 ## Current task
 
-Specify and implement an atomic Guide Category change with a confined cross-directory file move.
+Specify recoverable Guide deletion with explicit confirmation and Attachment safeguards.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace; create/edit/archive/restore/remove Categories; create draft Guides; edit Guide title, summary, body, Tags, and aliases; and archive/restore Guides through descriptor-confined recoverable writes. MCP remains read-only.
+In progress. A user can open or initialize a Workspace; create/edit/archive/restore/remove Categories; create draft Guides; edit Guide title, summary, body, Tags, aliases, and Category; and archive/restore Guides through descriptor-confined recoverable writes. MCP remains read-only.
 
 ## Completed work
 
@@ -76,10 +76,11 @@ In progress. A user can open or initialize a Workspace; create/edit/archive/rest
 - Added safe empty-Category removal at signed checkpoint `dac22e4`: default/nonempty/stale/unsafe Categories fail closed; the descriptor moves to an exact recoverable-trash path; only its verified-empty parent directory is removed nonrecursively; and the UI requires explicit confirmation.
 - Added reversible Guide archive/restore at signed checkpoint `34f7fe9`: the exact draft/stale/tested lifecycle matrix is applied through typed revision-checked recovery; path, body, verification, nested data, Attachments, and unknown metadata remain preserved; and the Reference Desk exposes named busy/error/live controls.
 - Added atomic Guide Tag/Alias editing at signed checkpoint `f315f1b`: title, summary, ordered Tags, and aliases share one revision-checked recovery write; Unicode case-fold duplicates and limits fail closed; tested declarations stale; comments/nonempty flow presentation are refused; and the Reference Desk exposes labeled one-per-line fields.
+- Added safe Guide Category moves at signed checkpoint `2b49223`: Rust derives the destination from an active Category ID, preserves the filename and content, refuses overwrite/stale/unsafe targets, and journals destination creation before source removal for interruption-safe recovery.
 
 ## Work in progress
 
-- Guide Tag/Alias editing is committed at signed checkpoint `f315f1b`. The next bounded batch is an atomic Guide Category move.
+- Guide Category move is committed at signed checkpoint `2b49223`. The next bounded batch is recoverable Guide deletion.
 
 ## Remaining work
 
@@ -97,6 +98,7 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Design and accessibility findings
 
+- 2026-09-18: Guide Category move adds a labeled native select with active destinations, visible focus, linked help/error text, dirty-state protection, and narrow-window behavior. Fresh current-guideline static review found no issue.
 - Reference Desk was accepted as the Phase 2A fixture-backed shell; the fixtures are now removed and real read-only Workspace states are wired. Existing captures cover 1440, 1024, 720, and 480 widths; light/dark, visible focus, empty results, narrow reader/back, responsive navigation, and 2× effective reflow.
 - The first Design Reviewer pass found 2 high, 7 medium, and 3 low issues. Search naming, focus restoration, responsive navigation, Arrow/Escape behavior, contrast, announcements, command accessibility, tests, screenshots, repeated skip behavior, tooltips, and path translation were corrected.
 - Final current-guideline closure: pass with no blocker, high, medium, or low finding.
@@ -150,6 +152,7 @@ No known regression in accepted phases. If the process is killed after the initi
 - The `dac22e4` removal adapter accepts only Category ID and expected revision. Rust refuses the default Category, loaded Guides, and every unexpected directory entry; moves only `category.yaml` to its operation-bound trash path; and removes only the now-empty Category directory with nonrecursive `unlinkat`. Replay verifies exact trash bytes before accepting the missing parent. No cascade, arbitrary path, recursive delete, Git, or MCP authority was added.
 - The `34f7fe9` Guide lifecycle adapter accepts only Guide ID, expected revision, and Boolean archive intent. Rust maps it to closed Archive/Restore mutations, changes tested/legacy archived-tested states only to stale, preserves the confined path and all content, and commits through existing recovery. Unknown metadata is compared semantically after known-field insertion shifts parser indexes. No generic status/YAML/path, delete, Git, or MCP authority was added.
 - The `f315f1b` details adapter accepts bounded title/summary/Tag/Alias values only. Rust validates 64-item and scalar limits plus full Unicode case-fold uniqueness, emits YAML itself, and commits all four fields atomically. The sole flow exception is exact empty `[]` from Rehow-created Guides; nonempty flow, tags, comments, and unsafe presentation remain read-only. No generic YAML/path/status, Git, or MCP authority was added.
+- The `2b49223` move adapter accepts only Guide ID, expected revision, active destination Category ID, and bounded detail values. Rust derives both paths, requires destination absence, writes the destination before removing the source, preserves the exact filename/body/Attachments/unknown metadata, and verifies one refreshed Guide. No renderer path, overwrite, recursive move, shell, Git, or MCP authority was added.
 
 ## Blockers and human checkpoints
 
@@ -159,10 +162,11 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Latest verified commit
 
-`f315f1b` — signed atomic Guide Tag/Alias editing across planner, application, native adapter, and Reference Desk UI.
+`2b49223` — signed, verified Guide Category move across recovery storage, application, native adapter, and Reference Desk UI.
 
 ## Tests last run and results
 
+- 2026-09-18: Guide Category move checkpoint at `2b49223`: `pnpm check/test/build`, Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 259 core library tests, 10 desktop Rust tests, 19 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused evidence covers active/inactive/missing destinations, stale revisions, occupied filenames, body/filename/unknown/verification preservation, tested-to-stale, exact refreshed location, and replay after destination creation. Fresh current-guideline static review found no issue.
 - 2026-09-18: Guide Tag/Alias checkpoint at `f315f1b`: `pnpm check/test/build`, Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 255 core library tests, 10 desktop Rust tests, 19 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused evidence covers empty/block/nonempty-flow/comment/CRLF presentation, exact item/scalar limits, Unicode case-fold duplicates and normalization distinctions, tested-to-stale, atomic invalid-input rollback, path/body/unknown preservation, bounded native payloads, and UI normalization. Fresh current-guideline static review found no issue.
 - 2026-09-18: Guide archive/restore checkpoint at `34f7fe9`: `pnpm check/test/build`, Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 253 core library tests, 10 desktop Rust tests, 18 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused evidence covers draft/stale/tested transitions, invalid restore, no-op archive, revision conflict, path/body/unknown preservation, native bounds, and explicit UI labels. Fresh current-guideline static review found no issue.
 - 2026-09-18: Category removal checkpoint at `dac22e4`: `pnpm check/test/build`, Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 250 core library tests, 10 desktop Rust tests, 17 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused evidence covers default/nonempty/stale/unexpected-entry refusal, exact trash bytes, preservation of unrelated Categories, nonrecursive empty-directory cleanup, and interrupted replay. Fresh current-guideline static review found no issue.
@@ -306,10 +310,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `docs/task-packets/phase-3i-category-remove.md` plus exact-trash deletion recovery, verified-empty nonrecursive directory cleanup, the closed application/native command, confirmation UI, and adversarial tests implement Category removal at `dac22e4`.
 - `docs/task-packets/phase-3j-guide-archive-restore.md` plus the closed lifecycle planner, semantic unknown-metadata preservation proof, application/native command, Reference Desk controls, and tests implement Guide archive/restore at `34f7fe9`.
 - `docs/task-packets/phase-3k-guide-tags-aliases.md`, ADR 0014's narrow canonical-empty-sequence correction, typed collection planners, atomic application/native path, accessible details fields, and adversarial tests implement Tag/Alias editing at `f315f1b`.
+- `docs/task-packets/phase-3l-guide-category-move.md` plus the confined create-then-delete recovery journal, typed application flow, Category-ID-only native command, labeled Category select, and adversarial tests implement Guide Category moves at `2b49223`.
 
 ## Next recommended action
 
-Specify and implement Guide Category change as one recovery-journaled source-to-destination move plus typed `category_id` update. Require an active destination Category, expected Guide revision, destination absence, confinement, and interruption-safe replay. Keep MCP read-only.
+Specify and implement recoverable Guide deletion. Require explicit confirmation, exact revision/path identity, before-image quarantine, safe Attachment handling, and no recursive or ambiguous deletion. Keep MCP read-only.
 
 ## Recommended agent role and reasoning effort
 
@@ -318,8 +323,8 @@ Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents for routine work; us
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read the Guide Category/path sections of `docs/content-model.md`, ADR 0009/0014, and the threat model.
+2. Read the Guide deletion/Attachment sections of `docs/content-model.md`, ADR 0009/0014, and the threat model.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `f315f1b`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `2b49223`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Resume with Guide Category move; do not accept renderer paths, overwrite destinations, move Attachments independently, preserve a tested declaration after change, or add Git/MCP writes.
+6. Resume with recoverable Guide deletion; do not accept renderer paths, recursive removal, unconfirmed deletion, unsafe Attachment behavior, or Git/MCP writes.
