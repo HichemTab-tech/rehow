@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 2B — empty-folder Workspace initialization accepted; next is Category creation.
+Phase 3B — active Category creation accepted; next is draft Guide creation.
 
 ## Current task
 
-Implement the first bounded Category creation path so a new Workspace can organize its first Guide. MCP remains read-only.
+Implement the first bounded draft Guide creation path inside a selected active Category. MCP remains read-only.
 
 ## Overall status
 
-In progress. A user can open an existing Workspace or select an empty folder, name a new Workspace, initialize it without renderer path authority, and open it immediately. Existing Guide body editing remains green. MCP remains read-only.
+In progress. A user can open or initialize a Workspace and create active Categories through descriptor-confined, recoverable native writes. Existing Guide body editing remains green. MCP remains read-only.
 
 ## Completed work
 
@@ -66,10 +66,11 @@ In progress. A user can open an existing Workspace or select an empty folder, na
 - Added the crate-private application Guide update proof at signed checkpoint `e28cf48`: random open-capability epochs, stable root identity, expected-revision enforcement, fresh parse/bind/typed planning under the writer lock, recoverable update execution, unknown-metadata preservation, tested-to-stale behavior, and retained-view refresh.
 - Shipped the first native Guide body editor at signed checkpoint `4e0e9da`: bounded raw-body IPC, revision conflicts, atomic recovery, post-save refresh, tested-to-stale warning, dirty-discard protection, error focus, and narrow-window actions. One combined review found no blocker/high issue; its blank narrow Save-label finding was corrected.
 - Added safe empty-folder Workspace initialization at signed checkpoint `b2dac91`: retained descriptor selection, one-shot native authority, canonical internal IDs/time/YAML, no-replace manifest journaling, exclusive private `categories/`, changed-folder refusal, structured actionable errors, and an accessible onboarding form. The work also fixed repeated directory scans incorrectly sharing an exhausted stream offset.
+- Added active Category creation at signed checkpoint `98e2501`: canonical core-owned IDs/time/order/YAML and directory names, descriptor-confined private directories, recovery-journaled no-replace descriptors, bounded structured Tauri IPC, refreshed Workspace state, accessible Reference Desk creation UI, and focused failure/mode tests.
 
 ## Work in progress
 
-- Workspace initialization is committed at signed checkpoint `b2dac91`. The next bounded batch is active Category creation, which is required before the first Guide can be created.
+- Category creation is committed at signed checkpoint `98e2501`. The next bounded batch is draft Guide creation inside an existing active Category.
 
 ## Remaining work
 
@@ -83,7 +84,7 @@ In progress. A user can open an existing Workspace or select an empty folder, na
 
 ## Known bugs
 
-No known regression in accepted phases. If the process is killed after the initialization manifest commits but before `categories/` is durably created, reopening classifies the folder as malformed with `categoriesMissing`; an explicit descriptor-bound repair flow is still required and Rehow never auto-adopts the residue. Phase 1E-A currently retains all parsed Guide bodies in native memory for the session; broad IPC is bounded, but streaming/lazy native reread is still required before claiming the 2 GiB worst-case scan budget is production-memory-safe. Phase 4A scans and normalizes the loaded view per query, so it does not yet claim the 5,000-Guide latency/RSS budgets; the disposable index and benchmark remain required. External changes are not watched/reloaded. Safe links are intentionally inert until the guarded native opener exists.
+No known regression in accepted phases. If the process is killed after the initialization manifest commits but before `categories/` is durably created, reopening classifies the folder as malformed with `categoriesMissing`; an explicit descriptor-bound repair flow is still required and Rehow never auto-adopts the residue. An interrupted Category create can similarly leave an empty private Category directory; inspection reports a missing descriptor and never deletes or adopts it automatically, so an explicit repair flow remains required. Phase 1E-A currently retains all parsed Guide bodies in native memory for the session; broad IPC is bounded, but streaming/lazy native reread is still required before claiming the 2 GiB worst-case scan budget is production-memory-safe. Phase 4A scans and normalizes the loaded view per query, so it does not yet claim the 5,000-Guide latency/RSS budgets; the disposable index and benchmark remain required. External changes are not watched/reloaded. Safe links are intentionally inert until the guarded native opener exists.
 
 ## Design and accessibility findings
 
@@ -93,6 +94,7 @@ No known regression in accepted phases. If the process is killed after the initi
 - A fresh real-data/onboarding screenshot and interaction pass, rendered Markdown, edit/conflict/error states, and manual screen-reader verification remain Phase 2 acceptance gates.
 - The current-guideline self-review and combined checkpoint review pass the editor structure/focus/responsive design. Browser-level editor interaction tests remain open because the current Vitest setup has no DOM/browser harness; do not add one without a bounded dependency decision.
 - The current upstream web-interface guidelines were re-fetched for Workspace onboarding. The implemented form has a real label/name/autocomplete policy, bounded controlled input, inline focused errors, live updates, loading copy, visible focus, responsive action wrapping, and a truthful zero-Guide state; static review found no remaining issue. Screenshot/manual portal coverage remains open.
+- The current upstream guidelines were re-fetched for Category creation. Both fields are labeled/named, bounded, and associated with focused inline errors; the icon action is named, loading copy uses an ellipsis, focus restores predictably, and narrow actions wrap. Static self-review found no remaining issue; screenshot/browser interaction coverage remains part of the later combined UI gate.
 
 ## Security findings
 
@@ -120,6 +122,7 @@ No known regression in accepted phases. If the process is killed after the initi
 - The `e28cf48` application proof adds no adapter command or arbitrary path/YAML authority. It accepts closed typed edits, validates the loaded Guide ID/Category and expected revision, derives a random launch capability hash with Linux `getrandom`, and rejects stale, reused-operation, hardlink, and unsafe-round-trip states.
 - The `4e0e9da` Tauri adapter accepts only Guide ID, expected revision, and bounded body text against native retained Workspace state. It exposes no path/YAML/status/time/operation authority; combined review reports no blocker/high security finding.
 - The `b2dac91` initialization adapter stores the selected empty-folder capability only in native state and accepts only a bounded name. The core re-scans the retained descriptor under its writer lock, rejects every new entry, generates all authority internally, journals `rehow.yaml` no-replace at `0600`, and creates `categories/` exclusively at `0700`. No path, ID, timestamp, operation ID, or YAML crosses IPC.
+- The `98e2501` Category adapter accepts only bounded name/summary text against retained native Workspace state. The core generates ID/time/order/path, creates a no-follow exclusive `0700` directory, journals a no-replace `0600` descriptor, refreshes the retained view, and reports interrupted residue without deleting or auto-adopting it. MCP gains no mutation authority.
 
 ## Blockers and human checkpoints
 
@@ -129,10 +132,11 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Latest verified commit
 
-`b2dac91` — signed empty-folder Workspace initialization and onboarding flow.
+`98e2501` — signed active Category creation across core, native adapter, and Reference Desk UI.
 
 ## Tests last run and results
 
+- 2026-09-18: Category creation checkpoint at `98e2501`: `pnpm check`, full `pnpm test`, locked all-target/all-feature Workspace Clippy with warnings denied, production web/Rust builds, optimized Tauri no-bundle build, bootstrap validation, formatting, contract drift, and whitespace checks pass. Counts include 234 core library tests, 6 desktop Rust tests, 14 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused coverage proves canonical IDs/order/paths, Unicode slug fallback, `0700`/`0600` modes, validation no-write, stable native errors, and UI normalization.
 - 2026-09-18: Workspace initialization checkpoint at `b2dac91`: full `pnpm check/test/build`, locked Workspace Rust tests, all-target/all-feature Clippy with warnings denied, contracts, bootstrap, formatting, whitespace, and optimized Tauri no-bundle build pass. Counts include 232 core library tests, 5 desktop Rust tests, 13 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and MCP smoke tests. Focused coverage proves canonical create/open, `0600`/`0700` modes, invalid-name no-write, file/directory change refusal, missing-categories classification, structured IPC errors, and exact name bounds.
 - 2026-09-18: Guide editor checkpoint at `4e0e9da`: full `pnpm check/test/build`, locked full Workspace Rust tests, locked core/desktop Clippy with warnings denied, public API compile tests, formatting, contract drift, whitespace checks, and optimized Tauri no-bundle build pass. Counts include 229 core library tests, 4 desktop Rust tests, and 11 Vitest tests. The native binary built at `target/release/rehow-desktop`; the existing `.app` identifier warning remains informational for Linux.
 - 2026-09-18: final ADR 0009 gate at `dbf4230`: 14 focused Workspace-recovery tests and 225 full core library tests pass, plus all 18 error-contract, 13 protocol, 11 unknown-YAML, doc, and public API/compile-fail suites. Locked core Clippy denies warnings; formatting, contract drift, bootstrap validation, and whitespace checks pass. Fault coverage includes temp write/fsync/reuse, journal durability, create/update/delete/trash renames, source/destination directory sync, quarantine replay, hostile path types, mixed targets, and forged Complete/Committed state.
@@ -257,10 +261,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `crates/rehow-core/src/application.rs` and `docs/task-packets/phase-1e-c1-guide-update-application.md` connect closed Guide edits to confined storage at signed checkpoint `e28cf48`; adapter exposure is intentionally absent.
 - `apps/desktop/src-tauri/src/lib.rs`, `apps/desktop/src/App.tsx`, `apps/desktop/src/index.css`, and `docs/task-packets/phase-3a-guide-body-editor.md` implement the accepted editor/save slice at `4e0e9da`.
 - `docs/task-packets/phase-2b-workspace-initialize.md` plus the core storage/application, Tauri session, and onboarding UI changes implement the accepted empty-folder creation slice at `b2dac91`.
+- `docs/task-packets/phase-3b-category-create.md` plus the core storage/application, Tauri adapter, Category form, styles, and tests implement active Category creation at `98e2501`.
 
 ## Next recommended action
 
-Implement active Category creation using the canonical emitter, expected Workspace state, descriptor-confined recovery, a bounded Tauri command, and the Reference Desk Categories surface. Keep MCP read-only.
+Implement bounded draft Guide creation inside an existing active Category using the canonical emitter, descriptor-confined recovery, structured native IPC, and the existing editor surface. Keep status `draft` and MCP read-only.
 
 ## Recommended agent role and reasoning effort
 
@@ -269,8 +274,8 @@ Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents for routine work; us
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read the Category sections of `docs/content-model.md`, `docs/architecture.md`, ADR 0009/0014, and the threat model.
+2. Read the Guide sections of `docs/content-model.md`, `docs/architecture.md`, ADR 0009/0014, and the threat model.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `b2dac91`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `98e2501`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Resume with bounded active Category creation; do not add generic paths/YAML, broad reorder/removal, Git, or MCP writes.
+6. Resume with bounded draft Guide creation; do not add generic paths/YAML, status elevation, broad lifecycle actions, Git, or MCP writes.
