@@ -295,6 +295,27 @@ struct GitCommitPackedCandidate {
     staging_snapshot: GitCommitStagingSnapshot,
 }
 
+#[allow(
+    dead_code,
+    reason = "Phase 5C2B publication consumes the private index source and snapshot"
+)]
+struct GitCommitIndexCandidate {
+    source: GitClonePackSource,
+    bytes: Vec<u8>,
+    staging_snapshot: GitCommitStagingSnapshot,
+}
+
+impl fmt::Debug for GitCommitIndexCandidate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitCommitIndexCandidate")
+            .field("bytes", &format_args!("<redacted:{}>", self.bytes.len()))
+            .field("source", &"<redacted>")
+            .field("staging_snapshot", &"<redacted>")
+            .finish()
+    }
+}
+
 impl fmt::Debug for GitCommitPackedCandidate {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -4812,6 +4833,110 @@ fn prepare_git_commit_pack(
 
 #[allow(
     dead_code,
+    reason = "Phase 5C2B publication consumes this private candidate index"
+)]
+fn prepare_git_commit_candidate_index(
+    plan: &mut GitCommitPlan,
+) -> Result<GitCommitIndexCandidate, GitCommitPlanError> {
+    let staging = &plan.candidate.prepared.staging;
+    if !staging
+        .verify_snapshot(plan.staging_snapshot, MAX_COMMIT_STAGING_BYTES)
+        .map_err(map_git_commit_staging_error)?
+    {
+        return Err(GitCommitPlanError::PlanStale);
+    }
+    let executable =
+        trusted_executable("/usr/bin/git").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+    let sandbox =
+        trusted_executable("/usr/bin/bwrap").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+    let mut command = git_commit_staging_write_command(
+        &executable,
+        &sandbox,
+        &plan.preflight.capability,
+        staging,
+        &["read-tree", &plan.candidate.tree_object_id],
+    );
+    command.stdin(Stdio::null());
+    let output = run_bounded_git_command(command, COMMIT_PROCESS_TIMEOUT, 128)
+        .map_err(map_git_commit_read_error)?;
+    if !output.stdout.is_empty() {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    let actual_tree = run_git_commit_staging_write_tree(
+        &executable,
+        &sandbox,
+        &plan.preflight.capability,
+        staging,
+        plan.preflight.object_format,
+    )?;
+    if actual_tree != plan.candidate.tree_object_id {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    let mut source = staging
+        .inspect_index_source(MAX_COMMIT_INDEX_BYTES as u64)
+        .map_err(map_git_commit_staging_error)?;
+    let mut bytes = read_git_commit_staging_index(staging, &source)?;
+    let snapshot = parse_git_index(&bytes, plan.preflight.object_format)?;
+    if snapshot.has_cache_tree {
+        bytes = git_index_without_extensions(&bytes, plan.preflight.object_format, &snapshot)?;
+        staging
+            .replace_index(&bytes)
+            .map_err(map_git_commit_staging_error)?;
+        source = staging
+            .inspect_index_source(MAX_COMMIT_INDEX_BYTES as u64)
+            .map_err(map_git_commit_staging_error)?;
+        bytes = read_git_commit_staging_index(staging, &source)?;
+        if parse_git_index(&bytes, plan.preflight.object_format)?.has_cache_tree {
+            return Err(GitCommitPlanError::UnsupportedIndex);
+        }
+        let actual_tree = run_git_commit_staging_write_tree(
+            &executable,
+            &sandbox,
+            &plan.preflight.capability,
+            staging,
+            plan.preflight.object_format,
+        )?;
+        if actual_tree != plan.candidate.tree_object_id {
+            return Err(GitCommitPlanError::UnsafeRepository);
+        }
+    }
+    staging
+        .verify_size_limit(MAX_COMMIT_STAGING_BYTES)
+        .map_err(map_git_commit_staging_error)?;
+    let staging_snapshot = staging
+        .snapshot(MAX_COMMIT_STAGING_BYTES)
+        .map_err(map_git_commit_staging_error)?;
+    plan.staging_snapshot = staging_snapshot;
+    Ok(GitCommitIndexCandidate {
+        source,
+        bytes,
+        staging_snapshot,
+    })
+}
+
+fn read_git_commit_staging_index(
+    staging: &GitCommitStaging,
+    source: &GitClonePackSource,
+) -> Result<Vec<u8>, GitCommitPlanError> {
+    let mut file = staging
+        .open_index_source(source, MAX_COMMIT_INDEX_BYTES as u64)
+        .map_err(map_git_commit_staging_error)?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(
+            usize::try_from(source.size).map_err(|_| GitCommitPlanError::ResourceLimit)?,
+        )
+        .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    file.read_to_end(&mut bytes)
+        .map_err(|_| GitCommitPlanError::Io)?;
+    if bytes.len() as u64 != source.size {
+        return Err(GitCommitPlanError::PlanStale);
+    }
+    Ok(bytes)
+}
+
+#[allow(
+    dead_code,
     reason = "Phase 5C2B consumes this after the recoverable index/ref transaction is added"
 )]
 fn install_git_commit_candidate_pack(
@@ -8439,6 +8564,39 @@ mod tests {
                 .count(),
             2
         );
+        cancel_git_commit_plan(plan).unwrap();
+    }
+
+    #[test]
+    fn commit_candidate_index_is_ordinary_exact_and_keeps_active_index_unchanged() {
+        let temp = Temp::new();
+        drop(initialized_workspace(&temp));
+        configure_fixture_identity(&temp);
+        fixture_git(&temp, &["add", "--", "rehow.yaml"]);
+        fixture_git(&temp, &["commit", "-qm", "base"]);
+        let active_index_before = fs::read(temp.0.join(".git/index")).unwrap();
+        let changed = fs::read_to_string(temp.0.join("rehow.yaml"))
+            .unwrap()
+            .replace("name: Git", "name: Candidate index");
+        fs::write(temp.0.join("rehow.yaml"), changed).unwrap();
+        let workspace = open_workspace(&temp);
+        let state = Temp::new();
+        let mut plan = plan_git_commit(&workspace, &state.0, "Build candidate index").unwrap();
+        prepare_git_commit_pack(&mut plan).unwrap();
+
+        let candidate = prepare_git_commit_candidate_index(&mut plan).unwrap();
+        let parsed = parse_git_index(&candidate.bytes, GitObjectFormat::Sha1).unwrap();
+        assert_eq!(candidate.source.name, "index");
+        assert_eq!(candidate.source.size, candidate.bytes.len() as u64);
+        assert!(!parsed.has_cache_tree);
+        assert_eq!(candidate.staging_snapshot, plan.staging_snapshot);
+        assert_eq!(
+            fs::read(temp.0.join(".git/index")).unwrap(),
+            active_index_before
+        );
+        let debug = format!("{candidate:?}");
+        assert!(debug.contains("<redacted:"));
+        assert!(!debug.contains(&plan.candidate.tree_object_id));
         cancel_git_commit_plan(plan).unwrap();
     }
 

@@ -145,6 +145,31 @@ impl GitCommitStaging {
             .map_err(map_commit_staging_error)
     }
 
+    pub(crate) fn inspect_index_source(
+        &self,
+        limit: u64,
+    ) -> Result<GitClonePackSource, GitCommitStagingError> {
+        self.inner
+            .inspect_index_source(limit)
+            .map_err(map_commit_staging_error)
+    }
+
+    pub(crate) fn open_index_source(
+        &self,
+        source: &GitClonePackSource,
+        limit: u64,
+    ) -> Result<File, GitCommitStagingError> {
+        self.inner
+            .open_index_source(source, limit)
+            .map_err(map_commit_staging_error)
+    }
+
+    pub(crate) fn replace_index(&self, bytes: &[u8]) -> Result<(), GitCommitStagingError> {
+        self.inner
+            .replace_index(bytes)
+            .map_err(map_commit_staging_error)
+    }
+
     pub(crate) fn quarantine(self) -> Result<(), GitCommitStagingError> {
         self.inner.quarantine().map_err(map_commit_staging_error)
     }

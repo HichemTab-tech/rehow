@@ -391,6 +391,65 @@ impl CommitStaging {
         open_pack_source(&self._git, source)
     }
 
+    pub(super) fn inspect_index_source(
+        &self,
+        limit: u64,
+    ) -> Result<GitClonePackSource, StoreError> {
+        let git = Directory {
+            descriptor: self._git.try_clone().map_err(|_| StoreError::Io)?,
+        };
+        let (size, hash) = git.hash_regular_relaxed("index", limit)?;
+        Ok(GitClonePackSource {
+            name: "index".to_owned(),
+            size,
+            hash,
+        })
+    }
+
+    pub(super) fn open_index_source(
+        &self,
+        source: &GitClonePackSource,
+        limit: u64,
+    ) -> Result<File, StoreError> {
+        if source.name != "index" || source.size > limit {
+            return Err(StoreError::Unsafe);
+        }
+        let git = Directory {
+            descriptor: self._git.try_clone().map_err(|_| StoreError::Io)?,
+        };
+        let mut file = git.open_regular_relaxed("index", source.size)?;
+        verify_open_source(&mut file, source)?;
+        Ok(file)
+    }
+
+    pub(super) fn replace_index(&self, bytes: &[u8]) -> Result<(), StoreError> {
+        let git = Directory {
+            descriptor: self._git.try_clone().map_err(|_| StoreError::Io)?,
+        };
+        let temp_name = temp_name("commit-index");
+        let mut temp = TempEntry::create(&git, &temp_name)?;
+        temp.file.write_all(bytes).map_err(|_| StoreError::Io)?;
+        temp.file.sync_all().map_err(|_| StoreError::Unsupported)?;
+        validate_file_descriptor(&temp.file, 0o600, Some(bytes.len() as u64))?;
+        let temp_component = component(&temp_name)?;
+        // SAFETY: both names are fixed validated components within retained private staging.
+        if unsafe {
+            libc::renameat(
+                git.descriptor.as_raw_fd(),
+                temp_component.as_ptr(),
+                git.descriptor.as_raw_fd(),
+                c"index".as_ptr(),
+            )
+        } != 0
+        {
+            return Err(StoreError::Io);
+        }
+        temp.installed = true;
+        git.sync()?;
+        let installed = git.open_file("index", libc::O_RDONLY)?;
+        validate_file(&installed, 0o600, Some(bytes.len() as u64))
+    }
+
     pub(super) fn quarantine(self) -> Result<(), StoreError> {
         let expected_identity = identity(&self._stage)?;
         let source = self.commit_staging.open_directory(&self.stage_name)?;
@@ -648,6 +707,11 @@ fn open_pack_source(
     };
     let pack = git.open_directory("objects")?.open_directory("pack")?;
     let mut file = pack.open_regular_relaxed(&source.name, source.size)?;
+    verify_open_source(&mut file, source)?;
+    Ok(file)
+}
+
+fn verify_open_source(file: &mut File, source: &GitClonePackSource) -> Result<(), StoreError> {
     let before = status(file.as_raw_fd())?;
     let mut hasher = blake3::Hasher::new();
     let mut buffer = [0_u8; 64 * 1024];
@@ -671,7 +735,7 @@ fn open_pack_source(
         return Err(StoreError::Corrupt);
     }
     file.seek(SeekFrom::Start(0)).map_err(|_| StoreError::Io)?;
-    Ok(file)
+    Ok(())
 }
 
 impl CloneStaging {

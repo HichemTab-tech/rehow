@@ -48,3 +48,9 @@ Verified checks:
 - `git diff --check`
 
 Focused coverage proves exact candidate closure, append-only installation, idempotent identical installation, unchanged branch/index, candidate readability without publication, stale-plan refusal before active mutation, and preservation of a mismatched active pack collision. Phase 5C2B remains responsible for the recoverable index/direct-ref-last transaction and final confirmation surface.
+
+## Phase 5C2B candidate-index preparation
+
+The private staging repository now generates the candidate index with fixed config-free `read-tree`, requires `write-tree` to reproduce the already verified candidate tree, parses the resulting bounded stage-zero v2/v3 index, removes any cache-tree extension, recomputes the object-format checksum, atomically replaces only the private staging index, and proves the stripped index still writes the candidate tree. The source is descriptor-opened and content-hashed for the later recovery transaction; the active index remains byte-identical.
+
+The locked all-feature core gate passes 386 unit tests with 2 intentional ignores plus all 43 contract/API tests. Formatting and strict all-target/all-feature Clippy pass. This is a recovery prerequisite only: active index/ref publication and the durable intent remain unimplemented.
