@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 5D2D Reference Desk manual sync is complete at `b1907ee`. Safe push and trusted credential provenance are the next Git gates.
+Phase 5D3A exact anonymous-HTTPS push is complete at `de848d7`. Trusted authenticated transport provenance is the next Git gate.
 
 ## Current task
 
-Specify Phase 5D3 safe push and trusted credential/agent provenance without adding credential storage or destructive Git behavior.
+Specify the first bounded Phase 5D3B trusted-authentication slice without adding credential storage or weakening the accepted Git sandbox.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; reconcile external changes; manage Attachment inventory/import/removal; retrieve Guides through the accepted search experience; see confined Git status; initialize a direct private Git repository; connect a strictly validated remote; clone a canonical anonymous-HTTPS Git Workspace; create a native-confirmed managed-only local commit; and manually inspect, cancel, apply, or recover a safe loose-branch anonymous-HTTPS fast-forward through the Reference Desk. Packed-branch publication, Attachment viewing/export/reveal, authenticated transports, push, and MCP mutation remain unimplemented; MCP remains read-only.
+In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; reconcile external changes; manage Attachment inventory/import/removal; retrieve Guides through the accepted search experience; see confined Git status; initialize a direct private Git repository; connect a strictly validated remote; clone a canonical anonymous-HTTPS Git Workspace; create a native-confirmed managed-only local commit; manually inspect/apply/recover an anonymous-HTTPS fast-forward; and publish one exact, server-verified fast-forward push through the Reference Desk. Packed-branch publication, Attachment viewing/export/reveal, authenticated transports, and MCP mutation remain unimplemented; MCP remains read-only.
 
 ## Completed work
 
@@ -114,16 +114,17 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Implemented Phase 5D2B2 core publication: an immutable generation-checked sync intent precedes Workspace activation; verified packs install append-only; a stripped exact candidate index publishes before the direct loose branch ref; recovery accepts only exact before/candidate states; final Workspace, object, index, ref, and static Git state are rechecked before completion. Packed-only current branches fail closed pending a separate representation policy.
 - Completed Phase 5D2C at signed checkpoint `4f984fd`: pathless native inspect/cancel/apply/recover commands retain the opaque classification in Rust, expose only a closed redacted result and single-use token, require OS-native confirmation for apply/recovery, replace the retained Workspace view only after core success, rebuild watching, and block Workspace switching during active publication. The single reused Security Reviewer returned PASS.
 - Completed Phase 5D2D at signed checkpoint `b1907ee`: the status bar and compact sync panel expose every closed ancestry/dirty/cancellation/apply/recovery state without renderer authority. Exact payload guards, deterministic focus/live feedback, wide/narrow captures, production build, and the corrected forced-dark contrast pass. The single reused Design Reviewer final verdict is PASS.
+- Completed Phase 5D3A at signed checkpoint `de848d7`: only an opaque `localAhead` authority can publish one exact full-OID-to-full-branch refspec through an anonymous canonical HTTPS, config-free sandbox. Fresh preflight and postflight discovery detect remote races; force, deletion, tags, arbitrary options, credentials, paths, refs, OIDs, and raw Git output never cross renderer IPC. The single reused Security Reviewer final verdict is PASS.
 
 ## Work in progress
 
-- Phase 5D2D is complete at signed checkpoint `b1907ee`; safe push/credential provenance is next.
+- Phase 5D3A is complete at signed checkpoint `de848d7`; a small trusted-authentication provenance slice is next.
 
 ## Remaining work
 
 - Workspace adoption/import/migration and Attachment viewing/export/reveal remain incomplete.
 - Phase 4: complete at `e17b7d1`.
-- Phase 5: read-only status, safe local initialization, metadata-only remote connection, anonymous-HTTPS clone including UI, native-confirmed recoverable managed-only commits, isolated incoming inspection, bounded ancestry, durable loose-branch fast-forward publication, pathless native sync/recovery, and manual sync UI are complete; packed-branch publication, authenticated transports, and push remain.
+- Phase 5: read-only status, safe local initialization, metadata-only remote connection, anonymous-HTTPS clone including UI, native-confirmed recoverable managed-only commits, isolated incoming inspection, bounded ancestry, durable loose-branch fast-forward publication, pathless native sync/recovery, manual sync UI, and exact anonymous-HTTPS fast-forward push are complete; packed-branch publication and authenticated transports remain.
 - Phase 6: standalone full MCP contract.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
@@ -224,19 +225,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - Phase 5D2B2 keeps publication crate-private and binds the exact Workspace/root/Git identities, `HEAD`, config, packed-refs, shallow state, before/candidate index/ref bytes and modes, Workspace journal, and immutable plan hash before Workspace activation. Verified packs install append-only; recovery accepts only exact before/candidate states; final Workspace/object/index/ref/static metadata are rechecked before completion. Foreign post-ref Workspace/ref changes are preserved and record conflict. The single reused Security Reviewer correction verdict is PASS.
 - Phase 5D2C exposes no renderer path, URL, ref, OID, Git output, credential, staging handle, or classification authority. Cancellation revokes active/retained results, tokens are single-use, apply accepts only a clean proven fast-forward after native confirmation, and recovery requires a pending durable intent. The single reused Security Reviewer verdict is PASS.
 - Phase 5D2D validates exact closed payloads before rendering or installing state, exposes Apply only for a clean proven fast-forward, and routes generic recovery through sync first with fallback only on `recoveryNotRequired`. It adds no renderer Git/filesystem/credential authority.
+- Phase 5D3A revalidates the complete local plan and exact upstream immediately before publication, uses only a normal server-enforced fast-forward with an internally constructed full refspec, and verifies the upstream afterward. The synthetic repository exposes read-only objects but no active refs, Workspace, config, helper, prompt, proxy, or credential authority. The single reused Security Reviewer verdict is PASS with no blocker/high/medium finding.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5D2D used exactly one reused Design Reviewer at the completed UI gate and the correction verdict is PASS.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5D3A used exactly one reused Security Reviewer at the completed authority gate and the correction verdict is PASS.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`b1907eed66fecd0f6354e960be2700bc545190e0` — signed Phase 5D2D Reference Desk Git sync UI; its configured GPG signature verifies. This progress-only ledger update follows that implementation commit.
+`de848d786181c20f932d1207bf1f3d7f6b58e113` — signed Phase 5D3A exact anonymous Git push; its configured GPG signature verifies. This progress-only ledger update follows that implementation commit.
 
 ## Tests last run and results
 
+- 2026-09-19: Phase 5D3A checkpoint `de848d7` passes 416 core tests with 2 intentional network/performance ignores; 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 24 desktop Rust, 39 Vitest, MCP, and doc tests pass. Formatting, strict all-Workspace/all-target/all-feature Clippy, `pnpm check`, production Vite/Cargo builds, optimized Tauri build, bootstrap validation, whitespace checks, signed-commit verification, and the single reused Security Reviewer correction gate pass. No live external push was performed because that requires external mutation authorization; deterministic production-state-machine and exact command tests cover preflight, publication, postflight, remote races, and uncertain outcomes.
 - 2026-09-19: Phase 5D2D checkpoint `b1907ee` passes 38 desktop Vitest tests, `pnpm check`, contract drift, TypeScript, Biome, the production Vite/Cargo Workspace build, bootstrap validation, whitespace checks, wide/narrow screenshot inspection, signed-commit verification, and the single reused Design Reviewer correction gate.
 - 2026-09-19: Phase 5D2C checkpoint `4f984fd` passes 412 core tests with 2 intentional network/performance ignores; 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 24 desktop, MCP, and doc tests pass. Focused sync coverage passes 18 tests. Strict all-Workspace/all-target/all-feature Clippy, formatting, bootstrap validation, whitespace checks, signed-commit verification, and the single reused Security Reviewer gate pass.
 - 2026-09-19: Phase 5D2B2 checkpoint `983b3da` passes 412 core tests with 2 intentional network/performance ignores; 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 22 desktop, MCP smoke, and doc tests pass. Focused sync/recovery coverage passes 18 tests, including all six Git metadata interruption seams, no-portable-change publication, packed-only refusal, post-ref foreign Workspace/ref conflicts, and intent codec bounds. Strict all-Workspace/all-target/all-feature Clippy, formatting, bootstrap validation, whitespace checks, signed-commit verification, and the single reused Security Reviewer correction gate pass.
@@ -455,20 +458,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0025, `docs/task-packets/phase-5d2b2-durable-sync-publication.md`, its evidence, and the core Git/storage/recovery changes implement internal durable loose-branch fast-forward publication at `983b3da`.
 - ADR 0025, `docs/task-packets/phase-5d2c-native-sync-lifecycle.md`, its evidence, the public opaque core boundary, and the pathless native inspect/cancel/apply/recover lifecycle implement Phase 5D2C at `4f984fd`.
 - ADR 0025, `docs/task-packets/phase-5d2d-sync-ui.md`, its evidence/screenshots, exact React payload guards, and the compact Reference Desk sync/recovery lifecycle implement Phase 5D2D at `b1907ee`.
+- ADR 0025, `docs/task-packets/phase-5d3a-anonymous-push.md`, its evidence, the exact core publication boundary, native single-use confirmation lifecycle, and local-ahead Reference Desk action implement Phase 5D3A at `de848d7`.
 
 ## Next recommended action
 
-Specify ADR 0025's Phase 5D3 safe-push gate and the trusted SSH-agent/Git-credential-helper provenance boundary. Preserve exact remote-OID/refspec confirmation, no credential storage/logging, no force, and no renderer URL/ref/OID authority before implementation.
+Specify Phase 5D3B1 as a small read-only trusted-transport provenance boundary, beginning with owner-safe launch-inherited `SSH_AUTH_SOCK` and fixed SSH configuration validation. Do not combine credential-helper execution or a live authenticated network operation into the same slice.
 
 ## Recommended agent role and reasoning effort
 
-Architect/Orchestrator locally with `gpt-5.6-sol`, xhigh/high judgment for the push/credential threat boundary. Run zero extra agents during routine work; use at most one reused Security Reviewer only at the completed authority gate.
+Architect/Orchestrator locally with `gpt-5.6-sol`, xhigh/high judgment for authentication provenance. Run zero extra agents during routine work; use at most one reused Security Reviewer only at the completed authority gate.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read the Git sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `b1907ee`, `4f984fd`, `983b3da`, and `85b835b`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoints `de848d7`, `b1907ee`, `4f984fd`, and `983b3da`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 5D2D as complete. Specify Phase 5D3 safe push/credential provenance next; do not implement force, history rewrite, automatic conflict resolution, credential storage, scheduling, packed-branch publication, or MCP mutation.
+6. Treat Phase 5D3A as complete. Specify the bounded Phase 5D3B1 trusted-transport provenance slice next; do not implement force, history rewrite, automatic conflict resolution, credential storage, scheduling, packed-branch publication, or MCP mutation.
