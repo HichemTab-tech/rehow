@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 5A accepted — confined read-only Git discovery/status is complete; next is Phase 5B safe repository initialization, connection, and clone design.
+Phase 5B1 accepted — native-confirmed, process-free Git initialization is complete; next is Phase 5B2 safe remote connection.
 
 ## Current task
 
-Specify Phase 5B's safe repository initialization, remote connection, and clone boundaries before adding mutation or network authority.
+Specify Phase 5B2's secret-free remote URL/config mutation and trusted credential provenance before adding remote connection authority.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; reconcile external changes; manage Attachment inventory/import/removal; retrieve Guides through the accepted search experience; and see confined, credential-free Git branch/change/remote/divergence status. Attachment viewing/export/reveal, Git mutation/sync workflows, and MCP mutation remain unimplemented; MCP remains read-only.
+In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; reconcile external changes; manage Attachment inventory/import/removal; retrieve Guides through the accepted search experience; see confined Git status; and initialize a direct private Git repository through a single-use native-confirmed plan. Attachment viewing/export/reveal, Git remote/clone/commit/sync workflows, and MCP mutation remain unimplemented; MCP remains read-only.
 
 ## Completed work
 
@@ -88,10 +88,11 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Added loss-tolerant external-change reconciliation at signed checkpoint `f2edc2a`: descriptor-bound nonrecursive watches emit path-free invalidation hints; clean sessions refresh automatically; dirty or in-flight edits remain intact; stale sessions are rejected; degraded/refocus/manual recovery stays available. The single Security Reviewer passed the corrected boundary with no blocker/high/medium finding.
 - Completed search retrieval interaction at signed checkpoint `e17b7d1`: bounded plain excerpts and Unicode-scalar highlights, closed pre-cap status scopes, dirty-safe selection reconciliation, URL-restorable filters, actionable empty states, production latency evidence, and wide/narrow visual captures. The single Design Reviewer passed the correction recheck with no blocker/high/medium finding.
 - Added confined read-only Git status at signed checkpoint `3896f92`: descriptor-held repository identity, a config-free Bubblewrap sandbox, hostile config/filter/hook/alternates resistance, bounded porcelain parsing, remote-name/tracking extraction without URLs, known divergence, a pathless native command, and compact footer status. The single Security Reviewer passed all corrections and the final delta with no blocker/high/medium finding.
+- Added safe Git initialization at signed checkpoint `7df22b9`: capability/revision-bound single-use plans, native confirmation, fresh ancestor and writability checks, process-free canonical repository creation, fsynced unnamed-inode/no-replace file publication, fully flushed private directory trees, inert interruption provenance, nested/symlink/residue refusal, and compact footer action. The single Security Reviewer passed the final implementation with no blocker/high/medium finding.
 
 ## Work in progress
 
-- Phase 5A is complete at signed checkpoint `3896f92`. The next batch is Phase 5B safe Git initialization/connection/clone design; Attachment viewing/export/reveal and MCP mutation remain deferred.
+- Phase 5B1 is complete at signed checkpoint `7df22b9`. The next batch is Phase 5B2 safe remote connection; clone follows as Phase 5B3. Attachment viewing/export/reveal and MCP mutation remain deferred.
 
 ## Remaining work
 
@@ -99,7 +100,7 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Phase 2: native shell and safe Workspace onboarding/import/migration.
 - Phase 3: Category/Guide/Attachment lifecycle and edit conflicts.
 - Phase 4: complete at `e17b7d1`.
-- Phase 5: read-only status complete; safe initialization, connection, clone, commit, and synchronization remain.
+- Phase 5: read-only status and safe local initialization complete; remote connection, clone, commit, and synchronization remain.
 - Phase 6: standalone full MCP contract.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
@@ -109,6 +110,7 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Design and accessibility findings
 
+- 2026-09-19: Phase 5B1's bounded footer action passed the freshly fetched Web Interface Guidelines: semantic named button, visible hover/focus/busy states, native confirmation, live/error feedback, narrow truncation, and deterministic focus return. It preserves the accepted shell geometry, so no separate screenshot checkpoint was required.
 - 2026-09-19: Phase 5A replaces the footer's static repository marker with concise checking/unavailable/unsafe/branch/detached/change/conflict/divergence text. It preserves the accepted shell geometry and adds no new interaction surface, so no separate visual-review checkpoint was required.
 - 2026-09-19: Phase 4E current-guideline and screenshot review passes at 1440×900 light, 480×800 dark, and 720×900 light. The only high/medium findings—post-cap status filtering and an out-of-scope selected Guide—were corrected with pre-cap core scopes and guarded selection reconciliation; the same Design Reviewer passed the narrow recheck.
 - 2026-09-19: Phase 4D adds concise toolbar health text and a named manual recovery action without changing shell geometry. Automatic refresh never steals focus; dirty/in-flight edits are retained and announced. Its current-guideline review found no blocking issue; Phase 4E subsequently closed the combined screenshot gate.
@@ -182,19 +184,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - The `f2edc2a` watcher holds no-follow directory descriptors, emits no paths/content, treats events only as invalidation hints, rejects stale native sessions, and retains dirty/in-flight edits. Review corrections closed a lost-wakeup race and exact managed-directory selection; Security Reviewer/xhigh reports no remaining blocker/high/medium finding.
 - The `e17b7d1` result contract contains only bounded plain text, closed field names, IDs, and bounded integer spans; React constructs text/`mark` nodes without HTML. Closed scopes are validated natively and enforced in core before ranking/capping. No new filesystem, shell, Git, credential, or MCP mutation authority was added.
 - The `3896f92` Git reader retains no-follow descriptors and runs root-owned Git inside a networkless, config-free Bubblewrap repository assembled from those descriptors. It masks late alternates, disables hooks/helpers/prompts/editors/pagers, bounds time and output, never returns paths, URLs, raw stderr, or content, and exposes no mutation. The single Security Reviewer passed the final implementation with no blocker/high/medium finding.
+- The `7df22b9` initializer executes no Git/config/helper/hook/network process. It uses launch-capability/revision-bound single-use plans, pathless IPC, native confirmation, fresh root/ancestor checks, `O_TMPFILE` plus no-replace publication, exact private modes, full directory fsyncs, and retained marker-bound recovery. Unknown/symlink/nested residue is never overwritten or deleted. The single Security Reviewer passed with no blocker/high/medium finding; unsupported unnamed-inode filesystems fail closed.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5A used exactly one Security Reviewer/xhigh at its acceptance boundary and it is complete.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5B1 used exactly one Security Reviewer/xhigh at its acceptance boundary and it is complete.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`3896f926198786dbdf8f131fe78bacc8a5ebfd56` — signed and verified Phase 5A confined read-only Git status. This progress-only ledger update follows that feature commit.
+`7df22b98819b9e1169895055952281cc36b23b1a` — signed and verified Phase 5B1 safe Git initialization. This progress-only ledger update follows that feature commit.
 
 ## Tests last run and results
 
+- 2026-09-19: Phase 5B1 Git initialization checkpoint at `7df22b9`: 313 normal core tests plus 1 intentional release-only ignore, 18 error-contract, 13 protocol, 1 public-API/trybuild, 11 unknown-YAML, 18 desktop Rust, 1 MCP, and 31 Vitest tests pass. `pnpm check/test/build`, Cargo formatting, locked all-Workspace/all-target/all-feature Clippy with warnings denied, optimized Tauri build, bootstrap/contract/whitespace checks, current Web Interface Guidelines, and focused 7/7 core plus 2/2 native adversarial tests pass. Security Reviewer/xhigh final verdict: PASS with no blocker/high/medium finding.
 - 2026-09-19: Phase 5A Git checkpoint at `3896f92`: 310 normal core tests plus 1 intentional release-only ignore, 18 error-contract, 13 protocol, 1 public-API/trybuild, 11 unknown-YAML, 16 desktop Rust, 1 MCP, and 30 Vitest tests pass. `pnpm check/test/build`, Cargo formatting, locked all-Workspace/all-target/all-feature Clippy with warnings denied, optimized Tauri build, bootstrap/contract/whitespace checks, and four focused adversarial Git tests pass. The single Security Reviewer/xhigh final verdict is PASS with no blocker/high/medium finding.
 - 2026-09-19: Phase 4 search checkpoint at `e17b7d1`: 306 normal core tests plus 18 error-contract, 13 protocol, 1 public-API/trybuild, 11 unknown-YAML, 15 desktop Rust, 1 MCP, and 29 Vitest tests pass; the release-only incremental gate is intentionally ignored by the debug suite. `pnpm check/test/build`, locked all-target/all-feature Clippy with warnings denied, Cargo formatting, optimized Tauri no-bundle build, bootstrap/contract/whitespace checks, three 5,000-Guide performance runs, production browser latency, and screenshot review pass. Worst backend p95 is 7.676 ms and browser-visible p95 is 50.184 ms. Design Reviewer/high final verdict: PASS.
 - 2026-09-19: external-change checkpoint at `f2edc2a`: the full pre-review gate passed 301 normal core tests plus the protocol/error/public-API/unknown-YAML/desktop/MCP suites, 24 Vitest tests, production web/Cargo/Tauri builds, and one intentional release benchmark ignore. Corrections then passed 7/7 watcher, 13/13 desktop Rust, and 25/25 Vitest tests; full all-target/all-feature locked Workspace Clippy denies warnings, formatting, `pnpm check`, bootstrap, contracts, and whitespace checks pass. Security Reviewer/xhigh final verdict: PASS with no blocker/high/medium finding.
@@ -362,20 +366,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0019, `docs/task-packets/phase-4d-external-change-watching.md`, `docs/evidence/phase-4d-external-change-watching.md`, the core watcher, native path-free event adapter, and dirty-safe UI reconciliation implement automatic external-change handling at `f2edc2a`.
 - ADR 0020, `docs/task-packets/phase-4e-search-interaction-completion.md`, `docs/evidence/phase-4e-search-interaction.md`, bounded excerpt/highlight payloads, pre-cap status scopes, guarded selection reconciliation, and representative screenshots complete Phase 4 at `e17b7d1`.
 - ADR 0021, `docs/task-packets/phase-5a-readonly-git-status.md`, `docs/evidence/phase-5a-readonly-git-status.md`, the confined core Git reader, descriptor capability, pathless native command, and footer summary implement Phase 5A at `3896f92`.
+- ADR 0022, `docs/task-packets/phase-5b1-git-initialize.md`, `docs/evidence/phase-5b1-git-initialize.md`, process-free core Git metadata creation, single-use native plan/apply commands, and the footer action implement Phase 5B1 at `7df22b9`.
 
 ## Next recommended action
 
-Specify Phase 5B safe Git initialization, remote connection, and clone behavior. Freeze destination inspection, credentials-through-existing-tools, confirmation, failure cleanup, and hostile-repository behavior before implementation.
+Specify Phase 5B2 safe remote connection. Freeze secret-free URL grammar, remote-name policy, lossless config parsing/mutation, config revision/CAS, atomic recovery, duplicate behavior, and later credential provenance before implementation.
 
 ## Recommended agent role and reasoning effort
 
-Architect — `gpt-5.6-sol`, xhigh for the Phase 5B authority decision, then Orchestrator/high locally. Run zero extra agents during routine work and one security reviewer only at the next material security checkpoint.
+Architect — `gpt-5.6-sol`, xhigh for the Phase 5B2 config/credential decision, then Orchestrator/high locally. Run zero extra agents during routine work and one security reviewer only at the next material security checkpoint.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read the Git sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `3896f926198786dbdf8f131fe78bacc8a5ebfd56`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `7df22b98819b9e1169895055952281cc36b23b1a`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Resume with the Phase 5B architecture/packet for safe initialization, connection, and clone; do not implement until its authority, confirmation, cleanup, credential, and hostile-repository rules are explicit.
+6. Resume with the Phase 5B2 ADR delta/packet for safe remote connection; do not implement until URL, config-preservation, revision, atomic-recovery, and credential-provenance rules are explicit.
