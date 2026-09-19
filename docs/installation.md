@@ -30,7 +30,7 @@ Prefer user-level installation when the package format supports it without weake
 
 ## Runtime dependencies
 
-Package metadata must declare the exact WebKitGTK 4.1, GTK, SSL, and other runtime libraries produced by the Tauri bundler/build baseline. Development-only packages are in `docs/development.md`. Do not tell users to install a permanently running Node server for the desktop application.
+Package metadata must declare the exact WebKitGTK 4.1, GTK, SSL, and other runtime libraries produced by the Tauri bundler/build baseline. Linux Git status additionally requires root-owned `/usr/bin/git` and `/usr/bin/bwrap`; when either is unavailable, Rehow content remains usable and reports Git status as unavailable. Development-only packages are in `docs/development.md`. Do not tell users to install a permanently running Node server for the desktop application.
 
 ## Wayland behavior
 

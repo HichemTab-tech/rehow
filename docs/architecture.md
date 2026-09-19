@@ -205,6 +205,7 @@ The desktop offers Active, Tested, Draft, Stale, Archived, and All scopes. Tauri
 - Respect Git ownership and `safe.directory`; never set a wildcard exception.
 - Parse porcelain v2 `-z`. Never run user aliases, hooks, submodule commands, repository-selected helpers, difftools, mergetools, or arbitrary refspecs.
 - Read discovery/status is the only accepted baseline. Commit/sync/clone/init remain proposed until separate ADRs define exact config isolation, Git-state CAS, index preservation, managed path scope, incoming-tree validation, journaled materialization, credentials, and conflict behavior.
+- ADR 0021 implements that baseline with fixed root-owned Git/Bubblewrap paths, a cleared environment, machine output, bounded execution, and remote names without URLs. Repository commands receive a read-only Workspace plus a synthetic config-free Git directory assembled from inherited descriptors inside an unshared mount/network namespace; object-info alternates are masked. Gitfiles and common directories are rejected.
 
 ## MCP architecture
 

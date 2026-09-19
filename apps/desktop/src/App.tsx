@@ -55,6 +55,23 @@ type WorkspacePayload = {
   watchSession: string;
 };
 
+type GitStatusPayload = {
+  kind: "unavailable" | "notRepository" | "unsafe" | "ready" | "failed";
+  version: string | null;
+  branch: string | null;
+  detached: boolean;
+  upstream: string | null;
+  divergenceKnown: boolean;
+  ahead: number;
+  behind: number;
+  changed: number;
+  untracked: number;
+  conflicts: number;
+  remotes: string[];
+  remoteCount: number;
+  failure: string | null;
+};
+
 type WorkspaceWatchEventPayload = {
   workspaceId: string;
   watchSession: string;
@@ -560,6 +577,71 @@ export function gitFactLabel(facts: FolderFacts) {
   return "No Git repository detected";
 }
 
+export function gitStatusLabel(status: GitStatusPayload | null) {
+  if (status === null) return "Checking Git…";
+  if (status.kind === "unavailable") return "Git unavailable";
+  if (status.kind === "notRepository") return "No Git repository";
+  if (status.kind === "unsafe") return "Git repository needs attention";
+  if (status.kind === "failed")
+    return status.failure ?? "Git status unavailable";
+  const branch = status.detached
+    ? "Detached HEAD"
+    : (status.branch ?? "Unborn branch");
+  if (status.conflicts > 0) return `${branch} · ${status.conflicts} conflicts`;
+  const changes = status.changed + status.untracked;
+  const divergence = status.divergenceKnown
+    ? ` · ↑${status.ahead} ↓${status.behind}`
+    : "";
+  return `${branch} · ${changes === 0 ? "clean" : `${changes} changes`}${divergence}`;
+}
+
+export function isGitStatusPayload(value: unknown): value is GitStatusPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const status = value as Partial<Record<keyof GitStatusPayload, unknown>> &
+    Record<string, unknown>;
+  if (
+    Object.keys(status).length !== 14 ||
+    !["unavailable", "notRepository", "unsafe", "ready", "failed"].includes(
+      String(status.kind),
+    )
+  )
+    return false;
+  for (const key of ["version", "branch", "upstream", "failure"] as const) {
+    const field = status[key];
+    if (field !== null && (typeof field !== "string" || field.length > 512))
+      return false;
+  }
+  if (
+    typeof status.detached !== "boolean" ||
+    typeof status.divergenceKnown !== "boolean"
+  )
+    return false;
+  for (const key of [
+    "ahead",
+    "behind",
+    "changed",
+    "untracked",
+    "conflicts",
+    "remoteCount",
+  ] as const) {
+    const count = status[key];
+    if (
+      typeof count !== "number" ||
+      !Number.isInteger(count) ||
+      count < 0 ||
+      count > 0xffff_ffff
+    )
+      return false;
+  }
+  return (
+    Array.isArray(status.remotes) &&
+    status.remotes.length <= 32 &&
+    status.remotes.every(
+      (remote) => typeof remote === "string" && remote.length <= 512,
+    )
+  );
+}
+
 function folderFactSuffix(facts: FolderFacts) {
   const access = facts.writable
     ? "The folder is writable."
@@ -642,6 +724,7 @@ export function App() {
     return isSearchScope(scope) ? scope : "active";
   });
   const [workspace, setWorkspace] = useState<WorkspacePayload | null>(null);
+  const [gitStatus, setGitStatus] = useState<GitStatusPayload | null>(null);
   const [selectedId, setSelectedId] = useState(
     () => initialParameter("guide") ?? "",
   );
@@ -1054,6 +1137,45 @@ export function App() {
       window.clearTimeout(timeout);
     };
   }, [query, searchScope, workspace]);
+
+  useEffect(() => {
+    if (workspace === null) {
+      setGitStatus(null);
+      return;
+    }
+    let active = true;
+    setGitStatus(null);
+    import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke<unknown>("git_status_open_workspace"))
+      .then((status) => {
+        if (!isGitStatusPayload(status))
+          throw new Error("invalid Git status payload");
+        if (active) setGitStatus(status);
+      })
+      .catch(() => {
+        if (active) {
+          setGitStatus({
+            kind: "failed",
+            version: null,
+            branch: null,
+            detached: false,
+            upstream: null,
+            divergenceKnown: false,
+            ahead: 0,
+            behind: 0,
+            changed: 0,
+            untracked: 0,
+            conflicts: 0,
+            remotes: [],
+            remoteCount: 0,
+            failure: "Git status unavailable",
+          });
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [workspace]);
 
   useEffect(() => {
     if (dirtyGuide || dirtyGuideDetails) return;
@@ -3352,7 +3474,7 @@ export function App() {
         <span className="status-path" translate="no">
           {workspace?.name ?? "No Workspace"}
         </span>
-        <span>{workspace ? gitFactLabel(workspace.facts) : "Read-only"}</span>
+        <span>{workspace ? gitStatusLabel(gitStatus) : "Read-only"}</span>
       </footer>
       <div className="sr-only" aria-live="polite">
         {announcement}

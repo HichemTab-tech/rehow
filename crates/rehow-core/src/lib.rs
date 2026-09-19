@@ -1,6 +1,6 @@
 pub mod application;
 pub mod domain;
-pub mod git {}
+pub mod git;
 pub mod markdown;
 pub mod protocol;
 pub mod search;

@@ -39,8 +39,66 @@ use std::{
     collections::{HashMap, HashSet},
     fmt,
     fs::File,
+    os::fd::OwnedFd,
     path::Path,
 };
+
+pub(crate) struct GitRepositoryCapability {
+    _work_tree: OwnedFd,
+    _git_dir: OwnedFd,
+    _objects: OwnedFd,
+    _config: OwnedFd,
+    _refs: OwnedFd,
+    _head: OwnedFd,
+    _index: Option<OwnedFd>,
+    _packed_refs: Option<OwnedFd>,
+    _shallow: Option<OwnedFd>,
+    work_tree_path: String,
+    objects_path: String,
+    config_path: String,
+    refs_path: String,
+    head_path: String,
+    index_path: Option<String>,
+    packed_refs_path: Option<String>,
+    shallow_path: Option<String>,
+}
+
+impl GitRepositoryCapability {
+    pub(crate) fn work_tree_path(&self) -> &str {
+        &self.work_tree_path
+    }
+
+    pub(crate) fn objects_path(&self) -> &str {
+        &self.objects_path
+    }
+
+    pub(crate) fn config_path(&self) -> &str {
+        &self.config_path
+    }
+
+    pub(crate) fn refs_path(&self) -> &str {
+        &self.refs_path
+    }
+    pub(crate) fn head_path(&self) -> &str {
+        &self.head_path
+    }
+    pub(crate) fn index_path(&self) -> Option<&str> {
+        self.index_path.as_deref()
+    }
+    pub(crate) fn packed_refs_path(&self) -> Option<&str> {
+        self.packed_refs_path.as_deref()
+    }
+    pub(crate) fn shallow_path(&self) -> Option<&str> {
+        self.shallow_path.as_deref()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitRepositoryCapabilityError {
+    NotRepository,
+    Unsafe,
+    Io,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspaceIssueKind {
@@ -189,6 +247,12 @@ impl WorkspaceView {
 
     pub(crate) fn search_index(&self) -> &crate::search::SearchIndex {
         &self.search_index
+    }
+
+    pub(crate) fn git_repository_capability(
+        &self,
+    ) -> Result<GitRepositoryCapability, GitRepositoryCapabilityError> {
+        self._root.git_repository_capability()
     }
 }
 
@@ -2097,6 +2161,162 @@ mod linux {
 
         pub(super) fn watch_path(&self) -> std::path::PathBuf {
             std::path::PathBuf::from(format!("/proc/self/fd/{}", self.descriptor.as_raw_fd()))
+        }
+
+        pub(super) fn git_repository_capability(
+            &self,
+        ) -> Result<super::GitRepositoryCapability, super::GitRepositoryCapabilityError> {
+            use super::GitRepositoryCapabilityError as Error;
+
+            let git_dir = match self.open_directory(".git") {
+                Ok(directory) => directory,
+                Err(OpenDirectoryError::Missing) => return Err(Error::NotRepository),
+                Err(OpenDirectoryError::Unsafe) => return Err(Error::Unsafe),
+                Err(OpenDirectoryError::Io(_)) => return Err(Error::Io),
+            };
+            if git_dir.entry_exists("commondir").map_err(|_| Error::Io)? {
+                return Err(Error::Unsafe);
+            }
+            let objects = match git_dir.open_directory("objects") {
+                Ok(objects) => {
+                    match objects.open_directory("info") {
+                        Ok(info) if info.entry_exists("alternates").map_err(|_| Error::Io)? => {
+                            return Err(Error::Unsafe);
+                        }
+                        Ok(_) => {}
+                        Err(OpenDirectoryError::Missing) => return Err(Error::Unsafe),
+                        Err(OpenDirectoryError::Unsafe) => return Err(Error::Unsafe),
+                        Err(OpenDirectoryError::Io(_)) => return Err(Error::Io),
+                    }
+                    objects
+                }
+                Err(OpenDirectoryError::Missing | OpenDirectoryError::Unsafe) => {
+                    return Err(Error::Unsafe);
+                }
+                Err(OpenDirectoryError::Io(_)) => return Err(Error::Io),
+            };
+            let refs = git_dir.open_directory("refs").map_err(|_| Error::Unsafe)?;
+            let head = git_dir
+                .open_inheritable_regular("HEAD")
+                .map_err(|_| Error::Unsafe)?;
+            let config = git_dir
+                .open_inheritable_regular("config")
+                .map_err(|_| Error::Unsafe)?;
+            let index = git_dir
+                .open_optional_inheritable_regular("index")
+                .map_err(|_| Error::Unsafe)?;
+            let packed_refs = git_dir
+                .open_optional_inheritable_regular("packed-refs")
+                .map_err(|_| Error::Unsafe)?;
+            let shallow = git_dir
+                .open_optional_inheritable_regular("shallow")
+                .map_err(|_| Error::Unsafe)?;
+
+            let work_tree = self.inheritable_duplicate().map_err(|_| Error::Io)?;
+            let git_dir = git_dir.inheritable_duplicate().map_err(|_| Error::Io)?;
+            let objects = objects.inheritable_duplicate().map_err(|_| Error::Io)?;
+            let refs = refs.inheritable_duplicate().map_err(|_| Error::Io)?;
+            let work_tree_path = format!("/proc/self/fd/{}", work_tree.as_raw_fd());
+            let objects_path = format!("/proc/self/fd/{}", objects.as_raw_fd());
+            let config_path = format!("/proc/self/fd/{}", config.as_raw_fd());
+            let refs_path = format!("/proc/self/fd/{}", refs.as_raw_fd());
+            let head_path = format!("/proc/self/fd/{}", head.as_raw_fd());
+            let index_path = index
+                .as_ref()
+                .map(|fd| format!("/proc/self/fd/{}", fd.as_raw_fd()));
+            let packed_refs_path = packed_refs
+                .as_ref()
+                .map(|fd| format!("/proc/self/fd/{}", fd.as_raw_fd()));
+            let shallow_path = shallow
+                .as_ref()
+                .map(|fd| format!("/proc/self/fd/{}", fd.as_raw_fd()));
+            Ok(super::GitRepositoryCapability {
+                _work_tree: work_tree,
+                _git_dir: git_dir,
+                _objects: objects,
+                _config: config,
+                _refs: refs,
+                _head: head,
+                _index: index,
+                _packed_refs: packed_refs,
+                _shallow: shallow,
+                work_tree_path,
+                objects_path,
+                config_path,
+                refs_path,
+                head_path,
+                index_path,
+                packed_refs_path,
+                shallow_path,
+            })
+        }
+
+        fn open_inheritable_regular(&self, name: &str) -> Result<OwnedFd, io::Error> {
+            let name = component(name)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid component"))?;
+            // SAFETY: descriptor and NUL-terminated component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_NOFOLLOW,
+                )
+            };
+            if raw < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: successful `openat` returned a newly owned descriptor.
+            let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
+            let metadata = File::from(descriptor.try_clone()?).metadata()?;
+            if !metadata.file_type().is_file() || metadata.nlink() != 1 {
+                return Err(io::Error::other("unsafe regular file"));
+            }
+            Ok(descriptor)
+        }
+
+        fn open_optional_inheritable_regular(
+            &self,
+            name: &str,
+        ) -> Result<Option<OwnedFd>, io::Error> {
+            match self.open_inheritable_regular(name) {
+                Ok(file) => Ok(Some(file)),
+                Err(error) if error.raw_os_error() == Some(libc::ENOENT) => Ok(None),
+                Err(error) => Err(error),
+            }
+        }
+
+        fn inheritable_duplicate(&self) -> Result<OwnedFd, io::Error> {
+            // SAFETY: `F_DUPFD` duplicates the valid descriptor and returns a newly owned fd.
+            let raw = unsafe { libc::fcntl(self.descriptor.as_raw_fd(), libc::F_DUPFD, 3) };
+            if raw < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: successful `fcntl(F_DUPFD)` returns a newly owned descriptor.
+            Ok(unsafe { OwnedFd::from_raw_fd(raw) })
+        }
+
+        fn entry_exists(&self, name: &str) -> Result<bool, io::Error> {
+            let name = component(name)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid component"))?;
+            let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: descriptor/name/status are valid and `AT_SYMLINK_NOFOLLOW` inspects the entry.
+            let result = unsafe {
+                libc::fstatat(
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    status.as_mut_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            };
+            if result == 0 {
+                return Ok(true);
+            }
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ENOENT) {
+                Ok(false)
+            } else {
+                Err(error)
+            }
         }
 
         pub(super) fn duplicate(&self) -> Result<Self, io::Error> {

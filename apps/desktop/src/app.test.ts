@@ -8,11 +8,13 @@ import {
   canMarkGuideTested,
   filterGuides,
   gitFactLabel,
+  gitStatusLabel,
   guideLifecycleLabel,
   guideMatchesSearchScope,
   hasUnsavedChanges,
   highlightedExcerptSegments,
   isCurrentWorkspaceWatchEvent,
+  isGitStatusPayload,
   isSearchHitPayload,
   isWorkspaceWatchEvent,
   movedCategoryOrder,
@@ -65,6 +67,32 @@ describe("application identity", () => {
     );
     expect(gitFactLabel({ ...base, unsafeGitMarker: true })).toBe(
       "Git marker needs attention",
+    );
+  });
+
+  it("validates and summarizes bounded Git status", () => {
+    const status = {
+      kind: "ready" as const,
+      version: "2.55.0",
+      branch: "main",
+      detached: false,
+      upstream: "origin/main",
+      divergenceKnown: true,
+      ahead: 2,
+      behind: 1,
+      changed: 3,
+      untracked: 1,
+      conflicts: 0,
+      remotes: ["origin"],
+      remoteCount: 1,
+      failure: null,
+    };
+    expect(isGitStatusPayload(status)).toBe(true);
+    expect(gitStatusLabel(status)).toBe("main · 4 changes · ↑2 ↓1");
+    expect(isGitStatusPayload({ ...status, unexpected: true })).toBe(false);
+    expect(isGitStatusPayload({ ...status, remoteCount: -1 })).toBe(false);
+    expect(gitStatusLabel({ ...status, conflicts: 2 })).toBe(
+      "main · 2 conflicts",
     );
   });
 

@@ -13,6 +13,7 @@ use rehow_core::{
         set_guide_archived, update_category_details, update_guide, update_guide_details,
     },
     domain::GuideStatus,
+    git::{GitReadError, GitRepositoryStatus, read_git_status},
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
     protocol::{AttachmentId, CategoryId, GuideId, Revision},
     search::{SearchHit, SearchStatusScope, search_workspace_in_scope},
@@ -137,6 +138,25 @@ struct WorkspaceWatchEventPayload {
     workspace_id: String,
     watch_session: String,
     kind: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitStatusPayload {
+    kind: &'static str,
+    version: Option<String>,
+    branch: Option<String>,
+    detached: bool,
+    upstream: Option<String>,
+    divergence_known: bool,
+    ahead: u32,
+    behind: u32,
+    changed: u32,
+    untracked: u32,
+    conflicts: u32,
+    remotes: Vec<String>,
+    remote_count: u32,
+    failure: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -475,6 +495,81 @@ fn search_open_workspace(
                 "Search query has too many terms".to_owned()
             }
         })
+}
+
+#[tauri::command]
+fn git_status_open_workspace(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<GitStatusPayload, String> {
+    let guard = state
+        .workspace
+        .lock()
+        .map_err(|_| "Workspace session is unavailable".to_owned())?;
+    let workspace = guard
+        .as_ref()
+        .ok_or_else(|| "No Workspace is open".to_owned())?;
+    match read_git_status(&workspace.view) {
+        Ok(status) => {
+            let version = status.version().map(str::to_owned);
+            if !status.available() {
+                return Ok(empty_git_payload("unavailable", None));
+            }
+            match status.repository() {
+                GitRepositoryStatus::NotRepository => {
+                    Ok(empty_git_payload("notRepository", version))
+                }
+                GitRepositoryStatus::Unsafe => Ok(empty_git_payload("unsafe", version)),
+                GitRepositoryStatus::Ready(repository) => Ok(GitStatusPayload {
+                    kind: "ready",
+                    version,
+                    branch: repository.branch().map(str::to_owned),
+                    detached: repository.detached(),
+                    upstream: repository.upstream().map(str::to_owned),
+                    divergence_known: repository.divergence_known(),
+                    ahead: repository.ahead(),
+                    behind: repository.behind(),
+                    changed: repository.changed(),
+                    untracked: repository.untracked(),
+                    conflicts: repository.conflicts(),
+                    remotes: repository.remotes().to_vec(),
+                    remote_count: repository.remote_count(),
+                    failure: None,
+                }),
+            }
+        }
+        Err(error) => {
+            let failure = match error {
+                GitReadError::Spawn => "Git could not be started.",
+                GitReadError::ExitStatus => "Git returned a non-success status.",
+                GitReadError::Signal => "Git was terminated by a signal.",
+                GitReadError::Timeout => "Git did not finish before the timeout.",
+                GitReadError::OutputLimit => "Git output exceeded the safety limit.",
+                GitReadError::InvalidOutput => "Git returned an unsupported status format.",
+            };
+            let mut payload = empty_git_payload("failed", None);
+            payload.failure = Some(failure);
+            Ok(payload)
+        }
+    }
+}
+
+fn empty_git_payload(kind: &'static str, version: Option<String>) -> GitStatusPayload {
+    GitStatusPayload {
+        kind,
+        version,
+        branch: None,
+        detached: false,
+        upstream: None,
+        divergence_known: false,
+        ahead: 0,
+        behind: 0,
+        changed: 0,
+        untracked: 0,
+        conflicts: 0,
+        remotes: Vec::new(),
+        remote_count: 0,
+        failure: None,
+    }
 }
 
 fn search_status_scope(scope: &str) -> Option<SearchStatusScope> {
@@ -2213,6 +2308,7 @@ pub fn run() {
             save_open_guide_details,
             set_open_category_archived,
             set_open_guide_archived,
+            git_status_open_workspace,
             search_open_workspace
         ])
         .run(tauri::generate_context!())
@@ -2227,10 +2323,10 @@ mod tests {
         attachment_removal_code, attachment_removal_message, category_create_code,
         category_create_message, category_remove_code, category_remove_message,
         category_reorder_code, category_reorder_message, category_update_code,
-        category_update_message, guide_create_code, guide_create_message, guide_remove_code,
-        guide_remove_confirmation, guide_remove_message, guide_update_code, guide_update_message,
-        native_command_error, search_status_scope, workspace_initialization_message,
-        workspace_refresh_code, workspace_refresh_message,
+        category_update_message, empty_git_payload, guide_create_code, guide_create_message,
+        guide_remove_code, guide_remove_confirmation, guide_remove_message, guide_update_code,
+        guide_update_message, native_command_error, search_status_scope,
+        workspace_initialization_message, workspace_refresh_code, workspace_refresh_message,
     };
     use rehow_core::{
         application::{
@@ -2244,6 +2340,18 @@ mod tests {
     #[test]
     fn application_name_is_stable() {
         assert_eq!(APPLICATION_NAME, "Rehow");
+    }
+
+    #[test]
+    fn git_status_payload_is_closed_and_content_free() {
+        let value =
+            serde_json::to_value(empty_git_payload("unsafe", Some("2.55.0".to_owned()))).unwrap();
+        let object = value.as_object().unwrap();
+        assert_eq!(object.len(), 14);
+        assert_eq!(object["kind"], "unsafe");
+        assert_eq!(object["divergenceKnown"], false);
+        assert_eq!(object["remotes"], serde_json::json!([]));
+        assert!(!value.to_string().contains("path"));
     }
 
     #[test]
