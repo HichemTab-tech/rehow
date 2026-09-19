@@ -13,7 +13,7 @@ const TARGET_LIMIT: usize = 64 * 1024 * 1024;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Eq, PartialEq)]
-enum WorkspaceFault {
+pub(crate) enum WorkspaceFault {
     BeforeLiveRename,
     AfterLiveRenameBeforeSync,
     AfterSourceDirectorySync,
@@ -22,6 +22,11 @@ enum WorkspaceFault {
 #[cfg(test)]
 thread_local! {
     static WORKSPACE_FAULT: std::cell::Cell<Option<WorkspaceFault>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_workspace_fault(fault: WorkspaceFault) {
+    WORKSPACE_FAULT.set(Some(fault));
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -175,6 +175,33 @@ impl CloneStaging {
         self.validation.sync()
     }
 
+    pub(super) fn read_validation_file(
+        &self,
+        relative_path: &str,
+        expected_size: u64,
+    ) -> Result<Vec<u8>, StoreError> {
+        if expected_size > MAX_OBJECT_BYTES as u64
+            || (relative_path != ".gitignore" && !super::valid_active_path(relative_path))
+        {
+            return Err(StoreError::Unsafe);
+        }
+        let mut parts = relative_path.split('/').peekable();
+        let mut directory = self.validation.duplicate()?;
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                let limit = usize::try_from(expected_size).map_err(|_| StoreError::TooLarge)?;
+                let bytes = directory.read_regular(part, limit)?;
+                return if bytes.len() as u64 == expected_size {
+                    Ok(bytes)
+                } else {
+                    Err(StoreError::Corrupt)
+                };
+            }
+            directory = directory.open_directory(part)?;
+        }
+        Err(StoreError::Unsafe)
+    }
+
     pub(super) fn verify_git_size_limit(&self, limit: u64) -> Result<(), StoreError> {
         let git = Directory {
             descriptor: self._git.try_clone().map_err(|_| StoreError::Io)?,
@@ -784,6 +811,25 @@ impl Directory {
         }
         validate_directory(&descriptor, true)?;
         self.sync()?;
+        Ok(Self { descriptor })
+    }
+
+    fn open_directory(&self, name: &str) -> Result<Self, StoreError> {
+        let name = component(name)?;
+        // SAFETY: parent descriptor and component are valid; no symlink is followed.
+        let raw = unsafe {
+            libc::openat(
+                self.descriptor.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if raw < 0 {
+            return Err(map_open_error(io::Error::last_os_error()));
+        }
+        // SAFETY: successful openat returned a newly owned descriptor.
+        let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
+        validate_directory(&descriptor, true)?;
         Ok(Self { descriptor })
     }
 

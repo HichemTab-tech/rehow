@@ -12,8 +12,10 @@ pub(crate) use recovery::{
     AttachmentRemovalStorageOutcome, AttachmentSourceState, CategoryCreateStorageError,
     CategoryCreateStorageOutcome, CategoryRemoveStorageError, CategoryRemoveStorageOutcome,
     DocumentCreateError, DocumentCreateOutcome, DocumentMoveOutcome, DocumentRemoveError,
-    DocumentRemoveOutcome, DocumentUpdateError, DocumentUpdateOutcome, GitCloneStaging,
-    GitCloneStagingError, MultiDocumentUpdateError, MultiDocumentUpdateOutcome, PreparedDocument,
+    DocumentRemoveOutcome, DocumentUpdateError, DocumentUpdateOutcome,
+    GitCloneMaterializationSource, GitCloneMaterializationStorageError,
+    GitCloneMaterializationStorageOutcome, GitCloneStaging, GitCloneStagingError,
+    MultiDocumentUpdateError, MultiDocumentUpdateOutcome, PreparedDocument,
     WorkspaceInitializeError, WorkspaceInitializeOutcome, create_git_clone_staging,
 };
 pub use watch::{WorkspaceWatchError, WorkspaceWatchSignal, WorkspaceWatcher};
@@ -29,7 +31,12 @@ pub(crate) fn set_attachment_import_source_changed_fault() {
 }
 
 #[cfg(test)]
-pub(crate) use linux::{GitInitFault, set_git_init_fault};
+pub(crate) use linux::{
+    GitCloneScaffoldFault, GitInitFault, set_git_clone_scaffold_fault, set_git_init_fault,
+};
+
+#[cfg(test)]
+pub(crate) use recovery::{WorkspaceFault, set_workspace_fault};
 
 #[cfg(not(target_os = "linux"))]
 compile_error!("Rehow's confined Workspace storage currently requires Linux");
@@ -694,6 +701,38 @@ impl EmptyWorkspaceTarget {
             facts: inspect_folder_facts(&self.root)?,
         })
     }
+
+    pub(crate) fn matches_clone_destination(
+        &self,
+        expected: CloneDestinationSnapshot,
+    ) -> Result<bool, WorkspaceInspectError> {
+        let (device, inode) = self.root.identity().map_err(map_clone_destination_error)?;
+        Ok(device == expected.device()
+            && inode == expected.inode()
+            && self.root.root_hash() == expected.root_hash()
+            && self.root.capability_hash() == expected.capability_hash())
+    }
+
+    pub(crate) fn verify_git_clone_materialization(
+        &self,
+        marker: &[u8],
+        expected_paths: &[String],
+    ) -> Result<(), WorkspaceInspectError> {
+        let temp_names = vec![String::new(); expected_paths.len()];
+        self.root
+            .verify_git_clone_inventory(marker, expected_paths, &temp_names, true)
+            .map_err(map_clone_destination_error)
+    }
+
+    pub(crate) fn read_git_clone_materialized_file(
+        &self,
+        relative_path: &str,
+        expected_size: u64,
+    ) -> Result<Vec<u8>, WorkspaceInspectError> {
+        self.root
+            .read_git_clone_file(relative_path, expected_size)
+            .map_err(map_clone_destination_error)
+    }
 }
 
 fn map_clone_destination_error(error: linux::MutationIoError) -> WorkspaceInspectError {
@@ -1314,6 +1353,36 @@ pub(crate) fn execute_workspace_initialize(
         operation_id,
         created_at,
         manifest,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_git_clone_materialization<F>(
+    target: &EmptyWorkspaceTarget,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: crate::protocol::WorkspaceId,
+    operation_id: crate::protocol::OperationId,
+    created_at: crate::protocol::Timestamp,
+    plan_hash: [u8; 32],
+    marker: &[u8],
+    sources: &[GitCloneMaterializationSource],
+    read_file: F,
+) -> Result<GitCloneMaterializationStorageOutcome, GitCloneMaterializationStorageError>
+where
+    F: FnMut(usize, &str, u64) -> Result<Vec<u8>, GitCloneMaterializationStorageError>,
+{
+    recovery::execute_git_clone_materialization(
+        &target.root,
+        state_home,
+        runtime_directory,
+        workspace_id,
+        operation_id,
+        created_at,
+        plan_hash,
+        marker,
+        sources,
+        read_file,
     )
 }
 
@@ -2095,6 +2164,7 @@ mod linux {
     use super::{GitInitializeStorageError, WorkspaceInspectError};
     use crate::protocol::Revision;
     use std::{
+        collections::{BTreeMap, BTreeSet},
         ffi::{CStr, CString, OsStr},
         fs::File,
         io::{self, Read, Seek, SeekFrom, Write},
@@ -2209,17 +2279,47 @@ mod linux {
     }
 
     #[cfg(test)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) enum GitCloneScaffoldFault {
+        Marker,
+        Objects,
+        Info,
+        Pack,
+        Refs,
+        Heads,
+        Remotes,
+        Origin,
+        Tags,
+    }
+
+    #[cfg(test)]
     thread_local! {
         static MANAGED_FAULT: std::cell::Cell<Option<ManagedFault>> = const { std::cell::Cell::new(None) };
         static ATTACHMENT_CHANGED_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static ATTACHMENT_GROWTH_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static ATTACHMENT_STATE_CHANGED_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static GIT_INIT_FAULT: std::cell::Cell<Option<GitInitFault>> = const { std::cell::Cell::new(None) };
+        static GIT_CLONE_SCAFFOLD_FAULT: std::cell::Cell<Option<GitCloneScaffoldFault>> = const { std::cell::Cell::new(None) };
     }
 
     #[cfg(test)]
     pub(crate) fn set_git_init_fault(fault: GitInitFault) {
         GIT_INIT_FAULT.set(Some(fault));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_git_clone_scaffold_fault(fault: GitCloneScaffoldFault) {
+        GIT_CLONE_SCAFFOLD_FAULT.set(Some(fault));
+    }
+
+    #[cfg(test)]
+    fn git_clone_scaffold_fail(point: GitCloneScaffoldFault) -> Result<(), MutationIoError> {
+        if GIT_CLONE_SCAFFOLD_FAULT.get() == Some(point) {
+            GIT_CLONE_SCAFFOLD_FAULT.set(None);
+            Err(MutationIoError::Unsupported)
+        } else {
+            Ok(())
+        }
     }
 
     #[cfg(test)]
@@ -2690,6 +2790,344 @@ mod linux {
         pub(super) fn create_categories_directory(&self) -> Result<(), MutationIoError> {
             self.create_private_directory_exclusive("categories")?;
             Ok(())
+        }
+
+        pub(super) fn create_git_clone_scaffold(
+            &self,
+            marker: &[u8],
+        ) -> Result<(), MutationIoError> {
+            let git_dir = self.create_private_directory_exclusive(".git")?;
+            git_dir
+                .create_or_verify_private_file("rehow-clone", marker)
+                .map_err(map_clone_materialization_git)?;
+            #[cfg(test)]
+            git_clone_scaffold_fail(GitCloneScaffoldFault::Marker)?;
+            let objects = git_dir.create_private_directory_exclusive("objects")?;
+            #[cfg(test)]
+            git_clone_scaffold_fail(GitCloneScaffoldFault::Objects)?;
+            let info = objects.create_private_directory_exclusive("info")?;
+            #[cfg(test)]
+            git_clone_scaffold_fail(GitCloneScaffoldFault::Info)?;
+            let pack = objects.create_private_directory_exclusive("pack")?;
+            #[cfg(test)]
+            git_clone_scaffold_fail(GitCloneScaffoldFault::Pack)?;
+            let refs = git_dir.create_private_directory_exclusive("refs")?;
+            #[cfg(test)]
+            git_clone_scaffold_fail(GitCloneScaffoldFault::Refs)?;
+            let heads = refs.create_private_directory_exclusive("heads")?;
+            #[cfg(test)]
+            git_clone_scaffold_fail(GitCloneScaffoldFault::Heads)?;
+            let remotes = refs.create_private_directory_exclusive("remotes")?;
+            #[cfg(test)]
+            git_clone_scaffold_fail(GitCloneScaffoldFault::Remotes)?;
+            let origin = remotes.create_private_directory_exclusive("origin")?;
+            #[cfg(test)]
+            git_clone_scaffold_fail(GitCloneScaffoldFault::Origin)?;
+            let tags = refs.create_private_directory_exclusive("tags")?;
+            #[cfg(test)]
+            git_clone_scaffold_fail(GitCloneScaffoldFault::Tags)?;
+            for directory in [&info, &pack, &heads, &origin, &tags] {
+                if !directory
+                    .entries(1)
+                    .map_err(map_clone_materialization_inspect)?
+                    .is_empty()
+                {
+                    return Err(MutationIoError::Unsafe);
+                }
+                directory
+                    .sync_directory()
+                    .map_err(map_clone_materialization_git)?;
+            }
+            let remote_entries = remotes
+                .entries(2)
+                .map_err(map_clone_materialization_inspect)?;
+            if remote_entries.len() != 1 || !remote_entries.iter().any(|entry| entry == "origin") {
+                return Err(MutationIoError::Unsafe);
+            }
+            let object_entries = objects
+                .entries(3)
+                .map_err(map_clone_materialization_inspect)?;
+            if object_entries.len() != 2
+                || ["info", "pack"]
+                    .iter()
+                    .any(|required| !object_entries.iter().any(|entry| entry == required))
+            {
+                return Err(MutationIoError::Unsafe);
+            }
+            let ref_entries = refs.entries(4).map_err(map_clone_materialization_inspect)?;
+            if ref_entries.len() != 3
+                || ["heads", "remotes", "tags"]
+                    .iter()
+                    .any(|required| !ref_entries.iter().any(|entry| entry == required))
+            {
+                return Err(MutationIoError::Unsafe);
+            }
+            objects
+                .sync_directory()
+                .map_err(map_clone_materialization_git)?;
+            remotes
+                .sync_directory()
+                .map_err(map_clone_materialization_git)?;
+            refs.sync_directory()
+                .map_err(map_clone_materialization_git)?;
+            git_dir
+                .sync_directory()
+                .map_err(map_clone_materialization_git)?;
+            self.sync_directory()
+                .map_err(map_clone_materialization_git)?;
+            self.verify_git_clone_scaffold(marker)
+        }
+
+        pub(super) fn resume_git_clone_scaffold(
+            &self,
+            marker: &[u8],
+        ) -> Result<(), MutationIoError> {
+            let git_dir = self.open_private_directory(".git")?;
+            verify_allowed_entries(&git_dir, &["objects", "refs", "rehow-clone"])?;
+            let entries = git_dir
+                .entries(4)
+                .map_err(map_clone_materialization_inspect)?;
+            if !entries.iter().any(|entry| entry == "rehow-clone") {
+                return Err(MutationIoError::Unsafe);
+            }
+            git_dir
+                .verify_private_file("rehow-clone", marker)
+                .map_err(map_clone_materialization_git)?;
+
+            if let Some(objects) = git_dir.optional_private_directory("objects")? {
+                verify_allowed_entries(&objects, &["info", "pack"])?;
+                if let Some(info) = objects.optional_private_directory("info")? {
+                    verify_exact_entries(&info, &[])?;
+                }
+                if let Some(pack) = objects.optional_private_directory("pack")? {
+                    verify_exact_entries(&pack, &[])?;
+                }
+            }
+            if let Some(refs) = git_dir.optional_private_directory("refs")? {
+                verify_allowed_entries(&refs, &["heads", "remotes", "tags"])?;
+                if let Some(heads) = refs.optional_private_directory("heads")? {
+                    verify_exact_entries(&heads, &[])?;
+                }
+                if let Some(remotes) = refs.optional_private_directory("remotes")? {
+                    verify_allowed_entries(&remotes, &["origin"])?;
+                    if let Some(origin) = remotes.optional_private_directory("origin")? {
+                        verify_exact_entries(&origin, &[])?;
+                    }
+                }
+                if let Some(tags) = refs.optional_private_directory("tags")? {
+                    verify_exact_entries(&tags, &[])?;
+                }
+            }
+
+            let objects = git_dir.ensure_private_directory("objects")?;
+            let info = objects.ensure_private_directory("info")?;
+            let pack = objects.ensure_private_directory("pack")?;
+            let refs = git_dir.ensure_private_directory("refs")?;
+            let heads = refs.ensure_private_directory("heads")?;
+            let remotes = refs.ensure_private_directory("remotes")?;
+            let origin = remotes.ensure_private_directory("origin")?;
+            let tags = refs.ensure_private_directory("tags")?;
+            for directory in [&info, &pack, &heads, &origin, &tags] {
+                directory
+                    .sync_directory()
+                    .map_err(map_clone_materialization_git)?;
+            }
+            objects
+                .sync_directory()
+                .map_err(map_clone_materialization_git)?;
+            remotes
+                .sync_directory()
+                .map_err(map_clone_materialization_git)?;
+            refs.sync_directory()
+                .map_err(map_clone_materialization_git)?;
+            git_dir
+                .sync_directory()
+                .map_err(map_clone_materialization_git)?;
+            self.sync_directory()
+                .map_err(map_clone_materialization_git)?;
+            self.verify_git_clone_scaffold(marker)
+        }
+
+        pub(super) fn verify_git_clone_scaffold(
+            &self,
+            marker: &[u8],
+        ) -> Result<(), MutationIoError> {
+            let git_dir = self.open_private_directory(".git")?;
+            git_dir
+                .verify_private_file("rehow-clone", marker)
+                .map_err(map_clone_materialization_git)?;
+            verify_exact_entries(&git_dir, &["objects", "refs", "rehow-clone"])?;
+            let objects = git_dir.open_private_directory("objects")?;
+            verify_exact_entries(&objects, &["info", "pack"])?;
+            let info = objects.open_private_directory("info")?;
+            let pack = objects.open_private_directory("pack")?;
+            verify_exact_entries(&info, &[])?;
+            verify_exact_entries(&pack, &[])?;
+            let refs = git_dir.open_private_directory("refs")?;
+            verify_exact_entries(&refs, &["heads", "remotes", "tags"])?;
+            let heads = refs.open_private_directory("heads")?;
+            let remotes = refs.open_private_directory("remotes")?;
+            let tags = refs.open_private_directory("tags")?;
+            verify_exact_entries(&heads, &[])?;
+            verify_exact_entries(&remotes, &["origin"])?;
+            verify_exact_entries(&tags, &[])?;
+            let origin = remotes.open_private_directory("origin")?;
+            verify_exact_entries(&origin, &[])
+        }
+
+        pub(super) fn verify_git_clone_inventory(
+            &self,
+            marker: &[u8],
+            expected_paths: &[String],
+            temp_names: &[String],
+            complete: bool,
+        ) -> Result<(), MutationIoError> {
+            if expected_paths.len() != temp_names.len() {
+                return Err(MutationIoError::Unsafe);
+            }
+            self.verify_git_clone_scaffold(marker)?;
+
+            let mut child_directories = BTreeMap::<String, BTreeSet<String>>::new();
+            let mut final_files = BTreeMap::<String, BTreeSet<String>>::new();
+            let mut temporary_files = BTreeMap::<String, BTreeSet<String>>::new();
+            child_directories
+                .entry(String::new())
+                .or_default()
+                .insert("categories".to_owned());
+            child_directories
+                .entry("categories".to_owned())
+                .or_default();
+            for (path, temp_name) in expected_paths.iter().zip(temp_names) {
+                if !super::recovery::valid_active_path(path) {
+                    return Err(MutationIoError::Unsafe);
+                }
+                let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
+                final_files
+                    .entry(parent.to_owned())
+                    .or_default()
+                    .insert(name.to_owned());
+                temporary_files
+                    .entry(parent.to_owned())
+                    .or_default()
+                    .insert(temp_name.to_owned());
+
+                let mut prior = String::new();
+                for part in parent.split('/').filter(|part| !part.is_empty()) {
+                    child_directories
+                        .entry(prior.clone())
+                        .or_default()
+                        .insert(part.to_owned());
+                    prior = if prior.is_empty() {
+                        part.to_owned()
+                    } else {
+                        format!("{prior}/{part}")
+                    };
+                    child_directories.entry(prior.clone()).or_default();
+                }
+            }
+
+            let mut directory_paths = child_directories.keys().cloned().collect::<Vec<_>>();
+            directory_paths.sort_by_key(|path| path.matches('/').count());
+            for path in directory_paths {
+                let directory = if path.is_empty() {
+                    self.duplicate().map_err(|_| MutationIoError::Io)?
+                } else {
+                    match self.open_git_clone_directory_path(&path) {
+                        Ok(directory) => directory,
+                        Err(MutationIoError::Conflict) if !complete => continue,
+                        Err(error) => return Err(error),
+                    }
+                };
+                let mut allowed = child_directories.get(&path).cloned().unwrap_or_default();
+                allowed.extend(final_files.get(&path).into_iter().flatten().cloned());
+                if !complete {
+                    allowed.extend(temporary_files.get(&path).into_iter().flatten().cloned());
+                }
+                if path.is_empty() {
+                    allowed.insert(".git".to_owned());
+                }
+                let actual = directory
+                    .entries(super::recovery::MAX_TARGETS)
+                    .map_err(map_clone_materialization_inspect)?
+                    .into_iter()
+                    .collect::<BTreeSet<_>>();
+                if (complete && actual != allowed)
+                    || (!complete && !actual.is_subset(&allowed))
+                    || (path.is_empty() && !actual.contains(".git"))
+                {
+                    return Err(MutationIoError::Conflict);
+                }
+            }
+            Ok(())
+        }
+
+        pub(super) fn read_git_clone_file(
+            &self,
+            relative_path: &str,
+            expected_size: u64,
+        ) -> Result<Vec<u8>, MutationIoError> {
+            if !super::recovery::valid_active_path(relative_path) {
+                return Err(MutationIoError::Unsafe);
+            }
+            let limit = usize::try_from(expected_size).map_err(|_| MutationIoError::TooLarge)?;
+            let (parent, name) = relative_path
+                .rsplit_once('/')
+                .unwrap_or(("", relative_path));
+            let directory = if parent.is_empty() {
+                self.duplicate().map_err(|_| MutationIoError::Io)?
+            } else {
+                self.open_git_clone_directory_path(parent)?
+            };
+            let state = directory
+                .read_regular_state(name, limit)
+                .map_err(|error| match error {
+                    EntryReadError::Unsafe | EntryReadError::Changed => MutationIoError::Unsafe,
+                    EntryReadError::TooLarge => MutationIoError::TooLarge,
+                    EntryReadError::Io(_) => MutationIoError::Io,
+                })?;
+            if state.mode != 0o600 || state.bytes.len() as u64 != expected_size {
+                return Err(MutationIoError::Conflict);
+            }
+            Ok(state.bytes)
+        }
+
+        fn open_git_clone_directory_path(&self, path: &str) -> Result<Self, MutationIoError> {
+            let mut directory = self.duplicate().map_err(|_| MutationIoError::Io)?;
+            for part in path.split('/') {
+                directory = directory.open_private_directory(part)?;
+            }
+            Ok(directory)
+        }
+
+        pub(super) fn prepare_git_clone_directories(
+            &self,
+            category_directories: &[String],
+            attachment_directories: &[String],
+        ) -> Result<(), MutationIoError> {
+            let categories = self.ensure_private_directory("categories")?;
+            for name in category_directories {
+                if !super::valid_category_directory(name) {
+                    return Err(MutationIoError::Unsafe);
+                }
+                categories.ensure_private_directory(name)?;
+            }
+            categories
+                .sync_directory()
+                .map_err(map_clone_materialization_git)?;
+
+            if !attachment_directories.is_empty() {
+                let attachments = self.ensure_private_directory("attachments")?;
+                for guide_id in attachment_directories {
+                    if guide_id.parse::<crate::protocol::GuideId>().is_err() {
+                        return Err(MutationIoError::Unsafe);
+                    }
+                    attachments.ensure_private_directory(guide_id)?;
+                }
+                attachments
+                    .sync_directory()
+                    .map_err(map_clone_materialization_git)?;
+            }
+            self.sync_directory().map_err(map_clone_materialization_git)
         }
 
         pub(super) fn git_initialization_resumable(
@@ -3516,6 +3954,46 @@ mod linux {
         Ok(())
     }
 
+    fn verify_exact_entries(
+        directory: &DirectoryCapability,
+        expected: &[&str],
+    ) -> Result<(), MutationIoError> {
+        let actual = directory
+            .entries(expected.len().saturating_add(1))
+            .map_err(map_clone_materialization_inspect)?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let expected = expected
+            .iter()
+            .map(|entry| (*entry).to_owned())
+            .collect::<BTreeSet<_>>();
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(MutationIoError::Unsafe)
+        }
+    }
+
+    fn verify_allowed_entries(
+        directory: &DirectoryCapability,
+        allowed: &[&str],
+    ) -> Result<(), MutationIoError> {
+        let actual = directory
+            .entries(allowed.len().saturating_add(1))
+            .map_err(map_clone_materialization_inspect)?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let allowed = allowed
+            .iter()
+            .map(|entry| (*entry).to_owned())
+            .collect::<BTreeSet<_>>();
+        if actual.is_subset(&allowed) {
+            Ok(())
+        } else {
+            Err(MutationIoError::Unsafe)
+        }
+    }
+
     fn map_git_init_mutation(error: MutationIoError) -> GitInitializeStorageError {
         match error {
             MutationIoError::Conflict => GitInitializeStorageError::Conflict,
@@ -3524,6 +4002,27 @@ mod linux {
             }
             MutationIoError::Unsupported => GitInitializeStorageError::Unsupported,
             MutationIoError::Io => GitInitializeStorageError::Io,
+        }
+    }
+
+    fn map_clone_materialization_git(error: GitInitializeStorageError) -> MutationIoError {
+        match error {
+            GitInitializeStorageError::Conflict => MutationIoError::Conflict,
+            GitInitializeStorageError::Unsafe => MutationIoError::Unsafe,
+            GitInitializeStorageError::Unsupported => MutationIoError::Unsupported,
+            GitInitializeStorageError::Io => MutationIoError::Io,
+        }
+    }
+
+    fn map_clone_materialization_inspect(error: WorkspaceInspectError) -> MutationIoError {
+        match error {
+            WorkspaceInspectError::UnsafeRoot => MutationIoError::Unsafe,
+            WorkspaceInspectError::ResourceLimit => MutationIoError::TooLarge,
+            WorkspaceInspectError::ChangedDuringRead => MutationIoError::Conflict,
+            WorkspaceInspectError::NotFound
+            | WorkspaceInspectError::NotDirectory
+            | WorkspaceInspectError::PermissionDenied
+            | WorkspaceInspectError::Io => MutationIoError::Io,
         }
     }
 

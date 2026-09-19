@@ -16,6 +16,9 @@ use unicode_normalization::UnicodeNormalization;
 mod store;
 mod workspace;
 
+#[cfg(test)]
+pub(crate) use workspace::{WorkspaceFault, set_workspace_fault};
+
 pub(crate) struct GitCloneStaging {
     inner: store::CloneStaging,
 }
@@ -53,6 +56,16 @@ impl GitCloneStaging {
             .map_err(map_clone_staging_error)
     }
 
+    pub(crate) fn read_validation_file(
+        &self,
+        relative_path: &str,
+        expected_size: u64,
+    ) -> Result<Vec<u8>, GitCloneStagingError> {
+        self.inner
+            .read_validation_file(relative_path, expected_size)
+            .map_err(map_clone_staging_error)
+    }
+
     pub(crate) fn verify_git_size_limit(&self, limit: u64) -> Result<(), GitCloneStagingError> {
         self.inner
             .verify_git_size_limit(limit)
@@ -68,6 +81,25 @@ pub(crate) enum GitCloneStagingError {
     TooLarge,
     Io,
 }
+
+pub(crate) struct GitCloneMaterializationSource {
+    pub(crate) relative_path: String,
+    pub(crate) size: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitCloneMaterializationStorageError {
+    SourceChanged,
+    Busy,
+    Conflict,
+    Unsafe,
+    Unsupported,
+    TooLarge,
+    Io,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GitCloneMaterializationStorageOutcome;
 
 pub(crate) fn create_git_clone_staging(
     state_home: &Path,
@@ -89,6 +121,249 @@ fn map_clone_staging_error(error: store::StoreError) -> GitCloneStagingError {
         store::StoreError::Io => GitCloneStagingError::Io,
         #[cfg(test)]
         store::StoreError::Injected => GitCloneStagingError::Io,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_git_clone_materialization<F>(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    operation_id: OperationId,
+    created_at: Timestamp,
+    plan_hash: [u8; 32],
+    marker: &[u8],
+    sources: &[GitCloneMaterializationSource],
+    mut read_file: F,
+) -> Result<GitCloneMaterializationStorageOutcome, GitCloneMaterializationStorageError>
+where
+    F: FnMut(usize, &str, u64) -> Result<Vec<u8>, GitCloneMaterializationStorageError>,
+{
+    if sources.is_empty() || sources.len() > MAX_TARGETS || marker.len() > 16 * 1024 {
+        return Err(GitCloneMaterializationStorageError::TooLarge);
+    }
+    let store = store::RecoveryStore::open(
+        state_home,
+        workspace_id,
+        root.root_hash(),
+        root.capability_hash(),
+    )
+    .map_err(map_store_clone_materialization)?;
+    let lock = store
+        .acquire_lock(runtime_directory)
+        .map_err(map_store_clone_materialization)?;
+
+    let persisted = match store.read_journal(&lock, operation_id) {
+        Ok(journal) => Some(journal),
+        Err(read_error) => match store.journal_missing(&lock, operation_id) {
+            Ok(true) => None,
+            Ok(false) => return Err(map_store_clone_materialization(read_error)),
+            Err(error) => return Err(map_store_clone_materialization(error)),
+        },
+    };
+
+    let mut targets = Vec::new();
+    targets
+        .try_reserve_exact(sources.len())
+        .map_err(|_| GitCloneMaterializationStorageError::TooLarge)?;
+    let mut categories = HashSet::new();
+    let mut attachments = HashSet::new();
+    let mut previous: Option<&str> = None;
+    for (index, source) in sources.iter().enumerate() {
+        if !valid_active_path(&source.relative_path)
+            || previous.is_some_and(|path| path >= source.relative_path.as_str())
+        {
+            return Err(GitCloneMaterializationStorageError::Unsafe);
+        }
+        previous = Some(&source.relative_path);
+        if let Some(remainder) = source.relative_path.strip_prefix("categories/")
+            && let Some((directory, _)) = remainder.split_once('/')
+        {
+            categories
+                .try_reserve(1)
+                .map_err(|_| GitCloneMaterializationStorageError::TooLarge)?;
+            categories.insert(directory.to_owned());
+        }
+        if let Some(remainder) = source.relative_path.strip_prefix("attachments/")
+            && let Some((guide_id, _)) = remainder.split_once('/')
+        {
+            attachments
+                .try_reserve(1)
+                .map_err(|_| GitCloneMaterializationStorageError::TooLarge)?;
+            attachments.insert(guide_id.to_owned());
+        }
+        let bytes = read_file(index, &source.relative_path, source.size)?;
+        if bytes.len() as u64 != source.size {
+            return Err(GitCloneMaterializationStorageError::SourceChanged);
+        }
+        let object_hash = store
+            .store_object(&lock, &bytes)
+            .map_err(map_store_clone_materialization)?;
+        targets.push(Target {
+            relative_path: source.relative_path.clone(),
+            expected: ExpectedState::Absent,
+            intended: IntendedState::Object {
+                object_hash,
+                mode: 0o600,
+            },
+            temp_name: format!(".rehow-tmp-{operation_id}-{index}"),
+            step: TargetStep::Prepared,
+        });
+    }
+    let (root_device, root_inode) = root.identity().map_err(map_io_clone_materialization)?;
+    let journal = Journal {
+        generation: 1,
+        operation_id,
+        operation_kind: OperationKind::GitMaterialize,
+        workspace_id,
+        root_hash: root.root_hash(),
+        root_device,
+        root_inode,
+        created_at,
+        plan_hash,
+        targets,
+        stage: JournalStage::Prepared,
+        completion: false,
+    };
+    if let Err(error) = journal.encode() {
+        return Err(match error {
+            JournalCodecError::TooLarge | JournalCodecError::ResourceLimit => {
+                GitCloneMaterializationStorageError::TooLarge
+            }
+            JournalCodecError::Invalid => GitCloneMaterializationStorageError::Unsafe,
+        });
+    }
+
+    let expected_paths = journal
+        .targets
+        .iter()
+        .map(|target| target.relative_path.clone())
+        .collect::<Vec<_>>();
+    let temp_names = journal
+        .targets
+        .iter()
+        .map(|target| target.temp_name.clone())
+        .collect::<Vec<_>>();
+    if let Some(persisted) = persisted {
+        if !journal_matches_plan(&persisted, &journal) {
+            return Err(GitCloneMaterializationStorageError::Conflict);
+        }
+        root.verify_git_clone_inventory(marker, &expected_paths, &temp_names, false)
+            .map_err(map_io_clone_materialization)?;
+    } else {
+        let root_entries = root.entries(2).map_err(map_inspect_clone_materialization)?;
+        if root_entries.is_empty() {
+            root.verify_empty_workspace_root()
+                .map_err(map_io_clone_materialization)?;
+            root.create_git_clone_scaffold(marker)
+                .map_err(map_io_clone_materialization)?;
+        } else if root_entries == [".git"] {
+            root.resume_git_clone_scaffold(marker)
+                .map_err(map_io_clone_materialization)?;
+        } else {
+            return Err(GitCloneMaterializationStorageError::Conflict);
+        }
+        if root.entries(2).map_err(map_inspect_clone_materialization)? != [".git"] {
+            return Err(GitCloneMaterializationStorageError::Conflict);
+        }
+        store
+            .install_journal(&lock, &journal)
+            .map_err(map_store_clone_materialization)?;
+    }
+
+    let mut categories = categories.into_iter().collect::<Vec<_>>();
+    categories.sort_unstable();
+    let mut attachments = attachments.into_iter().collect::<Vec<_>>();
+    attachments.sort_unstable();
+    root.prepare_git_clone_directories(&categories, &attachments)
+        .map_err(map_io_clone_materialization)?;
+    workspace::resume_journal(root, &store, &lock, operation_id)
+        .map_err(map_workspace_clone_materialization)?;
+    Ok(GitCloneMaterializationStorageOutcome)
+}
+
+fn journal_matches_plan(persisted: &Journal, prepared: &Journal) -> bool {
+    persisted.operation_id == prepared.operation_id
+        && persisted.operation_kind == prepared.operation_kind
+        && persisted.workspace_id == prepared.workspace_id
+        && persisted.root_hash == prepared.root_hash
+        && persisted.root_device == prepared.root_device
+        && persisted.root_inode == prepared.root_inode
+        && persisted.created_at == prepared.created_at
+        && persisted.plan_hash == prepared.plan_hash
+        && persisted.targets.len() == prepared.targets.len()
+        && persisted
+            .targets
+            .iter()
+            .zip(&prepared.targets)
+            .all(|(left, right)| left.same_intent(right))
+}
+
+fn map_store_clone_materialization(
+    error: store::StoreError,
+) -> GitCloneMaterializationStorageError {
+    match error {
+        store::StoreError::Busy => GitCloneMaterializationStorageError::Busy,
+        store::StoreError::Conflict | store::StoreError::Corrupt => {
+            GitCloneMaterializationStorageError::Conflict
+        }
+        store::StoreError::Unsafe => GitCloneMaterializationStorageError::Unsafe,
+        store::StoreError::Unsupported => GitCloneMaterializationStorageError::Unsupported,
+        store::StoreError::TooLarge => GitCloneMaterializationStorageError::TooLarge,
+        store::StoreError::Io => GitCloneMaterializationStorageError::Io,
+        #[cfg(test)]
+        store::StoreError::Injected => GitCloneMaterializationStorageError::Io,
+    }
+}
+
+fn map_io_clone_materialization(
+    error: super::linux::MutationIoError,
+) -> GitCloneMaterializationStorageError {
+    match error {
+        super::linux::MutationIoError::Conflict => GitCloneMaterializationStorageError::Conflict,
+        super::linux::MutationIoError::Unsafe => GitCloneMaterializationStorageError::Unsafe,
+        super::linux::MutationIoError::Unsupported => {
+            GitCloneMaterializationStorageError::Unsupported
+        }
+        super::linux::MutationIoError::TooLarge => GitCloneMaterializationStorageError::TooLarge,
+        super::linux::MutationIoError::Io => GitCloneMaterializationStorageError::Io,
+    }
+}
+
+fn map_inspect_clone_materialization(
+    error: super::WorkspaceInspectError,
+) -> GitCloneMaterializationStorageError {
+    match error {
+        super::WorkspaceInspectError::UnsafeRoot => GitCloneMaterializationStorageError::Unsafe,
+        super::WorkspaceInspectError::ResourceLimit => {
+            GitCloneMaterializationStorageError::TooLarge
+        }
+        super::WorkspaceInspectError::ChangedDuringRead => {
+            GitCloneMaterializationStorageError::Conflict
+        }
+        super::WorkspaceInspectError::NotFound
+        | super::WorkspaceInspectError::NotDirectory
+        | super::WorkspaceInspectError::PermissionDenied
+        | super::WorkspaceInspectError::Io => GitCloneMaterializationStorageError::Io,
+    }
+}
+
+fn map_workspace_clone_materialization(
+    error: workspace::WorkspaceMutationError,
+) -> GitCloneMaterializationStorageError {
+    match error {
+        workspace::WorkspaceMutationError::Conflict => {
+            GitCloneMaterializationStorageError::Conflict
+        }
+        workspace::WorkspaceMutationError::Unsafe => GitCloneMaterializationStorageError::Unsafe,
+        workspace::WorkspaceMutationError::Unsupported => {
+            GitCloneMaterializationStorageError::Unsupported
+        }
+        workspace::WorkspaceMutationError::TooLarge => {
+            GitCloneMaterializationStorageError::TooLarge
+        }
+        workspace::WorkspaceMutationError::Io => GitCloneMaterializationStorageError::Io,
     }
 }
 
@@ -1971,8 +2246,10 @@ fn map_workspace_category_remove(
 }
 
 pub(crate) const JOURNAL_VERSION: u64 = 1;
-pub(crate) const MAX_JOURNAL_BYTES: usize = 4 * 1024 * 1024;
-pub(crate) const MAX_TARGETS: usize = 1_024;
+// One clone journal must represent the complete accepted Workspace envelope:
+// manifest, optional .gitignore, Categories, Guides, and Attachments.
+pub(crate) const MAX_JOURNAL_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_TARGETS: usize = 21_002;
 const MAX_PATH_BYTES: usize = 1_024;
 const MAX_COMPONENT_BYTES: usize = 255;
 
@@ -2359,10 +2636,11 @@ impl Target {
                         IntendedState::Absent | IntendedState::Trash { .. }
                     )
             }
-            OperationKind::MultiFile
-            | OperationKind::Recovery
-            | OperationKind::Migration
-            | OperationKind::GitMaterialize => true,
+            OperationKind::GitMaterialize => {
+                matches!(self.expected, ExpectedState::Absent)
+                    && matches!(self.intended, IntendedState::Object { mode: 0o600, .. })
+            }
+            OperationKind::MultiFile | OperationKind::Recovery | OperationKind::Migration => true,
         };
         if valid_operation {
             Ok(())
@@ -2794,7 +3072,7 @@ pub(super) fn valid_active_path(path: &str) -> bool {
     if path.len() > MAX_PATH_BYTES {
         return false;
     }
-    if path == "rehow.yaml" {
+    if path == "rehow.yaml" || path == ".gitignore" {
         return true;
     }
     let parts = path.split('/').collect::<Vec<_>>();
@@ -3010,6 +3288,25 @@ mod tests {
             destination: ".rehow/trash/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/rehow.yaml".to_owned(),
         };
         assert_eq!(journal.encode(), Err(JournalCodecError::Invalid));
+
+        let mut journal = sample();
+        journal.operation_kind = OperationKind::GitMaterialize;
+        journal.targets[0].expected = ExpectedState::Existing {
+            revision: format!("rev:v1:{}", "44".repeat(32)).parse().unwrap(),
+            object_hash: [0x44; 32],
+            mode: 0o600,
+        };
+        assert_eq!(journal.encode(), Err(JournalCodecError::Invalid));
+        let mut journal = sample();
+        journal.operation_kind = OperationKind::GitMaterialize;
+        if let IntendedState::Object { mode, .. } = &mut journal.targets[0].intended {
+            *mode = 0o644;
+        }
+        assert_eq!(journal.encode(), Err(JournalCodecError::Invalid));
+        let mut journal = sample();
+        journal.operation_kind = OperationKind::GitMaterialize;
+        journal.targets[0].intended = IntendedState::Absent;
+        assert_eq!(journal.encode(), Err(JournalCodecError::Invalid));
     }
 
     #[test]
@@ -3072,6 +3369,7 @@ mod tests {
             assert_eq!(invalid.encode(), Err(JournalCodecError::Invalid), "{path}");
         }
         assert!(valid_active_path("rehow.yaml"));
+        assert!(valid_active_path(".gitignore"));
         assert!(valid_active_path("categories/linux/category.yaml"));
         assert!(valid_active_path("categories/linux/guide.md"));
         assert!(valid_active_path(

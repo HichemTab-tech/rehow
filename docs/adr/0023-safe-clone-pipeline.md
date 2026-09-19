@@ -1,6 +1,6 @@
 # ADR 0023: Safe clone pipeline
 
-- Status: Accepted; Phase 5B3A and pre-materialization anonymous-HTTPS validation implemented, authenticated transports/materialization pending
+- Status: Accepted; Phase 5B3A, anonymous-HTTPS validation, and journaled portable-content materialization implemented; Git object/ref finalization and authenticated transports pending
 - Date: 2026-09-19
 
 ## Context
@@ -59,6 +59,8 @@ Validated blob bytes are stored as recovery objects and published only by one `G
 After every content target is durable, Rehow opens the resulting Workspace through the normal scanner and requires an issue-free view whose Workspace ID, revisions, inventory, and Attachment hashes match the validated plan. Only then does it append the canonical `origin` config, create the local branch and remote-tracking ref with expected-absent OID compare-and-swap, point `HEAD` at that branch, fsync Git metadata, and transition the marker to complete. It never checks out, merges, resets, force-updates, runs hooks/filters, or deletes unrelated data. Ref/config races preserve existing state and return conflict.
 
 The renderer receives only stage, transport, host, bounded progress counts, and stable error codes. It never receives the destination path, URL after submission, ref/object IDs, credentials, Git stderr, filenames, or file content.
+
+The accepted 5B3C1 slice implements the portable-content half of this gate. It re-reads every staging file through no-follow private descriptors, independently rechecks its Git blob ID, stores exact bytes as recovery objects, and publishes the complete accepted tree through one `GitMaterialize` journal. Decoded clone journals permit only expected-absent `0600` object creation. The journal is durable before the proven `0700` Category/Attachment directory skeleton is created. An exact `.git/rehow-clone` marker and empty private scaffold bind the operation ID, destination, and clone-tree plan hash. A crash during scaffold construction may complete only missing canonical directories after a mutation-free preflight proves the exact marker and rejects every foreign or unsafe entry; a missing marker is never recreated. Interrupted journal application resumes only after the persisted intent matches and its current inventory contains no foreign entries. Final descriptor-confined inventory and Git blob-ID checks cover every accepted file, including `.gitignore`, and the canonical scanner must reproduce the validated Workspace fingerprint with no issues. Git object transfer, config, `HEAD`, branch, and remote-tracking refs remain the separate 5B3C2 finalization gate, so this slice is not exposed as completed clone success.
 
 ## Consequences
 

@@ -1,13 +1,15 @@
 //! Confined Git discovery/status and separately gated repository operations.
 
 use crate::{
-    protocol::{PlanToken, Revision},
+    protocol::{OperationId, PlanToken, Revision, Timestamp, current_timestamp, new_operation_id},
     storage::{
         ATTACHMENT_BYTES_LIMIT, ATTACHMENT_COUNT_LIMIT, CATEGORY_LIMIT, CloneDestinationSnapshot,
-        EmptyWorkspaceTarget, GUIDE_COUNT_LIMIT, GitCloneStaging, GitCloneStagingError,
+        EmptyWorkspaceTarget, GUIDE_COUNT_LIMIT, GitCloneMaterializationSource,
+        GitCloneMaterializationStorageError, GitCloneStaging, GitCloneStagingError,
         GitConfigStorageError, GitInitializeStorageError, GitMaterializationPathKind,
         GitRepositoryCapabilityError, MANAGED_BYTES_LIMIT, WorkspaceInspection, WorkspaceView,
-        classify_git_materialization_path, create_git_clone_staging, inspect_workspace,
+        classify_git_materialization_path, create_git_clone_staging,
+        execute_git_clone_materialization, inspect_workspace, open_initialized_workspace,
     },
 };
 use std::{
@@ -697,6 +699,16 @@ pub struct GitCloneValidation {
     remote_head: GitRemoteHead,
     #[allow(dead_code, reason = "consumed by the Phase 5B3C materialization gate")]
     validated: ValidatedGitClone,
+    #[allow(
+        dead_code,
+        reason = "consumed by the Phase 5B3C2 native finalization gate"
+    )]
+    operation_id: OperationId,
+    #[allow(
+        dead_code,
+        reason = "consumed by the Phase 5B3C2 native finalization gate"
+    )]
+    created_at: Timestamp,
 }
 
 impl fmt::Debug for GitCloneValidation {
@@ -724,6 +736,23 @@ pub enum GitCloneApplyError {
     StagingConflict,
     Unsafe,
     Unsupported,
+    Io,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "connected by the Phase 5B3C2 native finalization gate"
+)]
+pub(crate) enum GitCloneMaterializeError {
+    DestinationChanged,
+    StagingChanged,
+    Busy,
+    Conflict,
+    Unsafe,
+    Unsupported,
+    ResourceLimit,
+    ValidationMismatch,
     Io,
 }
 
@@ -762,6 +791,8 @@ pub fn apply_git_clone_validation(
                 staging,
                 remote_head,
                 validated,
+                operation_id: new_operation_id(),
+                created_at: current_timestamp(),
             })
         }
         Err(error) => {
@@ -769,6 +800,190 @@ pub fn apply_git_clone_validation(
                 .map_err(|_| GitCloneApplyError::DestinationChanged)?;
             Err(error)
         }
+    }
+}
+
+/// Publishes only the already validated portable Workspace content through the
+/// recovery journal. Git objects/config/refs remain a later finalization gate.
+#[allow(
+    dead_code,
+    reason = "connected by the Phase 5B3C2 native finalization gate"
+)]
+pub(crate) fn apply_git_clone_content_materialization(
+    destination: &EmptyWorkspaceTarget,
+    validation: &GitCloneValidation,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+) -> Result<Box<WorkspaceView>, GitCloneMaterializeError> {
+    if !destination
+        .matches_clone_destination(validation.plan.destination)
+        .map_err(|_| GitCloneMaterializeError::DestinationChanged)?
+    {
+        return Err(GitCloneMaterializeError::DestinationChanged);
+    }
+    let tree = validation.validated.tree();
+    let mut sources = Vec::new();
+    sources
+        .try_reserve_exact(tree.entries().len())
+        .map_err(|_| GitCloneMaterializeError::ResourceLimit)?;
+    for entry in tree.entries() {
+        sources.push(GitCloneMaterializationSource {
+            relative_path: entry.relative_path().to_owned(),
+            size: entry.size(),
+        });
+    }
+    let marker = git_clone_materialization_marker(
+        validation.operation_id,
+        tree.plan_hash(),
+        validation.plan.destination.root_hash(),
+    );
+    execute_git_clone_materialization(
+        destination,
+        state_home,
+        runtime_directory,
+        *validation.validated.workspace().manifest().workspace_id(),
+        validation.operation_id,
+        validation.created_at,
+        tree.plan_hash(),
+        &marker,
+        &sources,
+        |index, relative_path, size| {
+            let entry = tree
+                .entries()
+                .get(index)
+                .ok_or(GitCloneMaterializationStorageError::SourceChanged)?;
+            if entry.relative_path() != relative_path || entry.size() != size {
+                return Err(GitCloneMaterializationStorageError::SourceChanged);
+            }
+            let bytes = validation
+                .staging
+                .read_validation_file(relative_path, size)
+                .map_err(|error| match map_clone_materialization_staging(error) {
+                    GitCloneMaterializeError::ResourceLimit => {
+                        GitCloneMaterializationStorageError::TooLarge
+                    }
+                    GitCloneMaterializeError::Unsupported => {
+                        GitCloneMaterializationStorageError::Unsupported
+                    }
+                    GitCloneMaterializeError::Io => GitCloneMaterializationStorageError::Io,
+                    _ => GitCloneMaterializationStorageError::SourceChanged,
+                })?;
+            if !git_blob_object_id_matches(tree.object_format(), &bytes, entry.object_id()) {
+                return Err(GitCloneMaterializationStorageError::SourceChanged);
+            }
+            Ok(bytes)
+        },
+    )
+    .map_err(map_clone_materialization_storage)?;
+    let expected_paths = sources
+        .iter()
+        .map(|source| source.relative_path.clone())
+        .collect::<Vec<_>>();
+    destination
+        .verify_git_clone_materialization(&marker, &expected_paths)
+        .map_err(map_clone_materialization_inspection)?;
+    for entry in tree.entries() {
+        let bytes = destination
+            .read_git_clone_materialized_file(entry.relative_path(), entry.size())
+            .map_err(map_clone_materialization_inspection)?;
+        if !git_blob_object_id_matches(tree.object_format(), &bytes, entry.object_id()) {
+            return Err(GitCloneMaterializeError::ValidationMismatch);
+        }
+    }
+    let workspace =
+        open_initialized_workspace(destination).map_err(map_clone_materialization_inspection)?;
+    if !workspace.issues().is_empty()
+        || workspace_validation_fingerprint(&workspace)
+            != workspace_validation_fingerprint(validation.validated.workspace())
+    {
+        return Err(GitCloneMaterializeError::ValidationMismatch);
+    }
+    destination
+        .verify_git_clone_materialization(&marker, &expected_paths)
+        .map_err(map_clone_materialization_inspection)?;
+    Ok(workspace)
+}
+
+fn map_clone_materialization_inspection(
+    error: crate::storage::WorkspaceInspectError,
+) -> GitCloneMaterializeError {
+    match error {
+        crate::storage::WorkspaceInspectError::ChangedDuringRead => {
+            GitCloneMaterializeError::Conflict
+        }
+        crate::storage::WorkspaceInspectError::UnsafeRoot => GitCloneMaterializeError::Unsafe,
+        crate::storage::WorkspaceInspectError::ResourceLimit => {
+            GitCloneMaterializeError::ResourceLimit
+        }
+        crate::storage::WorkspaceInspectError::NotFound
+        | crate::storage::WorkspaceInspectError::NotDirectory
+        | crate::storage::WorkspaceInspectError::PermissionDenied
+        | crate::storage::WorkspaceInspectError::Io => GitCloneMaterializeError::Io,
+    }
+}
+
+fn git_clone_materialization_marker(
+    operation_id: OperationId,
+    plan_hash: [u8; 32],
+    root_hash: [u8; 32],
+) -> Vec<u8> {
+    format!(
+        "rehow-clone-finalize-v1\noperation_id={operation_id}\nplan_hash={}\nroot_hash={}\nstage=content\n",
+        hex_lower(&plan_hash),
+        hex_lower(&root_hash),
+    )
+    .into_bytes()
+}
+
+fn workspace_validation_fingerprint(workspace: &WorkspaceView) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"rehow:clone-workspace-view:v1\0");
+    hash_clone_field(
+        &mut hash,
+        workspace.manifest().workspace_id().to_string().as_bytes(),
+    );
+    hash_clone_field(
+        &mut hash,
+        workspace.manifest_revision().to_string().as_bytes(),
+    );
+    for category in workspace.categories() {
+        hash_clone_field(&mut hash, category.relative_directory().as_bytes());
+        hash_clone_field(
+            &mut hash,
+            category.descriptor_revision().to_string().as_bytes(),
+        );
+        for guide in category.guides() {
+            hash_clone_field(&mut hash, guide.relative_path().as_bytes());
+            hash_clone_field(&mut hash, guide.revision().to_string().as_bytes());
+        }
+    }
+    *hash.finalize().as_bytes()
+}
+
+fn map_clone_materialization_staging(error: GitCloneStagingError) -> GitCloneMaterializeError {
+    match error {
+        GitCloneStagingError::Conflict | GitCloneStagingError::Unsafe => {
+            GitCloneMaterializeError::StagingChanged
+        }
+        GitCloneStagingError::Unsupported => GitCloneMaterializeError::Unsupported,
+        GitCloneStagingError::TooLarge => GitCloneMaterializeError::ResourceLimit,
+        GitCloneStagingError::Io => GitCloneMaterializeError::Io,
+    }
+}
+
+fn map_clone_materialization_storage(
+    error: GitCloneMaterializationStorageError,
+) -> GitCloneMaterializeError {
+    match error {
+        GitCloneMaterializationStorageError::SourceChanged => {
+            GitCloneMaterializeError::StagingChanged
+        }
+        GitCloneMaterializationStorageError::Busy => GitCloneMaterializeError::Busy,
+        GitCloneMaterializationStorageError::Conflict => GitCloneMaterializeError::Conflict,
+        GitCloneMaterializationStorageError::Unsafe => GitCloneMaterializeError::Unsafe,
+        GitCloneMaterializationStorageError::Unsupported => GitCloneMaterializeError::Unsupported,
+        GitCloneMaterializationStorageError::TooLarge => GitCloneMaterializeError::ResourceLimit,
+        GitCloneMaterializationStorageError::Io => GitCloneMaterializeError::Io,
     }
 }
 
@@ -2724,8 +2939,9 @@ fn safe_git_label(value: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::storage::{
-        GitConfigFault, GitConfigRace, GitInitFault, WorkspaceInspection, inspect_workspace,
-        set_git_config_fault, set_git_config_race, set_git_init_fault,
+        GitCloneScaffoldFault, GitConfigFault, GitConfigRace, GitInitFault, WorkspaceFault,
+        WorkspaceInspection, inspect_workspace, set_git_clone_scaffold_fault, set_git_config_fault,
+        set_git_config_race, set_git_init_fault, set_workspace_fault,
     };
     use std::{fs, os::unix::fs::symlink, process::Command};
 
@@ -3550,18 +3766,17 @@ mod tests {
     }
 
     fn stage_clone_fixture(
-        destination: &Temp,
+        target: &EmptyWorkspaceTarget,
         state: &Temp,
         source: &Temp,
         commit_id: &str,
-    ) -> (GitRemoteHead, GitCloneStaging) {
-        let target = empty_target(destination);
-        let plan = plan_git_clone(&target, "https://example.invalid/team/rehow.git").unwrap();
+    ) -> (GitClonePlan, GitRemoteHead, GitCloneStaging) {
+        let plan = plan_git_clone(target, "https://example.invalid/team/rehow.git").unwrap();
         let head = parse_git_remote_head(
             format!("ref: refs/heads/main\tHEAD\n{commit_id}\tHEAD\n").as_bytes(),
         )
         .unwrap();
-        let staging = prepare_git_clone_staging(&target, &plan, &head, &state.0).unwrap();
+        let staging = prepare_git_clone_staging(target, &plan, &head, &state.0).unwrap();
         let mut fetch = Command::new("/usr/bin/git");
         fetch
             .env_clear()
@@ -3588,7 +3803,7 @@ mod tests {
             .arg(format!("{commit_id}:refs/rehow/clone/head"));
         configure_clone_child(&mut fetch, staging.git_descriptor(), None);
         assert!(fetch.status().unwrap().success());
-        (head, staging)
+        (plan, head, staging)
     }
 
     #[test]
@@ -3598,7 +3813,8 @@ mod tests {
         let source = Temp::new();
         let manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Cloned\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n";
         let commit_id = commit_clone_fixture(&source, manifest);
-        let (head, staging) = stage_clone_fixture(&destination, &state, &source, &commit_id);
+        let target = empty_target(&destination);
+        let (_, head, staging) = stage_clone_fixture(&target, &state, &source, &commit_id);
         let cancelled = AtomicBool::new(false);
         let tree = inspect_fetched_git_clone_tree(&staging, &head, &cancelled).unwrap();
         let validated = validate_fetched_git_clone(&staging, tree, &cancelled).unwrap();
@@ -3609,13 +3825,254 @@ mod tests {
         assert!(destination.0.read_dir().unwrap().next().is_none());
     }
 
+    fn validated_clone_fixture(
+        destination: &Temp,
+        state: &Temp,
+        source: &Temp,
+        manifest: &[u8],
+    ) -> (EmptyWorkspaceTarget, GitCloneValidation) {
+        let commit_id = commit_clone_fixture(source, manifest);
+        let target = empty_target(destination);
+        let (plan, remote_head, staging) = stage_clone_fixture(&target, state, source, &commit_id);
+        let cancelled = AtomicBool::new(false);
+        let tree = inspect_fetched_git_clone_tree(&staging, &remote_head, &cancelled).unwrap();
+        let validated = validate_fetched_git_clone(&staging, tree, &cancelled).unwrap();
+        (
+            target,
+            GitCloneValidation {
+                plan,
+                staging,
+                remote_head,
+                validated,
+                operation_id: new_operation_id(),
+                created_at: current_timestamp(),
+            },
+        )
+    }
+
+    #[test]
+    fn clone_materialization_journals_validated_content_and_reopens_it() {
+        let destination = Temp::new();
+        let state = Temp::new();
+        let source = Temp::new();
+        let manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Materialized\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n";
+        let category = source.0.join("categories/linux-system--b6ba3a5551");
+        fs::create_dir_all(&category).unwrap();
+        fs::write(
+            category.join("category.yaml"),
+            b"schema_version: 1\nid: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5551\nname: Linux System\norder: 1000\nstatus: active\ncreated_at: \"2026-09-05T10:01:00Z\"\nupdated_at: \"2026-09-05T10:01:00Z\"\n",
+        )
+        .unwrap();
+        use sha2::Digest as _;
+        let attachment_bytes = b"validated attachment\n";
+        let attachment_sha = hex_lower(&sha2::Sha256::digest(attachment_bytes));
+        let guide = format!(
+            "---\nschema_version: 1\nid: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\ntitle: Install a Tarball\nsummary: Install a downloaded archive.\ncategory_id: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5551\ntags: []\naliases: []\nattachments:\n  - id: 0199a264-ef5f-73b4-a238-a71ba1509898\n    path: attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/example.txt\n    title: Example text\n    sha256: {attachment_sha}\n    size_bytes: {}\nstatus: draft\ncreated_at: \"2026-09-05T10:03:00Z\"\nupdated_at: \"2026-09-05T10:03:00Z\"\n---\n\n## Steps\n\nExtract it.\n",
+            attachment_bytes.len()
+        );
+        fs::write(category.join("install--36c5735e10.md"), guide).unwrap();
+        let attachment = source
+            .0
+            .join("attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/example.txt");
+        fs::create_dir_all(attachment.parent().unwrap()).unwrap();
+        fs::write(&attachment, attachment_bytes).unwrap();
+        fs::write(source.0.join(".gitignore"), b"*.tmp\n").unwrap();
+        let (target, validation) = validated_clone_fixture(&destination, &state, &source, manifest);
+
+        let workspace =
+            apply_git_clone_content_materialization(&target, &validation, &state.0, None).unwrap();
+        assert_eq!(workspace.manifest().name(), "Materialized");
+        assert_eq!(
+            fs::read(destination.0.join("rehow.yaml")).unwrap(),
+            manifest
+        );
+        assert!(destination.0.join("categories").is_dir());
+        assert!(
+            destination
+                .0
+                .join("categories/linux-system--b6ba3a5551/install--36c5735e10.md")
+                .is_file()
+        );
+        assert_eq!(
+            fs::read(destination.0.join(".gitignore")).unwrap(),
+            b"*.tmp\n"
+        );
+        assert_eq!(
+            fs::read(
+                destination
+                    .0
+                    .join("attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/example.txt")
+            )
+            .unwrap(),
+            attachment_bytes
+        );
+        assert!(destination.0.join(".git/rehow-clone").is_file());
+        assert!(!destination.0.join(".git/HEAD").exists());
+        assert!(!destination.0.join(".git/config").exists());
+    }
+
+    #[test]
+    fn clone_materialization_refuses_destination_and_staging_changes() {
+        let manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Protected\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n";
+
+        let destination = Temp::new();
+        let state = Temp::new();
+        let source = Temp::new();
+        let (target, validation) = validated_clone_fixture(&destination, &state, &source, manifest);
+        fs::write(destination.0.join("external"), b"preserve").unwrap();
+        assert_eq!(
+            apply_git_clone_content_materialization(&target, &validation, &state.0, None)
+                .err()
+                .unwrap(),
+            GitCloneMaterializeError::Conflict
+        );
+        assert_eq!(
+            fs::read(destination.0.join("external")).unwrap(),
+            b"preserve"
+        );
+        assert!(!destination.0.join("rehow.yaml").exists());
+
+        let destination = Temp::new();
+        let state = Temp::new();
+        let source = Temp::new();
+        let (target, validation) = validated_clone_fixture(&destination, &state, &source, manifest);
+        fs::create_dir(destination.0.join(".git")).unwrap();
+        fs::write(destination.0.join(".git/foreign"), b"preserve").unwrap();
+        assert!(
+            apply_git_clone_content_materialization(&target, &validation, &state.0, None).is_err()
+        );
+        assert_eq!(
+            fs::read(destination.0.join(".git/foreign")).unwrap(),
+            b"preserve"
+        );
+        assert!(!destination.0.join(".git/rehow-clone").exists());
+        assert!(!destination.0.join("rehow.yaml").exists());
+
+        let destination = Temp::new();
+        let state = Temp::new();
+        let source = Temp::new();
+        let (target, validation) = validated_clone_fixture(&destination, &state, &source, manifest);
+        let changed = vec![b'x'; manifest.len()];
+        fs::write(
+            Path::new(validation.staging.validation_path()).join("rehow.yaml"),
+            changed,
+        )
+        .unwrap();
+        assert_eq!(
+            apply_git_clone_content_materialization(&target, &validation, &state.0, None)
+                .err()
+                .unwrap(),
+            GitCloneMaterializeError::StagingChanged
+        );
+        assert!(destination.0.read_dir().unwrap().next().is_none());
+    }
+
+    #[test]
+    fn clone_materialization_resumes_the_exact_installed_journal() {
+        let destination = Temp::new();
+        let state = Temp::new();
+        let source = Temp::new();
+        let manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Resumed\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n";
+        let (target, validation) = validated_clone_fixture(&destination, &state, &source, manifest);
+
+        set_workspace_fault(WorkspaceFault::BeforeLiveRename);
+        assert_eq!(
+            apply_git_clone_content_materialization(&target, &validation, &state.0, None)
+                .err()
+                .unwrap(),
+            GitCloneMaterializeError::Unsupported
+        );
+        assert!(destination.0.join(".git/rehow-clone").is_file());
+        assert!(!destination.0.join("rehow.yaml").exists());
+
+        let workspace =
+            apply_git_clone_content_materialization(&target, &validation, &state.0, None).unwrap();
+        assert_eq!(workspace.manifest().name(), "Resumed");
+        assert_eq!(
+            fs::read(destination.0.join("rehow.yaml")).unwrap(),
+            manifest
+        );
+
+        let destination = Temp::new();
+        let state = Temp::new();
+        let source = Temp::new();
+        let (target, validation) = validated_clone_fixture(&destination, &state, &source, manifest);
+        set_workspace_fault(WorkspaceFault::BeforeLiveRename);
+        assert!(
+            apply_git_clone_content_materialization(&target, &validation, &state.0, None).is_err()
+        );
+        fs::write(destination.0.join("foreign"), b"preserve").unwrap();
+        assert_eq!(
+            apply_git_clone_content_materialization(&target, &validation, &state.0, None)
+                .err()
+                .unwrap(),
+            GitCloneMaterializeError::Conflict
+        );
+        assert_eq!(
+            fs::read(destination.0.join("foreign")).unwrap(),
+            b"preserve"
+        );
+        assert!(!destination.0.join("rehow.yaml").exists());
+
+        let destination = Temp::new();
+        let state = Temp::new();
+        let source = Temp::new();
+        let (target, validation) = validated_clone_fixture(&destination, &state, &source, manifest);
+        set_workspace_fault(WorkspaceFault::BeforeLiveRename);
+        assert!(
+            apply_git_clone_content_materialization(&target, &validation, &state.0, None).is_err()
+        );
+        fs::remove_file(destination.0.join(".git/rehow-clone")).unwrap();
+        assert!(
+            apply_git_clone_content_materialization(&target, &validation, &state.0, None).is_err()
+        );
+        assert!(!destination.0.join(".git/rehow-clone").exists());
+        assert!(!destination.0.join("rehow.yaml").exists());
+    }
+
+    #[test]
+    fn clone_materialization_resumes_each_private_scaffold_boundary() {
+        let manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Scaffold resume\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n";
+        for fault in [
+            GitCloneScaffoldFault::Marker,
+            GitCloneScaffoldFault::Objects,
+            GitCloneScaffoldFault::Info,
+            GitCloneScaffoldFault::Pack,
+            GitCloneScaffoldFault::Refs,
+            GitCloneScaffoldFault::Heads,
+            GitCloneScaffoldFault::Remotes,
+            GitCloneScaffoldFault::Origin,
+            GitCloneScaffoldFault::Tags,
+        ] {
+            let destination = Temp::new();
+            let state = Temp::new();
+            let source = Temp::new();
+            let (target, validation) =
+                validated_clone_fixture(&destination, &state, &source, manifest);
+            set_git_clone_scaffold_fault(fault);
+            assert_eq!(
+                apply_git_clone_content_materialization(&target, &validation, &state.0, None)
+                    .err()
+                    .unwrap(),
+                GitCloneMaterializeError::Unsupported,
+                "{fault:?}"
+            );
+            assert!(destination.0.join(".git/rehow-clone").is_file());
+            let workspace =
+                apply_git_clone_content_materialization(&target, &validation, &state.0, None)
+                    .unwrap();
+            assert_eq!(workspace.manifest().name(), "Scaffold resume");
+        }
+    }
+
     #[test]
     fn clone_content_rejects_malformed_workspace_without_touching_destination() {
         let destination = Temp::new();
         let state = Temp::new();
         let source = Temp::new();
         let commit_id = commit_clone_fixture(&source, b"schema_version: nope\n");
-        let (head, staging) = stage_clone_fixture(&destination, &state, &source, &commit_id);
+        let target = empty_target(&destination);
+        let (_, head, staging) = stage_clone_fixture(&target, &state, &source, &commit_id);
         let cancelled = AtomicBool::new(false);
         let tree = inspect_fetched_git_clone_tree(&staging, &head, &cancelled).unwrap();
 
@@ -3638,7 +4095,8 @@ mod tests {
         fs::write(&attachment, b"orphan").unwrap();
         let manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Cloned\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n";
         let commit_id = commit_clone_fixture(&source, manifest);
-        let (head, staging) = stage_clone_fixture(&destination, &state, &source, &commit_id);
+        let target = empty_target(&destination);
+        let (_, head, staging) = stage_clone_fixture(&target, &state, &source, &commit_id);
         let cancelled = AtomicBool::new(false);
         let tree = inspect_fetched_git_clone_tree(&staging, &head, &cancelled).unwrap();
 
@@ -3703,7 +4161,8 @@ mod tests {
         for object_id in [tree_id, tag_id] {
             let destination = Temp::new();
             let state = Temp::new();
-            let (head, staging) = stage_clone_fixture(&destination, &state, &source, &object_id);
+            let target = empty_target(&destination);
+            let (_, head, staging) = stage_clone_fixture(&target, &state, &source, &object_id);
             assert_eq!(
                 inspect_fetched_git_clone_tree(&staging, &head, &AtomicBool::new(false)),
                 Err(GitCloneInspectError::InvalidRepository)
