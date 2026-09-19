@@ -1,6 +1,6 @@
 use super::{
-    ContentHash, GitClonePackSource, GitCommitIntent, Journal, JournalCodecError,
-    MAX_GIT_COMMIT_INTENT_BYTES, MAX_JOURNAL_BYTES,
+    ContentHash, GitClonePackSource, GitCommitIntent, GitSyncIntent, Journal, JournalCodecError,
+    MAX_GIT_COMMIT_INTENT_BYTES, MAX_GIT_SYNC_INTENT_BYTES, MAX_JOURNAL_BYTES,
 };
 use crate::protocol::{OperationId, WorkspaceId};
 use std::{
@@ -1320,6 +1320,73 @@ impl RecoveryStore {
         Ok(intents)
     }
 
+    pub(super) fn install_git_sync_intent(
+        &self,
+        lock: &WriterLock,
+        intent: &GitSyncIntent,
+    ) -> Result<(), StoreError> {
+        self.require_lock(lock)?;
+        if intent.workspace_id != self.workspace_id || intent.root_hash != self.root_hash {
+            return Err(StoreError::Conflict);
+        }
+        let bytes = intent.encode().map_err(map_codec)?;
+        let name = format!("{}.gitsync", intent.operation_id);
+        if intent.generation == 1 {
+            if !self.journals.missing(&name)? {
+                return Err(StoreError::Conflict);
+            }
+        } else {
+            let previous = self.read_git_sync_intent_by_name(&name, intent.operation_id)?;
+            if !previous.is_next_generation_of(intent) {
+                return Err(StoreError::Conflict);
+            }
+        }
+        let temp_name = temp_name("git-sync-intent");
+        let mut temp = TempEntry::create(&self.journals, &temp_name)?;
+        temp.file.write_all(&bytes).map_err(|_| StoreError::Io)?;
+        temp.file.sync_all().map_err(|_| StoreError::Unsupported)?;
+        validate_file_descriptor(&temp.file, 0o600, Some(bytes.len() as u64))?;
+        if intent.generation == 1 {
+            rename_no_replace(&self.journals, &temp_name, &name)?;
+        } else {
+            rename_replace(&self.journals, &temp_name, &name)?;
+        }
+        temp.installed = true;
+        self.journals.sync()?;
+        if self.read_git_sync_intent_by_name(&name, intent.operation_id)? == *intent {
+            Ok(())
+        } else {
+            Err(StoreError::Corrupt)
+        }
+    }
+
+    pub(super) fn read_git_sync_intent(
+        &self,
+        lock: &WriterLock,
+        operation_id: OperationId,
+    ) -> Result<GitSyncIntent, StoreError> {
+        self.require_lock(lock)?;
+        self.read_git_sync_intent_by_name(&format!("{operation_id}.gitsync"), operation_id)
+    }
+
+    pub(super) fn list_git_sync_intents(
+        &self,
+        lock: &WriterLock,
+    ) -> Result<Vec<GitSyncIntent>, StoreError> {
+        self.require_lock(lock)?;
+        let entries = self.journals.entries(1_024)?;
+        let mut intents = Vec::new();
+        for name in entries {
+            let Some(operation) = name.strip_suffix(".gitsync") else {
+                continue;
+            };
+            let operation_id = operation.parse().map_err(|_| StoreError::Corrupt)?;
+            intents.push(self.read_git_sync_intent_by_name(&name, operation_id)?);
+        }
+        intents.sort_by_key(|intent| intent.operation_id.to_string());
+        Ok(intents)
+    }
+
     fn read_object_by_name(&self, name: &str) -> Result<Vec<u8>, StoreError> {
         let bytes = self.objects.read_regular(name, MAX_OBJECT_BYTES)?;
         if hex(blake3::hash(&bytes).as_bytes()) != name {
@@ -1354,6 +1421,25 @@ impl RecoveryStore {
             .journals
             .read_regular(name, MAX_GIT_COMMIT_INTENT_BYTES)?;
         let intent = GitCommitIntent::decode(&bytes).map_err(map_codec)?;
+        if intent.operation_id == operation_id
+            && intent.workspace_id == self.workspace_id
+            && intent.root_hash == self.root_hash
+        {
+            Ok(intent)
+        } else {
+            Err(StoreError::Corrupt)
+        }
+    }
+
+    fn read_git_sync_intent_by_name(
+        &self,
+        name: &str,
+        operation_id: OperationId,
+    ) -> Result<GitSyncIntent, StoreError> {
+        let bytes = self
+            .journals
+            .read_regular(name, MAX_GIT_SYNC_INTENT_BYTES)?;
+        let intent = GitSyncIntent::decode(&bytes).map_err(map_codec)?;
         if intent.operation_id == operation_id
             && intent.workspace_id == self.workspace_id
             && intent.root_hash == self.root_hash

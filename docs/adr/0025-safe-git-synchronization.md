@@ -1,6 +1,6 @@
 # ADR 0025: Safe Git synchronization
 
-- Status: Partially Accepted — isolated inspection and bounded ancestry implemented; integration and push pending
+- Status: Partially Accepted — safe fetch, ancestry, and internal fast-forward publication implemented; native workflow and push pending
 - Date: 2026-09-19
 
 ## Context
@@ -31,9 +31,17 @@ Core has an internal-only primitive that accepts a clean, proven remote fast-for
 
 This primitive remains crate-private because it is not independently crash-atomic with Git metadata publication. The next gate must install a durable sync intent before invoking it and use that intent to resume the Workspace journal plus object/index/ref publication.
 
+### 5D2B2 — durable fast-forward publication
+
+Core now composes the accepted Workspace journal with append-only incoming object installation and index-first/direct-ref-last Git publication. It first prepares the Workspace journal and candidate index as inert recovery objects, validates the remote commit/tree/object closure in the active object database, and installs a generation-checked sync intent before activating the Workspace journal. The intent binds the Workspace/root/Git identities, exact unchanged `HEAD`/config/packed-refs/shallow bytes, exact before/candidate index and ref bytes and modes, the Workspace plan/journal, branch, and immutable plan hash.
+
+Recovery accepts only the exact before/before, candidate-index/before-ref, or candidate/candidate states. It replays the Workspace journal before Git publication, verifies the complete Workspace against the candidate index while holding the cooperating writer lock, revalidates candidate objects, publishes the index before the direct loose branch ref, and marks completion only after another object check. Any foreign Workspace, index, ref, static metadata, identity, or intent state becomes an explicit conflict; Rehow does not roll it back or overwrite it. Append-only packs and inert recovery objects may remain after an interrupted pre-intent attempt.
+
+Packed-only current branches are deliberately refused by this gate. Publishing a loose shadow without a separately accepted packed-ref compatibility policy would leave Rehow's strict single-representation parser unable to reopen the result. SHA-1 and SHA-256 object widths use the same validation path; the complete SHA-256 sync fixture remains a later portability case. The boundary stays crate-private until the native lifecycle and recovery presentation are specified.
+
 ### Pending gates
 
-5D2B2 must compose the accepted internal materialization with append-only object installation and index/direct-branch publication by expected-OID/state compare-and-swap. The durable intent must precede Workspace mutation so interruption at every boundary resumes or reports a conflict. Ambiguous, history-limited, or locally dirty states require explanation, not automatic resolution.
+The native 5D2C gate must retain the opaque classification, require an explicit user apply action, expose pathless recovery, and explain unsupported packed branches, conflicts, dirty state, divergence, and history limits without leaking refs, OIDs, paths, URLs, or credentials.
 
 5D3 may push only an exact reviewed local commit from the expected remote OID using an explicit refspec and native confirmation. Non-fast-forward, changed remote, auth, host-key, and transport failures are preserved and reported. No force option exists.
 
@@ -44,5 +52,5 @@ Authenticated HTTPS/SSH requires the separately audited credential/agent provena
 - The first accepted slice can securely answer whether the configured upstream snapshot is valid and changed, but cannot yet modify or publish anything.
 - A changed remote is called remote-fast-forward, local-ahead, or diverged only when bounded history proves that result; otherwise it is history-limited.
 - Private staging is retained as exact evidence/input for the next gate; identity-safe retention/pruning remains required.
-- Portable fast-forward materialization is now independently proven, but no adapter may call it until the cross-Workspace/Git sync intent is complete.
+- Portable fast-forward publication is now interruption-recoverable inside core, but no adapter may call it until the native authority lifecycle and recovery UX are accepted.
 - Unsupported authentication degrades to an actionable unavailable state rather than a token prompt.

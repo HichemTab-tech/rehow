@@ -17,8 +17,9 @@ pub(crate) use recovery::{
     GitCloneMaterializationStorageOutcome, GitClonePackSource, GitCloneStaging,
     GitCloneStagingError, GitSyncMaterializationCurrent, GitSyncMaterializationSource,
     GitSyncMaterializationStorageError, GitSyncMaterializationStorageOutcome,
-    MultiDocumentUpdateError, MultiDocumentUpdateOutcome, PreparedDocument,
-    WorkspaceInitializeError, WorkspaceInitializeOutcome, create_git_clone_staging,
+    GitSyncPreparedMaterialization, MultiDocumentUpdateError, MultiDocumentUpdateOutcome,
+    PreparedDocument, WorkspaceInitializeError, WorkspaceInitializeOutcome,
+    create_git_clone_staging,
 };
 pub use watch::{WorkspaceWatchError, WorkspaceWatchSignal, WorkspaceWatcher};
 
@@ -2996,6 +2997,76 @@ where
         incoming,
         validate_current,
         read_file,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_git_sync_materialization<V, F>(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    operation_id: crate::protocol::OperationId,
+    created_at: crate::protocol::Timestamp,
+    plan_hash: [u8; 32],
+    current: &[GitSyncMaterializationCurrent],
+    incoming: &[GitSyncMaterializationSource],
+    validate_current: V,
+    read_file: F,
+) -> Result<GitSyncPreparedMaterialization, GitSyncMaterializationStorageError>
+where
+    V: FnOnce() -> Result<(), GitSyncMaterializationStorageError>,
+    F: FnMut(usize, &str, u64) -> Result<Vec<u8>, GitSyncMaterializationStorageError>,
+{
+    recovery::prepare_git_sync_materialization(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        operation_id,
+        created_at,
+        plan_hash,
+        current,
+        incoming,
+        validate_current,
+        read_file,
+    )
+}
+
+pub(crate) fn activate_git_sync_materialization(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    prepared: GitSyncPreparedMaterialization,
+) -> Result<GitSyncMaterializationStorageOutcome, GitSyncMaterializationStorageError> {
+    recovery::activate_git_sync_materialization(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        prepared,
+    )
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+pub(crate) fn activate_git_sync_materialization_plan(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    operation_id: crate::protocol::OperationId,
+    plan_hash: [u8; 32],
+    journal_hash: Option<[u8; 32]>,
+) -> Result<GitSyncMaterializationStorageOutcome, GitSyncMaterializationStorageError> {
+    recovery::activate_git_sync_materialization_plan(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        operation_id,
+        plan_hash,
+        journal_hash,
     )
 }
 

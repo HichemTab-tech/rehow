@@ -1,0 +1,11 @@
+# Phase 5D2B2 durable sync publication evidence
+
+Date: 2026-09-19
+
+The internal remote-fast-forward path now prepares the accepted Workspace journal without activating it, independently creates and strips a bounded candidate Git index, installs verified incoming pack/index files append-only, and persists an operation-bound sync intent before any active Workspace mutation. The intent stores only content hashes and exact state bindings; Debug output remains redacted.
+
+Recovery activates or resumes the exact Workspace journal first. Under the same cooperating recovery lock used by other Rehow writers, it reopens the Workspace and requires its complete managed inventory to match the candidate index. It then accepts only exact before-index/before-ref, candidate-index/before-ref, or candidate-index/candidate-ref states. Existing confined Git metadata publication writes the index first and direct loose branch ref last. Static `HEAD`, config, packed-refs, shallow state, root/Git identities, candidate commit/tree/object closure, and the immutable intent hash are rechecked. Foreign state records a conflict and is never overwritten or rolled back.
+
+Focused coverage passes 18 sync/recovery tests, including complete Workspace/index/ref publication, intent codec truncation and stage order, all six Git metadata interruption seams, a new commit with no portable change, recovery blocking of new commit/sync plans, packed-only refusal, post-ref foreign Workspace/ref preservation as conflict, journal races, directory identity replacement, and redaction. The broad all-feature Workspace gate passes 412 core tests with 2 intentional ignores, 18 error-contract tests, 13 protocol tests, public-API/trybuild, 11 unknown-YAML tests, 22 desktop tests, the MCP smoke test, and doc tests. Strict all-Workspace/all-target/all-feature Clippy denies warnings; formatting, bootstrap validation, and whitespace checks pass. The single reused Security Reviewer passed the correction closure with no remaining blocker/high/medium finding.
+
+This is intentionally a core-only boundary. Packed-only current branches are refused until strict packed/loose representation reopening is solved. Native commands/UI, push, authenticated transport, remote-tracking refs, reflogs, merge/rebase, scheduling, and MCP mutation remain outside this checkpoint.

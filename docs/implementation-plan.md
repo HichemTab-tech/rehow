@@ -108,7 +108,7 @@ Milestones:
 1. Git discovery and strictly contained read status/branch/remotes/divergence/conflicts.
 2. Separately accepted init/connect/clone ADR and implementation with descriptor-bound destination safety.
 3. Separate commit ADR and implementation covering managed-only scope, clean index/ref CAS, unrelated-change preservation, and no hooks/filters/helpers.
-4. ADR 0025 synchronization gates: isolated fetch/validated incoming tree, bounded ancestry, and the internal journaled portable-Workspace primitive are implemented; next are the durable cross-Workspace/Git intent with object/index/ref CAS, safe push, trusted credential provenance, auth/conflict states, and opt-in schedule policy.
+4. ADR 0025 synchronization gates: isolated fetch/validated incoming tree, bounded ancestry, journaled portable-Workspace mutation, and internal durable object/index/direct-ref fast-forward publication are implemented; next are the native apply/recovery workflow, safe push, trusted credential provenance, auth/conflict states, and opt-in schedule policy.
 
 Gate:
 

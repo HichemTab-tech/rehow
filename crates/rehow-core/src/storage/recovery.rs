@@ -254,6 +254,16 @@ pub(crate) enum GitCommitIntentBranchRepresentation {
     Packed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitSyncIntentStage {
+    Prepared,
+    WorkspacePublished,
+    IndexPublished,
+    RefPublished,
+    Complete,
+    Conflict,
+}
+
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) struct GitCommitIntent {
     pub(crate) generation: u64,
@@ -288,6 +298,52 @@ impl fmt::Debug for GitCommitIntent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("GitCommitIntent")
+            .field("generation", &self.generation)
+            .field("operation_id", &self.operation_id)
+            .field("workspace_id", &self.workspace_id)
+            .field("branch_relative", &self.branch_relative)
+            .field("representation", &self.representation)
+            .field("stage", &self.stage)
+            .field("content", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct GitSyncIntent {
+    pub(crate) generation: u64,
+    pub(crate) operation_id: OperationId,
+    pub(crate) workspace_id: WorkspaceId,
+    pub(crate) root_hash: ContentHash,
+    pub(crate) root_device: u64,
+    pub(crate) root_inode: u64,
+    pub(crate) git_device: u64,
+    pub(crate) git_inode: u64,
+    pub(crate) branch_relative: String,
+    pub(crate) representation: GitCommitIntentBranchRepresentation,
+    pub(crate) head_hash: ContentHash,
+    pub(crate) config_hash: ContentHash,
+    pub(crate) before_index_hash: ContentHash,
+    pub(crate) before_index_mode: u32,
+    pub(crate) candidate_index_hash: ContentHash,
+    pub(crate) candidate_index_mode: u32,
+    pub(crate) packed_refs_hash: Option<ContentHash>,
+    pub(crate) shallow_hash: Option<ContentHash>,
+    pub(crate) shallow_mode: u32,
+    pub(crate) before_ref_hash: Option<ContentHash>,
+    pub(crate) before_ref_mode: u32,
+    pub(crate) candidate_ref_hash: ContentHash,
+    pub(crate) candidate_ref_mode: u32,
+    pub(crate) workspace_journal_hash: Option<ContentHash>,
+    pub(crate) workspace_plan_hash: ContentHash,
+    pub(crate) plan_hash: ContentHash,
+    pub(crate) stage: GitSyncIntentStage,
+}
+
+impl fmt::Debug for GitSyncIntent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitSyncIntent")
             .field("generation", &self.generation)
             .field("operation_id", &self.operation_id)
             .field("workspace_id", &self.workspace_id)
@@ -433,6 +489,15 @@ pub(crate) struct GitSyncMaterializationStorageOutcome {
     pub(crate) changed: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GitSyncPreparedMaterialization {
+    pub(crate) operation_id: OperationId,
+    pub(crate) created_at: Timestamp,
+    pub(crate) plan_hash: ContentHash,
+    pub(crate) journal_hash: Option<ContentHash>,
+    pub(crate) changed: bool,
+}
+
 pub(crate) type GitSyncMaterializationStorageError = GitCloneMaterializationStorageError;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -575,6 +640,30 @@ impl GitCommitRecoverySession {
     pub(crate) fn list_intents(&self) -> Result<Vec<GitCommitIntent>, GitCommitIntentError> {
         self.store
             .list_git_commit_intents(&self.lock)
+            .map_err(map_git_commit_intent_store)
+    }
+
+    pub(crate) fn install_sync_intent(
+        &self,
+        intent: &GitSyncIntent,
+    ) -> Result<(), GitCommitIntentError> {
+        self.store
+            .install_git_sync_intent(&self.lock, intent)
+            .map_err(map_git_commit_intent_store)
+    }
+
+    pub(crate) fn read_sync_intent(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<GitSyncIntent, GitCommitIntentError> {
+        self.store
+            .read_git_sync_intent(&self.lock, operation_id)
+            .map_err(map_git_commit_intent_store)
+    }
+
+    pub(crate) fn list_sync_intents(&self) -> Result<Vec<GitSyncIntent>, GitCommitIntentError> {
+        self.store
+            .list_git_sync_intents(&self.lock)
             .map_err(map_git_commit_intent_store)
     }
 
@@ -795,7 +884,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn execute_git_sync_materialization<V, F>(
+pub(super) fn prepare_git_sync_materialization<V, F>(
     root: &super::linux::DirectoryCapability,
     state_home: &Path,
     runtime_directory: Option<&Path>,
@@ -807,7 +896,7 @@ pub(super) fn execute_git_sync_materialization<V, F>(
     incoming: &[GitSyncMaterializationSource],
     validate_current: V,
     mut read_file: F,
-) -> Result<GitSyncMaterializationStorageOutcome, GitSyncMaterializationStorageError>
+) -> Result<GitSyncPreparedMaterialization, GitSyncMaterializationStorageError>
 where
     V: FnOnce() -> Result<(), GitSyncMaterializationStorageError>,
     F: FnMut(usize, &str, u64) -> Result<Vec<u8>, GitSyncMaterializationStorageError>,
@@ -844,8 +933,17 @@ where
             {
                 return Err(GitCloneMaterializationStorageError::Conflict);
             }
-            resume_git_sync_journal(root, &store, &lock, &journal)?;
-            return Ok(GitSyncMaterializationStorageOutcome {
+            let bytes = journal
+                .encode()
+                .map_err(map_journal_clone_materialization)?;
+            let journal_hash = store
+                .store_object(&lock, &bytes)
+                .map_err(map_store_clone_materialization)?;
+            return Ok(GitSyncPreparedMaterialization {
+                operation_id,
+                created_at,
+                plan_hash,
+                journal_hash: Some(journal_hash),
                 changed: !journal.targets.is_empty(),
             });
         }
@@ -938,7 +1036,13 @@ where
         }
     }
     if targets.is_empty() {
-        return Ok(GitSyncMaterializationStorageOutcome { changed: false });
+        return Ok(GitSyncPreparedMaterialization {
+            operation_id,
+            created_at,
+            plan_hash,
+            journal_hash: None,
+            changed: false,
+        });
     }
     targets.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     let journal = Journal {
@@ -955,17 +1059,136 @@ where
         stage: JournalStage::Prepared,
         completion: false,
     };
-    journal.encode().map_err(|error| match error {
-        JournalCodecError::TooLarge | JournalCodecError::ResourceLimit => {
-            GitSyncMaterializationStorageError::TooLarge
-        }
-        JournalCodecError::Invalid => GitSyncMaterializationStorageError::Unsafe,
-    })?;
-    store
-        .install_journal(&lock, &journal)
+    let bytes = journal
+        .encode()
+        .map_err(map_journal_clone_materialization)?;
+    let journal_hash = store
+        .store_object(&lock, &bytes)
         .map_err(map_store_clone_materialization)?;
+    Ok(GitSyncPreparedMaterialization {
+        operation_id,
+        created_at,
+        plan_hash,
+        journal_hash: Some(journal_hash),
+        changed: true,
+    })
+}
+
+pub(super) fn activate_git_sync_materialization(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    prepared: GitSyncPreparedMaterialization,
+) -> Result<GitSyncMaterializationStorageOutcome, GitSyncMaterializationStorageError> {
+    activate_git_sync_materialization_plan(
+        root,
+        state_home,
+        runtime_directory,
+        workspace_id,
+        prepared.operation_id,
+        prepared.plan_hash,
+        prepared.journal_hash,
+    )
+}
+
+pub(super) fn activate_git_sync_materialization_plan(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    operation_id: OperationId,
+    plan_hash: ContentHash,
+    journal_hash: Option<ContentHash>,
+) -> Result<GitSyncMaterializationStorageOutcome, GitSyncMaterializationStorageError> {
+    let store = store::RecoveryStore::open(
+        state_home,
+        workspace_id,
+        root.root_hash(),
+        root.capability_hash(),
+    )
+    .map_err(map_store_clone_materialization)?;
+    let lock = store
+        .acquire_lock(runtime_directory)
+        .map_err(map_store_clone_materialization)?;
+    let (root_device, root_inode) = root.identity().map_err(map_io_clone_materialization)?;
+    let Some(journal_hash) = journal_hash else {
+        if !store
+            .journal_missing(&lock, operation_id)
+            .map_err(map_store_clone_materialization)?
+        {
+            return Err(GitSyncMaterializationStorageError::Conflict);
+        }
+        return Ok(GitSyncMaterializationStorageOutcome { changed: false });
+    };
+    let bytes = store
+        .read_object(&lock, &journal_hash)
+        .map_err(map_store_clone_materialization)?;
+    let journal = Journal::decode(&bytes).map_err(map_journal_clone_materialization)?;
+    if journal.operation_id != operation_id
+        || journal.operation_kind != OperationKind::Migration
+        || journal.workspace_id != workspace_id
+        || journal.root_hash != root.root_hash()
+        || journal.root_device != root_device
+        || journal.root_inode != root_inode
+        || journal.plan_hash != plan_hash
+        || journal.stage != JournalStage::Prepared
+        || journal.completion
+    {
+        return Err(GitSyncMaterializationStorageError::Conflict);
+    }
+    match store.read_journal(&lock, operation_id) {
+        Ok(persisted) => {
+            if !journal_matches_plan(&persisted, &journal) {
+                return Err(GitSyncMaterializationStorageError::Conflict);
+            }
+        }
+        Err(read_error) => match store.journal_missing(&lock, operation_id) {
+            Ok(true) => store
+                .install_journal(&lock, &journal)
+                .map_err(map_store_clone_materialization)?,
+            Ok(false) => return Err(map_store_clone_materialization(read_error)),
+            Err(error) => return Err(map_store_clone_materialization(error)),
+        },
+    }
     resume_git_sync_journal(root, &store, &lock, &journal)?;
-    Ok(GitSyncMaterializationStorageOutcome { changed: true })
+    Ok(GitSyncMaterializationStorageOutcome {
+        changed: !journal.targets.is_empty(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_git_sync_materialization<V, F>(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    operation_id: OperationId,
+    created_at: Timestamp,
+    plan_hash: [u8; 32],
+    current: &[GitSyncMaterializationCurrent],
+    incoming: &[GitSyncMaterializationSource],
+    validate_current: V,
+    read_file: F,
+) -> Result<GitSyncMaterializationStorageOutcome, GitSyncMaterializationStorageError>
+where
+    V: FnOnce() -> Result<(), GitSyncMaterializationStorageError>,
+    F: FnMut(usize, &str, u64) -> Result<Vec<u8>, GitSyncMaterializationStorageError>,
+{
+    let prepared = prepare_git_sync_materialization(
+        root,
+        state_home,
+        runtime_directory,
+        workspace_id,
+        operation_id,
+        created_at,
+        plan_hash,
+        current,
+        incoming,
+        validate_current,
+        read_file,
+    )?;
+    activate_git_sync_materialization(root, state_home, runtime_directory, workspace_id, prepared)
 }
 
 fn sync_materialization_paths_valid(
@@ -1263,6 +1486,17 @@ fn map_store_clone_materialization(
         store::StoreError::Io => GitCloneMaterializationStorageError::Io,
         #[cfg(test)]
         store::StoreError::Injected => GitCloneMaterializationStorageError::Io,
+    }
+}
+
+fn map_journal_clone_materialization(
+    error: JournalCodecError,
+) -> GitCloneMaterializationStorageError {
+    match error {
+        JournalCodecError::TooLarge | JournalCodecError::ResourceLimit => {
+            GitCloneMaterializationStorageError::TooLarge
+        }
+        JournalCodecError::Invalid => GitCloneMaterializationStorageError::Unsafe,
     }
 }
 
@@ -3546,6 +3780,267 @@ impl GitCommitIntent {
     }
 }
 
+const GIT_SYNC_INTENT_VERSION: u64 = 1;
+pub(super) const MAX_GIT_SYNC_INTENT_BYTES: usize = 16 * 1024;
+
+impl GitSyncIntent {
+    pub(crate) fn encode(&self) -> Result<Vec<u8>, JournalCodecError> {
+        self.validate()?;
+        let mut writer = Writer::new()?;
+        writer.map(28)?;
+        writer.key(0)?;
+        writer.uint(GIT_SYNC_INTENT_VERSION)?;
+        writer.key(1)?;
+        writer.uint(self.generation)?;
+        writer.key(2)?;
+        writer.text(&self.operation_id.to_string())?;
+        writer.key(3)?;
+        writer.text(&self.workspace_id.to_string())?;
+        writer.key(4)?;
+        writer.bytes(&self.root_hash)?;
+        writer.key(5)?;
+        writer.uint(self.root_device)?;
+        writer.key(6)?;
+        writer.uint(self.root_inode)?;
+        writer.key(7)?;
+        writer.uint(self.git_device)?;
+        writer.key(8)?;
+        writer.uint(self.git_inode)?;
+        writer.key(9)?;
+        writer.text(&self.branch_relative)?;
+        writer.key(10)?;
+        writer.uint(self.representation.code())?;
+        writer.key(11)?;
+        writer.bytes(&self.head_hash)?;
+        writer.key(12)?;
+        writer.bytes(&self.config_hash)?;
+        writer.key(13)?;
+        writer.bytes(&self.before_index_hash)?;
+        writer.key(14)?;
+        writer.uint(u64::from(self.before_index_mode))?;
+        writer.key(15)?;
+        writer.bytes(&self.candidate_index_hash)?;
+        writer.key(16)?;
+        writer.uint(u64::from(self.candidate_index_mode))?;
+        writer.key(17)?;
+        writer.optional_hash(self.packed_refs_hash.as_ref())?;
+        writer.key(18)?;
+        writer.optional_hash(self.before_ref_hash.as_ref())?;
+        writer.key(19)?;
+        writer.uint(u64::from(self.before_ref_mode))?;
+        writer.key(20)?;
+        writer.bytes(&self.candidate_ref_hash)?;
+        writer.key(21)?;
+        writer.uint(u64::from(self.candidate_ref_mode))?;
+        writer.key(22)?;
+        writer.optional_hash(self.workspace_journal_hash.as_ref())?;
+        writer.key(23)?;
+        writer.bytes(&self.workspace_plan_hash)?;
+        writer.key(24)?;
+        writer.bytes(&self.plan_hash)?;
+        writer.key(25)?;
+        writer.uint(self.stage.code())?;
+        writer.key(26)?;
+        writer.optional_hash(self.shallow_hash.as_ref())?;
+        writer.key(27)?;
+        writer.uint(u64::from(self.shallow_mode))?;
+        if writer.bytes.len() > MAX_GIT_SYNC_INTENT_BYTES {
+            return Err(JournalCodecError::TooLarge);
+        }
+        Ok(writer.bytes)
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, JournalCodecError> {
+        if bytes.len() > MAX_GIT_SYNC_INTENT_BYTES {
+            return Err(JournalCodecError::TooLarge);
+        }
+        let mut reader = Reader::new(bytes);
+        reader.map(28)?;
+        reader.key(0)?;
+        if reader.uint()? != GIT_SYNC_INTENT_VERSION {
+            return Err(JournalCodecError::Invalid);
+        }
+        reader.key(1)?;
+        let generation = reader.uint()?;
+        reader.key(2)?;
+        let operation_id = reader.protocol_text::<OperationId>(36)?;
+        reader.key(3)?;
+        let workspace_id = reader.protocol_text::<WorkspaceId>(36)?;
+        reader.key(4)?;
+        let root_hash = reader.hash()?;
+        reader.key(5)?;
+        let root_device = reader.uint()?;
+        reader.key(6)?;
+        let root_inode = reader.uint()?;
+        reader.key(7)?;
+        let git_device = reader.uint()?;
+        reader.key(8)?;
+        let git_inode = reader.uint()?;
+        reader.key(9)?;
+        let branch_relative = reader.owned_text(MAX_PATH_BYTES)?;
+        reader.key(10)?;
+        let representation = GitCommitIntentBranchRepresentation::from_code(reader.uint()?)?;
+        reader.key(11)?;
+        let head_hash = reader.hash()?;
+        reader.key(12)?;
+        let config_hash = reader.hash()?;
+        reader.key(13)?;
+        let before_index_hash = reader.hash()?;
+        reader.key(14)?;
+        let before_index_mode = reader.mode()?;
+        reader.key(15)?;
+        let candidate_index_hash = reader.hash()?;
+        reader.key(16)?;
+        let candidate_index_mode = reader.mode()?;
+        reader.key(17)?;
+        let packed_refs_hash = reader.optional_hash()?;
+        reader.key(18)?;
+        let before_ref_hash = reader.optional_hash()?;
+        reader.key(19)?;
+        let before_ref_mode = reader.mode()?;
+        reader.key(20)?;
+        let candidate_ref_hash = reader.hash()?;
+        reader.key(21)?;
+        let candidate_ref_mode = reader.mode()?;
+        reader.key(22)?;
+        let workspace_journal_hash = reader.optional_hash()?;
+        reader.key(23)?;
+        let workspace_plan_hash = reader.hash()?;
+        reader.key(24)?;
+        let plan_hash = reader.hash()?;
+        reader.key(25)?;
+        let stage = GitSyncIntentStage::from_code(reader.uint()?)?;
+        reader.key(26)?;
+        let shallow_hash = reader.optional_hash()?;
+        reader.key(27)?;
+        let shallow_mode = reader.mode()?;
+        if !reader.finished() {
+            return Err(JournalCodecError::Invalid);
+        }
+        let intent = Self {
+            generation,
+            operation_id,
+            workspace_id,
+            root_hash,
+            root_device,
+            root_inode,
+            git_device,
+            git_inode,
+            branch_relative,
+            representation,
+            head_hash,
+            config_hash,
+            before_index_hash,
+            before_index_mode,
+            candidate_index_hash,
+            candidate_index_mode,
+            packed_refs_hash,
+            shallow_hash,
+            shallow_mode,
+            before_ref_hash,
+            before_ref_mode,
+            candidate_ref_hash,
+            candidate_ref_mode,
+            workspace_journal_hash,
+            workspace_plan_hash,
+            plan_hash,
+            stage,
+        };
+        intent.validate()?;
+        Ok(intent)
+    }
+
+    fn validate(&self) -> Result<(), JournalCodecError> {
+        if self.generation == 0
+            || !valid_git_commit_intent_branch(&self.branch_relative)
+            || !matches!(
+                self.representation,
+                GitCommitIntentBranchRepresentation::Loose
+                    | GitCommitIntentBranchRepresentation::Packed
+            )
+            || !matches!(self.before_index_mode, 0o600 | 0o644)
+            || !matches!(self.candidate_index_mode, 0o600 | 0o644)
+            || !matches!(self.before_ref_mode, 0o600 | 0o644)
+            || !matches!(self.candidate_ref_mode, 0o600 | 0o644)
+            || !matches!(self.shallow_mode, 0o600 | 0o644)
+            || (self.representation == GitCommitIntentBranchRepresentation::Loose
+                && self.before_ref_hash.is_none())
+            || (self.representation == GitCommitIntentBranchRepresentation::Packed
+                && (self.before_ref_hash.is_some() || self.packed_refs_hash.is_none()))
+        {
+            return Err(JournalCodecError::Invalid);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn next_stage(&self, stage: GitSyncIntentStage) -> Result<Self, JournalCodecError> {
+        let valid = matches!(
+            (self.stage, stage),
+            (
+                GitSyncIntentStage::Prepared,
+                GitSyncIntentStage::WorkspacePublished
+            ) | (
+                GitSyncIntentStage::WorkspacePublished,
+                GitSyncIntentStage::IndexPublished
+            ) | (
+                GitSyncIntentStage::IndexPublished,
+                GitSyncIntentStage::RefPublished
+            ) | (
+                GitSyncIntentStage::RefPublished,
+                GitSyncIntentStage::Complete
+            ) | (
+                GitSyncIntentStage::Prepared
+                    | GitSyncIntentStage::WorkspacePublished
+                    | GitSyncIntentStage::IndexPublished
+                    | GitSyncIntentStage::RefPublished,
+                GitSyncIntentStage::Conflict
+            )
+        );
+        if !valid {
+            return Err(JournalCodecError::Invalid);
+        }
+        let mut next = self.clone();
+        next.generation = next
+            .generation
+            .checked_add(1)
+            .ok_or(JournalCodecError::ResourceLimit)?;
+        next.stage = stage;
+        Ok(next)
+    }
+
+    pub(super) fn is_next_generation_of(&self, next: &Self) -> bool {
+        self.operation_id == next.operation_id
+            && self.workspace_id == next.workspace_id
+            && self.root_hash == next.root_hash
+            && self.root_device == next.root_device
+            && self.root_inode == next.root_inode
+            && self.git_device == next.git_device
+            && self.git_inode == next.git_inode
+            && self.branch_relative == next.branch_relative
+            && self.representation == next.representation
+            && self.head_hash == next.head_hash
+            && self.config_hash == next.config_hash
+            && self.before_index_hash == next.before_index_hash
+            && self.before_index_mode == next.before_index_mode
+            && self.candidate_index_hash == next.candidate_index_hash
+            && self.candidate_index_mode == next.candidate_index_mode
+            && self.packed_refs_hash == next.packed_refs_hash
+            && self.shallow_hash == next.shallow_hash
+            && self.shallow_mode == next.shallow_mode
+            && self.before_ref_hash == next.before_ref_hash
+            && self.before_ref_mode == next.before_ref_mode
+            && self.candidate_ref_hash == next.candidate_ref_hash
+            && self.candidate_ref_mode == next.candidate_ref_mode
+            && self.workspace_journal_hash == next.workspace_journal_hash
+            && self.workspace_plan_hash == next.workspace_plan_hash
+            && self.plan_hash == next.plan_hash
+            && self.generation.checked_add(1) == Some(next.generation)
+            && self
+                .next_stage(next.stage)
+                .is_ok_and(|expected| expected == *next)
+    }
+}
+
 fn valid_git_commit_intent_branch(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_PATH_BYTES
@@ -4052,6 +4547,14 @@ coded_enum!(GitCommitIntentStage,
     GitCommitIntentStage::Complete => 3,
     GitCommitIntentStage::Conflict => 4,
 );
+coded_enum!(GitSyncIntentStage,
+    GitSyncIntentStage::Prepared => 0,
+    GitSyncIntentStage::WorkspacePublished => 1,
+    GitSyncIntentStage::IndexPublished => 2,
+    GitSyncIntentStage::RefPublished => 3,
+    GitSyncIntentStage::Complete => 4,
+    GitSyncIntentStage::Conflict => 5,
+);
 
 impl TargetStep {
     fn next(self) -> Option<Self> {
@@ -4486,6 +4989,72 @@ mod tests {
         let mut changed = index.clone();
         changed.plan_hash = [0xaa; 32];
         assert!(!prepared.is_next_generation_of(&changed));
+    }
+
+    fn sample_git_sync_intent() -> GitSyncIntent {
+        GitSyncIntent {
+            generation: 1,
+            operation_id: "0199a1d7-7b0d-7d8e-a38d-f936c5735e10".parse().unwrap(),
+            workspace_id: "0199a19f-4d15-7ca7-a645-e75311caa710".parse().unwrap(),
+            root_hash: [0x11; 32],
+            root_device: 8,
+            root_inode: 42,
+            git_device: 8,
+            git_inode: 84,
+            branch_relative: "team/rehow".to_owned(),
+            representation: GitCommitIntentBranchRepresentation::Loose,
+            head_hash: [0x22; 32],
+            config_hash: [0x33; 32],
+            before_index_hash: [0x44; 32],
+            before_index_mode: 0o600,
+            candidate_index_hash: [0x55; 32],
+            candidate_index_mode: 0o600,
+            packed_refs_hash: Some([0x66; 32]),
+            shallow_hash: Some([0x67; 32]),
+            shallow_mode: 0o600,
+            before_ref_hash: Some([0x77; 32]),
+            before_ref_mode: 0o644,
+            candidate_ref_hash: [0x88; 32],
+            candidate_ref_mode: 0o644,
+            workspace_journal_hash: Some([0x89; 32]),
+            workspace_plan_hash: [0x98; 32],
+            plan_hash: [0x99; 32],
+            stage: GitSyncIntentStage::Prepared,
+        }
+    }
+
+    #[test]
+    fn git_sync_intent_round_trips_redacts_and_enforces_stage_order() {
+        let intent = sample_git_sync_intent();
+        let encoded = intent.encode().unwrap();
+        assert_eq!(GitSyncIntent::decode(&encoded).unwrap(), intent);
+        for length in 0..encoded.len() {
+            assert!(
+                GitSyncIntent::decode(&encoded[..length]).is_err(),
+                "prefix {length}"
+            );
+        }
+        let workspace = intent
+            .next_stage(GitSyncIntentStage::WorkspacePublished)
+            .unwrap();
+        assert!(intent.is_next_generation_of(&workspace));
+        let index = workspace
+            .next_stage(GitSyncIntentStage::IndexPublished)
+            .unwrap();
+        let reference = index.next_stage(GitSyncIntentStage::RefPublished).unwrap();
+        let complete = reference.next_stage(GitSyncIntentStage::Complete).unwrap();
+        assert_eq!(complete.generation, 5);
+        assert_eq!(complete.stage, GitSyncIntentStage::Complete);
+        assert_eq!(
+            intent.next_stage(GitSyncIntentStage::IndexPublished),
+            Err(JournalCodecError::Invalid)
+        );
+        let mut changed = workspace.clone();
+        changed.shallow_hash = None;
+        assert!(!intent.is_next_generation_of(&changed));
+        let debug = format!("{intent:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains(&"99".repeat(32)));
     }
 
     fn sample() -> Journal {

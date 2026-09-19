@@ -3,7 +3,7 @@
 use crate::storage::recovery::{
     GitCommitIntent, GitCommitIntentBranchRepresentation, GitCommitIntentError,
     GitCommitIntentStage, GitCommitStaging, GitCommitStagingError, GitCommitStagingSnapshot,
-    create_git_commit_staging,
+    GitSyncIntent, GitSyncIntentStage, create_git_commit_staging,
 };
 use crate::{
     protocol::{OperationId, PlanToken, Revision, Timestamp, current_timestamp, new_operation_id},
@@ -15,10 +15,11 @@ use crate::{
         GitCommitPackInstallError, GitCommitRepositorySnapshot, GitCommitSnapshotError,
         GitConfigStorageError, GitInitializeStorageError, GitMaterializationPathKind,
         GitRepositoryCapabilityError, GitSyncMaterializationCurrent, GitSyncMaterializationSource,
-        GitSyncMaterializationStorageError, MANAGED_BYTES_LIMIT, WorkspaceInspection,
-        WorkspaceView, classify_git_materialization_path, create_git_clone_staging,
-        execute_git_clone_materialization, execute_git_sync_materialization,
-        finalize_git_clone_repository, inspect_workspace, open_initialized_workspace,
+        GitSyncMaterializationStorageError, GitSyncPreparedMaterialization, MANAGED_BYTES_LIMIT,
+        WorkspaceInspection, WorkspaceView, activate_git_sync_materialization,
+        activate_git_sync_materialization_plan, classify_git_materialization_path,
+        create_git_clone_staging, execute_git_clone_materialization, finalize_git_clone_repository,
+        inspect_workspace, open_initialized_workspace, prepare_git_sync_materialization,
         seal_git_clone_repository,
     },
 };
@@ -313,6 +314,44 @@ struct GitCommitIndexCandidate {
     source: GitClonePackSource,
     bytes: Vec<u8>,
     staging_snapshot: GitCommitStagingSnapshot,
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+struct GitSyncCandidate {
+    index_bytes: Vec<u8>,
+    pack_sources: Vec<GitClonePackSource>,
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+pub(crate) struct GitSyncPublicationOutcome {
+    operation_id: OperationId,
+    changed: bool,
+}
+
+impl fmt::Debug for GitSyncPublicationOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitSyncPublicationOutcome")
+            .field("changed", &self.changed)
+            .field("authority", &"<redacted>")
+            .finish()
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+impl GitSyncPublicationOutcome {
+    pub(crate) fn changed(&self) -> bool {
+        self.changed
+    }
 }
 
 #[allow(
@@ -1525,7 +1564,11 @@ pub fn plan_git_sync(
     workspace: &WorkspaceView,
     state_home: &Path,
 ) -> Result<GitSyncPlan, GitSyncError> {
-    if git_commit_recovery_required(workspace, state_home, None).map_err(map_commit_plan_to_sync)? {
+    if git_commit_recovery_required(workspace, state_home, None).map_err(map_commit_plan_to_sync)?
+        || pending_git_sync_recovery_at(workspace, state_home, None)
+            .map_err(map_commit_plan_to_sync)?
+            .is_some()
+    {
         return Err(GitSyncError::RecoveryRequired);
     }
     let (preflight, target) = inspect_git_sync_repository(workspace)?;
@@ -1688,7 +1731,642 @@ pub(crate) fn apply_git_sync_workspace_materialization(
     {
         return Err(GitSyncError::Unsupported);
     }
-    let inspection = &classification.inspection;
+    let operation_id = new_operation_id();
+    let created_at = current_timestamp();
+    let prepared = prepare_git_sync_workspace_materialization(
+        workspace,
+        state_home,
+        runtime_directory,
+        &classification.inspection,
+        operation_id,
+        created_at,
+    )?;
+    let outcome =
+        activate_git_sync_materialization(workspace, state_home, runtime_directory, prepared)
+            .map_err(map_sync_materialization_to_sync)?;
+    let fresh = verify_git_sync_workspace_materialization(workspace, &classification.inspection)?;
+    Ok((
+        fresh,
+        GitSyncWorkspaceMaterialization {
+            classification,
+            operation_id,
+            created_at,
+            plan_hash: prepared.plan_hash,
+            changed: outcome.changed,
+        },
+    ))
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+pub(crate) fn apply_git_sync_fast_forward(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    classification: GitSyncClassification,
+) -> Result<(Box<WorkspaceView>, GitSyncPublicationOutcome), GitSyncError> {
+    if classification.ancestry != GitSyncAncestry::RemoteFastForward
+        || classification.inspection.local_changes()
+    {
+        return Err(GitSyncError::Unsupported);
+    }
+    let operation_id = new_operation_id();
+    let prepared = prepare_git_sync_workspace_materialization(
+        workspace,
+        state_home,
+        runtime_directory,
+        &classification.inspection,
+        operation_id,
+        current_timestamp(),
+    )?;
+    let candidate = prepare_git_sync_candidate(&classification.inspection)?;
+    install_git_sync_publication_intent(
+        workspace,
+        state_home,
+        runtime_directory,
+        &classification.inspection,
+        &candidate,
+        prepared,
+    )?;
+    let fresh =
+        resume_git_sync_publication(workspace, state_home, runtime_directory, operation_id)?;
+    Ok((
+        fresh,
+        GitSyncPublicationOutcome {
+            operation_id,
+            changed: true,
+        },
+    ))
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+fn install_git_sync_publication_intent(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    inspection: &GitSyncInspection,
+    candidate: &GitSyncCandidate,
+    prepared: GitSyncPreparedMaterialization,
+) -> Result<(), GitSyncError> {
+    revalidate_git_sync_plan(workspace, &inspection.plan)?;
+    let session = workspace
+        .open_git_commit_recovery_session(state_home, runtime_directory)
+        .map_err(map_git_commit_intent_to_sync)?;
+    if session
+        .list_intents()
+        .map_err(map_git_commit_intent_to_sync)?
+        .iter()
+        .any(|intent| intent.stage != GitCommitIntentStage::Complete)
+        || session
+            .list_sync_intents()
+            .map_err(map_git_commit_intent_to_sync)?
+            .iter()
+            .any(|intent| intent.stage != GitSyncIntentStage::Complete)
+    {
+        return Err(GitSyncError::RecoveryRequired);
+    }
+    let (current, _) = inspect_git_sync_repository(workspace)?;
+    if !same_git_sync_preflight(&inspection.plan.preflight, &current) {
+        return Err(GitSyncError::PlanStale);
+    }
+    let mut pack_files = candidate
+        .pack_sources
+        .iter()
+        .map(|source| inspection.staging.open_pack_source(source))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(map_clone_staging_to_sync)?;
+    let capability = workspace
+        .git_repository_capability()
+        .map_err(map_git_capability_to_sync)?;
+    if capability
+        .git_directory_identity()
+        .map_err(map_git_snapshot_to_sync)?
+        != current.git_identity
+    {
+        return Err(GitSyncError::PlanStale);
+    }
+    capability
+        .install_commit_pack_sources(
+            &candidate.pack_sources,
+            &mut pack_files,
+            inspection.remote_head.object_id().len(),
+        )
+        .map_err(map_git_commit_pack_install_to_sync)?;
+
+    revalidate_git_sync_plan(workspace, &inspection.plan)?;
+    let before_index = current
+        .repository
+        .index
+        .as_ref()
+        .ok_or(GitSyncError::InvalidRepository)?;
+    let branch_relative = current
+        .branch
+        .reference
+        .strip_prefix("refs/heads/")
+        .ok_or(GitSyncError::Unsafe)?;
+    let representation = match current.branch.representation {
+        GitBranchRepresentation::Loose => GitCommitIntentBranchRepresentation::Loose,
+        GitBranchRepresentation::Packed | GitBranchRepresentation::Unborn => {
+            return Err(GitSyncError::Unsupported);
+        }
+    };
+    let mut candidate_ref = Vec::new();
+    candidate_ref
+        .try_reserve_exact(inspection.remote_head.object_id().len().saturating_add(1))
+        .map_err(|_| GitSyncError::ResourceLimit)?;
+    candidate_ref.extend_from_slice(inspection.remote_head.object_id().as_bytes());
+    candidate_ref.push(b'\n');
+    let head_hash = session
+        .store_bytes(&current.repository.head.bytes)
+        .map_err(map_git_commit_intent_to_sync)?;
+    let config_hash = session
+        .store_bytes(&current.repository.config.bytes)
+        .map_err(map_git_commit_intent_to_sync)?;
+    let before_index_hash = session
+        .store_bytes(&before_index.bytes)
+        .map_err(map_git_commit_intent_to_sync)?;
+    let candidate_index_hash = session
+        .store_bytes(&candidate.index_bytes)
+        .map_err(map_git_commit_intent_to_sync)?;
+    let packed_refs_hash = current
+        .repository
+        .packed_refs
+        .as_ref()
+        .map(|snapshot| session.store_bytes(&snapshot.bytes))
+        .transpose()
+        .map_err(map_git_commit_intent_to_sync)?;
+    let shallow_hash = current
+        .repository
+        .shallow
+        .as_ref()
+        .map(|snapshot| session.store_bytes(&snapshot.bytes))
+        .transpose()
+        .map_err(map_git_commit_intent_to_sync)?;
+    let before_ref_hash = current
+        .branch_storage
+        .target
+        .as_ref()
+        .map(|snapshot| session.store_bytes(&snapshot.bytes))
+        .transpose()
+        .map_err(map_git_commit_intent_to_sync)?;
+    let candidate_ref_hash = session
+        .store_bytes(&candidate_ref)
+        .map_err(map_git_commit_intent_to_sync)?;
+    verify_git_sync_candidate_objects(
+        &capability,
+        current.object_format,
+        inspection.remote_head.object_id(),
+        &candidate.index_bytes,
+    )?;
+    let (root_device, root_inode) = session.root_identity();
+    let mut intent = GitSyncIntent {
+        generation: 1,
+        operation_id: prepared.operation_id,
+        workspace_id: session.workspace_id(),
+        root_hash: session.root_hash(),
+        root_device,
+        root_inode,
+        git_device: current.git_identity.0,
+        git_inode: current.git_identity.1,
+        branch_relative: branch_relative.to_owned(),
+        representation,
+        head_hash,
+        config_hash,
+        before_index_hash,
+        before_index_mode: before_index.mode(),
+        candidate_index_hash,
+        candidate_index_mode: before_index.mode(),
+        packed_refs_hash,
+        shallow_hash,
+        shallow_mode: current
+            .repository
+            .shallow
+            .as_ref()
+            .map_or(0o600, |snapshot| snapshot.mode()),
+        before_ref_hash,
+        before_ref_mode: current
+            .branch_storage
+            .target
+            .as_ref()
+            .map_or(0o600, |snapshot| snapshot.mode()),
+        candidate_ref_hash,
+        candidate_ref_mode: current
+            .branch_storage
+            .target
+            .as_ref()
+            .map_or(0o600, |snapshot| snapshot.mode()),
+        workspace_journal_hash: prepared.journal_hash,
+        workspace_plan_hash: prepared.plan_hash,
+        plan_hash: [0; 32],
+        stage: GitSyncIntentStage::Prepared,
+    };
+    intent.plan_hash = git_sync_intent_plan_hash(&intent);
+    session
+        .install_sync_intent(&intent)
+        .map_err(map_git_commit_intent_to_sync)
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+fn resume_git_sync_publication(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    operation_id: OperationId,
+) -> Result<Box<WorkspaceView>, GitSyncError> {
+    let session = workspace
+        .open_git_commit_recovery_session(state_home, runtime_directory)
+        .map_err(map_git_commit_intent_to_sync)?;
+    let mut intent = session
+        .read_sync_intent(operation_id)
+        .map_err(map_git_commit_intent_to_sync)?;
+    if intent.stage == GitSyncIntentStage::Conflict {
+        return Err(GitSyncError::PlanStale);
+    }
+    verify_git_sync_intent_plan_hash(&intent)?;
+    let capability = workspace
+        .git_repository_capability()
+        .map_err(map_git_capability_to_sync)?;
+    if session.root_identity() != (intent.root_device, intent.root_inode)
+        || capability
+            .git_directory_identity()
+            .map_err(map_git_snapshot_to_sync)?
+            != (intent.git_device, intent.git_inode)
+    {
+        return Err(GitSyncError::Unsafe);
+    }
+    let head = session
+        .read_bytes(&intent.head_hash)
+        .map_err(map_git_commit_intent_to_sync)?;
+    let config = session
+        .read_bytes(&intent.config_hash)
+        .map_err(map_git_commit_intent_to_sync)?;
+    let before_index = session
+        .read_bytes(&intent.before_index_hash)
+        .map_err(map_git_commit_intent_to_sync)?;
+    let candidate_index = session
+        .read_bytes(&intent.candidate_index_hash)
+        .map_err(map_git_commit_intent_to_sync)?;
+    let packed_refs = intent
+        .packed_refs_hash
+        .as_ref()
+        .map(|hash| session.read_bytes(hash))
+        .transpose()
+        .map_err(map_git_commit_intent_to_sync)?;
+    let shallow = intent
+        .shallow_hash
+        .as_ref()
+        .map(|hash| session.read_bytes(hash))
+        .transpose()
+        .map_err(map_git_commit_intent_to_sync)?;
+    let before_ref = intent
+        .before_ref_hash
+        .as_ref()
+        .map(|hash| session.read_bytes(hash))
+        .transpose()
+        .map_err(map_git_commit_intent_to_sync)?;
+    let candidate_ref = session
+        .read_bytes(&intent.candidate_ref_hash)
+        .map_err(map_git_commit_intent_to_sync)?;
+    let candidate_object_id = std::str::from_utf8(&candidate_ref)
+        .ok()
+        .and_then(|value| value.strip_suffix('\n'))
+        .ok_or(GitSyncError::Unsafe)?;
+    let object_format = validate_object_id(candidate_object_id).ok_or(GitSyncError::Unsafe)?;
+    parse_git_index(&candidate_index, object_format).map_err(map_commit_plan_to_sync)?;
+    capability
+        .recover_commit_lock_residue(
+            &intent.branch_relative,
+            Some((&before_index, intent.before_index_mode)),
+            (&candidate_index, intent.candidate_index_mode),
+            before_ref
+                .as_deref()
+                .map(|bytes| (bytes, intent.before_ref_mode)),
+            (&candidate_ref, intent.candidate_ref_mode),
+        )
+        .map_err(map_git_commit_metadata_to_sync)?;
+    let repository = capability
+        .read_commit_repository_snapshot()
+        .map_err(map_git_snapshot_to_sync)?;
+    let branch = capability
+        .read_commit_branch_snapshot(&intent.branch_relative)
+        .map_err(map_git_snapshot_to_sync)?;
+    if repository.head.bytes != head
+        || repository.config.bytes != config
+        || repository.packed_refs.as_ref().map(|value| &value.bytes) != packed_refs.as_ref()
+        || repository.shallow.as_ref().map(|value| &value.bytes) != shallow.as_ref()
+    {
+        return mark_git_sync_intent_conflict(&session, &mut intent);
+    }
+    let index_is_before = git_commit_snapshot_matches(
+        repository.index.as_ref(),
+        Some(&before_index),
+        intent.before_index_mode,
+    );
+    let index_is_candidate = git_commit_snapshot_matches(
+        repository.index.as_ref(),
+        Some(&candidate_index),
+        intent.candidate_index_mode,
+    );
+    let ref_is_before = git_commit_snapshot_matches(
+        branch.target.as_ref(),
+        before_ref.as_deref(),
+        intent.before_ref_mode,
+    );
+    let ref_is_candidate = git_commit_snapshot_matches(
+        branch.target.as_ref(),
+        Some(&candidate_ref),
+        intent.candidate_ref_mode,
+    );
+    if !matches!(
+        (
+            index_is_before,
+            index_is_candidate,
+            ref_is_before,
+            ref_is_candidate
+        ),
+        (true, false, true, false) | (false, true, true, false) | (false, true, false, true)
+    ) {
+        return mark_git_sync_intent_conflict(&session, &mut intent);
+    }
+    drop(capability);
+    drop(session);
+
+    if intent.stage == GitSyncIntentStage::Prepared {
+        activate_git_sync_materialization_plan(
+            workspace,
+            state_home,
+            runtime_directory,
+            operation_id,
+            intent.workspace_plan_hash,
+            intent.workspace_journal_hash,
+        )
+        .map_err(map_sync_materialization_to_sync)?;
+    }
+    let session = workspace
+        .open_git_commit_recovery_session(state_home, runtime_directory)
+        .map_err(map_git_commit_intent_to_sync)?;
+    intent = session
+        .read_sync_intent(operation_id)
+        .map_err(map_git_commit_intent_to_sync)?;
+    if intent.stage == GitSyncIntentStage::Prepared {
+        advance_git_sync_intent(
+            &session,
+            &mut intent,
+            GitSyncIntentStage::WorkspacePublished,
+        )?;
+    }
+    let fresh = workspace.fresh_snapshot().map_err(|error| match error {
+        crate::storage::WorkspaceInspectError::ResourceLimit => GitSyncError::ResourceLimit,
+        crate::storage::WorkspaceInspectError::ChangedDuringRead => GitSyncError::PlanStale,
+        _ => GitSyncError::Io,
+    })?;
+    if !fresh.issues().is_empty()
+        || !git_sync_workspace_matches_index(&fresh, object_format, &candidate_index)?
+    {
+        return mark_git_sync_intent_conflict(&session, &mut intent);
+    }
+    let capability = workspace
+        .git_repository_capability()
+        .map_err(map_git_capability_to_sync)?;
+    verify_git_sync_candidate_objects(
+        &capability,
+        object_format,
+        candidate_object_id,
+        &candidate_index,
+    )?;
+    let repository = capability
+        .read_commit_repository_snapshot()
+        .map_err(map_git_snapshot_to_sync)?;
+    let branch = capability
+        .read_commit_branch_snapshot(&intent.branch_relative)
+        .map_err(map_git_snapshot_to_sync)?;
+    if repository.head.bytes != head
+        || repository.config.bytes != config
+        || repository.packed_refs.as_ref().map(|value| &value.bytes) != packed_refs.as_ref()
+        || repository.shallow.as_ref().map(|value| &value.bytes) != shallow.as_ref()
+    {
+        return mark_git_sync_intent_conflict(&session, &mut intent);
+    }
+    let index_is_before = git_commit_snapshot_matches(
+        repository.index.as_ref(),
+        Some(&before_index),
+        intent.before_index_mode,
+    );
+    let index_is_candidate = git_commit_snapshot_matches(
+        repository.index.as_ref(),
+        Some(&candidate_index),
+        intent.candidate_index_mode,
+    );
+    let ref_is_before = git_commit_snapshot_matches(
+        branch.target.as_ref(),
+        before_ref.as_deref(),
+        intent.before_ref_mode,
+    );
+    let ref_is_candidate = git_commit_snapshot_matches(
+        branch.target.as_ref(),
+        Some(&candidate_ref),
+        intent.candidate_ref_mode,
+    );
+    let branch_relative = intent.branch_relative.clone();
+    match (
+        index_is_before,
+        index_is_candidate,
+        ref_is_before,
+        ref_is_candidate,
+    ) {
+        (true, false, true, false) if intent.stage == GitSyncIntentStage::WorkspacePublished => {
+            capability
+                .publish_commit_metadata(
+                    &repository,
+                    &branch,
+                    &branch_relative,
+                    &candidate_index,
+                    &candidate_ref,
+                    |stage| persist_recovered_git_sync_stage(&session, &mut intent, stage),
+                )
+                .map_err(map_git_commit_metadata_to_sync)?;
+        }
+        (false, true, true, false) => {
+            if intent.stage == GitSyncIntentStage::WorkspacePublished {
+                advance_git_sync_intent(&session, &mut intent, GitSyncIntentStage::IndexPublished)?;
+            }
+            if intent.stage != GitSyncIntentStage::IndexPublished {
+                return mark_git_sync_intent_conflict(&session, &mut intent);
+            }
+            capability
+                .publish_commit_ref_after_index(
+                    &repository,
+                    &branch,
+                    &branch_relative,
+                    &candidate_index,
+                    &candidate_ref,
+                    |stage| persist_recovered_git_sync_stage(&session, &mut intent, stage),
+                )
+                .map_err(map_git_commit_metadata_to_sync)?;
+        }
+        (false, true, false, true) => {
+            if intent.stage == GitSyncIntentStage::WorkspacePublished {
+                advance_git_sync_intent(&session, &mut intent, GitSyncIntentStage::IndexPublished)?;
+            }
+            if intent.stage == GitSyncIntentStage::IndexPublished {
+                advance_git_sync_intent(&session, &mut intent, GitSyncIntentStage::RefPublished)?;
+            }
+        }
+        _ => return mark_git_sync_intent_conflict(&session, &mut intent),
+    }
+    if !matches!(
+        intent.stage,
+        GitSyncIntentStage::RefPublished | GitSyncIntentStage::Complete
+    ) {
+        return Err(GitSyncError::RecoveryRequired);
+    }
+    verify_git_sync_candidate_objects(
+        &capability,
+        object_format,
+        candidate_object_id,
+        &candidate_index,
+    )?;
+    let final_repository = capability
+        .read_commit_repository_snapshot()
+        .map_err(map_git_snapshot_to_sync)?;
+    let final_branch = capability
+        .read_commit_branch_snapshot(&intent.branch_relative)
+        .map_err(map_git_snapshot_to_sync)?;
+    let final_fresh = workspace.fresh_snapshot().map_err(|error| match error {
+        crate::storage::WorkspaceInspectError::ResourceLimit => GitSyncError::ResourceLimit,
+        crate::storage::WorkspaceInspectError::ChangedDuringRead => GitSyncError::PlanStale,
+        _ => GitSyncError::Io,
+    })?;
+    if final_repository.head.bytes != head
+        || final_repository.config.bytes != config
+        || final_repository
+            .packed_refs
+            .as_ref()
+            .map(|value| &value.bytes)
+            != packed_refs.as_ref()
+        || final_repository.shallow.as_ref().map(|value| &value.bytes) != shallow.as_ref()
+        || !git_commit_snapshot_matches(
+            final_repository.index.as_ref(),
+            Some(&candidate_index),
+            intent.candidate_index_mode,
+        )
+        || !git_commit_snapshot_matches(
+            final_branch.target.as_ref(),
+            Some(&candidate_ref),
+            intent.candidate_ref_mode,
+        )
+        || !final_fresh.issues().is_empty()
+        || !git_sync_workspace_matches_index(&final_fresh, object_format, &candidate_index)?
+    {
+        return mark_git_sync_intent_conflict(&session, &mut intent);
+    }
+    if intent.stage == GitSyncIntentStage::RefPublished {
+        advance_git_sync_intent(&session, &mut intent, GitSyncIntentStage::Complete)?;
+    }
+    Ok(final_fresh)
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+fn verify_git_sync_candidate_objects(
+    capability: &crate::storage::GitRepositoryCapability,
+    object_format: GitObjectFormat,
+    commit_id: &str,
+    candidate_index: &[u8],
+) -> Result<(), GitSyncError> {
+    if validate_object_id(commit_id) != Some(object_format) {
+        return Err(GitSyncError::Unsafe);
+    }
+    let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
+    let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
+    let commit = run_git_commit_read(
+        &executable,
+        &sandbox,
+        capability,
+        object_format,
+        &["cat-file", "commit", commit_id],
+        OUTPUT_LIMIT,
+    )
+    .map_err(|error| map_commit_plan_to_sync(map_git_commit_read_error(error)))?;
+    if git_object_id(object_format, "commit", &commit.stdout) != commit_id {
+        return Err(GitSyncError::InvalidRepository);
+    }
+    let mut cursor = 0usize;
+    let root_tree = take_git_commit_line(&commit.stdout, &mut cursor)
+        .map_err(map_commit_plan_to_sync)?
+        .strip_prefix(b"tree ")
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .filter(|value| validate_object_id(value) == Some(object_format))
+        .ok_or(GitSyncError::InvalidRepository)?;
+    let tree_output = run_git_commit_read(
+        &executable,
+        &sandbox,
+        capability,
+        object_format,
+        &["ls-tree", "-r", "-t", "-l", "--full-tree", "-z", commit_id],
+        MAX_COMMIT_TREE_BYTES,
+    )
+    .map_err(|error| map_commit_plan_to_sync(map_git_commit_read_error(error)))?;
+    let tree = parse_git_commit_tree(&tree_output.stdout, object_format)
+        .map_err(map_commit_plan_to_sync)?;
+    verify_git_commit_index_matches_tree(candidate_index, object_format, &tree)
+        .map_err(map_commit_plan_to_sync)?;
+    verify_git_commit_tree_objects(
+        &executable,
+        &sandbox,
+        capability,
+        object_format,
+        commit_id,
+        root_tree,
+        &tree,
+    )
+    .map_err(map_commit_plan_to_sync)
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+fn git_sync_workspace_matches_index(
+    workspace: &WorkspaceView,
+    object_format: GitObjectFormat,
+    candidate_index: &[u8],
+) -> Result<bool, GitSyncError> {
+    let index = parse_git_index(candidate_index, object_format).map_err(map_commit_plan_to_sync)?;
+    let inventory = inspect_git_commit_managed_inventory(workspace, object_format)
+        .map_err(map_commit_plan_to_sync)?;
+    if index.entries.len() != inventory.files.len() {
+        return Ok(false);
+    }
+    Ok(index
+        .entries
+        .iter()
+        .zip(&inventory.files)
+        .all(|(indexed, file)| {
+            indexed.mode == 0o100644
+                && indexed.path == file.path.as_bytes()
+                && hex_lower(&indexed.object_id) == file.blob_object_id
+        }))
+}
+
+fn prepare_git_sync_workspace_materialization(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    inspection: &GitSyncInspection,
+    operation_id: OperationId,
+    created_at: Timestamp,
+) -> Result<GitSyncPreparedMaterialization, GitSyncError> {
     revalidate_git_sync_plan(workspace, &inspection.plan)?;
     let current_tree = inspect_fetched_git_clone_tree(
         &inspection.staging,
@@ -1699,7 +2377,6 @@ pub(crate) fn apply_git_sync_workspace_materialization(
     if &current_tree != inspection.validated.tree() {
         return Err(GitSyncError::PlanStale);
     }
-
     let mut current = Vec::new();
     current
         .try_reserve_exact(inspection.plan.preflight.managed.files.len())
@@ -1723,10 +2400,8 @@ pub(crate) fn apply_git_sync_workspace_materialization(
             size: entry.size(),
         });
     }
-    let operation_id = new_operation_id();
-    let created_at = current_timestamp();
     let plan_hash = git_sync_materialization_plan_hash(inspection, operation_id);
-    let outcome = execute_git_sync_materialization(
+    prepare_git_sync_materialization(
         workspace,
         state_home,
         runtime_directory,
@@ -1757,7 +2432,13 @@ pub(crate) fn apply_git_sync_workspace_materialization(
             Ok(bytes)
         },
     )
-    .map_err(map_sync_materialization_to_sync)?;
+    .map_err(map_sync_materialization_to_sync)
+}
+
+fn verify_git_sync_workspace_materialization(
+    workspace: &WorkspaceView,
+    inspection: &GitSyncInspection,
+) -> Result<Box<WorkspaceView>, GitSyncError> {
     let fresh = workspace.fresh_snapshot().map_err(|error| match error {
         crate::storage::WorkspaceInspectError::ResourceLimit => GitSyncError::ResourceLimit,
         crate::storage::WorkspaceInspectError::ChangedDuringRead => GitSyncError::PlanStale,
@@ -1766,20 +2447,11 @@ pub(crate) fn apply_git_sync_workspace_materialization(
     if !fresh.issues().is_empty()
         || fresh.manifest().workspace_id()
             != inspection.validated.workspace().manifest().workspace_id()
-        || !git_sync_workspace_matches_tree(&fresh, tree)?
+        || !git_sync_workspace_matches_tree(&fresh, inspection.validated.tree())?
     {
         return Err(GitSyncError::InvalidWorkspace);
     }
-    Ok((
-        fresh,
-        GitSyncWorkspaceMaterialization {
-            classification,
-            operation_id,
-            created_at,
-            plan_hash,
-            changed: outcome.changed,
-        },
-    ))
+    Ok(fresh)
 }
 
 #[allow(
@@ -3417,6 +4089,87 @@ fn prepare_clone_index(
     } else {
         Err(GitCloneMaterializeError::StagingChanged)
     }
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+fn prepare_git_sync_candidate(
+    inspection: &GitSyncInspection,
+) -> Result<GitSyncCandidate, GitSyncError> {
+    let staging_name = prepare_clone_index(&inspection.staging, inspection.remote_head.object_id())
+        .map_err(map_clone_materialize_to_sync)?;
+    let source = inspection
+        .staging
+        .inspect_index_source(&staging_name)
+        .map_err(map_clone_staging_to_sync)?;
+    let mut file = inspection
+        .staging
+        .open_index_source(&staging_name, &source)
+        .map_err(map_clone_staging_to_sync)?;
+    let size = usize::try_from(source.size).map_err(|_| GitSyncError::ResourceLimit)?;
+    let mut index_bytes = Vec::new();
+    index_bytes
+        .try_reserve_exact(size)
+        .map_err(|_| GitSyncError::ResourceLimit)?;
+    file.read_to_end(&mut index_bytes)
+        .map_err(|_| GitSyncError::Io)?;
+    if index_bytes.len() != size {
+        return Err(GitSyncError::PlanStale);
+    }
+    let mut index = parse_git_index(&index_bytes, inspection.remote_head.object_format())
+        .map_err(map_commit_plan_to_sync)?;
+    if index.has_cache_tree {
+        index_bytes = git_index_without_extensions(
+            &index_bytes,
+            inspection.remote_head.object_format(),
+            &index,
+        )
+        .map_err(map_commit_plan_to_sync)?;
+        index = parse_git_index(&index_bytes, inspection.remote_head.object_format())
+            .map_err(map_commit_plan_to_sync)?;
+    }
+    if index.entries.len() != inspection.validated.tree().entries().len()
+        || !index
+            .entries
+            .iter()
+            .zip(inspection.validated.tree().entries())
+            .all(|(indexed, expected)| {
+                indexed.mode == 0o100644
+                    && indexed.path == expected.relative_path().as_bytes()
+                    && hex_lower(&indexed.object_id) == expected.object_id()
+            })
+    {
+        return Err(GitSyncError::InvalidRepository);
+    }
+    inspection
+        .staging
+        .verify_git_size_limit(CLONE_STAGING_FILE_LIMIT)
+        .map_err(map_clone_staging_to_sync)?;
+    let pack_sources = inspection
+        .staging
+        .inspect_pack_sources(
+            inspection.remote_head.object_id().len(),
+            CLONE_STAGING_FILE_LIMIT,
+        )
+        .map_err(map_clone_staging_to_sync)?;
+    if pack_sources.is_empty() {
+        return Err(GitSyncError::InvalidRepository);
+    }
+    let current_tree = inspect_fetched_git_clone_tree(
+        &inspection.staging,
+        &inspection.remote_head,
+        &AtomicBool::new(false),
+    )
+    .map_err(map_clone_inspection_to_sync)?;
+    if &current_tree != inspection.validated.tree() {
+        return Err(GitSyncError::PlanStale);
+    }
+    Ok(GitSyncCandidate {
+        index_bytes,
+        pack_sources,
+    })
 }
 
 fn clone_batch_read_command(
@@ -5974,7 +6727,9 @@ fn ensure_no_incomplete_git_commit_intent(
     workspace: &WorkspaceView,
     state_home: &Path,
 ) -> Result<(), GitCommitPlanError> {
-    if pending_git_commit_recovery(workspace, state_home)?.is_some() {
+    if pending_git_commit_recovery(workspace, state_home)?.is_some()
+        || pending_git_sync_recovery_at(workspace, state_home, None)?.is_some()
+    {
         Err(GitCommitPlanError::OperationInProgress)
     } else {
         Ok(())
@@ -6027,6 +6782,22 @@ fn git_commit_intent_is_resumable(stage: GitCommitIntentStage) -> bool {
             | GitCommitIntentStage::IndexPublished
             | GitCommitIntentStage::RefPublished
     )
+}
+
+fn pending_git_sync_recovery_at(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+) -> Result<Option<OperationId>, GitCommitPlanError> {
+    let session = workspace
+        .open_git_commit_recovery_session(state_home, runtime_directory)
+        .map_err(map_git_commit_intent_error)?;
+    Ok(session
+        .list_sync_intents()
+        .map_err(map_git_commit_intent_error)?
+        .into_iter()
+        .find(|intent| intent.stage != GitSyncIntentStage::Complete)
+        .map(|intent| intent.operation_id))
 }
 
 pub fn git_commit_recovery_required(
@@ -7036,6 +7807,67 @@ fn persist_recovered_git_commit_stage(
     })
 }
 
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+fn persist_recovered_git_sync_stage(
+    session: &crate::storage::recovery::GitCommitRecoverySession,
+    intent: &mut GitSyncIntent,
+    stage: GitCommitMetadataStage,
+) -> Result<(), GitCommitMetadataStorageError> {
+    let stage = match stage {
+        GitCommitMetadataStage::IndexPublished => GitSyncIntentStage::IndexPublished,
+        GitCommitMetadataStage::RefPublished => GitSyncIntentStage::RefPublished,
+    };
+    advance_git_sync_intent(session, intent, stage).map_err(|error| match error {
+        GitSyncError::RecoveryRequired | GitSyncError::PlanStale => {
+            GitCommitMetadataStorageError::Conflict
+        }
+        GitSyncError::Unsafe => GitCommitMetadataStorageError::Unsafe,
+        GitSyncError::Unsupported => GitCommitMetadataStorageError::Unsupported,
+        GitSyncError::ResourceLimit => GitCommitMetadataStorageError::TooLarge,
+        _ => GitCommitMetadataStorageError::Io,
+    })
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+fn advance_git_sync_intent(
+    session: &crate::storage::recovery::GitCommitRecoverySession,
+    intent: &mut GitSyncIntent,
+    stage: GitSyncIntentStage,
+) -> Result<(), GitSyncError> {
+    let next = intent.next_stage(stage).map_err(|_| GitSyncError::Unsafe)?;
+    session
+        .install_sync_intent(&next)
+        .map_err(map_git_commit_intent_to_sync)?;
+    *intent = next;
+    Ok(())
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+fn mark_git_sync_intent_conflict<T>(
+    session: &crate::storage::recovery::GitCommitRecoverySession,
+    intent: &mut GitSyncIntent,
+) -> Result<T, GitSyncError> {
+    if matches!(
+        intent.stage,
+        GitSyncIntentStage::Prepared
+            | GitSyncIntentStage::WorkspacePublished
+            | GitSyncIntentStage::IndexPublished
+            | GitSyncIntentStage::RefPublished
+    ) {
+        advance_git_sync_intent(session, intent, GitSyncIntentStage::Conflict)?;
+    }
+    Err(GitSyncError::PlanStale)
+}
+
 fn advance_git_commit_intent(
     session: &crate::storage::recovery::GitCommitRecoverySession,
     intent: &mut GitCommitIntent,
@@ -7130,6 +7962,98 @@ fn hash_git_commit_intent_optional_hash(hasher: &mut blake3::Hasher, value: Opti
         None => {
             hasher.update(&[0]);
         }
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+fn git_sync_intent_plan_hash(intent: &GitSyncIntent) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"rehow:git-sync-publication-intent:v1\0");
+    hash_git_commit_intent_field(&mut hasher, intent.operation_id.to_string().as_bytes());
+    hash_git_commit_intent_field(&mut hasher, intent.workspace_id.to_string().as_bytes());
+    hasher.update(&intent.root_hash);
+    hasher.update(&intent.root_device.to_be_bytes());
+    hasher.update(&intent.root_inode.to_be_bytes());
+    hasher.update(&intent.git_device.to_be_bytes());
+    hasher.update(&intent.git_inode.to_be_bytes());
+    hash_git_commit_intent_field(&mut hasher, intent.branch_relative.as_bytes());
+    hasher.update(&[match intent.representation {
+        GitCommitIntentBranchRepresentation::Unborn => 0,
+        GitCommitIntentBranchRepresentation::Loose => 1,
+        GitCommitIntentBranchRepresentation::Packed => 2,
+    }]);
+    hasher.update(&intent.head_hash);
+    hasher.update(&intent.config_hash);
+    hasher.update(&intent.before_index_hash);
+    hasher.update(&intent.before_index_mode.to_be_bytes());
+    hasher.update(&intent.candidate_index_hash);
+    hasher.update(&intent.candidate_index_mode.to_be_bytes());
+    hash_git_commit_intent_optional_hash(&mut hasher, intent.packed_refs_hash.as_ref());
+    hash_git_commit_intent_optional_hash(&mut hasher, intent.shallow_hash.as_ref());
+    hasher.update(&intent.shallow_mode.to_be_bytes());
+    hash_git_commit_intent_optional_hash(&mut hasher, intent.before_ref_hash.as_ref());
+    hasher.update(&intent.before_ref_mode.to_be_bytes());
+    hasher.update(&intent.candidate_ref_hash);
+    hasher.update(&intent.candidate_ref_mode.to_be_bytes());
+    hash_git_commit_intent_optional_hash(&mut hasher, intent.workspace_journal_hash.as_ref());
+    hasher.update(&intent.workspace_plan_hash);
+    *hasher.finalize().as_bytes()
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+fn verify_git_sync_intent_plan_hash(intent: &GitSyncIntent) -> Result<(), GitSyncError> {
+    if git_sync_intent_plan_hash(intent) == intent.plan_hash {
+        Ok(())
+    } else {
+        Err(GitSyncError::Unsafe)
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+fn map_git_commit_intent_to_sync(error: GitCommitIntentError) -> GitSyncError {
+    match error {
+        GitCommitIntentError::Conflict => GitSyncError::RecoveryRequired,
+        GitCommitIntentError::Unsafe => GitSyncError::Unsafe,
+        GitCommitIntentError::Unsupported => GitSyncError::Unsupported,
+        GitCommitIntentError::TooLarge => GitSyncError::ResourceLimit,
+        GitCommitIntentError::Io => GitSyncError::Io,
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+fn map_git_commit_pack_install_to_sync(error: GitCommitPackInstallError) -> GitSyncError {
+    match error {
+        GitCommitPackInstallError::Conflict => GitSyncError::PlanStale,
+        GitCommitPackInstallError::Unsafe => GitSyncError::Unsafe,
+        GitCommitPackInstallError::Unsupported => GitSyncError::Unsupported,
+        GitCommitPackInstallError::TooLarge => GitSyncError::ResourceLimit,
+        GitCommitPackInstallError::Io => GitSyncError::Io,
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+fn map_git_commit_metadata_to_sync(error: GitCommitMetadataStorageError) -> GitSyncError {
+    match error {
+        GitCommitMetadataStorageError::Conflict => GitSyncError::PlanStale,
+        GitCommitMetadataStorageError::Unsafe => GitSyncError::Unsafe,
+        GitCommitMetadataStorageError::Unsupported => GitSyncError::Unsupported,
+        GitCommitMetadataStorageError::TooLarge => GitSyncError::ResourceLimit,
+        GitCommitMetadataStorageError::Io => GitSyncError::Io,
     }
 }
 
@@ -9733,6 +10657,24 @@ fn map_clone_staging_to_sync(error: GitCloneStagingError) -> GitSyncError {
         GitCloneStagingError::Unsafe => GitSyncError::Unsafe,
         GitCloneStagingError::Unsupported => GitSyncError::Unsupported,
         GitCloneStagingError::Io => GitSyncError::Io,
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "completed core sync gate awaits the native adapter"
+)]
+fn map_clone_materialize_to_sync(error: GitCloneMaterializeError) -> GitSyncError {
+    match error {
+        GitCloneMaterializeError::DestinationChanged
+        | GitCloneMaterializeError::StagingChanged
+        | GitCloneMaterializeError::Conflict => GitSyncError::PlanStale,
+        GitCloneMaterializeError::Busy => GitSyncError::RecoveryRequired,
+        GitCloneMaterializeError::Unsafe => GitSyncError::Unsafe,
+        GitCloneMaterializeError::Unsupported => GitSyncError::Unsupported,
+        GitCloneMaterializeError::ResourceLimit => GitSyncError::ResourceLimit,
+        GitCloneMaterializeError::ValidationMismatch => GitSyncError::InvalidRepository,
+        GitCloneMaterializeError::Io => GitSyncError::Io,
     }
 }
 
@@ -12780,6 +13722,44 @@ mod tests {
         .unwrap()
     }
 
+    fn clean_sync_publication_fixture(
+        remote_name: &str,
+    ) -> (
+        Temp,
+        Temp,
+        Box<WorkspaceView>,
+        GitSyncClassification,
+        String,
+    ) {
+        let temp = Temp::new();
+        let state = Temp::new();
+        drop(configured_sync_workspace(&temp));
+        fs::write(temp.0.join(".gitignore"), b".rehow/\n").unwrap();
+        fixture_git(&temp, &["add", "--", ".gitignore"]);
+        fixture_git(&temp, &["commit", "-qm", "ignore recovery trash"]);
+        let workspace = open_workspace(&temp);
+        let plan = plan_git_sync(&workspace, &state.0).unwrap();
+        let source = Temp::new();
+        write_fixture_guide(&source);
+        fs::write(source.0.join(".gitignore"), b".rehow/\n").unwrap();
+        let remote_manifest = format!(
+            "schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: {remote_name}\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T01:00:00Z\"\n"
+        );
+        let inspection = stage_sync_fixture(
+            &workspace,
+            plan,
+            &state,
+            &source,
+            remote_manifest.as_bytes(),
+        );
+        let remote_head = inspection.remote_head.object_id().to_owned();
+        let classification = GitSyncClassification {
+            inspection,
+            ancestry: GitSyncAncestry::RemoteFastForward,
+        };
+        (temp, state, workspace, classification, remote_head)
+    }
+
     fn stage_clone_fixture(
         target: &EmptyWorkspaceTarget,
         state: &Temp,
@@ -13732,6 +14712,284 @@ mod tests {
         let debug = format!("{materialization:?}");
         assert!(!debug.contains(&materialization.operation_id.to_string()));
         assert!(!debug.contains("Remote"));
+    }
+
+    #[test]
+    fn sync_fast_forward_durably_publishes_workspace_index_and_branch() {
+        let temp = Temp::new();
+        let state = Temp::new();
+        drop(configured_sync_workspace(&temp));
+        fs::write(temp.0.join(".gitignore"), b".rehow/\n").unwrap();
+        fixture_git(&temp, &["add", "--", ".gitignore"]);
+        fixture_git(&temp, &["commit", "-qm", "ignore recovery trash"]);
+        let workspace = open_workspace(&temp);
+        let plan = plan_git_sync(&workspace, &state.0).unwrap();
+        let source = Temp::new();
+        write_fixture_guide(&source);
+        fs::write(source.0.join(".gitignore"), b".rehow/\n").unwrap();
+        let remote_manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Remote\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T01:00:00Z\"\n";
+        let inspection = stage_sync_fixture(&workspace, plan, &state, &source, remote_manifest);
+        let remote_head = inspection.remote_head.object_id().to_owned();
+        let classification = GitSyncClassification {
+            inspection,
+            ancestry: GitSyncAncestry::RemoteFastForward,
+        };
+
+        let (fresh, outcome) =
+            apply_git_sync_fast_forward(&workspace, &state.0, None, classification).unwrap();
+
+        assert!(outcome.changed());
+        assert_eq!(fresh.manifest().name(), "Remote");
+        assert_eq!(
+            fixture_git_stdout(&temp, &["rev-parse", "HEAD"]),
+            remote_head
+        );
+        let status = fixture_git_stdout(&temp, &["status", "--porcelain=v1"]);
+        assert!(status.is_empty(), "unexpected status: {status:?}");
+        let session = fresh
+            .open_git_commit_recovery_session(&state.0, None)
+            .unwrap();
+        let intent = session.read_sync_intent(outcome.operation_id).unwrap();
+        assert_eq!(intent.stage, GitSyncIntentStage::Complete);
+        let debug = format!("{outcome:?}");
+        assert!(!debug.contains(&outcome.operation_id.to_string()));
+        assert!(!debug.contains(&remote_head));
+    }
+
+    #[test]
+    fn sync_fast_forward_publishes_a_new_commit_with_no_portable_change() {
+        let temp = Temp::new();
+        let state = Temp::new();
+        drop(configured_sync_workspace(&temp));
+        fs::write(temp.0.join(".gitignore"), b".rehow/\n").unwrap();
+        fixture_git(&temp, &["add", "--", ".gitignore"]);
+        fixture_git(&temp, &["commit", "-qm", "ignore recovery trash"]);
+        let manifest = fs::read(temp.0.join("rehow.yaml")).unwrap();
+        let workspace = open_workspace(&temp);
+        let plan = plan_git_sync(&workspace, &state.0).unwrap();
+        let source = Temp::new();
+        fs::write(source.0.join(".gitignore"), b".rehow/\n").unwrap();
+        let inspection = stage_sync_fixture(&workspace, plan, &state, &source, &manifest);
+        assert!(inspection.workspace_matches_remote());
+        let remote_head = inspection.remote_head.object_id().to_owned();
+        let classification = GitSyncClassification {
+            inspection,
+            ancestry: GitSyncAncestry::RemoteFastForward,
+        };
+
+        let (fresh, outcome) =
+            apply_git_sync_fast_forward(&workspace, &state.0, None, classification).unwrap();
+
+        assert!(outcome.changed());
+        assert_eq!(fresh.manifest().name(), workspace.manifest().name());
+        assert_eq!(
+            fixture_git_stdout(&temp, &["rev-parse", "HEAD"]),
+            remote_head
+        );
+        let session = fresh
+            .open_git_commit_recovery_session(&state.0, None)
+            .unwrap();
+        let intent = session.read_sync_intent(outcome.operation_id).unwrap();
+        assert!(intent.workspace_journal_hash.is_none());
+        assert_eq!(intent.stage, GitSyncIntentStage::Complete);
+    }
+
+    #[test]
+    fn sync_fast_forward_resumes_after_index_publication_interruption() {
+        let temp = Temp::new();
+        let state = Temp::new();
+        drop(configured_sync_workspace(&temp));
+        fs::write(temp.0.join(".gitignore"), b".rehow/\n").unwrap();
+        fixture_git(&temp, &["add", "--", ".gitignore"]);
+        fixture_git(&temp, &["commit", "-qm", "ignore recovery trash"]);
+        let workspace = open_workspace(&temp);
+        let plan = plan_git_sync(&workspace, &state.0).unwrap();
+        let source = Temp::new();
+        write_fixture_guide(&source);
+        fs::write(source.0.join(".gitignore"), b".rehow/\n").unwrap();
+        let remote_manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Resumed\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T01:00:00Z\"\n";
+        let inspection = stage_sync_fixture(&workspace, plan, &state, &source, remote_manifest);
+        let remote_head = inspection.remote_head.object_id().to_owned();
+        let classification = GitSyncClassification {
+            inspection,
+            ancestry: GitSyncAncestry::RemoteFastForward,
+        };
+        set_git_commit_metadata_fault(GitCommitMetadataFault::IndexPublished);
+
+        assert_eq!(
+            apply_git_sync_fast_forward(&workspace, &state.0, None, classification)
+                .err()
+                .unwrap(),
+            GitSyncError::Unsupported
+        );
+        assert_eq!(
+            plan_git_sync(&workspace, &state.0).err().unwrap(),
+            GitSyncError::RecoveryRequired
+        );
+        assert_eq!(
+            plan_git_commit(&workspace, &state.0, "must wait")
+                .err()
+                .unwrap(),
+            GitCommitPlanError::OperationInProgress
+        );
+        let session = workspace
+            .open_git_commit_recovery_session(&state.0, None)
+            .unwrap();
+        let intents = session.list_sync_intents().unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].stage, GitSyncIntentStage::IndexPublished);
+        let operation_id = intents[0].operation_id;
+        drop(session);
+
+        let fresh = resume_git_sync_publication(&workspace, &state.0, None, operation_id).unwrap();
+
+        assert_eq!(fresh.manifest().name(), "Resumed");
+        assert_eq!(
+            fixture_git_stdout(&temp, &["rev-parse", "HEAD"]),
+            remote_head
+        );
+        assert!(fixture_git_stdout(&temp, &["status", "--porcelain=v1"]).is_empty());
+        let session = fresh
+            .open_git_commit_recovery_session(&state.0, None)
+            .unwrap();
+        assert_eq!(
+            session.read_sync_intent(operation_id).unwrap().stage,
+            GitSyncIntentStage::Complete
+        );
+    }
+
+    #[test]
+    fn sync_fast_forward_resumes_every_git_metadata_interruption() {
+        for fault in [
+            GitCommitMetadataFault::IndexLockPublished,
+            GitCommitMetadataFault::IndexExchanged,
+            GitCommitMetadataFault::IndexPublished,
+            GitCommitMetadataFault::RefLockPublished,
+            GitCommitMetadataFault::RefExchanged,
+            GitCommitMetadataFault::RefPublished,
+        ] {
+            let (temp, state, workspace, classification, remote_head) =
+                clean_sync_publication_fixture("Interrupted");
+            set_git_commit_metadata_fault(fault);
+            assert!(
+                apply_git_sync_fast_forward(&workspace, &state.0, None, classification).is_err(),
+                "fault {fault:?}"
+            );
+            let session = workspace
+                .open_git_commit_recovery_session(&state.0, None)
+                .unwrap();
+            let intents = session.list_sync_intents().unwrap();
+            assert_eq!(intents.len(), 1, "fault {fault:?}");
+            let operation_id = intents[0].operation_id;
+            drop(session);
+
+            let fresh =
+                resume_git_sync_publication(&workspace, &state.0, None, operation_id).unwrap();
+
+            assert_eq!(fresh.manifest().name(), "Interrupted", "fault {fault:?}");
+            assert_eq!(
+                fixture_git_stdout(&temp, &["rev-parse", "HEAD"]),
+                remote_head,
+                "fault {fault:?}"
+            );
+            let session = fresh
+                .open_git_commit_recovery_session(&state.0, None)
+                .unwrap();
+            assert_eq!(
+                session.read_sync_intent(operation_id).unwrap().stage,
+                GitSyncIntentStage::Complete,
+                "fault {fault:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sync_fast_forward_refuses_a_packed_only_current_branch() {
+        let temp = Temp::new();
+        let state = Temp::new();
+        drop(configured_sync_workspace(&temp));
+        fs::write(temp.0.join(".gitignore"), b".rehow/\n").unwrap();
+        fixture_git(&temp, &["add", "--", ".gitignore"]);
+        fixture_git(&temp, &["commit", "-qm", "ignore recovery trash"]);
+        fixture_git(&temp, &["pack-refs", "--all", "--prune"]);
+        let before_head = fixture_git_stdout(&temp, &["rev-parse", "HEAD"]);
+        let workspace = open_workspace(&temp);
+        let plan = plan_git_sync(&workspace, &state.0).unwrap();
+        let source = Temp::new();
+        write_fixture_guide(&source);
+        fs::write(source.0.join(".gitignore"), b".rehow/\n").unwrap();
+        let remote_manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Packed refusal\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T01:00:00Z\"\n";
+        let inspection = stage_sync_fixture(&workspace, plan, &state, &source, remote_manifest);
+        let classification = GitSyncClassification {
+            inspection,
+            ancestry: GitSyncAncestry::RemoteFastForward,
+        };
+
+        assert_eq!(
+            apply_git_sync_fast_forward(&workspace, &state.0, None, classification)
+                .err()
+                .unwrap(),
+            GitSyncError::Unsupported
+        );
+        assert_eq!(
+            fixture_git_stdout(&temp, &["rev-parse", "HEAD"]),
+            before_head
+        );
+        let session = workspace
+            .open_git_commit_recovery_session(&state.0, None)
+            .unwrap();
+        assert!(session.list_sync_intents().unwrap().is_empty());
+    }
+
+    #[test]
+    fn sync_fast_forward_preserves_post_ref_workspace_and_ref_changes_as_conflicts() {
+        for mutate_ref in [false, true] {
+            let (temp, state, workspace, classification, _) =
+                clean_sync_publication_fixture("Conflict");
+            set_git_commit_metadata_fault(GitCommitMetadataFault::RefPublished);
+            assert!(
+                apply_git_sync_fast_forward(&workspace, &state.0, None, classification).is_err()
+            );
+            let session = workspace
+                .open_git_commit_recovery_session(&state.0, None)
+                .unwrap();
+            let intent = session.list_sync_intents().unwrap().remove(0);
+            assert_eq!(intent.stage, GitSyncIntentStage::RefPublished);
+            drop(session);
+            let (path, foreign) = if mutate_ref {
+                (
+                    temp.0.join(".git/refs/heads/main"),
+                    b"foreign-ref\n".to_vec(),
+                )
+            } else {
+                (
+                    temp.0.join("rehow.yaml"),
+                    fs::read_to_string(temp.0.join("rehow.yaml"))
+                        .unwrap()
+                        .replace("name: Conflict", "name: Foreign")
+                        .into_bytes(),
+                )
+            };
+            fs::write(&path, &foreign).unwrap();
+
+            let resume_error =
+                resume_git_sync_publication(&workspace, &state.0, None, intent.operation_id)
+                    .err()
+                    .unwrap();
+            assert_eq!(
+                resume_error,
+                GitSyncError::PlanStale,
+                "mutate_ref={mutate_ref}"
+            );
+            assert_eq!(fs::read(&path).unwrap(), foreign);
+            let session = workspace
+                .open_git_commit_recovery_session(&state.0, None)
+                .unwrap();
+            assert_eq!(
+                session.read_sync_intent(intent.operation_id).unwrap().stage,
+                GitSyncIntentStage::Conflict
+            );
+        }
     }
 
     #[test]
