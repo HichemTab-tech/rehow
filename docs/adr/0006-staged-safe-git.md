@@ -1,6 +1,6 @@
 # ADR 0006: Staged Safe Git Integration
 
-- Status: Partially Accepted — discovery/status and ADR 0022 local initialization; connect/clone/commit/sync remain Proposed behind separate ADR/security gates
+- Status: Partially Accepted — discovery/status, ADR 0022 init/connect, and ADR 0023 anonymous clone implemented; ADR 0024 accepts phased manual commit and sync remains proposed
 - Date: 2026-09-05
 
 ## Context
@@ -9,11 +9,11 @@ Git is required and must eventually support init/connect/clone/commit/sync, but 
 
 ## Decision
 
-Accept stage 1 and ADR 0022's process-free local initialization. The remaining required product stages are proposed and must each receive a separate operation ADR/security gate:
+Accept stage 1, ADR 0022's process-free local initialization/remote connection, and ADR 0023's anonymous-HTTPS clone. The remaining required product stages must each receive a separate operation ADR/security gate:
 
 1. executable/repository discovery and bounded machine-readable status/branch/remotes/divergence/conflict;
-2. safe init/connect/clone plans for unchanged destinations (only local init is accepted by ADR 0022);
-3. deliberate commit using a primitive proven not to execute repository hooks/filters (audited libgit2 or filter-free plumbing/update-ref with expected OID if porcelain cannot be contained);
+2. safe init/connect/clone plans for unchanged destinations (implemented by ADRs 0022–0023 for local init, metadata-only connect, and anonymous HTTPS);
+3. ADR 0024's deliberate managed-only commit using filter-free private plumbing plus direct recoverable metadata CAS rather than porcelain;
 4. explicit fetch/validated-incoming-tree/journaled-materialization/push sync with plan/current-state checks and trusted normal credentials.
 
 Every subprocess uses an absolute trusted executable, direct argv (no shell/aliases), sanitized dangerous environment/config, disabled pager/editor/hooks/external diff/fsmonitor where applicable, time/output limits, and machine formats. Repository/worktree configuration cannot select executable helpers. Require repository top-level equal to Workspace root initially; reject unsafe ownership, external gitfiles/object paths, ambiguous conflicts, and arbitrary refspecs.

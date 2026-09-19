@@ -81,8 +81,8 @@ Phasing:
 1. Detect executable and repository facts with noninteractive, bounded, machine-readable read operations.
 2. Add safe status/remotes/divergence/conflict reporting.
 3. Configure a remote without network access by losslessly appending one validated section under an exact before-image CAS, conventional `config.lock`, atomic exchange, and same-request/native-confirmed recovery. Repository config is data only and cannot choose execution.
-4. Design commit creation to avoid hooks and clean filters. Consider audited libgit2 or filter-free plumbing/update-ref with expected OID rather than porcelain `git add`/`commit` if containment cannot be proven.
-5. Add isolated fetch/validated materialization/push only with native approval, protocol allowlist/state plan, credentials from explicitly trusted system/user provenance outside repository config, and no arbitrary refspec. ADR 0023 now freezes clone's exact tree envelope and staged fetch/materialization controls; only its pure tree validator is implemented so far.
+4. ADR 0024 accepts commit creation through private config-free `hash-object --no-filters`/`mktree`/unsigned `commit-tree`, independently verified object IDs, append-only pack installation, and a Git-specific index/ref-last recovery intent that does not write reflogs. It never invokes porcelain add/commit, configured signing, or repository hooks/filters.
+5. Add isolated fetch/validated materialization/push only with native approval, protocol allowlist/state plan, credentials from explicitly trusted system/user provenance outside repository config, and no arbitrary refspec. ADR 0023 implements anonymous clone; authenticated transport and synchronization remain separately gated.
 
 If a required Git mutation cannot be made without repository-controlled code execution or ambiguous history effects, that feature remains blocked and the user is directed to normal Git tooling. Product requirements do not justify weakening the host boundary.
 
