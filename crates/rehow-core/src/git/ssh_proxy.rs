@@ -6,7 +6,7 @@ use std::{
 
 const AGENT_SOCKET: &str = "/run/rehow-agent/agent.sock";
 const USER_KNOWN_HOSTS_OPTION: &str = "UserKnownHostsFile=/home/rehow/.ssh/known_hosts";
-const SYSTEM_KNOWN_HOSTS_OPTION: &str = "GlobalKnownHostsFile=/etc/ssh/ssh_known_hosts";
+const SYSTEM_KNOWN_HOSTS_OPTION: &str = "GlobalKnownHostsFile=/home/rehow/.ssh/system_known_hosts";
 
 #[derive(Debug, Eq, PartialEq)]
 struct ProxyTarget {

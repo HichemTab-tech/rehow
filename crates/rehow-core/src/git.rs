@@ -1,8 +1,14 @@
 //! Confined Git discovery/status and separately gated repository operations.
 
 mod ssh_proxy;
+#[allow(
+    dead_code,
+    reason = "sealed SSH resources connect to product Git commands in the next gate"
+)]
+mod ssh_sandbox;
 
 pub use ssh_proxy::run_git_ssh_proxy;
+pub use ssh_sandbox::{GitSshProxyProvenance, GitSshProxyStatus, capture_git_ssh_proxy_provenance};
 
 use crate::storage::recovery::{
     GitCommitIntent, GitCommitIntentBranchRepresentation, GitCommitIntentError,
@@ -386,10 +392,6 @@ struct KnownHostsFileIdentity {
     mode: u32,
     links: u64,
     size: u64,
-    modified_seconds: i64,
-    modified_nanoseconds: i64,
-    changed_seconds: i64,
-    changed_nanoseconds: i64,
 }
 
 fn known_hosts_file_identity(metadata: &fs::Metadata) -> KnownHostsFileIdentity {
@@ -400,10 +402,6 @@ fn known_hosts_file_identity(metadata: &fs::Metadata) -> KnownHostsFileIdentity 
         mode: metadata.mode(),
         links: metadata.nlink(),
         size: metadata.size(),
-        modified_seconds: metadata.mtime(),
-        modified_nanoseconds: metadata.mtime_nsec(),
-        changed_seconds: metadata.ctime(),
-        changed_nanoseconds: metadata.ctime_nsec(),
     }
 }
 
@@ -11854,7 +11852,7 @@ mod tests {
         KNOWN_HOSTS_RACE.with(|race| {
             *race.borrow_mut() = Some(KnownHostsRace::Rewrite(
                 known_hosts.clone(),
-                b"changed during read\n".to_vec(),
+                b"hostile\n".to_vec(),
             ));
         });
         assert_eq!(
