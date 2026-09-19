@@ -98,6 +98,8 @@ Maintain a checked-in synthetic corpus with adversarial overlaps:
 - Category/Tag matches;
 - tested/stale/archived tie behavior;
 - Unicode/case/punctuation and long tokens.
+- bounded plain excerpts, Unicode-scalar highlight ranges, overlap merging, payload rejection, and every status/archived scope;
+- production-visible p95 including debounce/render plus a deterministic main-thread transformation budget.
 
 Ranking tests assert ordered IDs and matched-field reasons, not unstable raw floating scores. A deterministic generator produces 100, 1,000, and 5,000-Guide corpora without real user data.
 

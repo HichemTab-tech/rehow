@@ -568,13 +568,19 @@ kbd {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
-.results-meta button {
-  padding: 2px 3px;
-  background: transparent;
+.search-scope select {
+  max-width: 132px;
+  padding: 3px 20px 3px 5px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: var(--surface);
   color: var(--muted);
+  font: inherit;
   cursor: pointer;
 }
-.results-meta button:hover {
+.search-scope select:hover,
+.search-scope select:focus-visible {
+  border-color: var(--divider-strong);
   color: var(--text);
 }
 .workspace-message {
@@ -666,7 +672,7 @@ kbd {
 }
 .result-list > li {
   content-visibility: auto;
-  contain-intrinsic-size: auto 82px;
+  contain-intrinsic-size: auto 96px;
 }
 .result-row {
   display: flex;
@@ -719,6 +725,42 @@ kbd {
   line-height: 16px;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+.result-excerpt {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+.result-excerpt > span:last-child {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.result-match-label {
+  align-self: start;
+  padding: 0 4px;
+  border: 1px solid var(--divider);
+  border-radius: 3px;
+  color: var(--faint);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  line-height: 15px;
+  text-transform: uppercase;
+}
+.result-excerpt mark {
+  border-radius: 2px;
+  background: var(--selection);
+  color: var(--text);
+  font-weight: 680;
 }
 .result-footer {
   display: flex;
@@ -778,6 +820,11 @@ kbd {
   margin: 0 0 9px;
   font-size: 12px;
   line-height: 18px;
+}
+.empty-results-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .workspace-setup {
   display: grid;
@@ -859,8 +906,9 @@ kbd {
   color: var(--faint);
 }
 .title-line {
-  display: flex;
+  display: grid;
   min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: flex-start;
   gap: 14px;
 }
@@ -881,11 +929,12 @@ h1 {
 }
 .guide-header-actions {
   display: flex;
+  grid-column: 1 / -1;
   flex: 0 0 auto;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 6px;
-  margin-left: 2px;
+  margin-top: -2px;
 }
 
 .guide-attachments {
@@ -1483,6 +1532,7 @@ h1 {
   }
   .guide-header-actions {
     justify-content: flex-start;
+    margin-top: 12px;
     margin-left: 0;
   }
   .editor-heading {

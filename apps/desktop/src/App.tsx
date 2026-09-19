@@ -61,6 +61,36 @@ type WorkspaceWatchEventPayload = {
   kind: "changed" | "degraded";
 };
 
+const SEARCH_MATCH_FIELDS = [
+  "title",
+  "alias",
+  "command",
+  "path",
+  "error",
+  "tag",
+  "category",
+  "summary",
+  "heading",
+  "body",
+] as const;
+
+type SearchMatchField = (typeof SEARCH_MATCH_FIELDS)[number];
+export type SearchScope =
+  | "active"
+  | "tested"
+  | "draft"
+  | "stale"
+  | "archived"
+  | "all";
+
+export type SearchHitPayload = {
+  guideId: string;
+  excerpt: string;
+  excerptField: SearchMatchField;
+  matchedFields: SearchMatchField[];
+  highlights: Array<{ start: number; end: number }>;
+};
+
 const WORKSPACE_INVALIDATED_EVENT = "rehow://workspace-invalidated/v1";
 
 export function isWorkspaceWatchEvent(
@@ -110,6 +140,91 @@ export function refreshResultMayApply(
   currentEditGeneration: number,
 ) {
   return startedEditGeneration === currentEditGeneration;
+}
+
+export function isSearchHitPayload(value: unknown): value is SearchHitPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const hit = value as {
+    guideId?: unknown;
+    excerpt?: unknown;
+    excerptField?: unknown;
+    matchedFields?: unknown;
+    highlights?: unknown;
+  };
+  if (
+    Object.keys(hit).length !== 5 ||
+    typeof hit.guideId !== "string" ||
+    hit.guideId.length > 64 ||
+    typeof hit.excerpt !== "string" ||
+    Array.from(hit.excerpt).length > 222 ||
+    !SEARCH_MATCH_FIELDS.includes(hit.excerptField as SearchMatchField) ||
+    !Array.isArray(hit.matchedFields) ||
+    hit.matchedFields.length > SEARCH_MATCH_FIELDS.length ||
+    !hit.matchedFields.every((field) =>
+      SEARCH_MATCH_FIELDS.includes(field as SearchMatchField),
+    ) ||
+    !Array.isArray(hit.highlights) ||
+    hit.highlights.length > 32
+  )
+    return false;
+  const excerptLength = Array.from(hit.excerpt).length;
+  let previousEnd = 0;
+  return hit.highlights.every((value) => {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Object.keys(value).length !== 2
+    )
+      return false;
+    const range = value as { start?: unknown; end?: unknown };
+    if (
+      !Number.isInteger(range.start) ||
+      !Number.isInteger(range.end) ||
+      (range.start as number) < previousEnd ||
+      (range.end as number) <= (range.start as number) ||
+      (range.end as number) > excerptLength
+    )
+      return false;
+    previousEnd = range.end as number;
+    return true;
+  });
+}
+
+export function highlightedExcerptSegments(hit: SearchHitPayload) {
+  const characters = Array.from(hit.excerpt);
+  const segments: Array<{
+    start: number;
+    end: number;
+    text: string;
+    highlighted: boolean;
+  }> = [];
+  let cursor = 0;
+  for (const range of hit.highlights) {
+    if (range.start > cursor) {
+      segments.push({
+        start: cursor,
+        end: range.start,
+        text: characters.slice(cursor, range.start).join(""),
+        highlighted: false,
+      });
+    }
+    segments.push({
+      start: range.start,
+      end: range.end,
+      text: characters.slice(range.start, range.end).join(""),
+      highlighted: true,
+    });
+    cursor = range.end;
+  }
+  if (cursor < characters.length) {
+    segments.push({
+      start: cursor,
+      end: characters.length,
+      text: characters.slice(cursor).join(""),
+      highlighted: false,
+    });
+  }
+  return segments;
 }
 
 type OpenWorkspaceResult =
@@ -283,15 +398,46 @@ export function refreshedGuideId(
 export function rankedGuides(
   guides: GuideSummary[],
   query: string,
-  rankedIds: string[] | null,
+  rankedHits: SearchHitPayload[] | null,
 ) {
   if (query.trim() === "") return guides;
-  if (rankedIds === null) return filterGuides(guides, query);
+  if (rankedHits === null) return filterGuides(guides, query);
   const byId = new Map(guides.map((guide) => [guide.id, guide]));
-  return rankedIds.flatMap((id) => {
-    const guide = byId.get(id);
+  return rankedHits.flatMap((hit) => {
+    const guide = byId.get(hit.guideId);
     return guide ? [guide] : [];
   });
+}
+
+export function guideMatchesSearchScope(
+  status: GuideSummary["status"],
+  scope: SearchScope,
+) {
+  if (scope === "all") return true;
+  if (scope === "active") return status !== "Archived";
+  return status.toLowerCase() === scope;
+}
+
+function isSearchScope(value: string | null): value is SearchScope {
+  return ["active", "tested", "draft", "stale", "archived", "all"].includes(
+    value ?? "",
+  );
+}
+
+export function searchStatePath(
+  pathname: string,
+  search: string,
+  hash: string,
+  query: string,
+  scope: SearchScope,
+) {
+  const parameters = new URLSearchParams(search);
+  if (query === "") parameters.delete("q");
+  else parameters.set("q", query);
+  if (scope === "active") parameters.delete("scope");
+  else parameters.set("scope", scope);
+  const nextSearch = parameters.toString();
+  return `${pathname}${nextSearch === "" ? "" : `?${nextSearch}`}${hash}`;
 }
 
 export function resultCountLabel(count: number) {
@@ -453,8 +599,48 @@ function Status({ value }: { value: GuideSummary["status"] }) {
   );
 }
 
+const SEARCH_MATCH_LABELS: Record<SearchMatchField, string> = {
+  title: "Title",
+  alias: "Alias",
+  command: "Command",
+  path: "Path",
+  error: "Error",
+  tag: "Tag",
+  category: "Category",
+  summary: "Summary",
+  heading: "Heading",
+  body: "Content",
+};
+
+function SearchExcerpt({ hit }: { hit: SearchHitPayload }) {
+  return (
+    <span className="result-excerpt">
+      <span className="result-match-label">
+        {SEARCH_MATCH_LABELS[hit.excerptField]}
+      </span>
+      <span>
+        {highlightedExcerptSegments(hit).map((segment) =>
+          segment.highlighted ? (
+            <mark key={`${segment.start}-${segment.end}-mark`}>
+              {segment.text}
+            </mark>
+          ) : (
+            <span key={`${segment.start}-${segment.end}-text`}>
+              {segment.text}
+            </span>
+          ),
+        )}
+      </span>
+    </span>
+  );
+}
+
 export function App() {
   const [query, setQuery] = useState(() => initialParameter("q") ?? "");
+  const [searchScope, setSearchScope] = useState<SearchScope>(() => {
+    const scope = initialParameter("scope");
+    return isSearchScope(scope) ? scope : "active";
+  });
   const [workspace, setWorkspace] = useState<WorkspacePayload | null>(null);
   const [selectedId, setSelectedId] = useState(
     () => initialParameter("guide") ?? "",
@@ -525,7 +711,7 @@ export function App() {
   const [removingAttachmentId, setRemovingAttachmentId] = useState("");
   const [removingGuide, setRemovingGuide] = useState(false);
   const [guideStatusError, setGuideStatusError] = useState("");
-  const [rankedGuideIds, setRankedGuideIds] = useState<string[] | null>(null);
+  const [searchHits, setSearchHits] = useState<SearchHitPayload[] | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const readerRef = useRef<HTMLElement>(null);
   const resultListRef = useRef<HTMLUListElement>(null);
@@ -567,25 +753,42 @@ export function App() {
   const workspaceSessionRef = useRef("");
   const editGenerationRef = useRef(0);
   const guides = workspace?.guides ?? [];
-  const visibleGuides = useMemo(
-    () => rankedGuides(guides, query, rankedGuideIds),
-    [guides, query, rankedGuideIds],
+  const scopedGuides = useMemo(
+    () =>
+      guides.filter((guide) =>
+        guideMatchesSearchScope(guide.status, searchScope),
+      ),
+    [guides, searchScope],
   );
-  const selected =
-    guides.find((guide) => guide.id === selectedId) ?? visibleGuides[0] ?? null;
+  const visibleGuides = useMemo(
+    () => rankedGuides(scopedGuides, query, searchHits),
+    [scopedGuides, query, searchHits],
+  );
+  const searchHitsByGuideId = useMemo(
+    () => new Map((searchHits ?? []).map((hit) => [hit.guideId, hit])),
+    [searchHits],
+  );
+  const selectedById = guides.find((guide) => guide.id === selectedId) ?? null;
+  const selectedIsVisible = visibleGuides.some(
+    (guide) => guide.id === selectedId,
+  );
   const dirtyGuide =
     editingGuide &&
     guideBody !== null &&
-    guideBody.id === selected?.id &&
+    guideBody.id === selectedById?.id &&
     hasUnsavedChanges(guideBody.body, draftBody);
   const dirtyGuideDetails =
     editingGuideDetails &&
-    selected !== null &&
-    (selected.title !== detailTitle ||
-      selected.summary !== detailSummary ||
-      selected.categoryId !== detailCategoryId ||
-      selected.tags.join("\n") !== detailTags ||
-      selected.aliases.join("\n") !== detailAliases);
+    selectedById !== null &&
+    (selectedById.title !== detailTitle ||
+      selectedById.summary !== detailSummary ||
+      selectedById.categoryId !== detailCategoryId ||
+      selectedById.tags.join("\n") !== detailTags ||
+      selectedById.aliases.join("\n") !== detailAliases);
+  const selected =
+    selectedIsVisible || dirtyGuide || dirtyGuideDetails
+      ? selectedById
+      : (visibleGuides[0] ?? null);
   const categoryBeingRenamed =
     workspace?.categories.find(
       (category) => category.id === renamingCategoryId,
@@ -654,6 +857,17 @@ export function App() {
     window.addEventListener("hashchange", revealGuideTarget);
     return () => window.removeEventListener("hashchange", revealGuideTarget);
   }, []);
+
+  useEffect(() => {
+    const next = searchStatePath(
+      window.location.pathname,
+      window.location.search,
+      window.location.hash,
+      query,
+      searchScope,
+    );
+    window.history.replaceState(window.history.state, "", next);
+  }, [query, searchScope]);
 
   useEffect(() => {
     let active = true;
@@ -726,7 +940,7 @@ export function App() {
     function handleShortcut(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
       const editing = target?.matches(
-        "input, textarea, [contenteditable='true']",
+        "input, select, textarea, [contenteditable='true']",
       );
       if (
         (event.ctrlKey || event.metaKey) &&
@@ -809,31 +1023,50 @@ export function App() {
 
   useEffect(() => {
     if (workspace === null || query.trim() === "") {
-      setRankedGuideIds(null);
+      setSearchHits(null);
       return;
     }
     let active = true;
-    setRankedGuideIds(null);
+    setSearchHits(null);
     const timeout = window.setTimeout(() => {
       import("@tauri-apps/api/core")
         .then(({ invoke }) =>
-          invoke<string[]>("search_open_workspace", { query }),
+          invoke<unknown>("search_open_workspace", {
+            query,
+            scope: searchScope,
+          }),
         )
-        .then((ids) => {
-          if (active) setRankedGuideIds(ids);
+        .then((payload) => {
+          if (!Array.isArray(payload) || !payload.every(isSearchHitPayload)) {
+            throw new Error("invalid search payload");
+          }
+          if (active) setSearchHits(payload);
         })
         .catch(() => {
           if (active) {
-            setRankedGuideIds([]);
+            setSearchHits([]);
             setAnnouncement("Search could not be completed.");
           }
         });
-    }, 80);
+    }, 20);
     return () => {
       active = false;
       window.clearTimeout(timeout);
     };
-  }, [query, workspace]);
+  }, [query, searchScope, workspace]);
+
+  useEffect(() => {
+    if (dirtyGuide || dirtyGuideDetails) return;
+    if (selectedId !== "" && selectedIsVisible) return;
+    const nextId = visibleGuides[0]?.id ?? "";
+    if (nextId !== selectedId) setSelectedId(nextId);
+  }, [
+    dirtyGuide,
+    dirtyGuideDetails,
+    selectedId,
+    selectedIsVisible,
+    visibleGuides,
+  ]);
 
   function confirmDiscard() {
     if (workspaceOperationBusy) return false;
@@ -870,6 +1103,22 @@ export function App() {
     setSelectedId(id);
     setReaderOpen(true);
     requestAnimationFrame(() => readerRef.current?.focus());
+  }
+
+  function changeSearchScope(nextScope: SearchScope) {
+    if (nextScope === searchScope) return;
+    if (
+      selectedById !== null &&
+      !guideMatchesSearchScope(selectedById.status, nextScope)
+    ) {
+      if (!confirmDiscard()) return;
+      setEditingGuide(false);
+      setEditingGuideDetails(false);
+      setSaveError("");
+      setGuideDetailsError("");
+      setSelectedId("");
+    }
+    setSearchScope(nextScope);
   }
 
   function closeReader() {
@@ -2300,9 +2549,23 @@ export function App() {
             <span aria-live="polite" aria-atomic="true">
               {resultCountLabel(visibleGuides.length)}
             </span>
-            <button type="button">
-              Recently Updated <span aria-hidden="true">⌄</span>
-            </button>
+            <label className="search-scope" htmlFor="search-scope">
+              <span className="sr-only">Guide search scope</span>
+              <select
+                id="search-scope"
+                value={searchScope}
+                onChange={(event) =>
+                  changeSearchScope(event.target.value as SearchScope)
+                }
+              >
+                <option value="active">Active Guides</option>
+                <option value="tested">Tested</option>
+                <option value="draft">Draft</option>
+                <option value="stale">Stale</option>
+                <option value="archived">Archived</option>
+                <option value="all">All Guides</option>
+              </select>
+            </label>
           </div>
           {announcement !== "" && (
             <p className="workspace-message" role="status">
@@ -2427,27 +2690,38 @@ export function App() {
         )}
         <ul ref={resultListRef} className="result-list" aria-label="Guides">
           {visibleGuides.length > 0 ? (
-            visibleGuides.map((guide, index) => (
-              <li key={guide.id}>
-                <button
-                  type="button"
-                  className={`result-row ${guide.id === selected?.id ? "is-selected" : ""}`}
-                  aria-current={guide.id === selected?.id ? "true" : undefined}
-                  onClick={(event) => openGuide(guide.id, event.currentTarget)}
-                  onKeyDown={(event) => handleResultKey(event, index)}
-                >
-                  <span className="result-heading">
-                    <strong>{guide.title}</strong>
-                    <span>{formatUpdated(guide.updatedAt)}</span>
-                  </span>
-                  <span className="result-summary">{guide.summary}</span>
-                  <span className="result-footer">
-                    <span>{guide.category}</span>
-                    <Status value={guide.status} />
-                  </span>
-                </button>
-              </li>
-            ))
+            visibleGuides.map((guide, index) => {
+              const searchHit = searchHitsByGuideId.get(guide.id);
+              return (
+                <li key={guide.id}>
+                  <button
+                    type="button"
+                    className={`result-row ${guide.id === selected?.id ? "is-selected" : ""}`}
+                    aria-current={
+                      guide.id === selected?.id ? "true" : undefined
+                    }
+                    onClick={(event) =>
+                      openGuide(guide.id, event.currentTarget)
+                    }
+                    onKeyDown={(event) => handleResultKey(event, index)}
+                  >
+                    <span className="result-heading">
+                      <strong>{guide.title}</strong>
+                      <span>{formatUpdated(guide.updatedAt)}</span>
+                    </span>
+                    {query.trim() !== "" && searchHit !== undefined ? (
+                      <SearchExcerpt hit={searchHit} />
+                    ) : (
+                      <span className="result-summary">{guide.summary}</span>
+                    )}
+                    <span className="result-footer">
+                      <span>{guide.category}</span>
+                      <Status value={guide.status} />
+                    </span>
+                  </button>
+                </li>
+              );
+            })
           ) : (
             <li className="empty-results">
               <Icon name={pendingWorkspace === null ? "search" : "folder"} />
@@ -2458,7 +2732,9 @@ export function App() {
                     ? "Open a Workspace"
                     : guides.length === 0 && query.trim() === ""
                       ? "No Guides Yet"
-                      : "No Matching Guides"}
+                      : query.trim() === ""
+                        ? "No Guides in This Scope"
+                        : "No Matching Guides"}
               </h2>
               <p>
                 {pendingWorkspace !== null
@@ -2469,7 +2745,9 @@ export function App() {
                     ? "Choose a Rehow Workspace to load its Guides securely."
                     : guides.length === 0 && query.trim() === ""
                       ? "This Workspace is ready for its first Guide."
-                      : "Try fewer words or search for a command, path, or error message."}
+                      : query.trim() === ""
+                        ? "Choose another status scope to see more Guides."
+                        : "Try fewer words, another scope, or search for a command, path, or error message."}
               </p>
               {workspaceSetupError !== "" && (
                 <p
@@ -2541,13 +2819,37 @@ export function App() {
                   Open Workspace
                 </button>
               ) : guides.length === 0 && query.trim() === "" ? null : (
-                <button
-                  className="button"
-                  type="button"
-                  onClick={() => setQuery("")}
-                >
-                  Clear Search
-                </button>
+                <div className="empty-results-actions">
+                  {query.trim() !== "" && (
+                    <button
+                      className="button"
+                      type="button"
+                      onClick={() => setQuery("")}
+                    >
+                      Clear Search
+                    </button>
+                  )}
+                  {searchScope !== "active" && (
+                    <button
+                      className="button"
+                      type="button"
+                      onClick={() => changeSearchScope("active")}
+                    >
+                      Show Active Guides
+                    </button>
+                  )}
+                  {query.trim() !== "" &&
+                    searchScope !== "archived" &&
+                    searchScope !== "all" && (
+                      <button
+                        className="button"
+                        type="button"
+                        onClick={() => changeSearchScope("archived")}
+                      >
+                        Search Archived
+                      </button>
+                    )}
+                </div>
               )}
             </li>
           )}

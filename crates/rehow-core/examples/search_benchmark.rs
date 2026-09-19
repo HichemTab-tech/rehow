@@ -45,25 +45,32 @@ fn main() {
         search_workspace(&workspace, query, false, 100).expect("warm-up query must succeed");
     }
     let mut samples = Vec::with_capacity(400);
+    let mut single_result_samples = Vec::with_capacity(400);
     for iteration in 0..400 {
         let query = queries[iteration % queries.len()];
         let started = Instant::now();
         search_workspace(&workspace, query, false, 100).expect("benchmark query must succeed");
         samples.push(started.elapsed());
+        let started = Instant::now();
+        search_workspace(&workspace, query, false, 1).expect("benchmark query must succeed");
+        single_result_samples.push(started.elapsed());
     }
     samples.sort_unstable();
+    single_result_samples.sort_unstable();
 
     println!("guides={GUIDE_COUNT}");
     let markdown_bytes = workspace_bytes(root);
     let p50 = percentile(&samples, 50);
     let p95 = percentile(&samples, 95);
     let p99 = percentile(&samples, 99);
+    let single_result_p95 = percentile(&single_result_samples, 95);
     let peak_rss = peak_rss_kib().expect("Linux VmHWM must be available for this gate");
     println!("markdown_bytes={markdown_bytes}");
     println!("cold_rebuild_ms={:.3}", milliseconds(rebuild));
     println!("warm_query_p50_ms={p50:.3}");
     println!("warm_query_p95_ms={p95:.3}");
     println!("warm_query_p99_ms={p99:.3}");
+    println!("warm_query_limit1_p95_ms={single_result_p95:.3}");
     println!("peak_rss_kib={peak_rss}");
 
     assert!(markdown_bytes >= 50 * 1024 * 1024, "corpus is below 50 MiB");

@@ -15,7 +15,7 @@ use rehow_core::{
     domain::GuideStatus,
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
     protocol::{AttachmentId, CategoryId, GuideId, Revision},
-    search::search_workspace,
+    search::{SearchHit, SearchStatusScope, search_workspace_in_scope},
     storage::{
         EmptyWorkspaceTarget, WorkspaceFolderFacts, WorkspaceInspection, WorkspaceView,
         WorkspaceWatchSignal, WorkspaceWatcher, inspect_workspace,
@@ -164,6 +164,46 @@ struct GuidePayload {
     aliases: Vec<String>,
     attachments: Vec<AttachmentPayload>,
     matches: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchHitPayload {
+    guide_id: String,
+    excerpt: String,
+    excerpt_field: &'static str,
+    matched_fields: Vec<&'static str>,
+    highlights: Vec<SearchHighlightPayload>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchHighlightPayload {
+    start: u16,
+    end: u16,
+}
+
+impl From<SearchHit> for SearchHitPayload {
+    fn from(hit: SearchHit) -> Self {
+        Self {
+            guide_id: hit.guide_id().to_string(),
+            excerpt: hit.excerpt().to_owned(),
+            excerpt_field: hit.excerpt_field().as_str(),
+            matched_fields: hit
+                .matched_fields()
+                .iter()
+                .map(|field| field.as_str())
+                .collect(),
+            highlights: hit
+                .highlights()
+                .iter()
+                .map(|range| SearchHighlightPayload {
+                    start: range.start(),
+                    end: range.end(),
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -416,8 +456,10 @@ fn read_open_guide(
 #[tauri::command]
 fn search_open_workspace(
     query: String,
+    scope: String,
     state: tauri::State<'_, DesktopState>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<SearchHitPayload>, String> {
+    let scope = search_status_scope(&scope).ok_or_else(|| "Search scope is invalid".to_owned())?;
     let guard = state
         .workspace
         .lock()
@@ -425,18 +467,26 @@ fn search_open_workspace(
     let workspace = guard
         .as_ref()
         .ok_or_else(|| "No Workspace is open".to_owned())?;
-    search_workspace(&workspace.view, &query, false, 100)
-        .map(|hits| {
-            hits.into_iter()
-                .map(|hit| hit.guide_id().to_string())
-                .collect()
-        })
+    search_workspace_in_scope(&workspace.view, &query, scope, 100)
+        .map(|hits| hits.into_iter().map(SearchHitPayload::from).collect())
         .map_err(|error| match error {
             rehow_core::search::SearchError::QueryTooLarge => "Search query is too long".to_owned(),
             rehow_core::search::SearchError::TooManyTerms => {
                 "Search query has too many terms".to_owned()
             }
         })
+}
+
+fn search_status_scope(scope: &str) -> Option<SearchStatusScope> {
+    match scope {
+        "active" => Some(SearchStatusScope::Active),
+        "tested" => Some(SearchStatusScope::Tested),
+        "draft" => Some(SearchStatusScope::Draft),
+        "stale" => Some(SearchStatusScope::Stale),
+        "archived" => Some(SearchStatusScope::Archived),
+        "all" => Some(SearchStatusScope::All),
+        _ => None,
+    }
 }
 
 #[tauri::command]
@@ -2173,13 +2223,14 @@ pub fn run() {
 mod tests {
     use super::{
         APPLICATION_NAME, CategoryPayload, FolderFactsPayload, GuideBodyPayload, GuidePayload,
-        WorkspacePayload, WorkspaceWatchEventPayload, attachment_removal_code,
-        attachment_removal_message, category_create_code, category_create_message,
-        category_remove_code, category_remove_message, category_reorder_code,
-        category_reorder_message, category_update_code, category_update_message, guide_create_code,
-        guide_create_message, guide_remove_code, guide_remove_confirmation, guide_remove_message,
-        guide_update_code, guide_update_message, native_command_error,
-        workspace_initialization_message, workspace_refresh_code, workspace_refresh_message,
+        SearchHighlightPayload, SearchHitPayload, WorkspacePayload, WorkspaceWatchEventPayload,
+        attachment_removal_code, attachment_removal_message, category_create_code,
+        category_create_message, category_remove_code, category_remove_message,
+        category_reorder_code, category_reorder_message, category_update_code,
+        category_update_message, guide_create_code, guide_create_message, guide_remove_code,
+        guide_remove_confirmation, guide_remove_message, guide_update_code, guide_update_message,
+        native_command_error, search_status_scope, workspace_initialization_message,
+        workspace_refresh_code, workspace_refresh_message,
     };
     use rehow_core::{
         application::{
@@ -2193,6 +2244,14 @@ mod tests {
     #[test]
     fn application_name_is_stable() {
         assert_eq!(APPLICATION_NAME, "Rehow");
+    }
+
+    #[test]
+    fn search_status_scopes_are_closed() {
+        for scope in ["active", "tested", "draft", "stale", "archived", "all"] {
+            assert!(search_status_scope(scope).is_some(), "{scope}");
+        }
+        assert!(search_status_scope("everything").is_none());
     }
 
     #[test]
@@ -2264,6 +2323,23 @@ mod tests {
         .unwrap();
         assert_eq!(json.as_object().unwrap().len(), 3);
         assert_eq!(json["kind"], "changed");
+        assert!(json.get("path").is_none());
+    }
+
+    #[test]
+    fn search_payload_is_plain_bounded_structure() {
+        let json = serde_json::to_value(SearchHitPayload {
+            guide_id: "0199a1d7-7b0d-7d8e-a38d-f936c5735e10".to_owned(),
+            excerpt: "error: permission denied".to_owned(),
+            excerpt_field: "error",
+            matched_fields: vec!["error", "body"],
+            highlights: vec![SearchHighlightPayload { start: 7, end: 24 }],
+        })
+        .unwrap();
+        assert_eq!(json.as_object().unwrap().len(), 5);
+        assert_eq!(json["excerptField"], "error");
+        assert_eq!(json["highlights"][0]["start"], 7);
+        assert!(json.get("html").is_none());
         assert!(json.get("path").is_none());
     }
 

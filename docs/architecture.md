@@ -92,7 +92,7 @@ Phase 1D has no filesystem, revision, inventory, clock, entropy, process, networ
 1. Query parsing normalizes Unicode/case, recognizes quoted phrases/path-like/command-like/error-like tokens, and retains literal intent.
 2. The field-aware index retrieves candidates.
 3. Deterministic boosts rank exact normalized title, alias, command, path, and error matches deliberately; status/staleness and token coverage act as secondary signals.
-4. Results include matched fields/excerpts and diagnostics. Malformed files remain isolated.
+4. Results include matched fields and a bounded plain normalized excerpt with Unicode-scalar highlight ranges; the renderer validates the payload and creates text/`mark` nodes, never result HTML. Malformed files remain isolated.
 
 ### Git
 
@@ -184,6 +184,8 @@ Indexed fields and initial relative boosts:
 | Heading / body | 25 / 10 |
 
 Scores are an explicit policy layered over engine relevance, not engine defaults. Tested status may break otherwise close ties but cannot bury exact stale matches. Archived Guides are excluded by default but searchable by scope. Ranking fixtures lock expected order; corpus benchmarks enforce `docs/product-spec.md` budgets.
+
+The desktop offers Active, Tested, Draft, Stale, Archived, and All scopes. Tauri validates that closed scope set and core filters it before ranking and the result cap, so one status cannot crowd another out. Query and non-default scope are restorable route state. Core bounds each post-ranking excerpt to 220 Unicode scalars plus ellipses and 32 sorted non-overlapping Unicode-scalar ranges; Tauri exposes plain text and integers only.
 
 ## Markdown rendering
 

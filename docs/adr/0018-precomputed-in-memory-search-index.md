@@ -24,3 +24,5 @@ The Phase 4B production spike precomputes normalized field documents once per co
 Cold rebuild and warm backend budgets pass with substantial margin, ranking remains product-owned rather than engine-default, and deleting process memory loses no content. ADR 0019 and Phase 4C subsequently added loss-tolerant descriptor-bound watching and revision-driven incremental reconciliation. Persistent cache generations, snippets/highlights, and renderer latency remain explicit Phase 4 closure work.
 
 The benchmark source, hashes, reference environment, exact corpus, command, and five-run results are recorded in `docs/evidence/phase-4b-search-performance.md`.
+
+ADR 0020 records the required Phase 4E presentation-payload regression investigation and accepts a new measured baseline while retaining every absolute and relative revisit trigger above.

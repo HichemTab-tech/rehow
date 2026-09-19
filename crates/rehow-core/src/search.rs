@@ -12,6 +12,31 @@ use unicode_normalization::UnicodeNormalization;
 pub const MAX_SEARCH_QUERY_BYTES: usize = 512;
 pub const MAX_SEARCH_TERMS: usize = 16;
 pub const MAX_SEARCH_RESULTS: usize = 100;
+pub const MAX_SEARCH_EXCERPT_CHARS: usize = 220;
+pub const MAX_SEARCH_HIGHLIGHTS: usize = 32;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchStatusScope {
+    Active,
+    Tested,
+    Draft,
+    Stale,
+    Archived,
+    All,
+}
+
+impl SearchStatusScope {
+    fn includes(self, status: GuideStatus) -> bool {
+        match self {
+            Self::Active => status != GuideStatus::Archived,
+            Self::Tested => status == GuideStatus::Tested,
+            Self::Draft => status == GuideStatus::Draft,
+            Self::Stale => status == GuideStatus::Stale,
+            Self::Archived => status == GuideStatus::Archived,
+            Self::All => true,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum SearchMatchField {
@@ -27,11 +52,47 @@ pub enum SearchMatchField {
     Body,
 }
 
+impl SearchMatchField {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::Alias => "alias",
+            Self::Command => "command",
+            Self::Path => "path",
+            Self::Error => "error",
+            Self::Tag => "tag",
+            Self::Category => "category",
+            Self::Summary => "summary",
+            Self::Heading => "heading",
+            Self::Body => "body",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SearchHighlight {
+    start: u16,
+    end: u16,
+}
+
+impl SearchHighlight {
+    pub fn start(&self) -> u16 {
+        self.start
+    }
+
+    pub fn end(&self) -> u16 {
+        self.end
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchHit {
     guide_id: GuideId,
     score: u16,
     matched_fields: Vec<SearchMatchField>,
+    excerpt: String,
+    excerpt_field: SearchMatchField,
+    highlights: Vec<SearchHighlight>,
 }
 
 impl SearchHit {
@@ -45,6 +106,18 @@ impl SearchHit {
 
     pub fn matched_fields(&self) -> &[SearchMatchField] {
         &self.matched_fields
+    }
+
+    pub fn excerpt(&self) -> &str {
+        &self.excerpt
+    }
+
+    pub fn excerpt_field(&self) -> SearchMatchField {
+        self.excerpt_field
+    }
+
+    pub fn highlights(&self) -> &[SearchHighlight] {
+        &self.highlights
     }
 }
 
@@ -123,7 +196,7 @@ impl SearchIndex {
     fn search(
         &self,
         query: &str,
-        include_archived: bool,
+        status_scope: SearchStatusScope,
         limit: usize,
     ) -> Result<Vec<SearchHit>, SearchError> {
         let parsed = SearchQuery::parse(query)?;
@@ -131,10 +204,10 @@ impl SearchIndex {
         if limit == 0 || parsed.terms.is_empty() {
             return Ok(Vec::new());
         }
-        let mut hits: Vec<(SearchHit, &str)> = Vec::new();
+        let mut hits: Vec<(SearchHit, &str, &str, &SearchFields)> = Vec::new();
 
         for document in &self.documents {
-            if !include_archived && document.status == GuideStatus::Archived {
+            if !status_scope.includes(document.status) {
                 continue;
             }
             if !parsed
@@ -168,19 +241,34 @@ impl SearchIndex {
                     guide_id: document.guide_id,
                     score: base_score + status_tie,
                     matched_fields,
+                    excerpt: String::new(),
+                    excerpt_field: SearchMatchField::Body,
+                    highlights: Vec::new(),
                 },
                 &document.title,
+                &document.category,
+                &document.fields,
             ));
         }
 
-        hits.sort_by(|(left, left_title), (right, right_title)| {
+        hits.sort_by(|(left, left_title, _, _), (right, right_title, _, _)| {
             Reverse(left.score)
                 .cmp(&Reverse(right.score))
                 .then_with(|| left_title.cmp(right_title))
                 .then_with(|| left.guide_id.cmp(&right.guide_id))
         });
         hits.truncate(limit);
-        Ok(hits.into_iter().map(|(hit, _)| hit).collect())
+        Ok(hits
+            .into_iter()
+            .map(|(mut hit, _, category, fields)| {
+                let (field, excerpt, highlights) =
+                    fields.excerpt(&parsed, category, &hit.matched_fields);
+                hit.excerpt_field = field;
+                hit.excerpt = excerpt;
+                hit.highlights = highlights;
+                hit
+            })
+            .collect())
     }
 }
 
@@ -190,9 +278,21 @@ pub fn search_workspace(
     include_archived: bool,
     limit: usize,
 ) -> Result<Vec<SearchHit>, SearchError> {
-    workspace
-        .search_index()
-        .search(query, include_archived, limit)
+    let status_scope = if include_archived {
+        SearchStatusScope::All
+    } else {
+        SearchStatusScope::Active
+    };
+    search_workspace_in_scope(workspace, query, status_scope, limit)
+}
+
+pub fn search_workspace_in_scope(
+    workspace: &WorkspaceView,
+    query: &str,
+    status_scope: SearchStatusScope,
+    limit: usize,
+) -> Result<Vec<SearchHit>, SearchError> {
+    workspace.search_index().search(query, status_scope, limit)
 }
 
 struct SearchQuery {
@@ -449,6 +549,145 @@ impl SearchFields {
         );
         (score, matches)
     }
+
+    fn excerpt(
+        &self,
+        query: &SearchQuery,
+        category: &str,
+        matched_fields: &[SearchMatchField],
+    ) -> (SearchMatchField, String, Vec<SearchHighlight>) {
+        let (field, value) = matched_fields
+            .iter()
+            .find_map(|field| {
+                self.excerpt_candidate(*field, query, category)
+                    .map(|value| (*field, value))
+            })
+            .unwrap_or((SearchMatchField::Body, &self.body));
+        let excerpt = excerpt_window(value, &query.terms);
+        let highlights = highlight_ranges(&excerpt, &query.terms);
+        (field, excerpt, highlights)
+    }
+
+    fn excerpt_candidate<'a>(
+        &'a self,
+        field: SearchMatchField,
+        query: &SearchQuery,
+        category: &'a str,
+    ) -> Option<&'a str> {
+        let values: &[String] = match field {
+            SearchMatchField::Title => std::slice::from_ref(&self.title),
+            SearchMatchField::Alias => &self.aliases,
+            SearchMatchField::Command => &self.commands,
+            SearchMatchField::Path => &self.paths,
+            SearchMatchField::Error => &self.errors,
+            SearchMatchField::Tag => &self.tags,
+            SearchMatchField::Category => {
+                return matches_query(category, query).then_some(category);
+            }
+            SearchMatchField::Summary => std::slice::from_ref(&self.summary),
+            SearchMatchField::Heading => &self.headings,
+            SearchMatchField::Body => std::slice::from_ref(&self.body),
+        };
+        values
+            .iter()
+            .find(|value| matches_query(value, query))
+            .map(String::as_str)
+    }
+}
+
+fn matches_query(value: &str, query: &SearchQuery) -> bool {
+    value.contains(&query.normalized) || query.terms.iter().any(|term| value.contains(term))
+}
+
+fn excerpt_window(value: &str, terms: &[String]) -> String {
+    const BEFORE_MATCH: usize = 60;
+    let first_match = terms
+        .iter()
+        .filter_map(|term| value.find(term))
+        .min()
+        .unwrap_or(0);
+    if value.is_ascii() {
+        let start = first_match.saturating_sub(BEFORE_MATCH);
+        let end = start
+            .saturating_add(MAX_SEARCH_EXCERPT_CHARS)
+            .min(value.len());
+        let mut excerpt = String::with_capacity(end.saturating_sub(start) + 6);
+        if start > 0 {
+            excerpt.push('…');
+        }
+        excerpt.push_str(&value[start..end]);
+        if end < value.len() {
+            excerpt.push('…');
+        }
+        return excerpt;
+    }
+    let match_character = value[..first_match].chars().count();
+    let start_character = match_character.saturating_sub(BEFORE_MATCH);
+    let end_character = start_character.saturating_add(MAX_SEARCH_EXCERPT_CHARS);
+    let mut start_byte = value.len();
+    let mut end_byte = value.len();
+    let mut character_count = 0usize;
+    for (byte, _) in value.char_indices() {
+        if character_count == start_character {
+            start_byte = byte;
+        }
+        if character_count == end_character {
+            end_byte = byte;
+            break;
+        }
+        character_count += 1;
+    }
+    if start_character == character_count {
+        start_byte = value.len();
+    }
+    let leading = start_byte > 0;
+    let trailing = end_byte < value.len();
+    let mut excerpt = String::with_capacity(end_byte.saturating_sub(start_byte) + 6);
+    if leading {
+        excerpt.push('…');
+    }
+    excerpt.push_str(&value[start_byte..end_byte]);
+    if trailing {
+        excerpt.push('…');
+    }
+    excerpt
+}
+
+fn highlight_ranges(value: &str, terms: &[String]) -> Vec<SearchHighlight> {
+    let mut ranges = Vec::new();
+    for term in terms {
+        let mut offset = 0usize;
+        while ranges.len() < MAX_SEARCH_HIGHLIGHTS {
+            let Some(relative) = value[offset..].find(term) else {
+                break;
+            };
+            let start_byte = offset + relative;
+            let end_byte = start_byte + term.len();
+            let (start, end) = if value.is_ascii() {
+                (start_byte, end_byte)
+            } else {
+                let start = value[..start_byte].chars().count();
+                (start, start + value[start_byte..end_byte].chars().count())
+            };
+            ranges.push(SearchHighlight {
+                start: u16::try_from(start).expect("bounded excerpt start"),
+                end: u16::try_from(end).expect("bounded excerpt end"),
+            });
+            offset = end_byte;
+        }
+    }
+    ranges.sort_unstable_by_key(|range| (range.start, range.end));
+    let mut merged: Vec<SearchHighlight> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if let Some(previous) = merged.last_mut()
+            && range.start <= previous.end
+        {
+            previous.end = previous.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    merged
 }
 
 fn record(
@@ -706,6 +945,48 @@ mod tests {
     }
 
     #[test]
+    fn status_scope_filters_before_the_result_cap() {
+        let temp = TestDirectory::new();
+        write_workspace(temp.path());
+        for index in 0..101_u64 {
+            let id = format!("0199a1d7-7b0d-7d8e-a38d-{index:012x}");
+            guide(
+                temp.path(),
+                "desktop",
+                &id,
+                &format!("Needle {index:03}"),
+                "Active result",
+                "[]",
+                "[]",
+                "draft",
+                "needle\n",
+            );
+        }
+        let inspection = inspect_workspace(temp.path()).unwrap();
+        let (_, WorkspaceInspection::Compatible(workspace)) = inspection.into_parts() else {
+            panic!("expected compatible Workspace")
+        };
+
+        let all =
+            search_workspace_in_scope(&workspace, "needle", SearchStatusScope::All, 100).unwrap();
+        assert_eq!(all.len(), 100);
+        assert!(
+            !all.iter().any(|hit| {
+                hit.guide_id().to_string() == "0199a1d7-7b0d-7d8e-a38d-f936c5735e24"
+            })
+        );
+
+        let archived =
+            search_workspace_in_scope(&workspace, "needle", SearchStatusScope::Archived, 100)
+                .unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(
+            archived[0].guide_id().to_string(),
+            "0199a1d7-7b0d-7d8e-a38d-f936c5735e24"
+        );
+    }
+
+    #[test]
     fn command_path_error_alias_and_unicode_queries_are_explicit() {
         let (_temp, workspace) = workspace();
         for (query, field) in [
@@ -717,7 +998,42 @@ mod tests {
             let hits = search_workspace(&workspace, query, false, 10).unwrap();
             assert!(!hits.is_empty(), "{query}");
             assert!(hits[0].matched_fields().contains(&field), "{query}");
+            assert!(!hits[0].excerpt().is_empty(), "{query}");
+            assert!(!hits[0].highlights().is_empty(), "{query}");
+            assert!(
+                hits[0].excerpt().chars().count() <= MAX_SEARCH_EXCERPT_CHARS + 2,
+                "{query}"
+            );
         }
+    }
+
+    #[test]
+    fn excerpts_are_bounded_and_highlights_are_merged_unicode_scalar_ranges() {
+        let source = format!(
+            "{}permission denied{}",
+            "before ".repeat(80),
+            " after".repeat(80)
+        );
+        let excerpt = excerpt_window(&source, &["permission denied".to_owned()]);
+        assert!(excerpt.starts_with('…'));
+        assert!(excerpt.ends_with('…'));
+        assert!(excerpt.chars().count() <= MAX_SEARCH_EXCERPT_CHARS + 2);
+        let ranges = highlight_ranges(
+            "café permission denied",
+            &[
+                "café".to_owned(),
+                "permission".to_owned(),
+                "permission denied".to_owned(),
+            ],
+        );
+        assert_eq!(
+            ranges,
+            vec![
+                SearchHighlight { start: 0, end: 4 },
+                SearchHighlight { start: 5, end: 22 }
+            ]
+        );
+        assert!(ranges.len() <= MAX_SEARCH_HIGHLIGHTS);
     }
 
     #[test]
