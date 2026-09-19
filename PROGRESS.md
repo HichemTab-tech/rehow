@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 5D2B1 internal journaled remote-fast-forward Workspace materialization is complete at `85b835b`. Phase 5D2B2 durable cross-Workspace/Git publication is next; authenticated transports remain a separate gate.
+Phase 5D2B2 internal durable remote-fast-forward publication is complete at `983b3da`. Native sync lifecycle/recovery is next; authenticated transports remain a separate gate.
 
 ## Current task
 
-Define and implement the durable sync intent plus append-only object, exact index, and expected-OID direct-ref publication boundary around the accepted internal Workspace primitive.
+Specify and implement the bounded pathless native sync apply/recovery lifecycle around the accepted opaque core authority.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; reconcile external changes; manage Attachment inventory/import/removal; retrieve Guides through the accepted search experience; see confined Git status; initialize a direct private Git repository; connect a strictly validated remote; clone a canonical anonymous-HTTPS Git Workspace; and create a native-confirmed, managed-only local commit. Core can safely fetch, validate, conservatively classify, and internally journal the exact portable Workspace snapshot for an anonymous-HTTPS remote fast-forward. Cross-Workspace/Git publication, Attachment viewing/export/reveal, authenticated transports, sync UI/push, and MCP mutation remain unimplemented; MCP remains read-only.
+In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; reconcile external changes; manage Attachment inventory/import/removal; retrieve Guides through the accepted search experience; see confined Git status; initialize a direct private Git repository; connect a strictly validated remote; clone a canonical anonymous-HTTPS Git Workspace; and create a native-confirmed, managed-only local commit. Core can safely fetch, validate, classify, journal, and durably publish a loose-branch anonymous-HTTPS remote fast-forward with exact interruption recovery. Native sync UI/recovery, packed-branch publication, Attachment viewing/export/reveal, authenticated transports, push, and MCP mutation remain unimplemented; MCP remains read-only.
 
 ## Completed work
 
@@ -111,16 +111,17 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Completed Phase 5D1 at signed checkpoint `713eb7d`: one exact configured upstream is bound to complete local state, anonymously fetched by explicit HTTPS URL/ref into private XDG staging, and passed through the full clone tree/blob/Workspace/Attachment validator. Local state is revalidated afterward; active Workspace and repository state are never bound into the network child or mutated. The single reused Security Reviewer returned PASS.
 - Completed Phase 5D2A at signed checkpoint `95ec8aa`: exact bounded local/staged history reads prove up-to-date, local-ahead, remote-fast-forward, or complete divergence; shallow/capped uncertainty returns history-limit. Shallow state, cancellation, local plan state, remote tree identity, and staging capacity are bound and rechecked. No active state is mutated. The single reused Security Reviewer returned PASS.
 - Completed Phase 5D2B1 at signed checkpoint `85b835b`: a crate-private primitive revalidates a clean remote-fast-forward plan/tree, journals exact portable create/replace/trash effects, privately stages and identity-binds new managed directories before no-replace publication, reopens the exact remote tree, and leaves active Git state unchanged. The single reused Security Reviewer returned PASS.
+- Implemented Phase 5D2B2 core publication: an immutable generation-checked sync intent precedes Workspace activation; verified packs install append-only; a stripped exact candidate index publishes before the direct loose branch ref; recovery accepts only exact before/candidate states; final Workspace, object, index, ref, and static Git state are rechecked before completion. Packed-only current branches fail closed pending a separate representation policy.
 
 ## Work in progress
 
-- Phase 5D2B1 is complete. The Workspace primitive remains unavailable to adapters until Phase 5D2B2 installs a durable cross-Workspace/Git intent and exact object/index/ref replay.
+- Phase 5D2B2 is complete at signed checkpoint `983b3da`; the accepted boundary remains crate-private until the native lifecycle is implemented.
 
 ## Remaining work
 
 - Workspace adoption/import/migration and Attachment viewing/export/reveal remain incomplete.
 - Phase 4: complete at `e17b7d1`.
-- Phase 5: read-only status, safe local initialization, metadata-only remote connection, anonymous-HTTPS clone including UI, native-confirmed recoverable managed-only commits, isolated incoming inspection, bounded ancestry, and internal journaled fast-forward Workspace materialization are complete; durable Git publication, authenticated transports, UI integration, and push remain.
+- Phase 5: read-only status, safe local initialization, metadata-only remote connection, anonymous-HTTPS clone including UI, native-confirmed recoverable managed-only commits, isolated incoming inspection, bounded ancestry, and internal durable loose-branch fast-forward publication are complete; native sync integration/recovery, packed-branch publication, authenticated transports, and push remain.
 - Phase 6: standalone full MCP contract.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
@@ -217,19 +218,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - Checkpoint `48d5ee8` publishes only validated portable content through one recovery journal. Exact marker/scaffold provenance, absent-only journal decoding, no-foreign resume inventory, per-file Git blob revalidation, and canonical reopen all fail closed. Partial scaffold creation resumes only with the exact retained marker and was fault-tested at every boundary. The reused Security Reviewer final verdict is PASS.
 - Checkpoint `efc9fcf` adds no path, credential, Git-output, or filesystem authority to React. Closed payload guards bound every returned collection and field; ambiguous validation blocks conflicting setup until Complete/Cancel, and ambiguous completion reconciles only through the pathless canonical refresh. The Design Reviewer correction recheck passed with no blocker/high/medium finding.
 - Checkpoint `85b835b` keeps sync materialization crate-private and capability-confined. Staged blobs are re-read and rehashed; current bytes/revisions/modes are rechecked; removals use operation-bound trash; new Category, Attachment, and Attachment-root directories are privately staged with durable operation/path/device/inode ownership before no-replace publication. Failure cleanup quarantines only the exact still-empty owned identity, preserving pre-existing and racing replacements. The reused Security Reviewer verdict is PASS.
+- Phase 5D2B2 keeps publication crate-private and binds the exact Workspace/root/Git identities, `HEAD`, config, packed-refs, shallow state, before/candidate index/ref bytes and modes, Workspace journal, and immutable plan hash before Workspace activation. Verified packs install append-only; recovery accepts only exact before/candidate states; final Workspace/object/index/ref/static metadata are rechecked before completion. Foreign post-ref Workspace/ref changes are preserved and record conflict. The single reused Security Reviewer correction verdict is PASS.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5D2B1 used one reused Security Reviewer/xhigh only at the filesystem-authority gate and its verdict is PASS.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5D2B2 used exactly one reused Security Reviewer only at the cross-store authority gate and its correction verdict is PASS.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`85b835b97a8cb92ad4f08933619f184d64949726` — signed Phase 5D2B1 journaled sync Workspace materialization; its configured GPG signature verifies. This progress-only ledger update follows that implementation commit.
+`983b3da5323ab3c9a28baed2705091014a17eee8` — signed Phase 5D2B2 durable fast-forward sync publication; its configured GPG signature verifies. This progress-only ledger update follows that implementation commit.
 
 ## Tests last run and results
 
+- 2026-09-19: Phase 5D2B2 checkpoint `983b3da` passes 412 core tests with 2 intentional network/performance ignores; 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 22 desktop, MCP smoke, and doc tests pass. Focused sync/recovery coverage passes 18 tests, including all six Git metadata interruption seams, no-portable-change publication, packed-only refusal, post-ref foreign Workspace/ref conflicts, and intent codec bounds. Strict all-Workspace/all-target/all-feature Clippy, formatting, bootstrap validation, whitespace checks, signed-commit verification, and the single reused Security Reviewer correction gate pass.
 - 2026-09-19: Phase 5D2B1 checkpoint `85b835b`: 405 core tests pass with 2 intentional network/performance ignores; 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 22 desktop, and MCP smoke tests pass. Formatting, strict all-Workspace/all-target/all-feature Clippy, bootstrap validation, and whitespace checks pass. Six focused sync materialization tests cover exact create/replace/trash, Category/Attachment replacement races, failed directory/root cleanup, pre-existing empty Attachment preservation, unchanged `HEAD`, and redaction. The single reused Security Reviewer verdict is PASS and the signed commit verifies.
 - 2026-09-19: Phase 5D2A checkpoint `95ec8aa`: 399 core tests pass with 2 intentional network/performance ignores; all 43 contract/API tests pass; strict locked all-target/all-feature core Clippy, formatting, bootstrap validation, and whitespace checks pass. Focused classification, shallow-state binding, staging-budget, cancellation, redaction, and unchanged-active-state tests pass. The single reused Security Reviewer final verdict is PASS and the signed commit verifies.
 - 2026-09-19: Phase 5D1 checkpoint `713eb7d`: 398 core tests pass with 2 intentional network/performance ignores; all 43 contract/API tests pass; strict locked all-target/all-feature core Clippy, formatting, bootstrap validation, and whitespace checks pass. Focused upstream/ref parsing, command isolation, redaction/staleness, full incoming validation, and unchanged active manifest/HEAD tests pass. The single reused Security Reviewer verdict is PASS and the signed commit verifies.
@@ -442,20 +445,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0025, `docs/task-packets/phase-5d1-isolated-sync-inspection.md`, its evidence, and the redacted core plan/isolated fetch/validated-inspection boundary implement Phase 5D1 at `713eb7d`.
 - ADR 0025, the Phase 5D2A packet/evidence, bounded history classifier, exact shallow-state binding, and staging-capacity controls implement Phase 5D2A at `95ec8aa`.
 - ADR 0025, `docs/task-packets/phase-5d2b1-journaled-sync-workspace.md`, its evidence, and the core Git/storage/recovery changes implement internal journaled remote-fast-forward Workspace materialization at `85b835b`.
+- ADR 0025, `docs/task-packets/phase-5d2b2-durable-sync-publication.md`, its evidence, and the core Git/storage/recovery changes implement internal durable loose-branch fast-forward publication at `983b3da`.
 
 ## Next recommended action
 
-Implement Phase 5D2B2 durable sync intent, append-only object installation, exact index publication, and expected-OID direct-ref CAS around the accepted internal Workspace primitive. Do not add merge/rebase, push, credentials, scheduling, native/UI, or MCP yet.
+Specify and implement the bounded native sync apply/recovery lifecycle. Keep the core authority opaque and pathless; do not add merge/rebase, push, credentials, scheduling, packed-branch publication, or MCP yet.
 
 ## Recommended agent role and reasoning effort
 
-Architect/Integrator locally with `gpt-5.6-sol`, xhigh-equivalent judgment for Phase 5D2B2 cross-store recovery/ref-CAS. Run zero extra agents during routine work; use at most one reused Security Reviewer at the authority-bearing gate.
+Planner/Orchestrator locally with `gpt-5.6-sol`, medium/high judgment for the native Phase 5D2C lifecycle. Run zero extra agents during routine work; use at most one reused Security or Design Reviewer only at the completed authority/UI gate.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read the Git sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `85b835b`, `95ec8aa`, and `713eb7d`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoints `983b3da`, `85b835b`, `95ec8aa`, and `713eb7d`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 5D2B1 as complete and crate-private. Implement only the durable cross-Workspace/Git intent plus object/index/direct-ref publication next; merge/rebase, push, scheduling, authenticated transports, native/UI, and MCP mutation remain later.
+6. Treat Phase 5D2B2 as complete and crate-private. Implement only the pathless native sync apply/recovery lifecycle next; merge/rebase, push, scheduling, packed-branch publication, authenticated transports, and MCP mutation remain later.
