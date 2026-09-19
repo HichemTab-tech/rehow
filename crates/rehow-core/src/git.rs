@@ -45,6 +45,12 @@ const MAX_REMOTES: usize = 32;
 const MAX_REMOTE_NAME_BYTES: usize = 64;
 const MAX_REMOTE_URL_BYTES: usize = 2048;
 const MAX_GIT_CONFIG_BYTES: usize = 1024 * 1024;
+const MAX_COMMIT_MESSAGE_SCALARS: usize = 200;
+const MAX_GIT_IDENTITY_NAME_SCALARS: usize = 200;
+const MAX_GIT_IDENTITY_EMAIL_BYTES: usize = 254;
+const MAX_COMMIT_INDEX_BYTES: usize = 64 * 1024 * 1024;
+const MAX_COMMIT_INDEX_ENTRIES: usize = 50_000;
+const MAX_COMMIT_PATH_BYTES: usize = 4_096;
 #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
 const MAX_CLONE_TREE_LISTING_BYTES: usize = 32 * 1024 * 1024;
 #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
@@ -147,6 +153,41 @@ pub enum GitReadError {
     Timeout,
     OutputLimit,
     InvalidOutput,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitCommitPlanError {
+    InvalidMessage,
+    InvalidIdentity,
+    WorkspaceIssues,
+    ReadOnly,
+    NotRepository,
+    UnsafeRepository,
+    UnsupportedRepository,
+    OperationInProgress,
+    UnsupportedIndex,
+    AmbiguousManagedHistory,
+    PathCollision,
+    NothingToCommit,
+    ResourceLimit,
+    PlanStale,
+    Io,
+}
+
+#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
+struct GitCommitIdentity {
+    name: String,
+    email: String,
+}
+
+impl fmt::Debug for GitCommitIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitCommitIdentity")
+            .field("name", &"<redacted>")
+            .field("email", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -2283,6 +2324,327 @@ fn validate_object_id(value: &str) -> Option<GitObjectFormat> {
         .then_some(format)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
+enum GitBranchRepresentation {
+    Unborn,
+    Loose,
+    Packed,
+}
+
+#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
+struct GitCommitBranch {
+    reference: String,
+    display: String,
+    expected_object_id: Option<String>,
+    representation: GitBranchRepresentation,
+}
+
+impl fmt::Debug for GitCommitBranch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitCommitBranch")
+            .field("reference", &self.reference)
+            .field("display", &self.display)
+            .field("expected_object_id", &"<redacted>")
+            .field("representation", &self.representation)
+            .finish()
+    }
+}
+
+#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
+fn parse_git_commit_branch(
+    head: &[u8],
+    loose_target: Option<&[u8]>,
+    packed_refs: Option<&[u8]>,
+    object_format: GitObjectFormat,
+) -> Result<GitCommitBranch, GitCommitPlanError> {
+    let reference = std::str::from_utf8(head)
+        .ok()
+        .and_then(|value| value.strip_prefix("ref: "))
+        .and_then(|value| value.strip_suffix('\n'))
+        .filter(|value| !value.contains(['\n', '\r']))
+        .filter(|value| value.starts_with("refs/heads/") && valid_ref_name(value))
+        .ok_or(GitCommitPlanError::UnsafeRepository)?;
+    let display = reference
+        .strip_prefix("refs/heads/")
+        .filter(|value| !value.is_empty() && value.chars().count() <= 255)
+        .ok_or(GitCommitPlanError::UnsafeRepository)?;
+
+    let loose_object_id = loose_target
+        .map(|bytes| parse_direct_ref(bytes, object_format))
+        .transpose()?;
+    let packed_object_id = packed_refs
+        .map(|bytes| parse_packed_branch_target(bytes, reference, object_format))
+        .transpose()?
+        .flatten();
+    let (expected_object_id, representation) = match (loose_object_id, packed_object_id) {
+        (None, None) => (None, GitBranchRepresentation::Unborn),
+        (Some(object_id), None) => (Some(object_id), GitBranchRepresentation::Loose),
+        (None, Some(object_id)) => (Some(object_id), GitBranchRepresentation::Packed),
+        (Some(_), Some(_)) => return Err(GitCommitPlanError::UnsafeRepository),
+    };
+
+    Ok(GitCommitBranch {
+        reference: reference.to_owned(),
+        display: display.to_owned(),
+        expected_object_id,
+        representation,
+    })
+}
+
+fn parse_direct_ref(
+    bytes: &[u8],
+    object_format: GitObjectFormat,
+) -> Result<String, GitCommitPlanError> {
+    let object_id = std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|value| value.strip_suffix('\n'))
+        .filter(|value| !value.contains(['\n', '\r']))
+        .filter(|value| validate_object_id(value) == Some(object_format))
+        .ok_or(GitCommitPlanError::UnsafeRepository)?;
+    Ok(object_id.to_owned())
+}
+
+fn parse_packed_branch_target(
+    bytes: &[u8],
+    target: &str,
+    object_format: GitObjectFormat,
+) -> Result<Option<String>, GitCommitPlanError> {
+    if bytes.len() > MAX_GIT_CONFIG_BYTES || (!bytes.is_empty() && !bytes.ends_with(b"\n")) {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| GitCommitPlanError::UnsafeRepository)?;
+    let mut target_object_id = None;
+    let mut previous_was_tag = false;
+    for line in text.lines() {
+        if line.is_empty() || line.starts_with('#') {
+            previous_was_tag = false;
+            continue;
+        }
+        if let Some(peeled) = line.strip_prefix('^') {
+            if !previous_was_tag || validate_object_id(peeled) != Some(object_format) {
+                return Err(GitCommitPlanError::UnsafeRepository);
+            }
+            previous_was_tag = false;
+            continue;
+        }
+        let (object_id, reference) = line
+            .split_once(' ')
+            .filter(|(object_id, reference)| {
+                !reference.contains(' ')
+                    && validate_object_id(object_id) == Some(object_format)
+                    && valid_ref_name(reference)
+            })
+            .ok_or(GitCommitPlanError::UnsafeRepository)?;
+        previous_was_tag = reference.starts_with("refs/tags/");
+        if reference == target {
+            if target_object_id.is_some() {
+                return Err(GitCommitPlanError::UnsafeRepository);
+            }
+            target_object_id = Some(object_id.to_owned());
+        }
+    }
+    Ok(target_object_id)
+}
+
+#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
+struct GitIndexSnapshot {
+    version: u32,
+    entries: Vec<GitIndexEntry>,
+    has_cache_tree: bool,
+}
+
+impl fmt::Debug for GitIndexSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitIndexSnapshot")
+            .field("version", &self.version)
+            .field("entries", &self.entries.len())
+            .field("has_cache_tree", &self.has_cache_tree)
+            .finish()
+    }
+}
+
+#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
+struct GitIndexEntry {
+    mode: u32,
+    object_id: Vec<u8>,
+    path: Vec<u8>,
+}
+
+impl fmt::Debug for GitIndexEntry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitIndexEntry")
+            .field("mode", &format_args!("{:o}", self.mode))
+            .field("object_id", &"<redacted>")
+            .field("path", &"<redacted>")
+            .finish()
+    }
+}
+
+#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
+fn parse_git_index(
+    bytes: &[u8],
+    object_format: GitObjectFormat,
+) -> Result<GitIndexSnapshot, GitCommitPlanError> {
+    let hash_len = match object_format {
+        GitObjectFormat::Sha1 => 20,
+        GitObjectFormat::Sha256 => 32,
+    };
+    if bytes.len() > MAX_COMMIT_INDEX_BYTES || bytes.len() < 12 + hash_len {
+        return Err(GitCommitPlanError::UnsupportedIndex);
+    }
+    let (payload, checksum) = bytes.split_at(bytes.len() - hash_len);
+    if git_index_checksum(payload, object_format).as_slice() != checksum {
+        return Err(GitCommitPlanError::UnsupportedIndex);
+    }
+    if payload.get(..4) != Some(b"DIRC") {
+        return Err(GitCommitPlanError::UnsupportedIndex);
+    }
+    let version = read_be_u32(payload, 4)?;
+    if !matches!(version, 2 | 3) {
+        return Err(GitCommitPlanError::UnsupportedIndex);
+    }
+    let entry_count =
+        usize::try_from(read_be_u32(payload, 8)?).map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    if entry_count > MAX_COMMIT_INDEX_ENTRIES {
+        return Err(GitCommitPlanError::ResourceLimit);
+    }
+    let fixed_len = 40usize
+        .checked_add(hash_len)
+        .and_then(|value| value.checked_add(2))
+        .ok_or(GitCommitPlanError::ResourceLimit)?;
+    let mut cursor = 12usize;
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(entry_count)
+        .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    for _ in 0..entry_count {
+        let start = cursor;
+        let fixed_end = cursor
+            .checked_add(fixed_len)
+            .filter(|end| *end <= payload.len())
+            .ok_or(GitCommitPlanError::UnsupportedIndex)?;
+        let mode = read_be_u32(payload, cursor + 24)?;
+        if !matches!(mode, 0o100644 | 0o100755 | 0o120000 | 0o160000) {
+            return Err(GitCommitPlanError::UnsupportedIndex);
+        }
+        let object_start = cursor + 40;
+        let object_end = object_start + hash_len;
+        let object_id = payload[object_start..object_end].to_vec();
+        if object_id.iter().all(|byte| *byte == 0) {
+            return Err(GitCommitPlanError::UnsupportedIndex);
+        }
+        let flags = u16::from_be_bytes(
+            payload[object_end..fixed_end]
+                .try_into()
+                .map_err(|_| GitCommitPlanError::UnsupportedIndex)?,
+        );
+        if flags & 0xf000 != 0 {
+            return Err(GitCommitPlanError::UnsupportedIndex);
+        }
+        cursor = fixed_end;
+        let name_end = payload[cursor..]
+            .iter()
+            .position(|byte| *byte == 0)
+            .and_then(|relative| cursor.checked_add(relative))
+            .ok_or(GitCommitPlanError::UnsupportedIndex)?;
+        let path = &payload[cursor..name_end];
+        if !valid_opaque_git_path(path) {
+            return Err(GitCommitPlanError::UnsupportedIndex);
+        }
+        let encoded_len = usize::from(flags & 0x0fff);
+        if encoded_len != 0x0fff && encoded_len != path.len() {
+            return Err(GitCommitPlanError::UnsupportedIndex);
+        }
+        let unpadded_end = name_end
+            .checked_add(1)
+            .ok_or(GitCommitPlanError::ResourceLimit)?;
+        let entry_len = unpadded_end
+            .checked_sub(start)
+            .ok_or(GitCommitPlanError::UnsupportedIndex)?;
+        let padded_len = entry_len
+            .checked_add(7)
+            .map(|value| value & !7)
+            .ok_or(GitCommitPlanError::ResourceLimit)?;
+        cursor = start
+            .checked_add(padded_len)
+            .filter(|end| *end <= payload.len())
+            .ok_or(GitCommitPlanError::UnsupportedIndex)?;
+        if payload[unpadded_end..cursor].iter().any(|byte| *byte != 0) {
+            return Err(GitCommitPlanError::UnsupportedIndex);
+        }
+        if entries
+            .last()
+            .is_some_and(|previous: &GitIndexEntry| previous.path.as_slice() >= path)
+        {
+            return Err(GitCommitPlanError::UnsupportedIndex);
+        }
+        entries.push(GitIndexEntry {
+            mode,
+            object_id,
+            path: path.to_vec(),
+        });
+    }
+
+    let mut has_cache_tree = false;
+    while cursor < payload.len() {
+        let header_end = cursor
+            .checked_add(8)
+            .filter(|end| *end <= payload.len())
+            .ok_or(GitCommitPlanError::UnsupportedIndex)?;
+        let signature = &payload[cursor..cursor + 4];
+        let extension_len = usize::try_from(read_be_u32(payload, cursor + 4)?)
+            .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+        let extension_end = header_end
+            .checked_add(extension_len)
+            .filter(|end| *end <= payload.len())
+            .ok_or(GitCommitPlanError::UnsupportedIndex)?;
+        if signature != b"TREE" || has_cache_tree {
+            return Err(GitCommitPlanError::UnsupportedIndex);
+        }
+        has_cache_tree = true;
+        cursor = extension_end;
+    }
+    Ok(GitIndexSnapshot {
+        version,
+        entries,
+        has_cache_tree,
+    })
+}
+
+fn read_be_u32(bytes: &[u8], offset: usize) -> Result<u32, GitCommitPlanError> {
+    let end = offset
+        .checked_add(4)
+        .filter(|end| *end <= bytes.len())
+        .ok_or(GitCommitPlanError::UnsupportedIndex)?;
+    Ok(u32::from_be_bytes(
+        bytes[offset..end]
+            .try_into()
+            .map_err(|_| GitCommitPlanError::UnsupportedIndex)?,
+    ))
+}
+
+fn git_index_checksum(payload: &[u8], object_format: GitObjectFormat) -> Vec<u8> {
+    use sha1::Digest as _;
+    match object_format {
+        GitObjectFormat::Sha1 => sha1::Sha1::digest(payload).to_vec(),
+        GitObjectFormat::Sha256 => sha2::Sha256::digest(payload).to_vec(),
+    }
+}
+
+fn valid_opaque_git_path(path: &[u8]) -> bool {
+    !path.is_empty()
+        && path.len() <= MAX_COMMIT_PATH_BYTES
+        && !path.starts_with(b"/")
+        && !path.ends_with(b"/")
+        && path
+            .split(|byte| *byte == b'/')
+            .all(|component| !component.is_empty() && component != b"." && component != b"..")
+}
+
 #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
 fn parse_canonical_u64(value: &str) -> Option<u64> {
     if value.is_empty()
@@ -3208,6 +3570,8 @@ fn parse_divergence(bytes: &[u8]) -> Result<(u32, u32), GitReadError> {
 
 fn valid_ref_component(value: &str) -> bool {
     !value.is_empty()
+        && !value.starts_with('.')
+        && !value.ends_with('.')
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
@@ -3222,6 +3586,81 @@ fn valid_ref_name(value: &str) -> bool {
         && value
             .split('/')
             .all(|part| valid_ref_component(part) && !part.ends_with(".lock"))
+}
+
+#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
+fn normalize_git_commit_message(value: &str) -> Result<String, GitCommitPlanError> {
+    let value = value.trim();
+    let scalar_count = value.chars().count();
+    if scalar_count == 0
+        || scalar_count > MAX_COMMIT_MESSAGE_SCALARS
+        || value.chars().any(unsafe_commit_text_scalar)
+    {
+        return Err(GitCommitPlanError::InvalidMessage);
+    }
+    let mut normalized = String::new();
+    normalized
+        .try_reserve_exact(value.len())
+        .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    normalized.push_str(value);
+    Ok(normalized)
+}
+
+#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
+fn validate_git_commit_identity(
+    name: &str,
+    email: &str,
+) -> Result<GitCommitIdentity, GitCommitPlanError> {
+    let name_scalars = name.chars().count();
+    if name_scalars == 0
+        || name_scalars > MAX_GIT_IDENTITY_NAME_SCALARS
+        || name.trim() != name
+        || name.contains(['<', '>'])
+        || name.chars().any(unsafe_commit_text_scalar)
+    {
+        return Err(GitCommitPlanError::InvalidIdentity);
+    }
+    if email.len() < 3
+        || email.len() > MAX_GIT_IDENTITY_EMAIL_BYTES
+        || !email.is_ascii()
+        || email.bytes().any(|byte| {
+            byte.is_ascii_control() || byte.is_ascii_whitespace() || matches!(byte, b'<' | b'>')
+        })
+    {
+        return Err(GitCommitPlanError::InvalidIdentity);
+    }
+    let mut parts = email.split('@');
+    let local = parts.next().unwrap_or_default();
+    let domain = parts.next().unwrap_or_default();
+    if local.is_empty() || domain.is_empty() || parts.next().is_some() {
+        return Err(GitCommitPlanError::InvalidIdentity);
+    }
+    let mut safe_name = String::new();
+    let mut safe_email = String::new();
+    safe_name
+        .try_reserve_exact(name.len())
+        .and_then(|()| safe_email.try_reserve_exact(email.len()))
+        .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    safe_name.push_str(name);
+    safe_email.push_str(email);
+    Ok(GitCommitIdentity {
+        name: safe_name,
+        email: safe_email,
+    })
+}
+
+fn unsafe_commit_text_scalar(character: char) -> bool {
+    let scalar = character as u32;
+    character.is_control()
+        || matches!(
+            scalar,
+            0x061c
+                | 0x200e..=0x200f
+                | 0x2028..=0x202e
+                | 0x2066..=0x2069
+        )
+        || (0xfdd0..=0xfdef).contains(&scalar)
+        || scalar & 0xfffe == 0xfffe
 }
 
 fn safe_git_label(value: &str) -> Option<String> {
@@ -3315,6 +3754,299 @@ mod tests {
                 .extend_from_slice(format!("100644 blob {object_id} {size}\t{path}\0").as_bytes());
         }
         listing
+    }
+
+    fn index_fixture(
+        format: GitObjectFormat,
+        version: u32,
+        entries: &[(u32, &[u8], u16)],
+        extension: Option<(&[u8; 4], &[u8])>,
+    ) -> Vec<u8> {
+        let hash_len = match format {
+            GitObjectFormat::Sha1 => 20,
+            GitObjectFormat::Sha256 => 32,
+        };
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"DIRC");
+        bytes.extend_from_slice(&version.to_be_bytes());
+        bytes.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+        for (ordinal, (mode, path, extra_flags)) in entries.iter().enumerate() {
+            let start = bytes.len();
+            let mut stat = [0_u8; 40];
+            stat[24..28].copy_from_slice(&mode.to_be_bytes());
+            bytes.extend_from_slice(&stat);
+            bytes.extend(std::iter::repeat_n((ordinal + 1) as u8, hash_len));
+            let path_len = u16::try_from(path.len()).unwrap().min(0x0fff);
+            bytes.extend_from_slice(&(path_len | extra_flags).to_be_bytes());
+            bytes.extend_from_slice(path);
+            bytes.push(0);
+            while (bytes.len() - start) % 8 != 0 {
+                bytes.push(0);
+            }
+        }
+        if let Some((signature, payload)) = extension {
+            bytes.extend_from_slice(signature);
+            bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(payload);
+        }
+        bytes.extend_from_slice(&git_index_checksum(&bytes, format));
+        bytes
+    }
+
+    #[test]
+    fn commit_message_is_trimmed_bounded_and_single_line() {
+        assert_eq!(
+            normalize_git_commit_message("  Remember the fix  ").unwrap(),
+            "Remember the fix"
+        );
+        assert_eq!(
+            normalize_git_commit_message(&"é".repeat(MAX_COMMIT_MESSAGE_SCALARS)).unwrap(),
+            "é".repeat(MAX_COMMIT_MESSAGE_SCALARS)
+        );
+        for invalid in [
+            String::new(),
+            " ".to_owned(),
+            "a".repeat(MAX_COMMIT_MESSAGE_SCALARS + 1),
+            "two\nlines".to_owned(),
+            "tab\there".to_owned(),
+            "bidi\u{202e}text".to_owned(),
+            "separator\u{2028}text".to_owned(),
+            "noncharacter\u{fdd0}".to_owned(),
+        ] {
+            assert_eq!(
+                normalize_git_commit_message(&invalid),
+                Err(GitCommitPlanError::InvalidMessage),
+                "accepted {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn commit_identity_is_bounded_canonical_and_redacted() {
+        let identity = validate_git_commit_identity(
+            &"N".repeat(MAX_GIT_IDENTITY_NAME_SCALARS),
+            "person@example.test",
+        )
+        .unwrap();
+        assert_eq!(identity.email, "person@example.test");
+        let debug = format!("{identity:?}");
+        assert!(!debug.contains("person"));
+        assert!(!debug.contains("example"));
+
+        let invalid_names = [
+            String::new(),
+            " leading".to_owned(),
+            "trailing ".to_owned(),
+            "bad<name".to_owned(),
+            "bad\nname".to_owned(),
+            "bad\u{2066}name".to_owned(),
+            "N".repeat(MAX_GIT_IDENTITY_NAME_SCALARS + 1),
+        ];
+        for name in invalid_names {
+            assert!(matches!(
+                validate_git_commit_identity(&name, "person@example.test"),
+                Err(GitCommitPlanError::InvalidIdentity)
+            ));
+        }
+
+        let invalid_emails = [
+            "a@",
+            "@b",
+            "a@@b",
+            "a b@example.test",
+            "a<b@example.test",
+            "a\n@example.test",
+        ];
+        for email in invalid_emails {
+            assert!(matches!(
+                validate_git_commit_identity("Name", email),
+                Err(GitCommitPlanError::InvalidIdentity)
+            ));
+        }
+        let oversized_email = format!("{}@b", "a".repeat(MAX_GIT_IDENTITY_EMAIL_BYTES));
+        assert!(matches!(
+            validate_git_commit_identity("Name", &oversized_email),
+            Err(GitCommitPlanError::InvalidIdentity)
+        ));
+    }
+
+    #[test]
+    fn commit_branch_accepts_exactly_one_direct_representation() {
+        let object_id = "0123456789abcdef0123456789abcdef01234567";
+        let head = b"ref: refs/heads/team/main\n";
+        let loose = format!("{object_id}\n");
+        let branch =
+            parse_git_commit_branch(head, Some(loose.as_bytes()), None, GitObjectFormat::Sha1)
+                .unwrap();
+        assert_eq!(branch.reference, "refs/heads/team/main");
+        assert_eq!(branch.display, "team/main");
+        assert_eq!(branch.expected_object_id.as_deref(), Some(object_id));
+        assert_eq!(branch.representation, GitBranchRepresentation::Loose);
+        assert!(!format!("{branch:?}").contains(object_id));
+
+        let packed = format!("# pack-refs with: peeled\n{object_id} refs/heads/team/main\n");
+        assert_eq!(
+            parse_git_commit_branch(head, None, Some(packed.as_bytes()), GitObjectFormat::Sha1)
+                .unwrap()
+                .representation,
+            GitBranchRepresentation::Packed
+        );
+        assert_eq!(
+            parse_git_commit_branch(head, None, None, GitObjectFormat::Sha1)
+                .unwrap()
+                .representation,
+            GitBranchRepresentation::Unborn
+        );
+
+        for (candidate_head, candidate_loose, candidate_packed) in [
+            (
+                b"0123456789abcdef0123456789abcdef01234567\n".as_slice(),
+                None,
+                None,
+            ),
+            (
+                head.as_slice(),
+                Some(b"ref: refs/heads/other\n".as_slice()),
+                None,
+            ),
+            (
+                head.as_slice(),
+                Some(loose.as_bytes()),
+                Some(packed.as_bytes()),
+            ),
+        ] {
+            assert!(matches!(
+                parse_git_commit_branch(
+                    candidate_head,
+                    candidate_loose,
+                    candidate_packed,
+                    GitObjectFormat::Sha1
+                ),
+                Err(GitCommitPlanError::UnsafeRepository)
+            ));
+        }
+    }
+
+    #[test]
+    fn commit_branch_rejects_duplicate_malformed_and_wrong_width_packed_targets() {
+        let object_id = "0123456789abcdef0123456789abcdef01234567";
+        let head = b"ref: refs/heads/main\n";
+        for packed in [
+            format!("{object_id} refs/heads/main\n{object_id} refs/heads/main\n"),
+            format!("{object_id} refs/heads/main"),
+            format!("{} refs/heads/main\n", "a".repeat(64)),
+            format!("^{object_id}\n"),
+            format!("{object_id} refs/heads/../main\n"),
+        ] {
+            assert!(matches!(
+                parse_git_commit_branch(head, None, Some(packed.as_bytes()), GitObjectFormat::Sha1),
+                Err(GitCommitPlanError::UnsafeRepository)
+            ));
+        }
+        assert!(matches!(
+            parse_git_commit_branch(
+                b"ref: refs/heads/.hidden\n",
+                None,
+                None,
+                GitObjectFormat::Sha1
+            ),
+            Err(GitCommitPlanError::UnsafeRepository)
+        ));
+    }
+
+    #[test]
+    fn commit_index_accepts_only_bounded_clean_v2_v3_with_optional_cache_tree() {
+        let sha1 = index_fixture(
+            GitObjectFormat::Sha1,
+            2,
+            &[
+                (0o100644, b"alpha".as_slice(), 0),
+                (0o100755, b"dir/non-utf8-\xff".as_slice(), 0),
+            ],
+            Some((b"TREE", b"cache")),
+        );
+        let parsed = parse_git_index(&sha1, GitObjectFormat::Sha1).unwrap();
+        assert_eq!(parsed.version, 2);
+        assert_eq!(parsed.entries.len(), 2);
+        assert!(parsed.has_cache_tree);
+        assert_eq!(parsed.entries[1].mode, 0o100755);
+        assert_eq!(parsed.entries[1].object_id.len(), 20);
+        assert_eq!(parsed.entries[1].path, b"dir/non-utf8-\xff");
+        assert!(!format!("{:?}", parsed.entries[1]).contains("non-utf8"));
+
+        let sha256 = index_fixture(
+            GitObjectFormat::Sha256,
+            3,
+            &[(0o120000, b"link".as_slice(), 0)],
+            None,
+        );
+        let parsed = parse_git_index(&sha256, GitObjectFormat::Sha256).unwrap();
+        assert_eq!(parsed.version, 3);
+        assert_eq!(parsed.entries[0].object_id.len(), 32);
+        assert!(!parsed.has_cache_tree);
+    }
+
+    #[test]
+    fn commit_index_rejects_checksum_flags_order_extensions_and_limits() {
+        let valid = index_fixture(
+            GitObjectFormat::Sha1,
+            2,
+            &[(0o100644, b"alpha".as_slice(), 0)],
+            None,
+        );
+        let mut bad_checksum = valid.clone();
+        bad_checksum[12] ^= 1;
+        let staged = index_fixture(
+            GitObjectFormat::Sha1,
+            2,
+            &[(0o100644, b"alpha".as_slice(), 0x1000)],
+            None,
+        );
+        let extended = index_fixture(
+            GitObjectFormat::Sha1,
+            3,
+            &[(0o100644, b"alpha".as_slice(), 0x4000)],
+            None,
+        );
+        let unsorted = index_fixture(
+            GitObjectFormat::Sha1,
+            2,
+            &[
+                (0o100644, b"zeta".as_slice(), 0),
+                (0o100644, b"alpha".as_slice(), 0),
+            ],
+            None,
+        );
+        let unknown_extension = index_fixture(
+            GitObjectFormat::Sha1,
+            2,
+            &[(0o100644, b"alpha".as_slice(), 0)],
+            Some((b"FSMN", b"hostile")),
+        );
+        let wrong_version = index_fixture(GitObjectFormat::Sha1, 4, &[], None);
+        for bytes in [
+            bad_checksum,
+            staged,
+            extended,
+            unsorted,
+            unknown_extension,
+            wrong_version,
+        ] {
+            assert!(matches!(
+                parse_git_index(&bytes, GitObjectFormat::Sha1),
+                Err(GitCommitPlanError::UnsupportedIndex)
+            ));
+        }
+
+        let mut too_many = Vec::new();
+        too_many.extend_from_slice(b"DIRC");
+        too_many.extend_from_slice(&2_u32.to_be_bytes());
+        too_many.extend_from_slice(&((MAX_COMMIT_INDEX_ENTRIES + 1) as u32).to_be_bytes());
+        too_many.extend_from_slice(&git_index_checksum(&too_many, GitObjectFormat::Sha1));
+        assert!(matches!(
+            parse_git_index(&too_many, GitObjectFormat::Sha1),
+            Err(GitCommitPlanError::ResourceLimit)
+        ));
     }
 
     #[test]
