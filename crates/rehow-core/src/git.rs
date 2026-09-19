@@ -6,15 +6,16 @@ use crate::{
         ATTACHMENT_BYTES_LIMIT, ATTACHMENT_COUNT_LIMIT, CATEGORY_LIMIT, CloneDestinationSnapshot,
         EmptyWorkspaceTarget, GUIDE_COUNT_LIMIT, GitCloneMaterializationSource,
         GitCloneMaterializationStorageError, GitCloneStaging, GitCloneStagingError,
-        GitConfigStorageError, GitInitializeStorageError, GitMaterializationPathKind,
-        GitRepositoryCapabilityError, MANAGED_BYTES_LIMIT, WorkspaceInspection, WorkspaceView,
-        classify_git_materialization_path, create_git_clone_staging,
-        execute_git_clone_materialization, finalize_git_clone_repository, inspect_workspace,
-        open_initialized_workspace, seal_git_clone_repository,
+        GitCommitRepositorySnapshot, GitCommitSnapshotError, GitConfigStorageError,
+        GitInitializeStorageError, GitMaterializationPathKind, GitRepositoryCapabilityError,
+        MANAGED_BYTES_LIMIT, WorkspaceInspection, WorkspaceView, classify_git_materialization_path,
+        create_git_clone_staging, execute_git_clone_materialization, finalize_git_clone_repository,
+        inspect_workspace, open_initialized_workspace, seal_git_clone_repository,
     },
 };
 use std::{
-    fmt, fs,
+    fmt,
+    fs::{self, File},
     io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     os::{
         fd::{AsRawFd, FromRawFd},
@@ -51,6 +52,9 @@ const MAX_GIT_IDENTITY_EMAIL_BYTES: usize = 254;
 const MAX_COMMIT_INDEX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_COMMIT_INDEX_ENTRIES: usize = 50_000;
 const MAX_COMMIT_PATH_BYTES: usize = 4_096;
+const MAX_COMMIT_TREE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_COMMIT_TREE_ENTRIES: usize = 50_000;
+const COMMIT_PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
 const MAX_CLONE_TREE_LISTING_BYTES: usize = 32 * 1024 * 1024;
 #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
@@ -186,6 +190,82 @@ impl fmt::Debug for GitCommitIdentity {
             .debug_struct("GitCommitIdentity")
             .field("name", &"<redacted>")
             .field("email", &"<redacted>")
+            .finish()
+    }
+}
+
+#[allow(dead_code, reason = "consumed by Phase 5C1 candidate construction")]
+struct GitCommitRepositoryPreflight {
+    capability: crate::storage::GitRepositoryCapability,
+    repository: GitCommitRepositorySnapshot,
+    branch_storage: crate::storage::GitCommitBranchSnapshot,
+    branch: GitCommitBranch,
+    identity: GitCommitIdentity,
+    object_format: GitObjectFormat,
+    index: Option<GitIndexSnapshot>,
+    tree: GitCommitTree,
+    managed: GitCommitManagedInventory,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GitCommitManagedKind {
+    Manifest,
+    Category,
+    Guide,
+    Attachment,
+}
+
+enum GitCommitManagedExpectation {
+    Document(Revision),
+    Attachment {
+        sha256: String,
+        declared_size: Option<u64>,
+    },
+}
+
+#[derive(Eq, PartialEq)]
+struct GitCommitManagedFile {
+    path: String,
+    kind: GitCommitManagedKind,
+    size: u64,
+    revision: Revision,
+    blob_object_id: String,
+}
+
+impl fmt::Debug for GitCommitManagedFile {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitCommitManagedFile")
+            .field("path", &"<redacted>")
+            .field("kind", &self.kind)
+            .field("size", &self.size)
+            .field("revision", &"<redacted>")
+            .field("blob_object_id", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct GitCommitManagedInventory {
+    files: Vec<GitCommitManagedFile>,
+}
+
+impl fmt::Debug for GitCommitRepositoryPreflight {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitCommitRepositoryPreflight")
+            .field("capability", &"<redacted>")
+            .field("repository", &"<redacted>")
+            .field("branch_storage", &"<redacted>")
+            .field("branch", &self.branch)
+            .field("identity", &self.identity)
+            .field("object_format", &self.object_format)
+            .field(
+                "index_entries",
+                &self.index.as_ref().map_or(0, |index| index.entries.len()),
+            )
+            .field("tree_entries", &self.tree.entries.len())
+            .field("managed_files", &self.managed.files.len())
             .finish()
     }
 }
@@ -1515,10 +1595,14 @@ fn stream_clone_blobs(
 }
 
 fn git_blob_object_id_matches(format: GitObjectFormat, bytes: &[u8], expected: &str) -> bool {
+    git_blob_object_id(format, bytes) == expected
+}
+
+fn git_blob_object_id(format: GitObjectFormat, bytes: &[u8]) -> String {
     use sha1::Digest as _;
 
     let header = format!("blob {}\0", bytes.len());
-    let actual = match format {
+    match format {
         GitObjectFormat::Sha1 => {
             let mut digest = sha1::Sha1::new();
             digest.update(header.as_bytes());
@@ -1531,8 +1615,7 @@ fn git_blob_object_id_matches(format: GitObjectFormat, bytes: &[u8], expected: &
             digest.update(bytes);
             hex_lower(&digest.finalize())
         }
-    };
-    actual == expected
+    }
 }
 
 fn read_clone_batch_header(reader: &mut impl Read) -> Result<Vec<u8>, GitCloneContentError> {
@@ -2325,6 +2408,210 @@ fn validate_object_id(value: &str) -> Option<GitObjectFormat> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GitCommitTreeEntryKind {
+    Tree,
+    Blob,
+    Commit,
+}
+
+struct GitCommitTreeEntry {
+    mode: u32,
+    kind: GitCommitTreeEntryKind,
+    object_id: String,
+    size: Option<u64>,
+    path: Vec<u8>,
+}
+
+impl fmt::Debug for GitCommitTreeEntry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitCommitTreeEntry")
+            .field("mode", &format_args!("{:o}", self.mode))
+            .field("kind", &self.kind)
+            .field("object_id", &"<redacted>")
+            .field("size", &self.size)
+            .field("path", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+struct GitCommitTree {
+    entries: Vec<GitCommitTreeEntry>,
+}
+
+fn parse_git_commit_tree(
+    listing: &[u8],
+    object_format: GitObjectFormat,
+) -> Result<GitCommitTree, GitCommitPlanError> {
+    if listing.len() > MAX_COMMIT_TREE_BYTES {
+        return Err(GitCommitPlanError::ResourceLimit);
+    }
+    if !listing.is_empty() && !listing.ends_with(&[0]) {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    if listing.is_empty() {
+        return Ok(GitCommitTree {
+            entries: Vec::new(),
+        });
+    }
+    let records = listing.strip_suffix(&[0]).unwrap_or(listing);
+    let mut entries = Vec::new();
+    let mut previous_path: Option<&[u8]> = None;
+    let mut tree_paths = std::collections::HashSet::new();
+    for record in records.split(|byte| *byte == 0) {
+        if record.is_empty() {
+            return Err(GitCommitPlanError::UnsafeRepository);
+        }
+        if entries.len() >= MAX_COMMIT_TREE_ENTRIES {
+            return Err(GitCommitPlanError::ResourceLimit);
+        }
+        let tab = record
+            .iter()
+            .position(|byte| *byte == b'\t')
+            .ok_or(GitCommitPlanError::UnsafeRepository)?;
+        let header = std::str::from_utf8(&record[..tab])
+            .map_err(|_| GitCommitPlanError::UnsafeRepository)?;
+        let path = &record[tab + 1..];
+        if !valid_opaque_git_path(path) || previous_path.is_some_and(|previous| previous >= path) {
+            return Err(GitCommitPlanError::UnsafeRepository);
+        }
+        previous_path = Some(path);
+        if let Some(parent_end) = path.iter().rposition(|byte| *byte == b'/')
+            && !tree_paths.contains(&path[..parent_end])
+        {
+            return Err(GitCommitPlanError::UnsafeRepository);
+        }
+        let mut fields = header.split_ascii_whitespace();
+        let mode = fields.next().ok_or(GitCommitPlanError::UnsafeRepository)?;
+        let object_type = fields.next().ok_or(GitCommitPlanError::UnsafeRepository)?;
+        let object_id = fields.next().ok_or(GitCommitPlanError::UnsafeRepository)?;
+        let size = fields.next().ok_or(GitCommitPlanError::UnsafeRepository)?;
+        if fields.next().is_some() || validate_object_id(object_id) != Some(object_format) {
+            return Err(GitCommitPlanError::UnsafeRepository);
+        }
+        let (mode, kind, size) = match (mode, object_type, size) {
+            ("040000", "tree", "-") => (0o040000, GitCommitTreeEntryKind::Tree, None),
+            ("100644", "blob", size) => (
+                0o100644,
+                GitCommitTreeEntryKind::Blob,
+                Some(parse_canonical_u64(size).ok_or(GitCommitPlanError::UnsafeRepository)?),
+            ),
+            ("100755", "blob", size) => (
+                0o100755,
+                GitCommitTreeEntryKind::Blob,
+                Some(parse_canonical_u64(size).ok_or(GitCommitPlanError::UnsafeRepository)?),
+            ),
+            ("120000", "blob", size) => (
+                0o120000,
+                GitCommitTreeEntryKind::Blob,
+                Some(parse_canonical_u64(size).ok_or(GitCommitPlanError::UnsafeRepository)?),
+            ),
+            ("160000", "commit", "-") => (0o160000, GitCommitTreeEntryKind::Commit, None),
+            _ => return Err(GitCommitPlanError::UnsafeRepository),
+        };
+        let path = path.to_vec();
+        if kind == GitCommitTreeEntryKind::Tree && !tree_paths.insert(path.clone()) {
+            return Err(GitCommitPlanError::UnsafeRepository);
+        }
+        entries.push(GitCommitTreeEntry {
+            mode,
+            kind,
+            object_id: object_id.to_owned(),
+            size,
+            path,
+        });
+    }
+    Ok(GitCommitTree { entries })
+}
+
+fn git_commit_path_collision(
+    tree: &GitCommitTree,
+    prior_managed: &[Vec<u8>],
+    current_managed: &[Vec<u8>],
+) -> bool {
+    let mut prior = prior_managed.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    prior.sort_unstable();
+    prior.dedup();
+    current_managed.iter().any(|current| {
+        let current = current.as_slice();
+        if prior.binary_search(&current).is_ok() {
+            return false;
+        }
+        if tree
+            .entries
+            .binary_search_by(|entry| entry.path.as_slice().cmp(current))
+            .is_ok()
+        {
+            return true;
+        }
+        let descendant_index = tree
+            .entries
+            .partition_point(|entry| entry.path.as_slice() <= current);
+        let descendant = tree.entries.get(descendant_index);
+        if descendant.is_some_and(|entry| path_is_ancestor(current, &entry.path)) {
+            return true;
+        }
+        current
+            .iter()
+            .enumerate()
+            .filter(|(_, byte)| **byte == b'/')
+            .any(|(end, _)| {
+                let ancestor = &current[..end];
+                let Ok(index) = tree
+                    .entries
+                    .binary_search_by(|entry| entry.path.as_slice().cmp(ancestor))
+                else {
+                    return false;
+                };
+                let entry = &tree.entries[index];
+                entry.kind != GitCommitTreeEntryKind::Tree
+                    || !sorted_paths_have_descendant(&prior, ancestor)
+            })
+    })
+}
+
+fn prior_managed_candidate_paths(tree: &GitCommitTree) -> Result<Vec<Vec<u8>>, GitCommitPlanError> {
+    let mut paths = Vec::new();
+    paths
+        .try_reserve(tree.entries.len().min(MAX_COMMIT_INDEX_ENTRIES))
+        .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    for entry in &tree.entries {
+        if entry.mode != 0o100644 || entry.kind != GitCommitTreeEntryKind::Blob {
+            continue;
+        }
+        let Ok(path) = std::str::from_utf8(&entry.path) else {
+            continue;
+        };
+        let Some((kind, _)) = classify_git_materialization_path(path) else {
+            continue;
+        };
+        if kind != GitMaterializationPathKind::Ignore {
+            let mut retained = Vec::new();
+            retained
+                .try_reserve_exact(entry.path.len())
+                .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+            retained.extend_from_slice(&entry.path);
+            paths.push(retained);
+        }
+    }
+    Ok(paths)
+}
+
+fn path_is_ancestor(ancestor: &[u8], descendant: &[u8]) -> bool {
+    descendant
+        .strip_prefix(ancestor)
+        .is_some_and(|suffix| suffix.starts_with(b"/"))
+}
+
+fn sorted_paths_have_descendant(sorted: &[&[u8]], ancestor: &[u8]) -> bool {
+    let index = sorted.partition_point(|path| *path <= ancestor);
+    sorted
+        .get(index)
+        .is_some_and(|path| path_is_ancestor(ancestor, path))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
 enum GitBranchRepresentation {
     Unborn,
@@ -2359,13 +2646,7 @@ fn parse_git_commit_branch(
     packed_refs: Option<&[u8]>,
     object_format: GitObjectFormat,
 ) -> Result<GitCommitBranch, GitCommitPlanError> {
-    let reference = std::str::from_utf8(head)
-        .ok()
-        .and_then(|value| value.strip_prefix("ref: "))
-        .and_then(|value| value.strip_suffix('\n'))
-        .filter(|value| !value.contains(['\n', '\r']))
-        .filter(|value| value.starts_with("refs/heads/") && valid_ref_name(value))
-        .ok_or(GitCommitPlanError::UnsafeRepository)?;
+    let reference = parse_git_head_reference(head)?;
     let display = reference
         .strip_prefix("refs/heads/")
         .filter(|value| !value.is_empty() && value.chars().count() <= 255)
@@ -2391,6 +2672,16 @@ fn parse_git_commit_branch(
         expected_object_id,
         representation,
     })
+}
+
+fn parse_git_head_reference(head: &[u8]) -> Result<&str, GitCommitPlanError> {
+    std::str::from_utf8(head)
+        .ok()
+        .and_then(|value| value.strip_prefix("ref: "))
+        .and_then(|value| value.strip_suffix('\n'))
+        .filter(|value| !value.contains(['\n', '\r']))
+        .filter(|value| value.starts_with("refs/heads/") && valid_ref_name(value))
+        .ok_or(GitCommitPlanError::UnsafeRepository)
 }
 
 fn parse_direct_ref(
@@ -3357,17 +3648,211 @@ fn run_git(
     run_bounded_git_command(command, PROCESS_TIMEOUT, OUTPUT_LIMIT)
 }
 
+fn run_git_commit_read(
+    executable: &Path,
+    sandbox: &Path,
+    repository: &crate::storage::GitRepositoryCapability,
+    object_format: GitObjectFormat,
+    arguments: &[&str],
+    output_limit: usize,
+) -> Result<ProcessOutput, GitReadError> {
+    run_git_commit_read_with_input(
+        executable,
+        sandbox,
+        repository,
+        object_format,
+        arguments,
+        output_limit,
+        None,
+    )
+}
+
+fn run_git_commit_read_with_input(
+    executable: &Path,
+    sandbox: &Path,
+    repository: &crate::storage::GitRepositoryCapability,
+    object_format: GitObjectFormat,
+    arguments: &[&str],
+    output_limit: usize,
+    input: Option<Vec<u8>>,
+) -> Result<ProcessOutput, GitReadError> {
+    let mut synthetic_config = create_git_format_config(object_format)?;
+    let config_descriptor = synthetic_config.as_raw_fd();
+    let config_descriptor_text = config_descriptor.to_string();
+    let mut command = Command::new(sandbox);
+    command
+        .env_clear()
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_PAGER", "cat")
+        .env("GIT_EDITOR", "false")
+        .env("GIT_ASKPASS", "false")
+        .env("SSH_ASKPASS", "false")
+        .args([
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-all",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib",
+            "/lib64",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/repo.git",
+            "--ro-bind",
+            repository.objects_path(),
+            "/repo.git/objects",
+            "--ro-bind",
+            repository.refs_path(),
+            "/repo.git/refs",
+            "--ro-bind",
+            repository.head_path(),
+            "/repo.git/HEAD",
+            "--file",
+            &config_descriptor_text,
+            "/repo.git/config",
+            "--tmpfs",
+            "/repo.git/objects/info",
+            "--tmpfs",
+            "/tmp",
+            "--chdir",
+            "/tmp",
+            "--setenv",
+            "GIT_DIR",
+            "/repo.git",
+        ]);
+    for (source, destination) in [
+        (repository.packed_refs_path(), "/repo.git/packed-refs"),
+        (repository.shallow_path(), "/repo.git/shallow"),
+    ] {
+        if let Some(source) = source {
+            command.args(["--ro-bind", source, destination]);
+        }
+    }
+    command
+        .args(["--", executable.to_str().ok_or(GitReadError::Spawn)?])
+        .args([
+            "--no-pager",
+            "--literal-pathspecs",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            "-c",
+            "core.alternateRefsCommand=",
+            "-c",
+            "diff.external=",
+            "-c",
+            "color.ui=false",
+            "-c",
+            "protocol.allow=never",
+        ])
+        .args(arguments)
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // SAFETY: the closure only clears CLOEXEC on the owned synthetic-config
+    // descriptor between fork and exec so Bubblewrap can copy it into the
+    // otherwise private repository view.
+    unsafe {
+        command.pre_exec(move || {
+            let flags = libc::fcntl(config_descriptor, libc::F_GETFD);
+            if flags < 0
+                || libc::fcntl(config_descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let output = run_bounded_git_command_with_input(
+        command,
+        COMMIT_PROCESS_TIMEOUT,
+        output_limit,
+        OUTPUT_LIMIT,
+        input,
+    );
+    let _ = synthetic_config.seek(SeekFrom::Start(0));
+    output
+}
+
+fn create_git_format_config(object_format: GitObjectFormat) -> Result<File, GitReadError> {
+    // SAFETY: the static name is NUL-terminated and flags are valid.
+    let raw = unsafe {
+        libc::memfd_create(
+            c"rehow-git-format".as_ptr(),
+            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+        )
+    };
+    if raw < 0 {
+        return Err(GitReadError::Spawn);
+    }
+    // SAFETY: successful memfd_create returned a newly owned descriptor.
+    let mut file = unsafe { File::from_raw_fd(raw) };
+    let config = match object_format {
+        GitObjectFormat::Sha1 => b"[core]\n\trepositoryformatversion = 0\n".as_slice(),
+        GitObjectFormat::Sha256 => {
+            b"[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectformat = sha256\n"
+                .as_slice()
+        }
+    };
+    file.write_all(config).map_err(|_| GitReadError::Spawn)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| GitReadError::Spawn)?;
+    // SAFETY: the descriptor is owned and sealing constants are valid.
+    let seals = libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, seals) } != 0 {
+        return Err(GitReadError::Spawn);
+    }
+    Ok(file)
+}
+
 fn run_bounded_git_command(
-    mut command: Command,
+    command: Command,
     timeout: Duration,
     output_limit: usize,
 ) -> Result<ProcessOutput, GitReadError> {
+    run_bounded_git_command_with_input(command, timeout, output_limit, output_limit, None)
+}
+
+fn run_bounded_git_command_with_input(
+    mut command: Command,
+    timeout: Duration,
+    stdout_limit: usize,
+    stderr_limit: usize,
+    input: Option<Vec<u8>>,
+) -> Result<ProcessOutput, GitReadError> {
     let mut child = command.spawn().map_err(|_| GitReadError::Spawn)?;
+    let input_writer = input.map(|input| {
+        let mut stdin = child.stdin.take().ok_or(GitReadError::Spawn)?;
+        Ok::<_, GitReadError>(thread::spawn(move || stdin.write_all(&input)))
+    });
+    let input_writer = input_writer.transpose()?;
     let exceeded = Arc::new(AtomicBool::new(false));
     let stdout = child.stdout.take().ok_or(GitReadError::Spawn)?;
     let stderr = child.stderr.take().ok_or(GitReadError::Spawn)?;
-    let stdout_reader = read_capped_with_limit(stdout, Arc::clone(&exceeded), output_limit);
-    let stderr_reader = read_capped_with_limit(stderr, Arc::clone(&exceeded), output_limit);
+    let stdout_reader = read_capped_with_limit(stdout, Arc::clone(&exceeded), stdout_limit);
+    let stderr_reader = read_capped_with_limit(stderr, Arc::clone(&exceeded), stderr_limit);
     let started = Instant::now();
     let status = loop {
         if exceeded.load(Ordering::Relaxed) {
@@ -3387,6 +3872,9 @@ fn run_bounded_git_command(
     };
     let stdout = stdout_reader.join().map_err(|_| GitReadError::Spawn)?;
     let _ = stderr_reader.join().map_err(|_| GitReadError::Spawn)?;
+    if let Some(writer) = input_writer {
+        let _ = writer.join().map_err(|_| GitReadError::Spawn)?;
+    }
     let status = status?;
     if exceeded.load(Ordering::Relaxed) {
         return Err(GitReadError::OutputLimit);
@@ -3588,6 +4076,460 @@ fn valid_ref_name(value: &str) -> bool {
             .all(|part| valid_ref_component(part) && !part.ends_with(".lock"))
 }
 
+#[allow(dead_code, reason = "consumed by Phase 5C1 candidate construction")]
+fn inspect_git_commit_repository(
+    workspace: &WorkspaceView,
+) -> Result<GitCommitRepositoryPreflight, GitCommitPlanError> {
+    if !workspace.issues().is_empty() {
+        return Err(GitCommitPlanError::WorkspaceIssues);
+    }
+    let facts = workspace
+        .git_initialization_facts()
+        .map_err(|error| match error {
+            GitInitializeStorageError::Conflict => GitCommitPlanError::PlanStale,
+            GitInitializeStorageError::Unsafe => GitCommitPlanError::UnsafeRepository,
+            GitInitializeStorageError::Unsupported => GitCommitPlanError::UnsupportedRepository,
+            GitInitializeStorageError::Io => GitCommitPlanError::Io,
+        })?;
+    if !facts.writable() {
+        return Err(GitCommitPlanError::ReadOnly);
+    }
+    let capability = workspace
+        .git_repository_capability()
+        .map_err(|error| match error {
+            GitRepositoryCapabilityError::NotRepository => GitCommitPlanError::NotRepository,
+            GitRepositoryCapabilityError::Unsafe => GitCommitPlanError::UnsafeRepository,
+            GitRepositoryCapabilityError::Io => GitCommitPlanError::Io,
+        })?;
+    let repository = capability
+        .read_commit_repository_snapshot()
+        .map_err(map_git_commit_snapshot_error)?;
+    let executable =
+        trusted_executable("/usr/bin/git").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+    let config_output = run_git(
+        &executable,
+        None,
+        &[
+            "config",
+            "--file",
+            capability.config_path(),
+            "--no-includes",
+            "-z",
+            "--list",
+        ],
+    )
+    .map_err(map_git_commit_read_error)?;
+    let descriptor_config =
+        fs::read(capability.config_path()).map_err(|_| GitCommitPlanError::Io)?;
+    if descriptor_config != repository.config.bytes {
+        return Err(GitCommitPlanError::PlanStale);
+    }
+    let (object_format, identity) = parse_git_commit_config(&config_output.stdout)?;
+    let reference = parse_git_head_reference(&repository.head.bytes)?;
+    let branch_relative = reference
+        .strip_prefix("refs/heads/")
+        .ok_or(GitCommitPlanError::UnsafeRepository)?;
+    let branch_storage = capability
+        .read_commit_branch_snapshot(branch_relative)
+        .map_err(map_git_commit_snapshot_error)?;
+    let branch = parse_git_commit_branch(
+        &repository.head.bytes,
+        branch_storage
+            .target
+            .as_ref()
+            .map(|target| target.bytes.as_slice()),
+        repository
+            .packed_refs
+            .as_ref()
+            .map(|packed| packed.bytes.as_slice()),
+        object_format,
+    )?;
+    let index = match (
+        branch.expected_object_id.is_none(),
+        repository.index.as_ref(),
+    ) {
+        (true, None) => None,
+        (false, Some(index)) => Some(parse_git_index(&index.bytes, object_format)?),
+        _ => return Err(GitCommitPlanError::UnsupportedIndex),
+    };
+    let tree = if let Some(parent) = branch.expected_object_id.as_deref() {
+        let sandbox = trusted_executable("/usr/bin/bwrap")
+            .ok_or(GitCommitPlanError::UnsupportedRepository)?;
+        let output = run_git_commit_read(
+            &executable,
+            &sandbox,
+            &capability,
+            object_format,
+            &["ls-tree", "-r", "-t", "-l", "--full-tree", "-z", parent],
+            MAX_COMMIT_TREE_BYTES,
+        )
+        .map_err(map_git_commit_read_error)?;
+        let tree = parse_git_commit_tree(&output.stdout, object_format)?;
+        verify_git_commit_tree_objects(
+            &executable,
+            &sandbox,
+            &capability,
+            object_format,
+            parent,
+            &tree,
+        )?;
+        tree
+    } else {
+        GitCommitTree {
+            entries: Vec::new(),
+        }
+    };
+    let managed = inspect_git_commit_managed_inventory(workspace, object_format)?;
+    let prior_managed = prior_managed_candidate_paths(&tree)?;
+    let mut current_managed = Vec::new();
+    current_managed
+        .try_reserve_exact(managed.files.len())
+        .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    for file in &managed.files {
+        let mut path = Vec::new();
+        path.try_reserve_exact(file.path.len())
+            .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+        path.extend_from_slice(file.path.as_bytes());
+        current_managed.push(path);
+    }
+    if git_commit_path_collision(&tree, &prior_managed, &current_managed) {
+        return Err(GitCommitPlanError::PathCollision);
+    }
+    let final_repository = capability
+        .read_commit_repository_snapshot()
+        .map_err(map_git_commit_snapshot_error)?;
+    let final_branch = capability
+        .read_commit_branch_snapshot(branch_relative)
+        .map_err(map_git_commit_snapshot_error)?;
+    if final_repository != repository || final_branch != branch_storage {
+        return Err(GitCommitPlanError::PlanStale);
+    }
+    Ok(GitCommitRepositoryPreflight {
+        capability,
+        repository,
+        branch_storage,
+        branch,
+        identity,
+        object_format,
+        index,
+        tree,
+        managed,
+    })
+}
+
+fn verify_git_commit_tree_objects(
+    executable: &Path,
+    sandbox: &Path,
+    capability: &crate::storage::GitRepositoryCapability,
+    object_format: GitObjectFormat,
+    parent: &str,
+    tree: &GitCommitTree,
+) -> Result<(), GitCommitPlanError> {
+    let mut expected = Vec::new();
+    expected
+        .try_reserve_exact(tree.entries.len().saturating_add(1))
+        .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    expected.push((parent, "commit", None));
+    for entry in &tree.entries {
+        let object_type = match entry.kind {
+            GitCommitTreeEntryKind::Tree => "tree",
+            GitCommitTreeEntryKind::Blob => "blob",
+            GitCommitTreeEntryKind::Commit => "commit",
+        };
+        expected.push((entry.object_id.as_str(), object_type, entry.size));
+    }
+    let mut input = Vec::new();
+    input
+        .try_reserve_exact(expected.len().saturating_mul(65))
+        .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    for (object_id, _, _) in &expected {
+        input.extend_from_slice(object_id.as_bytes());
+        input.push(b'\n');
+    }
+    let output = run_git_commit_read_with_input(
+        executable,
+        sandbox,
+        capability,
+        object_format,
+        &[
+            "cat-file",
+            "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+        ],
+        MAX_COMMIT_TREE_BYTES,
+        Some(input),
+    )
+    .map_err(map_git_commit_read_error)?;
+    if !output.stdout.ends_with(b"\n") {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    let mut lines = output.stdout.split(|byte| *byte == b'\n');
+    for (expected_id, expected_type, expected_size) in expected {
+        let line = lines.next().ok_or(GitCommitPlanError::UnsafeRepository)?;
+        let text = std::str::from_utf8(line).map_err(|_| GitCommitPlanError::UnsafeRepository)?;
+        let mut fields = text.split_ascii_whitespace();
+        let object_id = fields.next().ok_or(GitCommitPlanError::UnsafeRepository)?;
+        let object_type = fields.next().ok_or(GitCommitPlanError::UnsafeRepository)?;
+        let object_size = fields.next().ok_or(GitCommitPlanError::UnsafeRepository)?;
+        if fields.next().is_some()
+            || object_id != expected_id
+            || object_type != expected_type
+            || parse_canonical_u64(object_size).is_none()
+            || expected_size.is_some_and(|size| parse_canonical_u64(object_size) != Some(size))
+        {
+            return Err(GitCommitPlanError::UnsafeRepository);
+        }
+    }
+    if lines.any(|line| !line.is_empty()) {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    Ok(())
+}
+
+fn inspect_git_commit_managed_inventory(
+    workspace: &WorkspaceView,
+    object_format: GitObjectFormat,
+) -> Result<GitCommitManagedInventory, GitCommitPlanError> {
+    if !workspace.issues().is_empty() {
+        return Err(GitCommitPlanError::WorkspaceIssues);
+    }
+    let (guide_count, attachment_count) = workspace.categories().iter().try_fold(
+        (0usize, 0usize),
+        |(guides, attachments), category| {
+            let guides = guides
+                .checked_add(category.guides().len())
+                .ok_or(GitCommitPlanError::ResourceLimit)?;
+            let attachments = category
+                .guides()
+                .iter()
+                .try_fold(attachments, |count, guide| {
+                    count
+                        .checked_add(
+                            guide
+                                .guide()
+                                .attachments()
+                                .map_or(0, |attachments| attachments.len()),
+                        )
+                        .ok_or(GitCommitPlanError::ResourceLimit)
+                })?;
+            Ok::<_, GitCommitPlanError>((guides, attachments))
+        },
+    )?;
+    let expected_count = 1usize
+        .checked_add(workspace.categories().len())
+        .and_then(|count| count.checked_add(guide_count))
+        .and_then(|count| count.checked_add(attachment_count))
+        .ok_or(GitCommitPlanError::ResourceLimit)?;
+    let mut expected = Vec::new();
+    expected
+        .try_reserve_exact(expected_count)
+        .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    expected.push((
+        "rehow.yaml".to_owned(),
+        GitCommitManagedKind::Manifest,
+        GitCommitManagedExpectation::Document(workspace.manifest_revision()),
+    ));
+    for category in workspace.categories() {
+        let descriptor = format!("{}/category.yaml", category.relative_directory());
+        expected.push((
+            descriptor,
+            GitCommitManagedKind::Category,
+            GitCommitManagedExpectation::Document(category.descriptor_revision()),
+        ));
+        for guide in category.guides() {
+            expected.push((
+                guide.relative_path().to_owned(),
+                GitCommitManagedKind::Guide,
+                GitCommitManagedExpectation::Document(guide.revision()),
+            ));
+            for attachment in guide.guide().attachments().unwrap_or_default() {
+                expected.push((
+                    attachment.path().to_owned(),
+                    GitCommitManagedKind::Attachment,
+                    GitCommitManagedExpectation::Attachment {
+                        sha256: attachment.sha256().to_owned(),
+                        declared_size: attachment.size_bytes(),
+                    },
+                ));
+            }
+        }
+    }
+    if expected.len() != expected_count
+        || expected.len()
+            > 1usize
+                .saturating_add(CATEGORY_LIMIT)
+                .saturating_add(GUIDE_COUNT_LIMIT)
+                .saturating_add(ATTACHMENT_COUNT_LIMIT)
+    {
+        return Err(GitCommitPlanError::ResourceLimit);
+    }
+    expected.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    if expected
+        .windows(2)
+        .any(|pair| pair[0].0.as_bytes() >= pair[1].0.as_bytes())
+    {
+        return Err(GitCommitPlanError::WorkspaceIssues);
+    }
+
+    let mut files = Vec::new();
+    files
+        .try_reserve_exact(expected.len())
+        .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    let mut descriptor_bytes = 0u64;
+    let mut attachment_bytes = 0u64;
+    for (path, kind, expectation) in expected {
+        let (classified, limit) =
+            classify_git_materialization_path(&path).ok_or(GitCommitPlanError::WorkspaceIssues)?;
+        let expected_class = match kind {
+            GitCommitManagedKind::Manifest => GitMaterializationPathKind::Manifest,
+            GitCommitManagedKind::Category => GitMaterializationPathKind::Category,
+            GitCommitManagedKind::Guide => GitMaterializationPathKind::Guide,
+            GitCommitManagedKind::Attachment => GitMaterializationPathKind::Attachment,
+        };
+        if classified != expected_class {
+            return Err(GitCommitPlanError::WorkspaceIssues);
+        }
+        let snapshot = workspace
+            .read_git_commit_managed_file(&path, limit)
+            .map_err(map_git_commit_workspace_read_error)?;
+        if snapshot.mode & 0o111 != 0 {
+            return Err(GitCommitPlanError::WorkspaceIssues);
+        }
+        let size =
+            u64::try_from(snapshot.bytes.len()).map_err(|_| GitCommitPlanError::ResourceLimit)?;
+        match expectation {
+            GitCommitManagedExpectation::Document(expected_revision) => {
+                if snapshot.revision != expected_revision {
+                    return Err(GitCommitPlanError::PlanStale);
+                }
+                descriptor_bytes = descriptor_bytes
+                    .checked_add(size)
+                    .filter(|total| *total <= MANAGED_BYTES_LIMIT)
+                    .ok_or(GitCommitPlanError::ResourceLimit)?;
+            }
+            GitCommitManagedExpectation::Attachment {
+                sha256,
+                declared_size,
+            } => {
+                use sha2::Digest as _;
+                if declared_size.is_some_and(|declared| declared != size)
+                    || hex_lower(&sha2::Sha256::digest(&snapshot.bytes)) != sha256
+                {
+                    return Err(GitCommitPlanError::PlanStale);
+                }
+                attachment_bytes = attachment_bytes
+                    .checked_add(size)
+                    .filter(|total| *total <= ATTACHMENT_BYTES_LIMIT)
+                    .ok_or(GitCommitPlanError::ResourceLimit)?;
+            }
+        }
+        files.push(GitCommitManagedFile {
+            path,
+            kind,
+            size,
+            revision: snapshot.revision,
+            blob_object_id: git_blob_object_id(object_format, &snapshot.bytes),
+        });
+    }
+    Ok(GitCommitManagedInventory { files })
+}
+
+fn map_git_commit_workspace_read_error(error: GitCommitSnapshotError) -> GitCommitPlanError {
+    match error {
+        GitCommitSnapshotError::Conflict => GitCommitPlanError::PlanStale,
+        GitCommitSnapshotError::Unsafe | GitCommitSnapshotError::OperationInProgress => {
+            GitCommitPlanError::WorkspaceIssues
+        }
+        GitCommitSnapshotError::TooLarge => GitCommitPlanError::ResourceLimit,
+        GitCommitSnapshotError::Io => GitCommitPlanError::Io,
+    }
+}
+
+fn map_git_commit_snapshot_error(error: GitCommitSnapshotError) -> GitCommitPlanError {
+    match error {
+        GitCommitSnapshotError::OperationInProgress => GitCommitPlanError::OperationInProgress,
+        GitCommitSnapshotError::Conflict => GitCommitPlanError::PlanStale,
+        GitCommitSnapshotError::Unsafe => GitCommitPlanError::UnsafeRepository,
+        GitCommitSnapshotError::TooLarge => GitCommitPlanError::ResourceLimit,
+        GitCommitSnapshotError::Io => GitCommitPlanError::Io,
+    }
+}
+
+fn map_git_commit_read_error(error: GitReadError) -> GitCommitPlanError {
+    match error {
+        GitReadError::Timeout | GitReadError::OutputLimit => GitCommitPlanError::ResourceLimit,
+        GitReadError::ExitStatus | GitReadError::InvalidOutput => {
+            GitCommitPlanError::UnsafeRepository
+        }
+        GitReadError::Spawn | GitReadError::Signal => GitCommitPlanError::Io,
+    }
+}
+
+fn parse_git_commit_config(
+    records: &[u8],
+) -> Result<(GitObjectFormat, GitCommitIdentity), GitCommitPlanError> {
+    if !records.is_empty() && !records.ends_with(b"\0") {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    let mut repository_version = None;
+    let mut object_format = None;
+    let mut name = None;
+    let mut email = None;
+    for record in records
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+    {
+        let separator = record
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .ok_or(GitCommitPlanError::UnsafeRepository)?;
+        let key = std::str::from_utf8(&record[..separator])
+            .map_err(|_| GitCommitPlanError::UnsafeRepository)?;
+        let value = &record[separator + 1..];
+        match key {
+            "core.repositoryformatversion" => {
+                set_single_config_value(&mut repository_version, value)?;
+            }
+            "extensions.objectformat" => set_single_config_value(&mut object_format, value)?,
+            "user.name" => set_single_config_value(&mut name, value)?,
+            "user.email" => set_single_config_value(&mut email, value)?,
+            key if key.starts_with("extensions.") => {
+                return Err(GitCommitPlanError::UnsupportedRepository);
+            }
+            _ => {}
+        }
+    }
+    let format = match (repository_version.as_deref(), object_format.as_deref()) {
+        (Some(b"0"), None) => GitObjectFormat::Sha1,
+        (Some(b"1"), Some(b"sha256")) => GitObjectFormat::Sha256,
+        _ => return Err(GitCommitPlanError::UnsupportedRepository),
+    };
+    let name = std::str::from_utf8(name.as_deref().ok_or(GitCommitPlanError::InvalidIdentity)?)
+        .map_err(|_| GitCommitPlanError::InvalidIdentity)?;
+    let email = std::str::from_utf8(
+        email
+            .as_deref()
+            .ok_or(GitCommitPlanError::InvalidIdentity)?,
+    )
+    .map_err(|_| GitCommitPlanError::InvalidIdentity)?;
+    Ok((format, validate_git_commit_identity(name, email)?))
+}
+
+fn set_single_config_value(
+    slot: &mut Option<Vec<u8>>,
+    value: &[u8],
+) -> Result<(), GitCommitPlanError> {
+    if slot.is_some() {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    let mut retained = Vec::new();
+    retained
+        .try_reserve_exact(value.len())
+        .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    retained.extend_from_slice(value);
+    *slot = Some(retained);
+    Ok(())
+}
+
 #[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
 fn normalize_git_commit_message(value: &str) -> Result<String, GitCommitPlanError> {
     let value = value.trim();
@@ -3721,6 +4663,32 @@ mod tests {
         open_workspace(temp)
     }
 
+    fn fixture_git(temp: &Temp, arguments: &[&str]) {
+        let status = Command::new("/usr/bin/git")
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .args(arguments)
+            .current_dir(&temp.0)
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "git fixture command failed: {arguments:?}"
+        );
+    }
+
+    fn configure_fixture_identity(temp: &Temp) {
+        fixture_git(temp, &["config", "--local", "user.name", "Rehow Test"]);
+        fixture_git(
+            temp,
+            &["config", "--local", "user.email", "rehow@example.invalid"],
+        );
+    }
+
     fn empty_target(temp: &Temp) -> EmptyWorkspaceTarget {
         let (_, inspection) = inspect_workspace(&temp.0).unwrap().into_parts();
         let WorkspaceInspection::Empty(target) = inspection else {
@@ -3791,6 +4759,17 @@ mod tests {
         }
         bytes.extend_from_slice(&git_index_checksum(&bytes, format));
         bytes
+    }
+
+    fn commit_tree_listing(entries: &[(&str, &str, &str, &str, &[u8])]) -> Vec<u8> {
+        let mut listing = Vec::new();
+        for (mode, object_type, object_id, size, path) in entries {
+            listing
+                .extend_from_slice(format!("{mode} {object_type} {object_id} {size}\t").as_bytes());
+            listing.extend_from_slice(path);
+            listing.push(0);
+        }
+        listing
     }
 
     #[test]
@@ -4047,6 +5026,310 @@ mod tests {
             parse_git_index(&too_many, GitObjectFormat::Sha1),
             Err(GitCommitPlanError::ResourceLimit)
         ));
+    }
+
+    #[test]
+    fn commit_tree_parses_bounded_opaque_paths_and_supported_git_modes() {
+        let oid = "0123456789abcdef0123456789abcdef01234567";
+        let listing = commit_tree_listing(&[
+            ("040000", "tree", oid, "-", b"dir"),
+            ("100755", "blob", oid, "7", b"dir/executable"),
+            ("120000", "blob", oid, "6", b"dir/link"),
+            ("100644", "blob", oid, "3", b"dir/non-utf8-\xff"),
+            ("160000", "commit", oid, "-", b"submodule"),
+        ]);
+        let tree = parse_git_commit_tree(&listing, GitObjectFormat::Sha1).unwrap();
+        assert_eq!(tree.entries.len(), 5);
+        assert_eq!(tree.entries[0].kind, GitCommitTreeEntryKind::Tree);
+        assert_eq!(tree.entries[1].mode, 0o100755);
+        assert_eq!(tree.entries[1].size, Some(7));
+        assert_eq!(tree.entries[4].kind, GitCommitTreeEntryKind::Commit);
+        let debug = format!("{:?}", tree.entries[3]);
+        assert!(!debug.contains("non-utf8"));
+        assert!(!debug.contains(oid));
+        assert!(
+            parse_git_commit_tree(&[], GitObjectFormat::Sha1)
+                .unwrap()
+                .entries
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn commit_tree_rejects_malformed_order_hierarchy_type_and_width() {
+        let oid = "0123456789abcdef0123456789abcdef01234567";
+        for listing in [
+            commit_tree_listing(&[("100644", "blob", oid, "1", b"dir/file")]),
+            commit_tree_listing(&[
+                ("100644", "blob", oid, "1", b"z"),
+                ("100644", "blob", oid, "1", b"a"),
+            ]),
+            commit_tree_listing(&[("100755", "tree", oid, "-", b"dir")]),
+            commit_tree_listing(&[("100644", "blob", oid, "-", b"file")]),
+            commit_tree_listing(&[("100644", "blob", &"a".repeat(64), "1", b"file")]),
+            b"100644 blob 0123456789abcdef0123456789abcdef01234567 1\tfile".to_vec(),
+        ] {
+            assert!(matches!(
+                parse_git_commit_tree(&listing, GitObjectFormat::Sha1),
+                Err(GitCommitPlanError::UnsafeRepository)
+            ));
+        }
+    }
+
+    #[test]
+    fn commit_tree_detects_only_new_managed_ownership_collisions() {
+        let oid = "0123456789abcdef0123456789abcdef01234567";
+        let tree = parse_git_commit_tree(
+            &commit_tree_listing(&[
+                ("040000", "tree", oid, "-", b"categories"),
+                ("040000", "tree", oid, "-", b"categories/existing"),
+                (
+                    "100644",
+                    "blob",
+                    oid,
+                    "1",
+                    b"categories/existing/category.yaml",
+                ),
+                ("040000", "tree", oid, "-", b"categories/unrelated"),
+                ("100644", "blob", oid, "1", b"categories/unrelated/file"),
+                ("100644", "blob", oid, "1", b"rehow.yaml"),
+            ]),
+            GitObjectFormat::Sha1,
+        )
+        .unwrap();
+        let prior = vec![
+            b"categories/existing/category.yaml".to_vec(),
+            b"rehow.yaml".to_vec(),
+        ];
+        assert!(!git_commit_path_collision(
+            &tree,
+            &prior,
+            &[
+                b"categories/existing/category.yaml".to_vec(),
+                b"categories/new/category.yaml".to_vec(),
+                b"rehow.yaml".to_vec(),
+            ]
+        ));
+        for current in [
+            b"categories/unrelated".to_vec(),
+            b"categories/unrelated/file/child".to_vec(),
+            b"categories/unrelated/new.yaml".to_vec(),
+        ] {
+            assert!(git_commit_path_collision(&tree, &prior, &[current]));
+        }
+        assert!(!git_commit_path_collision(
+            &tree,
+            &prior,
+            &[b"rehow.yaml".to_vec()]
+        ));
+    }
+
+    #[test]
+    fn commit_repository_preflight_accepts_stable_unborn_and_parented_sha1_state() {
+        let unborn = Temp::new();
+        drop(initialized_workspace(&unborn));
+        configure_fixture_identity(&unborn);
+        let workspace = open_workspace(&unborn);
+        let preflight = inspect_git_commit_repository(&workspace).unwrap();
+        assert_eq!(preflight.object_format, GitObjectFormat::Sha1);
+        assert_eq!(preflight.branch.display, "main");
+        assert_eq!(
+            preflight.branch.representation,
+            GitBranchRepresentation::Unborn
+        );
+        assert!(preflight.index.is_none());
+        assert!(!format!("{preflight:?}").contains("rehow@example.invalid"));
+
+        let parented = Temp::new();
+        drop(initialized_workspace(&parented));
+        configure_fixture_identity(&parented);
+        fixture_git(&parented, &["add", "--", "rehow.yaml"]);
+        fixture_git(&parented, &["commit", "-qm", "fixture"]);
+        let workspace = open_workspace(&parented);
+        let capability = workspace.git_repository_capability().unwrap();
+        let sandbox = trusted_executable("/usr/bin/bwrap").unwrap();
+        let executable = trusted_executable("/usr/bin/git").unwrap();
+        let parent = fs::read_to_string(parented.0.join(".git/refs/heads/main")).unwrap();
+        let listing = run_git_commit_read(
+            &executable,
+            &sandbox,
+            &capability,
+            GitObjectFormat::Sha1,
+            &[
+                "ls-tree",
+                "-r",
+                "-t",
+                "-l",
+                "--full-tree",
+                "-z",
+                parent.trim(),
+            ],
+            MAX_COMMIT_TREE_BYTES,
+        )
+        .unwrap();
+        parse_git_commit_tree(&listing.stdout, GitObjectFormat::Sha1).unwrap();
+        let preflight = inspect_git_commit_repository(&workspace).unwrap();
+        assert_eq!(preflight.object_format, GitObjectFormat::Sha1);
+        assert_eq!(
+            preflight.branch.representation,
+            GitBranchRepresentation::Loose
+        );
+        assert!(preflight.branch.expected_object_id.is_some());
+        assert_eq!(preflight.index.as_ref().unwrap().entries.len(), 1);
+    }
+
+    #[test]
+    fn commit_repository_preflight_refuses_every_operation_marker_and_branch_lock() {
+        let temp = Temp::new();
+        drop(initialized_workspace(&temp));
+        configure_fixture_identity(&temp);
+        let workspace = open_workspace(&temp);
+        for marker in [
+            "MERGE_HEAD",
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+            "REBASE_HEAD",
+            "BISECT_LOG",
+            "BISECT_START",
+            "AUTO_MERGE",
+            "index.lock",
+            "HEAD.lock",
+            "packed-refs.lock",
+            "config.lock",
+            "shallow.lock",
+        ] {
+            fs::write(temp.0.join(".git").join(marker), b"busy").unwrap();
+            assert_eq!(
+                inspect_git_commit_repository(&workspace).unwrap_err(),
+                GitCommitPlanError::OperationInProgress,
+                "marker {marker} was accepted"
+            );
+            fs::remove_file(temp.0.join(".git").join(marker)).unwrap();
+        }
+        for marker in ["rebase-apply", "rebase-merge", "sequencer"] {
+            fs::create_dir(temp.0.join(".git").join(marker)).unwrap();
+            assert_eq!(
+                inspect_git_commit_repository(&workspace).unwrap_err(),
+                GitCommitPlanError::OperationInProgress,
+                "marker {marker} was accepted"
+            );
+            fs::remove_dir(temp.0.join(".git").join(marker)).unwrap();
+        }
+        fs::write(temp.0.join(".git/refs/heads/main.lock"), b"busy").unwrap();
+        assert_eq!(
+            inspect_git_commit_repository(&workspace).unwrap_err(),
+            GitCommitPlanError::OperationInProgress
+        );
+    }
+
+    #[test]
+    fn commit_repository_preflight_refuses_ambiguous_identity_and_unsafe_metadata() {
+        let temp = Temp::new();
+        drop(initialized_workspace(&temp));
+        configure_fixture_identity(&temp);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(temp.0.join(".git/config"))
+            .unwrap()
+            .write_all(b"[user]\n\tname = Other Name\n")
+            .unwrap();
+        let workspace = open_workspace(&temp);
+        assert_eq!(
+            inspect_git_commit_repository(&workspace).unwrap_err(),
+            GitCommitPlanError::UnsafeRepository
+        );
+
+        let symlink_marker = Temp::new();
+        drop(initialized_workspace(&symlink_marker));
+        configure_fixture_identity(&symlink_marker);
+        symlink("/dev/null", symlink_marker.0.join(".git/CHERRY_PICK_HEAD")).unwrap();
+        let workspace = open_workspace(&symlink_marker);
+        assert_eq!(
+            inspect_git_commit_repository(&workspace).unwrap_err(),
+            GitCommitPlanError::OperationInProgress
+        );
+    }
+
+    #[test]
+    fn commit_repository_preflight_supports_sha256_without_active_config_authority() {
+        let temp = Temp::new();
+        drop(workspace(&temp));
+        fixture_git(
+            &temp,
+            &[
+                "init",
+                "-q",
+                "--object-format=sha256",
+                "--initial-branch=main",
+            ],
+        );
+        configure_fixture_identity(&temp);
+        fixture_git(&temp, &["add", "--", "rehow.yaml"]);
+        fixture_git(&temp, &["commit", "-qm", "fixture"]);
+        let workspace = open_workspace(&temp);
+        let preflight = inspect_git_commit_repository(&workspace).unwrap();
+        assert_eq!(preflight.object_format, GitObjectFormat::Sha256);
+        assert_eq!(
+            preflight.branch.expected_object_id.as_ref().unwrap().len(),
+            64
+        );
+        assert_eq!(
+            preflight.index.as_ref().unwrap().entries[0].object_id.len(),
+            32
+        );
+        assert_eq!(preflight.managed.files[0].blob_object_id.len(), 64);
+    }
+
+    #[test]
+    fn commit_repository_preflight_rejects_stale_or_executable_managed_content() {
+        let stale = Temp::new();
+        drop(initialized_workspace(&stale));
+        configure_fixture_identity(&stale);
+        let workspace = open_workspace(&stale);
+        let changed = fs::read_to_string(stale.0.join("rehow.yaml"))
+            .unwrap()
+            .replace("name: Git", "name: Changed");
+        fs::write(stale.0.join("rehow.yaml"), changed).unwrap();
+        assert_eq!(
+            inspect_git_commit_repository(&workspace).unwrap_err(),
+            GitCommitPlanError::PlanStale
+        );
+
+        let executable = Temp::new();
+        drop(initialized_workspace(&executable));
+        configure_fixture_identity(&executable);
+        let workspace = open_workspace(&executable);
+        let mut mode = fs::metadata(executable.0.join("rehow.yaml"))
+            .unwrap()
+            .permissions();
+        mode.set_mode(0o700);
+        fs::set_permissions(executable.0.join("rehow.yaml"), mode).unwrap();
+        assert_eq!(
+            inspect_git_commit_repository(&workspace).unwrap_err(),
+            GitCommitPlanError::WorkspaceIssues
+        );
+    }
+
+    #[test]
+    fn commit_repository_preflight_rejects_unrelated_tree_ownership_collision() {
+        const CATEGORY: &str = "schema_version: 1\nid: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5551\nname: Linux System\norder: 1000\nstatus: active\ncreated_at: \"2026-09-05T10:01:00Z\"\nupdated_at: \"2026-09-05T10:01:00Z\"\n";
+        let temp = Temp::new();
+        fixture_git(&temp, &["init", "-q", "--initial-branch=main"]);
+        configure_fixture_identity(&temp);
+        fs::create_dir_all(temp.0.join("categories/unrelated")).unwrap();
+        fs::write(temp.0.join("categories/unrelated/file"), b"unrelated").unwrap();
+        fixture_git(&temp, &["add", "--", "categories/unrelated/file"]);
+        fixture_git(&temp, &["commit", "-qm", "unrelated tree"]);
+        fs::remove_dir_all(temp.0.join("categories")).unwrap();
+        fs::write(temp.0.join("rehow.yaml"), "schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Git\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n").unwrap();
+        let category = temp.0.join("categories/linux-system--b6ba3a5551");
+        fs::create_dir_all(&category).unwrap();
+        fs::write(category.join("category.yaml"), CATEGORY).unwrap();
+        let workspace = open_workspace(&temp);
+        assert_eq!(
+            inspect_git_commit_repository(&workspace).unwrap_err(),
+            GitCommitPlanError::PathCollision
+        );
     }
 
     #[test]

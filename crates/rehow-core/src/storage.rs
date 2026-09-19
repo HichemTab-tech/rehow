@@ -56,6 +56,64 @@ use std::{
 };
 
 const GIT_CONFIG_LIMIT: usize = 1024 * 1024;
+const GIT_COMMIT_INDEX_LIMIT: usize = 64 * 1024 * 1024;
+const GIT_COMMIT_REF_LIMIT: usize = 1024 * 1024;
+
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct GitCommitFileSnapshot {
+    pub(crate) bytes: Vec<u8>,
+    metadata: GitConfigMetadata,
+}
+
+impl fmt::Debug for GitCommitFileSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitCommitFileSnapshot")
+            .field("bytes", &format_args!("<redacted:{}>", self.bytes.len()))
+            .field("metadata", &self.metadata)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GitCommitRepositorySnapshot {
+    pub(crate) head: GitCommitFileSnapshot,
+    pub(crate) config: GitCommitFileSnapshot,
+    pub(crate) index: Option<GitCommitFileSnapshot>,
+    pub(crate) packed_refs: Option<GitCommitFileSnapshot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GitCommitBranchSnapshot {
+    pub(crate) target: Option<GitCommitFileSnapshot>,
+}
+
+#[derive(Eq, PartialEq)]
+pub(crate) struct GitCommitManagedFileSnapshot {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) revision: Revision,
+    pub(crate) mode: u32,
+}
+
+impl fmt::Debug for GitCommitManagedFileSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitCommitManagedFileSnapshot")
+            .field("bytes", &format_args!("<redacted:{}>", self.bytes.len()))
+            .field("revision", &"<redacted>")
+            .field("mode", &format_args!("{:o}", self.mode))
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitCommitSnapshotError {
+    OperationInProgress,
+    Conflict,
+    Unsafe,
+    TooLarge,
+    Io,
+}
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct GitConfigFiles {
@@ -219,6 +277,76 @@ impl GitRepositoryCapability {
         self.shallow_path.as_deref()
     }
 
+    pub(crate) fn read_commit_repository_snapshot(
+        &self,
+    ) -> Result<GitCommitRepositorySnapshot, GitCommitSnapshotError> {
+        validate_git_directory_for_mutation(&self._git_dir).map_err(map_git_commit_snapshot)?;
+        for marker in [
+            "MERGE_HEAD",
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+            "REBASE_HEAD",
+            "BISECT_LOG",
+            "BISECT_START",
+            "AUTO_MERGE",
+            "rebase-apply",
+            "rebase-merge",
+            "sequencer",
+            "index.lock",
+            "HEAD.lock",
+            "packed-refs.lock",
+            "config.lock",
+            "shallow.lock",
+        ] {
+            if git_entry_exists(&self._git_dir, marker)? {
+                return Err(GitCommitSnapshotError::OperationInProgress);
+            }
+        }
+        let head = read_git_entry(&self._git_dir, "HEAD", GIT_COMMIT_REF_LIMIT)?
+            .ok_or(GitCommitSnapshotError::Unsafe)?;
+        let config = read_git_entry(&self._git_dir, "config", GIT_CONFIG_LIMIT)?
+            .ok_or(GitCommitSnapshotError::Unsafe)?;
+        let index = read_git_entry(&self._git_dir, "index", GIT_COMMIT_INDEX_LIMIT)?;
+        let packed_refs = read_git_entry(&self._git_dir, "packed-refs", GIT_COMMIT_REF_LIMIT)?;
+        Ok(GitCommitRepositorySnapshot {
+            head: GitCommitFileSnapshot {
+                bytes: head.0,
+                metadata: head.1,
+            },
+            config: GitCommitFileSnapshot {
+                bytes: config.0,
+                metadata: config.1,
+            },
+            index: index.map(|(bytes, metadata)| GitCommitFileSnapshot { bytes, metadata }),
+            packed_refs: packed_refs
+                .map(|(bytes, metadata)| GitCommitFileSnapshot { bytes, metadata }),
+        })
+    }
+
+    pub(crate) fn read_commit_branch_snapshot(
+        &self,
+        branch_relative: &str,
+    ) -> Result<GitCommitBranchSnapshot, GitCommitSnapshotError> {
+        let mut components = branch_relative.split('/').peekable();
+        if components.peek().is_none() || components.clone().any(|part| !valid_git_ref_part(part)) {
+            return Err(GitCommitSnapshotError::Unsafe);
+        }
+        let mut directory = open_git_directory(&self._refs, "heads")?;
+        while let Some(part) = components.next() {
+            if components.peek().is_none() {
+                let lock_name = format!("{part}.lock");
+                if git_entry_exists(&directory, &lock_name)? {
+                    return Err(GitCommitSnapshotError::OperationInProgress);
+                }
+                let target = read_git_entry(&directory, part, GIT_COMMIT_REF_LIMIT)?
+                    .map(|(bytes, metadata)| GitCommitFileSnapshot { bytes, metadata });
+                return Ok(GitCommitBranchSnapshot { target });
+            }
+            directory = open_git_directory(&directory, part)?;
+        }
+        Err(GitCommitSnapshotError::Unsafe)
+    }
+
     pub(crate) fn read_config_files(&self) -> Result<GitConfigFiles, GitConfigStorageError> {
         validate_git_directory_for_mutation(&self._git_dir)?;
         let (config, config_metadata) = read_git_config_entry(&self._git_dir, "config")?
@@ -337,7 +465,22 @@ fn read_git_config_entry(
     directory: &OwnedFd,
     name: &str,
 ) -> Result<Option<(Vec<u8>, GitConfigMetadata)>, GitConfigStorageError> {
-    let name = std::ffi::CString::new(name).map_err(|_| GitConfigStorageError::Unsafe)?;
+    read_git_entry(directory, name, GIT_CONFIG_LIMIT).map_err(|error| match error {
+        GitCommitSnapshotError::Conflict => GitConfigStorageError::Conflict,
+        GitCommitSnapshotError::Unsafe | GitCommitSnapshotError::OperationInProgress => {
+            GitConfigStorageError::Unsafe
+        }
+        GitCommitSnapshotError::TooLarge => GitConfigStorageError::TooLarge,
+        GitCommitSnapshotError::Io => GitConfigStorageError::Io,
+    })
+}
+
+fn read_git_entry(
+    directory: &OwnedFd,
+    name: &str,
+    limit: usize,
+) -> Result<Option<(Vec<u8>, GitConfigMetadata)>, GitCommitSnapshotError> {
+    let name = std::ffi::CString::new(name).map_err(|_| GitCommitSnapshotError::Unsafe)?;
     // SAFETY: the retained directory and validated NUL-terminated leaf are valid.
     let raw = unsafe {
         libc::openat(
@@ -350,34 +493,114 @@ fn read_git_config_entry(
         let error = std::io::Error::last_os_error();
         return match error.raw_os_error() {
             Some(libc::ENOENT) => Ok(None),
-            Some(libc::ELOOP | libc::ENXIO | libc::ENODEV) => Err(GitConfigStorageError::Unsafe),
-            _ => Err(GitConfigStorageError::Io),
+            Some(libc::ELOOP | libc::ENXIO | libc::ENODEV) => Err(GitCommitSnapshotError::Unsafe),
+            _ => Err(GitCommitSnapshotError::Io),
         };
     }
     // SAFETY: successful openat returned a newly owned descriptor.
     let mut file = unsafe { File::from_raw_fd(raw) };
-    let before = git_config_metadata(&file)?;
-    if before.size > GIT_CONFIG_LIMIT as u64 {
-        return Err(GitConfigStorageError::TooLarge);
+    let before = git_config_metadata(&file).map_err(map_git_commit_snapshot)?;
+    if before.size > limit as u64 {
+        return Err(GitCommitSnapshotError::TooLarge);
     }
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(before.size as usize)
-        .map_err(|_| GitConfigStorageError::TooLarge)?;
+        .map_err(|_| GitCommitSnapshotError::TooLarge)?;
     file.seek(SeekFrom::Start(0))
-        .map_err(|_| GitConfigStorageError::Io)?;
+        .map_err(|_| GitCommitSnapshotError::Io)?;
     Read::by_ref(&mut file)
-        .take((GIT_CONFIG_LIMIT as u64).saturating_add(1))
+        .take((limit as u64).saturating_add(1))
         .read_to_end(&mut bytes)
-        .map_err(|_| GitConfigStorageError::Io)?;
-    if bytes.len() > GIT_CONFIG_LIMIT {
-        return Err(GitConfigStorageError::TooLarge);
+        .map_err(|_| GitCommitSnapshotError::Io)?;
+    if bytes.len() > limit {
+        return Err(GitCommitSnapshotError::TooLarge);
     }
-    let after = git_config_metadata(&file)?;
+    let after = git_config_metadata(&file).map_err(map_git_commit_snapshot)?;
     if before != after || bytes.len() as u64 != after.size {
-        return Err(GitConfigStorageError::Conflict);
+        return Err(GitCommitSnapshotError::Conflict);
     }
     Ok(Some((bytes, after)))
+}
+
+fn map_git_commit_snapshot(error: GitConfigStorageError) -> GitCommitSnapshotError {
+    match error {
+        GitConfigStorageError::Conflict => GitCommitSnapshotError::Conflict,
+        GitConfigStorageError::Unsafe => GitCommitSnapshotError::Unsafe,
+        GitConfigStorageError::Unsupported => GitCommitSnapshotError::Unsafe,
+        GitConfigStorageError::TooLarge => GitCommitSnapshotError::TooLarge,
+        GitConfigStorageError::Io => GitCommitSnapshotError::Io,
+    }
+}
+
+fn git_entry_exists(directory: &OwnedFd, name: &str) -> Result<bool, GitCommitSnapshotError> {
+    let name = std::ffi::CString::new(name).map_err(|_| GitCommitSnapshotError::Unsafe)?;
+    let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: retained directory, NUL-terminated name, and output storage are valid.
+    if unsafe {
+        libc::fstatat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            status.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } == 0
+    {
+        return Ok(true);
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::ENOENT) => Ok(false),
+        _ => Err(GitCommitSnapshotError::Io),
+    }
+}
+
+fn open_git_directory(directory: &OwnedFd, name: &str) -> Result<OwnedFd, GitCommitSnapshotError> {
+    if !valid_git_ref_part(name) {
+        return Err(GitCommitSnapshotError::Unsafe);
+    }
+    let name = std::ffi::CString::new(name).map_err(|_| GitCommitSnapshotError::Unsafe)?;
+    // SAFETY: retained directory and validated NUL-terminated component are valid.
+    let raw = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if raw < 0 {
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ENOENT) => Err(GitCommitSnapshotError::Conflict),
+            Some(libc::ELOOP | libc::ENOTDIR) => Err(GitCommitSnapshotError::Unsafe),
+            _ => Err(GitCommitSnapshotError::Io),
+        };
+    }
+    // SAFETY: successful openat returned a newly owned descriptor.
+    let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
+    let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: descriptor and output storage are valid.
+    if unsafe { libc::fstat(descriptor.as_raw_fd(), status.as_mut_ptr()) } != 0 {
+        return Err(GitCommitSnapshotError::Io);
+    }
+    // SAFETY: successful fstat initialized the structure.
+    let status = unsafe { status.assume_init() };
+    if status.st_uid != unsafe { libc::geteuid() }
+        || status.st_mode & libc::S_IFMT != libc::S_IFDIR
+        || status.st_mode & 0o022 != 0
+    {
+        return Err(GitCommitSnapshotError::Unsafe);
+    }
+    Ok(descriptor)
+}
+
+fn valid_git_ref_part(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && !value.starts_with('.')
+        && !value.ends_with('.')
+        && !value.ends_with(".lock")
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
 }
 
 fn git_config_metadata(file: &File) -> Result<GitConfigMetadata, GitConfigStorageError> {
@@ -758,6 +981,16 @@ fn map_clone_destination_error(error: linux::MutationIoError) -> WorkspaceInspec
     }
 }
 
+fn map_git_commit_managed_read(error: linux::MutationIoError) -> GitCommitSnapshotError {
+    match error {
+        linux::MutationIoError::Conflict => GitCommitSnapshotError::Conflict,
+        linux::MutationIoError::Unsafe => GitCommitSnapshotError::Unsafe,
+        linux::MutationIoError::Unsupported => GitCommitSnapshotError::Unsafe,
+        linux::MutationIoError::TooLarge => GitCommitSnapshotError::TooLarge,
+        linux::MutationIoError::Io => GitCommitSnapshotError::Io,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WorkspaceFolderFacts {
     writable: bool,
@@ -866,6 +1099,28 @@ impl WorkspaceView {
         &self,
     ) -> Result<GitRepositoryCapability, GitRepositoryCapabilityError> {
         self._root.git_repository_capability()
+    }
+
+    pub(crate) fn read_git_commit_managed_file(
+        &self,
+        relative_path: &str,
+        limit: u64,
+    ) -> Result<GitCommitManagedFileSnapshot, GitCommitSnapshotError> {
+        let limit = usize::try_from(limit).map_err(|_| GitCommitSnapshotError::TooLarge)?;
+        let target = self
+            ._root
+            .open_managed_target(relative_path)
+            .map_err(map_git_commit_managed_read)?;
+        let state = target.state(limit).map_err(map_git_commit_managed_read)?;
+        let linux::ManagedState::Regular(state) = state else {
+            return Err(GitCommitSnapshotError::Conflict);
+        };
+        let revision = document_revision(relative_path, &state.bytes);
+        Ok(GitCommitManagedFileSnapshot {
+            bytes: state.bytes,
+            revision,
+            mode: state.mode,
+        })
     }
 
     pub(crate) fn git_initialization_binding(&self) -> (String, Revision, [u8; 32]) {
