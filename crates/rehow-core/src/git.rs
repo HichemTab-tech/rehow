@@ -1,5 +1,8 @@
 //! Confined Git discovery/status and separately gated repository operations.
 
+use crate::storage::recovery::{
+    GitCommitStaging, GitCommitStagingError, create_git_commit_staging,
+};
 use crate::{
     protocol::{OperationId, PlanToken, Revision, Timestamp, current_timestamp, new_operation_id},
     storage::{
@@ -54,7 +57,9 @@ const MAX_COMMIT_INDEX_ENTRIES: usize = 50_000;
 const MAX_COMMIT_PATH_BYTES: usize = 4_096;
 const MAX_COMMIT_TREE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_COMMIT_TREE_ENTRIES: usize = 50_000;
+const MAX_COMMIT_STAGING_BYTES: u64 = 3 * 1024 * 1024 * 1024;
 const COMMIT_PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
+const COMMIT_PLAN_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
 const MAX_CLONE_TREE_LISTING_BYTES: usize = 32 * 1024 * 1024;
 #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
@@ -196,15 +201,23 @@ impl fmt::Debug for GitCommitIdentity {
 
 #[allow(dead_code, reason = "consumed by Phase 5C1 candidate construction")]
 struct GitCommitRepositoryPreflight {
+    workspace_id: String,
     capability: crate::storage::GitRepositoryCapability,
     repository: GitCommitRepositorySnapshot,
     branch_storage: crate::storage::GitCommitBranchSnapshot,
     branch: GitCommitBranch,
     identity: GitCommitIdentity,
     object_format: GitObjectFormat,
+    head_tree_object_id: Option<String>,
     index: Option<GitIndexSnapshot>,
     tree: GitCommitTree,
     managed: GitCommitManagedInventory,
+}
+
+#[allow(dead_code, reason = "consumed by Phase 5C1 candidate construction")]
+struct GitCommitPreparedStaging {
+    staging: GitCommitStaging,
+    prior_managed: GitCommitManagedInventory,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -254,12 +267,14 @@ impl fmt::Debug for GitCommitRepositoryPreflight {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("GitCommitRepositoryPreflight")
+            .field("workspace_id", &"<redacted>")
             .field("capability", &"<redacted>")
             .field("repository", &"<redacted>")
             .field("branch_storage", &"<redacted>")
             .field("branch", &self.branch)
             .field("identity", &self.identity)
             .field("object_format", &self.object_format)
+            .field("head_tree_object_id", &"<redacted>")
             .field(
                 "index_entries",
                 &self.index.as_ref().map_or(0, |index| index.entries.len()),
@@ -2407,6 +2422,20 @@ fn validate_object_id(value: &str) -> Option<GitObjectFormat> {
         .then_some(format)
 }
 
+fn parse_git_commit_object_id_line(
+    bytes: &[u8],
+    object_format: GitObjectFormat,
+) -> Result<String, GitCommitPlanError> {
+    let line = bytes
+        .strip_suffix(b"\n")
+        .ok_or(GitCommitPlanError::UnsafeRepository)?;
+    let value = std::str::from_utf8(line).map_err(|_| GitCommitPlanError::UnsafeRepository)?;
+    if validate_object_id(value) != Some(object_format) {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    Ok(value.to_owned())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GitCommitTreeEntryKind {
     Tree,
@@ -2577,9 +2606,6 @@ fn prior_managed_candidate_paths(tree: &GitCommitTree) -> Result<Vec<Vec<u8>>, G
         .try_reserve(tree.entries.len().min(MAX_COMMIT_INDEX_ENTRIES))
         .map_err(|_| GitCommitPlanError::ResourceLimit)?;
     for entry in &tree.entries {
-        if entry.mode != 0o100644 || entry.kind != GitCommitTreeEntryKind::Blob {
-            continue;
-        }
         let Ok(path) = std::str::from_utf8(&entry.path) else {
             continue;
         };
@@ -2587,6 +2613,9 @@ fn prior_managed_candidate_paths(tree: &GitCommitTree) -> Result<Vec<Vec<u8>>, G
             continue;
         };
         if kind != GitMaterializationPathKind::Ignore {
+            if entry.mode != 0o100644 || entry.kind != GitCommitTreeEntryKind::Blob {
+                return Err(GitCommitPlanError::AmbiguousManagedHistory);
+            }
             let mut retained = Vec::new();
             retained
                 .try_reserve_exact(entry.path.len())
@@ -3688,6 +3717,7 @@ fn run_git_commit_read_with_input(
         .env("HOME", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_PAGER", "cat")
@@ -4152,9 +4182,21 @@ fn inspect_git_commit_repository(
         (false, Some(index)) => Some(parse_git_index(&index.bytes, object_format)?),
         _ => return Err(GitCommitPlanError::UnsupportedIndex),
     };
-    let tree = if let Some(parent) = branch.expected_object_id.as_deref() {
+    let (head_tree_object_id, tree) = if let Some(parent) = branch.expected_object_id.as_deref() {
         let sandbox = trusted_executable("/usr/bin/bwrap")
             .ok_or(GitCommitPlanError::UnsupportedRepository)?;
+        let tree_expression = format!("{parent}^{{tree}}");
+        let tree_output = run_git_commit_read(
+            &executable,
+            &sandbox,
+            &capability,
+            object_format,
+            &["rev-parse", "--verify", &tree_expression],
+            128,
+        )
+        .map_err(map_git_commit_read_error)?;
+        let head_tree_object_id =
+            parse_git_commit_object_id_line(&tree_output.stdout, object_format)?;
         let output = run_git_commit_read(
             &executable,
             &sandbox,
@@ -4171,13 +4213,17 @@ fn inspect_git_commit_repository(
             &capability,
             object_format,
             parent,
+            &head_tree_object_id,
             &tree,
         )?;
-        tree
+        (Some(head_tree_object_id), tree)
     } else {
-        GitCommitTree {
-            entries: Vec::new(),
-        }
+        (
+            None,
+            GitCommitTree {
+                entries: Vec::new(),
+            },
+        )
     };
     let managed = inspect_git_commit_managed_inventory(workspace, object_format)?;
     let prior_managed = prior_managed_candidate_paths(&tree)?;
@@ -4205,16 +4251,557 @@ fn inspect_git_commit_repository(
         return Err(GitCommitPlanError::PlanStale);
     }
     Ok(GitCommitRepositoryPreflight {
+        workspace_id: workspace.manifest().workspace_id().to_string(),
         capability,
         repository,
         branch_storage,
         branch,
         identity,
         object_format,
+        head_tree_object_id,
         index,
         tree,
         managed,
     })
+}
+
+#[allow(dead_code, reason = "consumed by Phase 5C1 candidate construction")]
+fn prepare_git_commit_staging(
+    preflight: &GitCommitRepositoryPreflight,
+    state_home: &Path,
+) -> Result<GitCommitPreparedStaging, GitCommitPlanError> {
+    let operation_id = new_operation_id().to_string();
+    let mut stage_hasher = blake3::Hasher::new();
+    stage_hasher.update(b"rehow:git-commit-stage:v1\0");
+    hash_clone_field(&mut stage_hasher, operation_id.as_bytes());
+    let stage_name = hex_lower(stage_hasher.finalize().as_bytes());
+    let object_format = match preflight.object_format {
+        GitObjectFormat::Sha1 => "sha1",
+        GitObjectFormat::Sha256 => "sha256",
+    };
+    let provenance = format!(
+        "rehow-git-commit-stage-v1\noperation_id={operation_id}\nobject_format={object_format}\nbranch={}\nparent={}\nstage=prepared\n",
+        preflight.branch.reference,
+        preflight
+            .branch
+            .expected_object_id
+            .as_deref()
+            .unwrap_or("unborn"),
+    );
+    let config: &[u8] = match preflight.object_format {
+        GitObjectFormat::Sha1 => {
+            b"[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n"
+        }
+        GitObjectFormat::Sha256 => {
+            b"[core]\n\trepositoryformatversion = 1\n\tfilemode = true\n\tbare = true\n[extensions]\n\tobjectformat = sha256\n"
+        }
+    };
+    let staging = create_git_commit_staging(
+        state_home,
+        &stage_name,
+        provenance.as_bytes(),
+        config,
+        preflight
+            .repository
+            .index
+            .as_ref()
+            .map(|index| index.bytes.as_slice()),
+    )
+    .map_err(map_git_commit_staging_error)?;
+
+    match (
+        preflight.branch.expected_object_id.as_ref(),
+        preflight.head_tree_object_id.as_ref(),
+        preflight.repository.index.as_ref(),
+    ) {
+        (Some(_), Some(expected_tree), Some(_)) => {
+            let executable = trusted_executable("/usr/bin/git")
+                .ok_or(GitCommitPlanError::UnsupportedRepository)?;
+            let sandbox = trusted_executable("/usr/bin/bwrap")
+                .ok_or(GitCommitPlanError::UnsupportedRepository)?;
+            let actual_tree = run_git_commit_staging_write_tree(
+                &executable,
+                &sandbox,
+                &preflight.capability,
+                &staging,
+                preflight.object_format,
+            )?;
+            if &actual_tree != expected_tree {
+                return Err(GitCommitPlanError::UnsupportedIndex);
+            }
+        }
+        (None, None, None) => {}
+        _ => return Err(GitCommitPlanError::UnsupportedIndex),
+    }
+    let prior_managed = validate_prior_git_commit_workspace(preflight, &staging)?;
+    staging
+        .verify_size_limit(MAX_COMMIT_STAGING_BYTES)
+        .map_err(map_git_commit_staging_error)?;
+    Ok(GitCommitPreparedStaging {
+        staging,
+        prior_managed,
+    })
+}
+
+fn run_git_commit_staging_write_tree(
+    executable: &Path,
+    sandbox: &Path,
+    repository: &crate::storage::GitRepositoryCapability,
+    staging: &GitCommitStaging,
+    object_format: GitObjectFormat,
+) -> Result<String, GitCommitPlanError> {
+    let descriptor = staging.git_descriptor();
+    let mut command = Command::new(sandbox);
+    command
+        .env_clear()
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_PAGER", "cat")
+        .env("GIT_EDITOR", "false")
+        .env("GIT_ASKPASS", "false")
+        .env("SSH_ASKPASS", "false")
+        .args([
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-all",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib",
+            "/lib64",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--bind",
+            staging.git_path(),
+            "/repo.git",
+            "--ro-bind",
+            repository.objects_path(),
+            "/active-objects",
+            "--tmpfs",
+            "/active-objects/info",
+            "--chdir",
+            "/tmp",
+            "--setenv",
+            "GIT_DIR",
+            "/repo.git",
+            "--setenv",
+            "GIT_INDEX_FILE",
+            "/repo.git/index",
+            "--setenv",
+            "GIT_OBJECT_DIRECTORY",
+            "/repo.git/objects",
+            "--setenv",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "/active-objects",
+            "--",
+        ])
+        .arg(executable)
+        .args([
+            "--no-pager",
+            "--literal-pathspecs",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            "-c",
+            "core.alternateRefsCommand=",
+            "-c",
+            "diff.external=",
+            "-c",
+            "protocol.allow=never",
+            "write-tree",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.process_group(0);
+    // SAFETY: only the retained staging descriptor has CLOEXEC cleared for the
+    // Bubblewrap bind; the child receives no arbitrary descriptor selection.
+    unsafe {
+        command.pre_exec(move || {
+            let flags = libc::fcntl(descriptor, libc::F_GETFD);
+            if flags < 0 || libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let output = run_bounded_git_command(command, COMMIT_PROCESS_TIMEOUT, 128)
+        .map_err(map_git_commit_read_error)?;
+    parse_git_commit_object_id_line(&output.stdout, object_format)
+}
+
+fn validate_prior_git_commit_workspace(
+    preflight: &GitCommitRepositoryPreflight,
+    staging: &GitCommitStaging,
+) -> Result<GitCommitManagedInventory, GitCommitPlanError> {
+    let paths = prior_managed_candidate_paths(&preflight.tree)?;
+    if paths.is_empty() {
+        return Ok(GitCommitManagedInventory { files: Vec::new() });
+    }
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(paths.len())
+        .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    for path in &paths {
+        let index = preflight
+            .tree
+            .entries
+            .binary_search_by(|entry| entry.path.as_slice().cmp(path.as_slice()))
+            .map_err(|_| GitCommitPlanError::AmbiguousManagedHistory)?;
+        let entry = &preflight.tree.entries[index];
+        let text = std::str::from_utf8(&entry.path)
+            .map_err(|_| GitCommitPlanError::AmbiguousManagedHistory)?;
+        let (_, limit) = classify_git_materialization_path(text)
+            .ok_or(GitCommitPlanError::AmbiguousManagedHistory)?;
+        if entry.kind != GitCommitTreeEntryKind::Blob
+            || entry.mode != 0o100644
+            || entry.size.is_none_or(|size| size > limit)
+        {
+            return Err(GitCommitPlanError::AmbiguousManagedHistory);
+        }
+        entries.push(entry);
+    }
+
+    let executable =
+        trusted_executable("/usr/bin/git").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+    let sandbox =
+        trusted_executable("/usr/bin/bwrap").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+    stream_prior_git_commit_blobs(
+        git_commit_staging_read_command(
+            &executable,
+            &sandbox,
+            &preflight.capability,
+            staging,
+            &["cat-file", "--batch"],
+        ),
+        staging,
+        preflight.object_format,
+        &entries,
+    )?;
+    staging
+        .finish_validation_tree()
+        .map_err(map_git_commit_staging_error)?;
+    let inspection = inspect_workspace(Path::new(staging.validation_path()))
+        .map_err(map_prior_git_commit_inspection_error)?;
+    let (_, classification) = inspection.into_parts();
+    let WorkspaceInspection::Compatible(workspace) = classification else {
+        return Err(GitCommitPlanError::AmbiguousManagedHistory);
+    };
+    if !workspace.issues().is_empty()
+        || workspace.manifest().workspace_id().to_string() != preflight.workspace_id
+    {
+        return Err(GitCommitPlanError::AmbiguousManagedHistory);
+    }
+    let prior = inspect_git_commit_managed_inventory(&workspace, preflight.object_format).map_err(
+        |error| match error {
+            GitCommitPlanError::ResourceLimit => GitCommitPlanError::ResourceLimit,
+            GitCommitPlanError::Io => GitCommitPlanError::Io,
+            _ => GitCommitPlanError::AmbiguousManagedHistory,
+        },
+    )?;
+    if prior.files.len() != entries.len()
+        || prior.files.iter().zip(entries).any(|(file, entry)| {
+            file.path.as_bytes() != entry.path
+                || file.size != entry.size.unwrap_or(u64::MAX)
+                || file.blob_object_id != entry.object_id
+        })
+    {
+        return Err(GitCommitPlanError::AmbiguousManagedHistory);
+    }
+    Ok(prior)
+}
+
+fn git_commit_staging_read_command(
+    executable: &Path,
+    sandbox: &Path,
+    repository: &crate::storage::GitRepositoryCapability,
+    staging: &GitCommitStaging,
+    arguments: &[&str],
+) -> Command {
+    let descriptor = staging.git_descriptor();
+    let mut command = Command::new(sandbox);
+    command
+        .env_clear()
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_PAGER", "cat")
+        .env("GIT_EDITOR", "false")
+        .env("GIT_ASKPASS", "false")
+        .env("SSH_ASKPASS", "false")
+        .args([
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-all",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib",
+            "/lib64",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--ro-bind",
+            staging.git_path(),
+            "/repo.git",
+            "--ro-bind",
+            repository.objects_path(),
+            "/active-objects",
+            "--tmpfs",
+            "/active-objects/info",
+            "--chdir",
+            "/tmp",
+            "--setenv",
+            "GIT_DIR",
+            "/repo.git",
+            "--setenv",
+            "GIT_OBJECT_DIRECTORY",
+            "/repo.git/objects",
+            "--setenv",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "/active-objects",
+            "--",
+        ])
+        .arg(executable)
+        .args([
+            "--no-pager",
+            "--literal-pathspecs",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            "-c",
+            "core.alternateRefsCommand=",
+            "-c",
+            "diff.external=",
+            "-c",
+            "protocol.allow=never",
+        ])
+        .args(arguments)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.process_group(0);
+    // SAFETY: only the retained staging descriptor has CLOEXEC cleared for the
+    // fixed Bubblewrap read-only bind.
+    unsafe {
+        command.pre_exec(move || {
+            let flags = libc::fcntl(descriptor, libc::F_GETFD);
+            if flags < 0 || libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command
+}
+
+fn stream_prior_git_commit_blobs(
+    mut command: Command,
+    staging: &GitCommitStaging,
+    object_format: GitObjectFormat,
+    entries: &[&GitCommitTreeEntry],
+) -> Result<(), GitCommitPlanError> {
+    let mut child = command.spawn().map_err(|_| GitCommitPlanError::Io)?;
+    let stdin = child.stdin.take().ok_or(GitCommitPlanError::Io)?;
+    let stdout = child.stdout.take().ok_or(GitCommitPlanError::Io)?;
+    let stderr = child.stderr.take().ok_or(GitCommitPlanError::Io)?;
+    let exceeded = Arc::new(AtomicBool::new(false));
+    let stderr_reader = read_capped_with_limit(stderr, Arc::clone(&exceeded), OUTPUT_LIMIT);
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let started = Instant::now();
+    let mut worker_result = None;
+    let mut process_status = None;
+    let mut terminal_error = None;
+    thread::scope(|scope| {
+        scope.spawn(move || {
+            let result =
+                stream_prior_git_commit_blob_bytes(stdin, stdout, staging, object_format, entries);
+            let _ = sender.send(result);
+        });
+        loop {
+            if worker_result.is_none() {
+                match receiver.try_recv() {
+                    Ok(result) => worker_result = Some(result),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        terminal_error = Some(GitCommitPlanError::Io);
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                }
+            }
+            if process_status.is_none() {
+                match child.try_wait() {
+                    Ok(Some(status)) => process_status = Some(status),
+                    Ok(None) => {}
+                    Err(_) => terminal_error = Some(GitCommitPlanError::Io),
+                }
+            }
+            if worker_result.is_some() && process_status.is_some() {
+                break;
+            }
+            if terminal_error.is_none() {
+                terminal_error = if exceeded.load(Ordering::Relaxed)
+                    || started.elapsed() >= COMMIT_PLAN_TIMEOUT
+                {
+                    Some(GitCommitPlanError::ResourceLimit)
+                } else {
+                    None
+                };
+            }
+            if terminal_error.is_some() {
+                terminate_child(&mut child);
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+    });
+    let _ = stderr_reader.join().map_err(|_| GitCommitPlanError::Io)?;
+    if let Some(error) = terminal_error {
+        return Err(error);
+    }
+    worker_result.ok_or(GitCommitPlanError::Io)??;
+    if process_status.is_some_and(|status| status.success()) {
+        Ok(())
+    } else {
+        Err(GitCommitPlanError::UnsafeRepository)
+    }
+}
+
+fn stream_prior_git_commit_blob_bytes(
+    stdin: std::process::ChildStdin,
+    stdout: std::process::ChildStdout,
+    staging: &GitCommitStaging,
+    object_format: GitObjectFormat,
+    entries: &[&GitCommitTreeEntry],
+) -> Result<(), GitCommitPlanError> {
+    let mut writer = BufWriter::new(stdin);
+    let mut reader = BufReader::new(stdout);
+    for entry in entries {
+        writer
+            .write_all(entry.object_id.as_bytes())
+            .and_then(|_| writer.write_all(b"\n"))
+            .and_then(|_| writer.flush())
+            .map_err(|_| GitCommitPlanError::Io)?;
+        let header = read_git_commit_batch_header(&mut reader)?;
+        let size = entry
+            .size
+            .and_then(|size| usize::try_from(size).ok())
+            .ok_or(GitCommitPlanError::ResourceLimit)?;
+        let expected = format!("{} blob {size}\n", entry.object_id);
+        if header != expected.as_bytes() {
+            return Err(GitCommitPlanError::AmbiguousManagedHistory);
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(size)
+            .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+        bytes.resize(size, 0);
+        reader
+            .read_exact(&mut bytes)
+            .map_err(|_| GitCommitPlanError::AmbiguousManagedHistory)?;
+        let mut terminator = [0_u8; 1];
+        reader
+            .read_exact(&mut terminator)
+            .map_err(|_| GitCommitPlanError::AmbiguousManagedHistory)?;
+        if terminator != *b"\n"
+            || !git_blob_object_id_matches(object_format, &bytes, &entry.object_id)
+        {
+            return Err(GitCommitPlanError::AmbiguousManagedHistory);
+        }
+        let path = std::str::from_utf8(&entry.path)
+            .map_err(|_| GitCommitPlanError::AmbiguousManagedHistory)?;
+        staging
+            .write_validation_file(path, &bytes)
+            .map_err(map_git_commit_staging_error)?;
+    }
+    drop(writer);
+    let mut unexpected = [0_u8; 1];
+    if reader
+        .read(&mut unexpected)
+        .map_err(|_| GitCommitPlanError::Io)?
+        != 0
+    {
+        return Err(GitCommitPlanError::AmbiguousManagedHistory);
+    }
+    Ok(())
+}
+
+fn read_git_commit_batch_header(reader: &mut impl Read) -> Result<Vec<u8>, GitCommitPlanError> {
+    let mut header = Vec::with_capacity(96);
+    while header.len() < CLONE_BATCH_HEADER_LIMIT {
+        let mut byte = [0_u8; 1];
+        reader
+            .read_exact(&mut byte)
+            .map_err(|_| GitCommitPlanError::AmbiguousManagedHistory)?;
+        header.push(byte[0]);
+        if byte[0] == b'\n' {
+            return Ok(header);
+        }
+    }
+    Err(GitCommitPlanError::AmbiguousManagedHistory)
+}
+
+fn map_prior_git_commit_inspection_error(
+    error: crate::storage::WorkspaceInspectError,
+) -> GitCommitPlanError {
+    match error {
+        crate::storage::WorkspaceInspectError::ResourceLimit => GitCommitPlanError::ResourceLimit,
+        crate::storage::WorkspaceInspectError::Io => GitCommitPlanError::Io,
+        crate::storage::WorkspaceInspectError::ChangedDuringRead
+        | crate::storage::WorkspaceInspectError::UnsafeRoot
+        | crate::storage::WorkspaceInspectError::NotFound
+        | crate::storage::WorkspaceInspectError::NotDirectory
+        | crate::storage::WorkspaceInspectError::PermissionDenied => {
+            GitCommitPlanError::AmbiguousManagedHistory
+        }
+    }
+}
+
+fn map_git_commit_staging_error(error: GitCommitStagingError) -> GitCommitPlanError {
+    match error {
+        GitCommitStagingError::Conflict => GitCommitPlanError::OperationInProgress,
+        GitCommitStagingError::Unsafe => GitCommitPlanError::UnsafeRepository,
+        GitCommitStagingError::Unsupported => GitCommitPlanError::UnsupportedRepository,
+        GitCommitStagingError::TooLarge => GitCommitPlanError::ResourceLimit,
+        GitCommitStagingError::Io => GitCommitPlanError::Io,
+    }
 }
 
 fn verify_git_commit_tree_objects(
@@ -4223,13 +4810,15 @@ fn verify_git_commit_tree_objects(
     capability: &crate::storage::GitRepositoryCapability,
     object_format: GitObjectFormat,
     parent: &str,
+    root_tree: &str,
     tree: &GitCommitTree,
 ) -> Result<(), GitCommitPlanError> {
     let mut expected = Vec::new();
     expected
-        .try_reserve_exact(tree.entries.len().saturating_add(1))
+        .try_reserve_exact(tree.entries.len().saturating_add(2))
         .map_err(|_| GitCommitPlanError::ResourceLimit)?;
     expected.push((parent, "commit", None));
+    expected.push((root_tree, "tree", None));
     for entry in &tree.entries {
         let object_type = match entry.kind {
             GitCommitTreeEntryKind::Tree => "tree",
@@ -5278,6 +5867,152 @@ mod tests {
             32
         );
         assert_eq!(preflight.managed.files[0].blob_object_id.len(), 64);
+        assert_eq!(preflight.head_tree_object_id.as_ref().unwrap().len(), 64);
+        let state = Temp::new();
+        let prepared = prepare_git_commit_staging(&preflight, &state.0).unwrap();
+        assert_eq!(prepared.prior_managed.files.len(), 1);
+    }
+
+    #[test]
+    fn commit_private_write_tree_matches_head_without_active_mutation() {
+        let temp = Temp::new();
+        drop(initialized_workspace(&temp));
+        configure_fixture_identity(&temp);
+        fixture_git(&temp, &["add", "--", "rehow.yaml"]);
+        fixture_git(&temp, &["commit", "-qm", "fixture"]);
+        let workspace = open_workspace(&temp);
+        let preflight = inspect_git_commit_repository(&workspace).unwrap();
+        let active_before = preflight
+            .capability
+            .read_commit_repository_snapshot()
+            .unwrap();
+        let state = Temp::new();
+        let staging = prepare_git_commit_staging(&preflight, &state.0).unwrap();
+        assert!(staging.staging.stage_path().starts_with("/proc/self/fd/"));
+        assert!(
+            Path::new(staging.staging.git_path())
+                .join("index")
+                .is_file()
+        );
+        assert_eq!(staging.prior_managed.files.len(), 1);
+        assert_eq!(
+            preflight
+                .capability
+                .read_commit_repository_snapshot()
+                .unwrap(),
+            active_before
+        );
+
+        let unborn = Temp::new();
+        drop(initialized_workspace(&unborn));
+        configure_fixture_identity(&unborn);
+        let workspace = open_workspace(&unborn);
+        let preflight = inspect_git_commit_repository(&workspace).unwrap();
+        assert!(preflight.head_tree_object_id.is_none());
+        let unborn_state = Temp::new();
+        let staging = prepare_git_commit_staging(&preflight, &unborn_state.0).unwrap();
+        assert!(!Path::new(staging.staging.git_path()).join("index").exists());
+        assert!(staging.prior_managed.files.is_empty());
+    }
+
+    #[test]
+    fn commit_private_write_tree_refuses_semantically_dirty_copied_index() {
+        let temp = Temp::new();
+        drop(initialized_workspace(&temp));
+        configure_fixture_identity(&temp);
+        fixture_git(&temp, &["add", "--", "rehow.yaml"]);
+        fixture_git(&temp, &["commit", "-qm", "fixture"]);
+        let workspace = open_workspace(&temp);
+        let mut preflight = inspect_git_commit_repository(&workspace).unwrap();
+        fs::write(temp.0.join("unrelated.txt"), b"staged only\n").unwrap();
+        fixture_git(&temp, &["add", "--", "unrelated.txt"]);
+        let dirty_index = fs::read(temp.0.join(".git/index")).unwrap();
+        fixture_git(&temp, &["reset", "--hard", "-q", "HEAD"]);
+        preflight.repository.index.as_mut().unwrap().bytes = dirty_index;
+        let state = Temp::new();
+        assert!(matches!(
+            prepare_git_commit_staging(&preflight, &state.0),
+            Err(GitCommitPlanError::UnsupportedIndex)
+        ));
+        assert_eq!(
+            fs::read_dir(state.0.join("rehow/commit-staging"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn commit_prior_workspace_validation_refuses_malformed_or_replaced_identity() {
+        let malformed = Temp::new();
+        fixture_git(&malformed, &["init", "-q", "--initial-branch=main"]);
+        configure_fixture_identity(&malformed);
+        fs::write(malformed.0.join("rehow.yaml"), b"schema_version: [\n").unwrap();
+        fixture_git(&malformed, &["add", "--", "rehow.yaml"]);
+        fixture_git(&malformed, &["commit", "-qm", "malformed prior"]);
+        fs::create_dir(malformed.0.join("categories")).unwrap();
+        fs::write(malformed.0.join("rehow.yaml"), "schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Git\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n").unwrap();
+        let malformed_workspace = open_workspace(&malformed);
+        let preflight = inspect_git_commit_repository(&malformed_workspace).unwrap();
+        let state = Temp::new();
+        assert!(matches!(
+            prepare_git_commit_staging(&preflight, &state.0),
+            Err(GitCommitPlanError::AmbiguousManagedHistory)
+        ));
+
+        let replaced = Temp::new();
+        fixture_git(&replaced, &["init", "-q", "--initial-branch=main"]);
+        configure_fixture_identity(&replaced);
+        drop(workspace(&replaced));
+        fixture_git(&replaced, &["add", "--", "rehow.yaml"]);
+        fixture_git(&replaced, &["commit", "-qm", "valid prior"]);
+        let changed = fs::read_to_string(replaced.0.join("rehow.yaml"))
+            .unwrap()
+            .replace(
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e11",
+            );
+        fs::write(replaced.0.join("rehow.yaml"), changed).unwrap();
+        let replaced_workspace = open_workspace(&replaced);
+        let preflight = inspect_git_commit_repository(&replaced_workspace).unwrap();
+        let state = Temp::new();
+        assert!(matches!(
+            prepare_git_commit_staging(&preflight, &state.0),
+            Err(GitCommitPlanError::AmbiguousManagedHistory)
+        ));
+    }
+
+    #[test]
+    fn commit_repository_reads_ignore_replace_refs() {
+        let temp = Temp::new();
+        drop(initialized_workspace(&temp));
+        configure_fixture_identity(&temp);
+        fixture_git(&temp, &["add", "--", "rehow.yaml"]);
+        fixture_git(&temp, &["commit", "-qm", "base"]);
+        let base = fs::read_to_string(temp.0.join(".git/refs/heads/main"))
+            .unwrap()
+            .trim()
+            .to_owned();
+        let replaced = fs::read_to_string(temp.0.join("rehow.yaml"))
+            .unwrap()
+            .replace(
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e10",
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e11",
+            );
+        fs::write(temp.0.join("rehow.yaml"), replaced).unwrap();
+        fixture_git(&temp, &["add", "--", "rehow.yaml"]);
+        fixture_git(&temp, &["commit", "-qm", "replacement"]);
+        let replacement = fs::read_to_string(temp.0.join(".git/refs/heads/main"))
+            .unwrap()
+            .trim()
+            .to_owned();
+        fixture_git(&temp, &["reset", "--hard", "-q", &base]);
+        fixture_git(&temp, &["replace", &base, &replacement]);
+        let workspace = open_workspace(&temp);
+        let preflight = inspect_git_commit_repository(&workspace).unwrap();
+        let state = Temp::new();
+        let prepared = prepare_git_commit_staging(&preflight, &state.0).unwrap();
+        assert_eq!(prepared.prior_managed.files.len(), 1);
     }
 
     #[test]
