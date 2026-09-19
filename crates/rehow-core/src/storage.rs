@@ -84,6 +84,7 @@ pub(crate) struct GitCommitRepositorySnapshot {
     pub(crate) config: GitCommitFileSnapshot,
     pub(crate) index: Option<GitCommitFileSnapshot>,
     pub(crate) packed_refs: Option<GitCommitFileSnapshot>,
+    pub(crate) shallow: Option<GitCommitFileSnapshot>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -367,6 +368,18 @@ impl GitRepositoryCapability {
     }
     pub(crate) fn shallow_path(&self) -> Option<&str> {
         self.shallow_path.as_deref()
+    }
+
+    pub(crate) fn read_retained_shallow_snapshot(
+        &self,
+    ) -> Result<Option<GitCommitFileSnapshot>, GitCommitSnapshotError> {
+        self._shallow
+            .as_ref()
+            .map(|descriptor| {
+                read_git_descriptor(descriptor, GIT_COMMIT_REF_LIMIT)
+                    .map(|(bytes, metadata)| GitCommitFileSnapshot { bytes, metadata })
+            })
+            .transpose()
     }
 
     pub(crate) fn git_directory_identity(&self) -> Result<(u64, u64), GitCommitSnapshotError> {
@@ -721,6 +734,7 @@ impl GitRepositoryCapability {
             .ok_or(GitCommitSnapshotError::Unsafe)?;
         let index = read_git_entry(&self._git_dir, "index", GIT_COMMIT_INDEX_LIMIT)?;
         let packed_refs = read_git_entry(&self._git_dir, "packed-refs", GIT_COMMIT_REF_LIMIT)?;
+        let shallow = read_git_entry(&self._git_dir, "shallow", GIT_COMMIT_REF_LIMIT)?;
         Ok(GitCommitRepositorySnapshot {
             head: GitCommitFileSnapshot {
                 bytes: head.0,
@@ -733,6 +747,7 @@ impl GitRepositoryCapability {
             index: index.map(|(bytes, metadata)| GitCommitFileSnapshot { bytes, metadata }),
             packed_refs: packed_refs
                 .map(|(bytes, metadata)| GitCommitFileSnapshot { bytes, metadata }),
+            shallow: shallow.map(|(bytes, metadata)| GitCommitFileSnapshot { bytes, metadata }),
         })
     }
 
@@ -940,6 +955,38 @@ fn read_git_entry(
         return Err(GitCommitSnapshotError::Conflict);
     }
     Ok(Some((bytes, after)))
+}
+
+fn read_git_descriptor(
+    descriptor: &OwnedFd,
+    limit: usize,
+) -> Result<(Vec<u8>, GitConfigMetadata), GitCommitSnapshotError> {
+    let duplicate = descriptor
+        .try_clone()
+        .map_err(|_| GitCommitSnapshotError::Io)?;
+    let mut file = File::from(duplicate);
+    let before = git_config_metadata(&file).map_err(map_git_commit_snapshot)?;
+    if before.size > limit as u64 {
+        return Err(GitCommitSnapshotError::TooLarge);
+    }
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(before.size as usize)
+        .map_err(|_| GitCommitSnapshotError::TooLarge)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| GitCommitSnapshotError::Io)?;
+    Read::by_ref(&mut file)
+        .take((limit as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| GitCommitSnapshotError::Io)?;
+    if bytes.len() > limit {
+        return Err(GitCommitSnapshotError::TooLarge);
+    }
+    let after = git_config_metadata(&file).map_err(map_git_commit_snapshot)?;
+    if before != after || bytes.len() as u64 != after.size {
+        return Err(GitCommitSnapshotError::Conflict);
+    }
+    Ok((bytes, after))
 }
 
 fn map_git_commit_snapshot(error: GitConfigStorageError) -> GitCommitSnapshotError {

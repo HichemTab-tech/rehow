@@ -24,6 +24,12 @@ pub(crate) struct GitCloneStaging {
     inner: store::CloneStaging,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GitCloneRepositoryState {
+    pub(crate) bytes: u64,
+    pub(crate) binding: [u8; 32],
+}
+
 pub(crate) struct GitCommitStaging {
     inner: store::CommitStaging,
 }
@@ -320,6 +326,19 @@ impl GitCloneStaging {
     pub(crate) fn verify_git_size_limit(&self, limit: u64) -> Result<(), GitCloneStagingError> {
         self.inner
             .verify_git_size_limit(limit)
+            .map_err(map_clone_staging_error)
+    }
+
+    pub(crate) fn git_state(
+        &self,
+        limit: u64,
+    ) -> Result<GitCloneRepositoryState, GitCloneStagingError> {
+        self.inner
+            .git_state(limit)
+            .map(|state| GitCloneRepositoryState {
+                bytes: state.bytes,
+                binding: state.binding,
+            })
             .map_err(map_clone_staging_error)
     }
 

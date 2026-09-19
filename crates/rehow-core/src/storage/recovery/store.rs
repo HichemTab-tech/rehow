@@ -69,6 +69,12 @@ pub(super) struct CloneStaging {
     validation_path: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CloneGitState {
+    pub(super) bytes: u64,
+    pub(super) binding: [u8; 32],
+}
+
 pub(super) struct CommitStaging {
     commit_staging: Directory,
     commit_quarantine: Directory,
@@ -626,12 +632,46 @@ impl CloneStaging {
     }
 
     pub(super) fn verify_git_size_limit(&self, limit: u64) -> Result<(), StoreError> {
+        self.git_state(limit).map(|_| ())
+    }
+
+    pub(super) fn git_state(&self, limit: u64) -> Result<CloneGitState, StoreError> {
         let git = Directory {
             descriptor: self._git.try_clone().map_err(|_| StoreError::Io)?,
         };
+        let directory_before = status(git.descriptor.as_raw_fd())?;
         let mut entries = 0usize;
-        let _ = git.bounded_tree_bytes(limit, &mut entries)?;
-        Ok(())
+        let bytes = git.bounded_tree_bytes(limit, &mut entries)?;
+        let shallow = if git.missing("shallow")? {
+            None
+        } else {
+            let bytes = git.read_regular("shallow", 1024 * 1024)?;
+            let name = component("shallow")?;
+            let state = status_at(git.descriptor.as_raw_fd(), &name)?;
+            validate_status(&state, 0o600, Some(bytes.len() as u64))?;
+            Some((bytes, state))
+        };
+        let directory_after = status(git.descriptor.as_raw_fd())?;
+        if !same_file_state(&directory_before, &directory_after) {
+            return Err(StoreError::Conflict);
+        }
+        let mut binding = blake3::Hasher::new();
+        binding.update(b"rehow:clone-git-state:v1\0");
+        hash_file_state(&mut binding, &directory_after);
+        match shallow {
+            Some((bytes, state)) => {
+                binding.update(b"shallow\0");
+                hash_file_state(&mut binding, &state);
+                binding.update(&bytes);
+            }
+            None => {
+                binding.update(b"no-shallow\0");
+            }
+        }
+        Ok(CloneGitState {
+            bytes,
+            binding: *binding.finalize().as_bytes(),
+        })
     }
 
     pub(super) fn inspect_pack_sources(
@@ -2058,6 +2098,22 @@ fn same_file_state(left: &libc::stat, right: &libc::stat) -> bool {
         && left.st_mtime_nsec == right.st_mtime_nsec
         && left.st_ctime == right.st_ctime
         && left.st_ctime_nsec == right.st_ctime_nsec
+}
+
+fn hash_file_state(hasher: &mut blake3::Hasher, state: &libc::stat) {
+    for value in [
+        state.st_dev as i128,
+        state.st_ino as i128,
+        state.st_size as i128,
+        state.st_mtime as i128,
+        state.st_mtime_nsec as i128,
+        state.st_ctime as i128,
+        state.st_ctime_nsec as i128,
+        state.st_mode as i128,
+        state.st_nlink as i128,
+    ] {
+        hasher.update(&value.to_le_bytes());
+    }
 }
 
 fn status(descriptor: i32) -> Result<libc::stat, StoreError> {

@@ -1,6 +1,6 @@
 # ADR 0025: Safe Git synchronization
 
-- Status: Partially Accepted — isolated incoming inspection implemented; integration and push pending
+- Status: Partially Accepted — isolated inspection and bounded ancestry implemented; integration and push pending
 - Date: 2026-09-19
 
 ## Context
@@ -19,9 +19,15 @@ Apply currently accepts anonymous canonical HTTPS only. It sends the canonical U
 
 The complete fetched commit, tree, paths, object identities, blob bytes, Workspace schemas, relationships, and Attachments pass the accepted clone validator. The incoming Workspace ID must equal the open Workspace ID. Core repeats the full local plan binding after validation. The result exposes only `upToDate` or `remoteChanged`, whether the active worktree has local changes, and whether the portable Workspace snapshots match. URL, paths, refs, OIDs, content, Git output, credentials, and staging authority remain private. This gate never changes the active Workspace, object database, index, refs, config, reflogs, or remote-tracking refs.
 
+### 5D2A — bounded ancestry classification
+
+Core consumes the opaque validated inspection, honors cancellation before every successful return, and revalidates the complete local plan before and after classification. Equal object IDs are `upToDate` without another network operation. Otherwise, core deepens only the exact already-advertised object in the same private staging repository to a 4,096-commit cap, rechecks that its validated tree is unchanged, and reads both local and staged histories through config-free, hook-disabled, read-only sandboxes. The deepening child receives only a conservative fraction of the verified remaining aggregate staging budget, with fixed metadata headroom; the complete staging tree is rescanned afterward.
+
+History output is capped and accepts only full-width object IDs headed by the expected commit. Exact shallow-file content and metadata are plan-bound and checked around local reads; staged shallow state and repository metadata are checked around staged reads. Proven containment yields `remoteFastForward` or `localAhead`; non-containment yields `diverged` only when both histories are complete. A shallow boundary or cap yields `historyLimit`, never a guessed relationship. The result retains integration authority opaquely and exposes only the ancestry class and prior bounded facts. No active content, object, index, ref, config, or reflog is changed.
+
 ### Pending gates
 
-5D2 must prove bounded ancestry using the retained validated staging and active repository without trusting remote claims. It may classify only exact up-to-date, local-ahead, remote-fast-forward, or diverged states. Remote-fast-forward content must be materialized through the Workspace recovery journal and refs/index updated by expected-OID/state compare-and-swap. Ambiguous or locally dirty states require explanation, not automatic resolution.
+5D2B must materialize proven remote-fast-forward content through the Workspace recovery journal and update objects, index, and the direct branch ref by expected-OID/state compare-and-swap. Ambiguous, history-limited, or locally dirty states require explanation, not automatic resolution.
 
 5D3 may push only an exact reviewed local commit from the expected remote OID using an explicit refspec and native confirmation. Non-fast-forward, changed remote, auth, host-key, and transport failures are preserved and reported. No force option exists.
 
@@ -30,6 +36,6 @@ Authenticated HTTPS/SSH requires the separately audited credential/agent provena
 ## Consequences
 
 - The first accepted slice can securely answer whether the configured upstream snapshot is valid and changed, but cannot yet modify or publish anything.
-- A changed remote is not called “behind” or “diverged” until ancestry is proven.
+- A changed remote is called remote-fast-forward, local-ahead, or diverged only when bounded history proves that result; otherwise it is history-limited.
 - Private staging is retained as exact evidence/input for the next gate; identity-safe retention/pruning remains required.
 - Unsupported authentication degrades to an actionable unavailable state rather than a token prompt.

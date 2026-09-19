@@ -47,6 +47,10 @@ const CLONE_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 const CLONE_FETCH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CLONE_LOCAL_READ_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CLONE_DISCOVERY_OUTPUT_LIMIT: usize = 64 * 1024;
+const SYNC_HISTORY_LIMIT: usize = 4_096;
+const SYNC_HISTORY_OUTPUT_LIMIT: usize = (SYNC_HISTORY_LIMIT + 1) * 65;
+const SYNC_FETCH_METADATA_RESERVE: u64 = 4 * 1024 * 1024;
+const SYNC_FETCH_LARGE_FILE_SLOTS: u64 = 4;
 const CLONE_BATCH_HEADER_LIMIT: usize = 160;
 const CLONE_STAGING_FILE_LIMIT: u64 = 7 * 1024 * 1024 * 1024;
 const MAX_REMOTES: usize = 32;
@@ -1295,6 +1299,40 @@ pub enum GitSyncInspectionState {
     RemoteChanged,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitSyncAncestry {
+    UpToDate,
+    LocalAhead,
+    RemoteFastForward,
+    Diverged,
+    HistoryLimit,
+}
+
+pub struct GitSyncClassification {
+    inspection: GitSyncInspection,
+    ancestry: GitSyncAncestry,
+}
+
+impl fmt::Debug for GitSyncClassification {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitSyncClassification")
+            .field("ancestry", &self.ancestry)
+            .field("authority", &"<redacted>")
+            .finish()
+    }
+}
+
+impl GitSyncClassification {
+    pub fn ancestry(&self) -> GitSyncAncestry {
+        self.ancestry
+    }
+
+    pub fn local_changes(&self) -> bool {
+        self.inspection.local_changes()
+    }
+}
+
 /// Validated, native-held incoming state for the later materialization/ref-CAS
 /// gate. Debug and public accessors deliberately expose no content or Git IDs.
 pub struct GitSyncInspection {
@@ -1533,6 +1571,300 @@ fn finish_git_sync_inspection(
     })
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct GitSyncHistory {
+    object_ids: Vec<String>,
+    complete: bool,
+}
+
+/// Proves the relationship between the active branch and the already
+/// validated remote snapshot using bounded history reads. The active
+/// repository remains read-only and the remote history remains in private
+/// staging.
+pub fn classify_git_sync_ancestry(
+    workspace: &WorkspaceView,
+    inspection: GitSyncInspection,
+    cancelled: &AtomicBool,
+) -> Result<GitSyncClassification, GitSyncError> {
+    revalidate_git_sync_plan(workspace, &inspection.plan)?;
+    let local_head = inspection
+        .plan
+        .preflight
+        .branch
+        .expected_object_id
+        .as_deref()
+        .ok_or(GitSyncError::Unsupported)?;
+    if local_head == inspection.remote_head.object_id() {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(GitSyncError::Cancelled);
+        }
+        revalidate_git_sync_plan(workspace, &inspection.plan)?;
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(GitSyncError::Cancelled);
+        }
+        return Ok(GitSyncClassification {
+            inspection,
+            ancestry: GitSyncAncestry::UpToDate,
+        });
+    }
+
+    deepen_git_sync_remote(&inspection, cancelled)?;
+    let refreshed_tree =
+        inspect_fetched_git_clone_tree(&inspection.staging, &inspection.remote_head, cancelled)
+            .map_err(map_clone_inspection_to_sync)?;
+    if &refreshed_tree != inspection.validated.tree() {
+        return Err(GitSyncError::InvalidRepository);
+    }
+    let remote_history = read_remote_sync_history(&inspection, cancelled)?;
+    let local_history = read_local_sync_history(workspace, &inspection.plan)?;
+    let ancestry = classify_git_sync_histories(
+        local_head,
+        inspection.remote_head.object_id(),
+        &local_history,
+        &remote_history,
+    );
+    revalidate_git_sync_plan(workspace, &inspection.plan)?;
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(GitSyncError::Cancelled);
+    }
+    Ok(GitSyncClassification {
+        inspection,
+        ancestry,
+    })
+}
+
+fn deepen_git_sync_remote(
+    inspection: &GitSyncInspection,
+    cancelled: &AtomicBool,
+) -> Result<(), GitSyncError> {
+    let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
+    let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
+    let before = inspection
+        .staging
+        .git_state(CLONE_STAGING_FILE_LIMIT)
+        .map_err(map_clone_staging_to_sync)?;
+    let available = CLONE_STAGING_FILE_LIMIT
+        .checked_sub(before.bytes)
+        .and_then(|remaining| remaining.checked_sub(SYNC_FETCH_METADATA_RESERVE))
+        .ok_or(GitSyncError::ResourceLimit)?;
+    let file_limit = available / SYNC_FETCH_LARGE_FILE_SLOTS;
+    if file_limit == 0 {
+        return Err(GitSyncError::ResourceLimit);
+    }
+    let output = run_clone_command(
+        sync_history_fetch_command(
+            &executable,
+            &sandbox,
+            inspection.staging.git_path(),
+            inspection.staging.git_descriptor(),
+            &inspection.plan.remote_url,
+            inspection.remote_head.object_id(),
+            file_limit,
+        ),
+        cancelled,
+        CLONE_FETCH_TIMEOUT,
+        CLONE_DISCOVERY_OUTPUT_LIMIT,
+    )
+    .map_err(map_clone_discovery_to_sync)?;
+    if !output.stdout.is_empty() {
+        return Err(GitSyncError::InvalidRepository);
+    }
+    inspection
+        .staging
+        .git_state(CLONE_STAGING_FILE_LIMIT)
+        .map(|_| ())
+        .map_err(map_clone_staging_to_sync)
+}
+
+fn read_remote_sync_history(
+    inspection: &GitSyncInspection,
+    cancelled: &AtomicBool,
+) -> Result<GitSyncHistory, GitSyncError> {
+    let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
+    let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
+    let head = inspection.remote_head.object_id();
+    let state_before = inspection
+        .staging
+        .git_state(CLONE_STAGING_FILE_LIMIT)
+        .map_err(map_clone_staging_to_sync)?;
+    let shallow_before = run_clone_command(
+        clone_read_command(
+            &executable,
+            &sandbox,
+            inspection.staging.git_path(),
+            inspection.staging.git_descriptor(),
+            &["rev-parse", "--is-shallow-repository"],
+        ),
+        cancelled,
+        CLONE_LOCAL_READ_TIMEOUT,
+        16,
+    )
+    .map_err(map_clone_discovery_to_sync)?;
+    let history = run_clone_command(
+        clone_read_command(
+            &executable,
+            &sandbox,
+            inspection.staging.git_path(),
+            inspection.staging.git_descriptor(),
+            &["rev-list", "--max-count=4097", head],
+        ),
+        cancelled,
+        CLONE_LOCAL_READ_TIMEOUT,
+        SYNC_HISTORY_OUTPUT_LIMIT,
+    )
+    .map_err(map_clone_discovery_to_sync)?;
+    let shallow_after = run_clone_command(
+        clone_read_command(
+            &executable,
+            &sandbox,
+            inspection.staging.git_path(),
+            inspection.staging.git_descriptor(),
+            &["rev-parse", "--is-shallow-repository"],
+        ),
+        cancelled,
+        CLONE_LOCAL_READ_TIMEOUT,
+        16,
+    )
+    .map_err(map_clone_discovery_to_sync)?;
+    let state_after = inspection
+        .staging
+        .git_state(CLONE_STAGING_FILE_LIMIT)
+        .map_err(map_clone_staging_to_sync)?;
+    if state_before != state_after || shallow_before.stdout != shallow_after.stdout {
+        return Err(GitSyncError::PlanStale);
+    }
+    let shallow = parse_git_shallow_state(&shallow_after.stdout)?;
+    parse_git_sync_history(
+        &history.stdout,
+        inspection.remote_head.object_format(),
+        head,
+        shallow,
+    )
+}
+
+fn read_local_sync_history(
+    workspace: &WorkspaceView,
+    plan: &GitSyncPlan,
+) -> Result<GitSyncHistory, GitSyncError> {
+    let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
+    let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
+    let capability = workspace
+        .git_repository_capability()
+        .map_err(map_git_capability_to_sync)?;
+    if capability
+        .git_directory_identity()
+        .map_err(map_git_snapshot_to_sync)?
+        != plan.preflight.git_identity
+    {
+        return Err(GitSyncError::PlanStale);
+    }
+    let repository_before = capability
+        .read_commit_repository_snapshot()
+        .map_err(map_git_snapshot_to_sync)?;
+    let retained_shallow_before = capability
+        .read_retained_shallow_snapshot()
+        .map_err(map_git_snapshot_to_sync)?;
+    if repository_before != plan.preflight.repository
+        || retained_shallow_before != repository_before.shallow
+    {
+        return Err(GitSyncError::PlanStale);
+    }
+    let shallow = repository_before.shallow.is_some();
+    let head = plan
+        .preflight
+        .branch
+        .expected_object_id
+        .as_deref()
+        .ok_or(GitSyncError::Unsupported)?;
+    let output = run_git_commit_read(
+        &executable,
+        &sandbox,
+        &capability,
+        plan.preflight.object_format,
+        &["rev-list", "--max-count=4097", head],
+        SYNC_HISTORY_OUTPUT_LIMIT,
+    )
+    .map_err(map_git_read_to_sync)?;
+    let repository_after = capability
+        .read_commit_repository_snapshot()
+        .map_err(map_git_snapshot_to_sync)?;
+    let retained_shallow_after = capability
+        .read_retained_shallow_snapshot()
+        .map_err(map_git_snapshot_to_sync)?;
+    if repository_after != repository_before
+        || retained_shallow_after != retained_shallow_before
+        || retained_shallow_after != repository_after.shallow
+    {
+        return Err(GitSyncError::PlanStale);
+    }
+    parse_git_sync_history(&output.stdout, plan.preflight.object_format, head, shallow)
+}
+
+fn parse_git_shallow_state(bytes: &[u8]) -> Result<bool, GitSyncError> {
+    match bytes {
+        b"true\n" => Ok(true),
+        b"false\n" => Ok(false),
+        _ => Err(GitSyncError::InvalidRepository),
+    }
+}
+
+fn parse_git_sync_history(
+    bytes: &[u8],
+    object_format: GitObjectFormat,
+    expected_head: &str,
+    shallow: bool,
+) -> Result<GitSyncHistory, GitSyncError> {
+    if bytes.is_empty() || !bytes.ends_with(b"\n") {
+        return Err(GitSyncError::InvalidRepository);
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| GitSyncError::InvalidRepository)?;
+    let mut object_ids = Vec::new();
+    for line in text.trim_end_matches('\n').split('\n') {
+        if validate_object_id(line) != Some(object_format)
+            || object_ids.iter().any(|existing| existing == line)
+            || object_ids.len() > SYNC_HISTORY_LIMIT
+        {
+            return Err(GitSyncError::InvalidRepository);
+        }
+        object_ids.push(line.to_owned());
+    }
+    if object_ids.first().map(String::as_str) != Some(expected_head) {
+        return Err(GitSyncError::InvalidRepository);
+    }
+    let complete = !shallow && object_ids.len() <= SYNC_HISTORY_LIMIT;
+    Ok(GitSyncHistory {
+        object_ids,
+        complete,
+    })
+}
+
+fn classify_git_sync_histories(
+    local_head: &str,
+    remote_head: &str,
+    local: &GitSyncHistory,
+    remote: &GitSyncHistory,
+) -> GitSyncAncestry {
+    if local_head == remote_head {
+        GitSyncAncestry::UpToDate
+    } else if remote
+        .object_ids
+        .iter()
+        .any(|object_id| object_id == local_head)
+    {
+        GitSyncAncestry::RemoteFastForward
+    } else if local
+        .object_ids
+        .iter()
+        .any(|object_id| object_id == remote_head)
+    {
+        GitSyncAncestry::LocalAhead
+    } else if local.complete && remote.complete {
+        GitSyncAncestry::Diverged
+    } else {
+        GitSyncAncestry::HistoryLimit
+    }
+}
+
 fn revalidate_git_sync_plan(
     workspace: &WorkspaceView,
     plan: &GitSyncPlan,
@@ -1589,6 +1921,13 @@ fn inspect_git_sync_repository(
     let repository = capability
         .read_commit_repository_snapshot()
         .map_err(map_git_snapshot_to_sync)?;
+    if capability
+        .read_retained_shallow_snapshot()
+        .map_err(map_git_snapshot_to_sync)?
+        != repository.shallow
+    {
+        return Err(GitSyncError::PlanStale);
+    }
     let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
     let config_output = run_git(
         &executable,
@@ -2569,7 +2908,52 @@ fn clone_fetch_command(
     remote_url: &str,
     object_id: &str,
 ) -> Command {
+    remote_fetch_command(
+        executable,
+        sandbox,
+        staging_git_path,
+        staging_git_descriptor,
+        remote_url,
+        object_id,
+        1,
+        CLONE_STAGING_FILE_LIMIT,
+    )
+}
+
+fn sync_history_fetch_command(
+    executable: &Path,
+    sandbox: &Path,
+    staging_git_path: &str,
+    staging_git_descriptor: i32,
+    remote_url: &str,
+    object_id: &str,
+    file_limit: u64,
+) -> Command {
+    remote_fetch_command(
+        executable,
+        sandbox,
+        staging_git_path,
+        staging_git_descriptor,
+        remote_url,
+        object_id,
+        SYNC_HISTORY_LIMIT,
+        file_limit,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn remote_fetch_command(
+    executable: &Path,
+    sandbox: &Path,
+    staging_git_path: &str,
+    staging_git_descriptor: i32,
+    remote_url: &str,
+    object_id: &str,
+    depth: usize,
+    file_limit: u64,
+) -> Command {
     let refspec = format!("{object_id}:refs/rehow/clone/head");
+    let depth = format!("--depth={depth}");
     let mut command = Command::new(sandbox);
     command
         .env_clear()
@@ -2672,7 +3056,7 @@ fn clone_fetch_command(
             "protocol.ssh.allow=never",
             "fetch",
             "--quiet",
-            "--depth=1",
+            &depth,
             "--filter=blob:limit=67108865",
             "--no-tags",
             "--no-write-fetch-head",
@@ -2686,11 +3070,7 @@ fn clone_fetch_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.process_group(0);
-    configure_clone_child(
-        &mut command,
-        staging_git_descriptor,
-        Some(CLONE_STAGING_FILE_LIMIT),
-    );
+    configure_clone_child(&mut command, staging_git_descriptor, Some(file_limit));
     command
 }
 
@@ -2867,10 +3247,12 @@ fn clone_batch_read_command(
 }
 
 fn configure_clone_child(command: &mut Command, descriptor: i32, file_limit: Option<u64>) {
-    // SAFETY: this closure runs after fork and before exec. It only updates the
-    // selected child descriptor flag and an inherited resource limit.
+    // SAFETY: this closure runs after fork and before exec. It only tightens
+    // the child umask, updates the selected descriptor flag, and sets an
+    // inherited resource limit.
     unsafe {
         command.pre_exec(move || {
+            libc::umask(0o077);
             let flags = libc::fcntl(descriptor, libc::F_GETFD);
             if flags < 0 || libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) != 0 {
                 return Err(io::Error::last_os_error());
@@ -9139,6 +9521,16 @@ fn map_clone_content_to_sync(error: GitCloneContentError) -> GitSyncError {
     }
 }
 
+fn map_clone_staging_to_sync(error: GitCloneStagingError) -> GitSyncError {
+    match error {
+        GitCloneStagingError::TooLarge => GitSyncError::ResourceLimit,
+        GitCloneStagingError::Conflict => GitSyncError::StagingConflict,
+        GitCloneStagingError::Unsafe => GitSyncError::Unsafe,
+        GitCloneStagingError::Unsupported => GitSyncError::Unsupported,
+        GitCloneStagingError::Io => GitSyncError::Io,
+    }
+}
+
 fn parse_git_object_format(records: &[u8]) -> Result<GitObjectFormat, GitCommitPlanError> {
     if !records.is_empty() && !records.ends_with(b"\0") {
         return Err(GitCommitPlanError::UnsafeRepository);
@@ -11902,6 +12294,30 @@ mod tests {
         for forbidden in ["clone", "checkout", "pull", "submodule"] {
             assert!(!fetch_arguments.iter().any(|argument| argument == forbidden));
         }
+
+        let history_fetch = sync_history_fetch_command(
+            Path::new("/usr/bin/git"),
+            Path::new("/usr/bin/bwrap"),
+            "/proc/self/fd/99",
+            99,
+            url,
+            "0123456789abcdef0123456789abcdef01234567",
+            1024 * 1024,
+        );
+        let history_arguments = history_fetch
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            history_arguments
+                .iter()
+                .any(|argument| argument == "--depth=4096")
+        );
+        assert!(
+            !history_arguments
+                .iter()
+                .any(|argument| argument == "--depth=1")
+        );
     }
 
     #[test]
@@ -11974,6 +12390,13 @@ mod tests {
             staging.verify_git_size_limit(1),
             Err(GitCloneStagingError::TooLarge)
         );
+        let initial = staging.git_state(u64::MAX).unwrap();
+        let shallow_path = Path::new(staging.git_path()).join("shallow");
+        fs::write(&shallow_path, b"0123456789abcdef0123456789abcdef01234567\n").unwrap();
+        fs::set_permissions(&shallow_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let changed = staging.git_state(u64::MAX).unwrap();
+        assert!(changed.bytes > initial.bytes);
+        assert_ne!(changed.binding, initial.binding);
         symlink("/tmp", Path::new(staging.git_path()).join("unsafe-link")).unwrap();
         assert_eq!(
             staging.verify_git_size_limit(u64::MAX),
@@ -12713,6 +13136,94 @@ mod tests {
     }
 
     #[test]
+    fn sync_history_parser_and_classification_are_conservative() {
+        let local_head = "1111111111111111111111111111111111111111";
+        let remote_head = "2222222222222222222222222222222222222222";
+        let common = "3333333333333333333333333333333333333333";
+        let history = |ids: &[&str], complete| GitSyncHistory {
+            object_ids: ids.iter().map(|id| (*id).to_owned()).collect(),
+            complete,
+        };
+
+        assert_eq!(
+            classify_git_sync_histories(
+                local_head,
+                local_head,
+                &history(&[local_head], true),
+                &history(&[local_head], true),
+            ),
+            GitSyncAncestry::UpToDate
+        );
+        assert_eq!(
+            classify_git_sync_histories(
+                local_head,
+                remote_head,
+                &history(&[local_head, common], true),
+                &history(&[remote_head, local_head, common], true),
+            ),
+            GitSyncAncestry::RemoteFastForward
+        );
+        assert_eq!(
+            classify_git_sync_histories(
+                local_head,
+                remote_head,
+                &history(&[local_head, remote_head, common], true),
+                &history(&[remote_head, common], true),
+            ),
+            GitSyncAncestry::LocalAhead
+        );
+        assert_eq!(
+            classify_git_sync_histories(
+                local_head,
+                remote_head,
+                &history(&[local_head, common], true),
+                &history(&[remote_head, common], true),
+            ),
+            GitSyncAncestry::Diverged
+        );
+        assert_eq!(
+            classify_git_sync_histories(
+                local_head,
+                remote_head,
+                &history(&[local_head], false),
+                &history(&[remote_head], true),
+            ),
+            GitSyncAncestry::HistoryLimit
+        );
+
+        let parsed = parse_git_sync_history(
+            format!("{remote_head}\n{common}\n").as_bytes(),
+            GitObjectFormat::Sha1,
+            remote_head,
+            false,
+        )
+        .unwrap();
+        assert_eq!(parsed.object_ids, vec![remote_head, common]);
+        assert!(parsed.complete);
+        assert_eq!(parse_git_shallow_state(b"true\n"), Ok(true));
+        assert_eq!(parse_git_shallow_state(b"false\n"), Ok(false));
+        assert!(parse_git_shallow_state(b"true").is_err());
+        assert!(
+            parse_git_sync_history(
+                format!("{remote_head}\n{remote_head}\n").as_bytes(),
+                GitObjectFormat::Sha1,
+                remote_head,
+                false,
+            )
+            .is_err()
+        );
+        assert!(
+            parse_git_sync_history(
+                format!("{common}\n").as_bytes(),
+                GitObjectFormat::Sha1,
+                remote_head,
+                false,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn sync_plan_is_bound_and_redacts_remote_authority() {
         let temp = Temp::new();
         let state = Temp::new();
@@ -12728,6 +13239,21 @@ mod tests {
         let token = serde_json::to_string(plan.token()).unwrap();
         assert!(!debug.contains(token.trim_matches('"')));
         assert!(!debug.contains(plan.preflight.branch.expected_object_id.as_ref().unwrap()));
+
+        let shallow = temp.0.join(".git/shallow");
+        fs::write(
+            &shallow,
+            format!(
+                "{}\n",
+                plan.preflight.branch.expected_object_id.as_ref().unwrap()
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            revalidate_git_sync_plan(&open_workspace(&temp), &plan),
+            Err(GitSyncError::PlanStale)
+        );
+        fs::remove_file(shallow).unwrap();
 
         fixture_git(&temp, &["config", "branch.main.merge", "refs/heads/other"]);
         assert_eq!(
@@ -12787,7 +13313,7 @@ mod tests {
         configure_clone_child(&mut fetch, staging.git_descriptor(), None);
         assert!(fetch.status().unwrap().success());
 
-        let inspection = finish_git_sync_inspection(
+        let mut inspection = finish_git_sync_inspection(
             &workspace,
             plan,
             staging,
@@ -12808,6 +13334,18 @@ mod tests {
             before_head
         );
         assert!(!format!("{inspection:?}").contains(&commit_id));
+
+        inspection.remote_head.object_id = inspection
+            .plan
+            .preflight
+            .branch
+            .expected_object_id
+            .clone()
+            .unwrap();
+        assert!(matches!(
+            classify_git_sync_ancestry(&workspace, inspection, &AtomicBool::new(true)),
+            Err(GitSyncError::Cancelled)
+        ));
     }
 
     #[test]
