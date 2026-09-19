@@ -722,6 +722,12 @@ impl fmt::Debug for GitCloneValidation {
     }
 }
 
+impl GitCloneValidation {
+    pub fn remote_url(&self) -> &str {
+        self.plan.remote_url()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GitCloneApplyError {
     UnsupportedTransport,
@@ -742,11 +748,7 @@ pub enum GitCloneApplyError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(
-    dead_code,
-    reason = "connected by the Phase 5B3C2 native finalization gate"
-)]
-pub(crate) enum GitCloneMaterializeError {
+pub enum GitCloneMaterializeError {
     DestinationChanged,
     StagingChanged,
     Busy,
@@ -906,11 +908,7 @@ pub(crate) fn apply_git_clone_content_materialization(
     Ok(workspace)
 }
 
-#[allow(
-    dead_code,
-    reason = "connected by the Phase 5B3C2 native finalization gate"
-)]
-pub(crate) fn apply_git_clone_repository_finalization(
+pub fn apply_git_clone_repository_finalization(
     destination: &EmptyWorkspaceTarget,
     validation: &GitCloneValidation,
     state_home: &Path,

@@ -14,10 +14,11 @@ use rehow_core::{
     },
     domain::GuideStatus,
     git::{
-        GitCloneApplyError, GitCloneError, GitClonePlan, GitCloneValidation, GitInitError,
-        GitInitPlan, GitReadError, GitRemoteError, GitRemotePlan, GitRepositoryStatus,
-        apply_git_clone_validation, apply_git_initialize, apply_git_remote_connect, plan_git_clone,
-        plan_git_initialize, plan_git_remote_connect, read_git_status,
+        GitCloneApplyError, GitCloneError, GitCloneMaterializeError, GitClonePlan,
+        GitCloneValidation, GitInitError, GitInitPlan, GitReadError, GitRemoteError, GitRemotePlan,
+        GitRepositoryStatus, apply_git_clone_repository_finalization, apply_git_clone_validation,
+        apply_git_initialize, apply_git_remote_connect, plan_git_clone, plan_git_initialize,
+        plan_git_remote_connect, read_git_status,
     },
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
     protocol::{AttachmentId, CategoryId, GuideId, PlanToken, Revision},
@@ -57,6 +58,7 @@ struct GitCloneLifecycle {
     active: Option<Arc<AtomicBool>>,
     validated: Option<PendingValidatedClone>,
     revoke_on_completion: bool,
+    finalizing: bool,
 }
 
 impl DesktopState {
@@ -99,7 +101,6 @@ struct PendingWorkspace {
     facts: WorkspaceFolderFacts,
 }
 
-#[allow(dead_code, reason = "consumed by the Phase 5B3C materialization gate")]
 struct PendingValidatedClone {
     selected: PendingWorkspace,
     validation: GitCloneValidation,
@@ -228,6 +229,13 @@ struct GitCloneApplyResultPayload {
 #[serde(rename_all = "camelCase")]
 struct GitCloneCancelResultPayload {
     cancellation_requested: bool,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum GitCloneCompleteResultPayload {
+    Declined,
+    Completed { workspace: WorkspacePayload },
 }
 
 #[derive(Serialize)]
@@ -954,6 +962,12 @@ fn git_clone_plan_selected_workspace(
             "A Git clone validation is already running.".to_owned(),
         ));
     }
+    if lifecycle.validated.is_some() {
+        return Err(native_command_error(
+            "completionPending",
+            "Complete or cancel the validated clone before creating another plan.".to_owned(),
+        ));
+    }
     lifecycle.pending = None;
     let pending_workspace = state.pending_empty.lock().map_err(|_| {
         native_command_error(
@@ -999,6 +1013,13 @@ async fn git_clone_apply_selected_workspace(
                 "A Git clone validation is already running.".to_owned(),
             ));
         }
+        if lifecycle.validated.is_some() {
+            return Err(native_command_error(
+                "completionPending",
+                "Complete or cancel the validated clone before starting another operation."
+                    .to_owned(),
+            ));
+        }
         let plan = take_matching_git_plan(&mut lifecycle.pending, &plan_token).map_err(
             |error| match error {
                 PendingGitPlanError::Missing => native_command_error(
@@ -1035,6 +1056,7 @@ async fn git_clone_apply_selected_workspace(
             })?;
         lifecycle.active = Some(Arc::clone(&cancelled));
         lifecycle.revoke_on_completion = false;
+        lifecycle.finalizing = false;
         (plan, selected)
     };
     let confirmed = rfd::MessageDialog::new()
@@ -1116,6 +1138,7 @@ async fn git_clone_apply_selected_workspace(
             });
             lifecycle.active = None;
             lifecycle.revoke_on_completion = false;
+            lifecycle.finalizing = false;
             Ok(GitCloneApplyResultPayload {
                 validated: true,
                 stage: "validated",
@@ -1139,6 +1162,178 @@ async fn git_clone_apply_selected_workspace(
 }
 
 #[tauri::command]
+async fn git_clone_complete_selected_workspace(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+) -> Result<GitCloneCompleteResultPayload, NativeCommandError> {
+    let state = app.state::<DesktopState>();
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    fs::create_dir_all(&state_home).map_err(|_| {
+        native_command_error(
+            "stateUnavailable",
+            "Rehow could not prepare its private recovery folder.".to_owned(),
+        )
+    })?;
+    let active = Arc::new(AtomicBool::new(false));
+    let (pending, confirmation) = {
+        let mut lifecycle = state.git_clone.lock().map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Git clone state is unavailable".to_owned(),
+            )
+        })?;
+        if lifecycle.active.is_some() {
+            return Err(native_command_error(
+                "cloneBusy",
+                "A Git clone operation is already running.".to_owned(),
+            ));
+        }
+        let pending = lifecycle.validated.take().ok_or_else(|| {
+            native_command_error(
+                "validationMissing",
+                "Validate the Git Workspace before completing the clone.".to_owned(),
+            )
+        })?;
+        let confirmation = git_clone_completion_confirmation(pending.validation.remote_url());
+        lifecycle.active = Some(Arc::clone(&active));
+        lifecycle.finalizing = false;
+        lifecycle.revoke_on_completion = false;
+        (pending, confirmation)
+    };
+
+    let confirmed = rfd::MessageDialog::new()
+        .set_parent(&window)
+        .set_level(rfd::MessageLevel::Info)
+        .set_title("Complete Git Clone?")
+        .set_description(confirmation)
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes;
+    {
+        let mut lifecycle = state.git_clone.lock().map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Git clone state is unavailable".to_owned(),
+            )
+        })?;
+        if lifecycle.finalizing || !active_git_clone_matches(&lifecycle, &active) {
+            return Err(native_command_error(
+                "sessionUnavailable",
+                "Git clone completion state changed unexpectedly. Reopen the destination to recover."
+                    .to_owned(),
+            ));
+        }
+        if !confirmed {
+            lifecycle.active = None;
+            lifecycle.validated = Some(pending);
+            return Ok(GitCloneCompleteResultPayload::Declined);
+        }
+        if active.load(Ordering::Relaxed) || lifecycle.revoke_on_completion {
+            lifecycle.active = None;
+            lifecycle.revoke_on_completion = false;
+            lifecycle.validated = Some(pending);
+            return Err(native_command_error(
+                "cancelled",
+                "Clone completion was cancelled before the selected folder was changed.".to_owned(),
+            ));
+        }
+        lifecycle.finalizing = true;
+    }
+
+    let pending_holder = Arc::new(Mutex::new(Some(pending)));
+    let worker_pending = Arc::clone(&pending_holder);
+    let operation = tauri::async_runtime::spawn_blocking(move || {
+        let pending = worker_pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pending = pending
+            .as_ref()
+            .expect("native clone completion retains its pending session");
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            apply_git_clone_repository_finalization(
+                &pending.selected.target,
+                &pending.validation,
+                &state_home,
+                runtime_directory.as_deref(),
+            )
+        }))
+    })
+    .await;
+    let pending = pending_holder
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+        .ok_or_else(|| {
+            native_command_error(
+                "sessionUnavailable",
+                "Validated Git clone state is unavailable. Reopen the destination to recover."
+                    .to_owned(),
+            )
+        })?;
+    let mut lifecycle = state.git_clone.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Git clone state is unavailable".to_owned(),
+        )
+    })?;
+    if !lifecycle.finalizing || !active_git_clone_matches(&lifecycle, &active) {
+        return Err(native_command_error(
+            "sessionUnavailable",
+            "Git clone completion state changed unexpectedly. Reopen the destination to recover."
+                .to_owned(),
+        ));
+    }
+    lifecycle.active = None;
+    lifecycle.finalizing = false;
+
+    let result = match operation {
+        Ok(result) => result,
+        Err(_) => {
+            lifecycle.validated = Some(pending);
+            return Err(native_command_error(
+                "sessionUnavailable",
+                "Git clone completion stopped unexpectedly. Try completing it again.".to_owned(),
+            ));
+        }
+    };
+
+    let view = match result {
+        Ok(Ok(view)) => view,
+        Ok(Err(error)) => {
+            lifecycle.validated = Some(pending);
+            return Err(native_command_error(
+                git_clone_materialize_code(error),
+                git_clone_materialize_message(error),
+            ));
+        }
+        Err(_) => {
+            lifecycle.validated = Some(pending);
+            return Err(native_command_error(
+                "sessionUnavailable",
+                "Git clone completion stopped unexpectedly. Try completing it again.".to_owned(),
+            ));
+        }
+    };
+    let facts = pending.selected.facts.after_git_initialize();
+    let workspace = DesktopWorkspace::new(view, facts, state.next_watch_session(), &app);
+    let payload = workspace.payload();
+    let mut workspace_session = match state.workspace.lock() {
+        Ok(session) => session,
+        Err(_) => {
+            lifecycle.validated = Some(pending);
+            return Err(native_command_error(
+                "sessionUnavailable",
+                "Workspace session is unavailable. Try completing the clone again.".to_owned(),
+            ));
+        }
+    };
+    *workspace_session = Some(workspace);
+    lifecycle.validated = None;
+    Ok(GitCloneCompleteResultPayload::Completed { workspace: payload })
+}
+
+#[tauri::command]
 fn git_clone_cancel_active(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<GitCloneCancelResultPayload, NativeCommandError> {
@@ -1156,6 +1351,9 @@ fn git_clone_cancel_active(
 
 fn request_git_clone_cancellation(lifecycle: &Mutex<GitCloneLifecycle>) -> Result<bool, ()> {
     let lifecycle = lifecycle.lock().map_err(|_| ())?;
+    if lifecycle.finalizing {
+        return Ok(false);
+    }
     Ok(lifecycle.active.as_ref().is_some_and(|cancelled| {
         cancelled.store(true, Ordering::Relaxed);
         true
@@ -1168,6 +1366,7 @@ fn clear_active_git_clone(state: &DesktopState, expected: &Arc<AtomicBool>) {
     {
         lifecycle.active = None;
         lifecycle.revoke_on_completion = false;
+        lifecycle.finalizing = false;
     }
 }
 
@@ -1212,6 +1411,7 @@ fn restore_selected_after_clone(
     }
     lifecycle.active = None;
     lifecycle.revoke_on_completion = false;
+    lifecycle.finalizing = false;
     Ok(())
 }
 
@@ -1222,6 +1422,12 @@ fn git_clone_confirmation(plan: &GitClonePlan) -> String {
 fn git_clone_confirmation_fields(transport: &str, remote_url: &str) -> String {
     format!(
         "Download and validate this {transport} Rehow Workspace?\n\n{remote_url}\n\nRehow will use private staging only. It will not change the selected folder yet."
+    )
+}
+
+fn git_clone_completion_confirmation(remote_url: &str) -> String {
+    format!(
+        "Rehow validated this Git Workspace:\n\n{remote_url}\n\nComplete the clone now? This writes only the validated Workspace and exact Git metadata into the selected folder. Rehow will not run Guide commands, hooks, or a checkout."
     )
 }
 
@@ -1292,6 +1498,52 @@ fn git_clone_apply_message(error: GitCloneApplyError) -> String {
         }
         GitCloneApplyError::Io => {
             "Clone validation could not finish. Check system storage and try again.".to_owned()
+        }
+    }
+}
+
+fn git_clone_materialize_code(error: GitCloneMaterializeError) -> &'static str {
+    match error {
+        GitCloneMaterializeError::DestinationChanged => "destinationChanged",
+        GitCloneMaterializeError::StagingChanged => "stagingChanged",
+        GitCloneMaterializeError::Busy => "busy",
+        GitCloneMaterializeError::Conflict => "conflict",
+        GitCloneMaterializeError::Unsafe => "unsafeState",
+        GitCloneMaterializeError::Unsupported => "unsupportedFilesystem",
+        GitCloneMaterializeError::ResourceLimit => "resourceLimit",
+        GitCloneMaterializeError::ValidationMismatch => "validationMismatch",
+        GitCloneMaterializeError::Io => "io",
+    }
+}
+
+fn git_clone_materialize_message(error: GitCloneMaterializeError) -> String {
+    match error {
+        GitCloneMaterializeError::DestinationChanged => {
+            "The clone destination changed. Reopen it before trying to recover.".to_owned()
+        }
+        GitCloneMaterializeError::StagingChanged => {
+            "The validated clone staging data changed. Validate the remote again.".to_owned()
+        }
+        GitCloneMaterializeError::Busy => {
+            "Another Rehow writer is active. Wait a moment and try again.".to_owned()
+        }
+        GitCloneMaterializeError::Conflict => {
+            "The destination contains unexpected data. Nothing was overwritten.".to_owned()
+        }
+        GitCloneMaterializeError::Unsafe => {
+            "The destination or staging area contains unsafe filesystem state.".to_owned()
+        }
+        GitCloneMaterializeError::Unsupported => {
+            "This filesystem cannot provide the safe clone publication Rehow requires.".to_owned()
+        }
+        GitCloneMaterializeError::ResourceLimit => {
+            "Clone completion exceeded a safe resource limit.".to_owned()
+        }
+        GitCloneMaterializeError::ValidationMismatch => {
+            "The completed repository did not match the validated Workspace.".to_owned()
+        }
+        GitCloneMaterializeError::Io => {
+            "Clone completion could not finish. Check folder access and try again.".to_owned()
         }
     }
 }
@@ -2246,7 +2498,13 @@ fn initialize_selected_workspace(
     if lifecycle.active.is_some() {
         return Err(native_command_error(
             "cloneBusy",
-            "Cancel the active Git clone validation before creating a Workspace.".to_owned(),
+            "Wait for the active Git clone operation before creating a Workspace.".to_owned(),
+        ));
+    }
+    if lifecycle.validated.is_some() {
+        return Err(native_command_error(
+            "completionPending",
+            "Complete or cancel the validated clone before creating a Workspace.".to_owned(),
         ));
     }
     lifecycle.pending = None;
@@ -3018,6 +3276,11 @@ fn cancel_selected_workspace_initialization(
         .git_clone
         .lock()
         .map_err(|_| "Git clone state is unavailable".to_owned())?;
+    if lifecycle.finalizing {
+        return Err(
+            "Git clone completion cannot be cancelled safely. Wait for it to finish.".to_owned(),
+        );
+    }
     lifecycle.pending = None;
     lifecycle.validated = None;
     if lifecycle.active.as_ref().is_some_and(|cancelled| {
@@ -3056,7 +3319,7 @@ fn choose_workspace(
         .map_err(|_| "Git clone state is unavailable".to_owned())?;
     if lifecycle.active.is_some() {
         return Err(
-            "Cancel the active Git clone validation before choosing another folder.".to_owned(),
+            "Wait for the active Git clone operation before choosing another folder.".to_owned(),
         );
     }
     lifecycle.pending = None;
@@ -3143,6 +3406,7 @@ pub fn run() {
             git_remote_apply_open_workspace,
             git_clone_plan_selected_workspace,
             git_clone_apply_selected_workspace,
+            git_clone_complete_selected_workspace,
             git_clone_cancel_active,
             git_status_open_workspace,
             search_open_workspace
@@ -3155,18 +3419,20 @@ pub fn run() {
 mod tests {
     use super::{
         APPLICATION_NAME, CategoryPayload, FolderFactsPayload, GitCloneApplyResultPayload,
-        GitCloneCancelResultPayload, GitCloneLifecycle, GitClonePlanPayload, GitInitPlanPayload,
-        GitInitResultPayload, GitRemotePlanPayload, GitRemoteResultPayload, GuideBodyPayload,
-        GuidePayload, PendingGitPlanError, SearchHighlightPayload, SearchHitPayload,
-        WorkspacePayload, WorkspaceWatchEventPayload, attachment_removal_code,
-        attachment_removal_message, category_create_code, category_create_message,
-        category_remove_code, category_remove_message, category_reorder_code,
-        category_reorder_message, category_update_code, category_update_message, empty_git_payload,
-        git_clone_apply_code, git_clone_apply_message, git_clone_code,
-        git_clone_confirmation_fields, git_clone_message, git_init_code, git_init_confirmation,
-        git_init_message, git_remote_code, git_remote_confirmation_fields, git_remote_message,
-        guide_create_code, guide_create_message, guide_remove_code, guide_remove_confirmation,
-        guide_remove_message, guide_update_code, guide_update_message, native_command_error,
+        GitCloneCancelResultPayload, GitCloneCompleteResultPayload, GitCloneLifecycle,
+        GitClonePlanPayload, GitInitPlanPayload, GitInitResultPayload, GitRemotePlanPayload,
+        GitRemoteResultPayload, GuideBodyPayload, GuidePayload, PendingGitPlanError,
+        SearchHighlightPayload, SearchHitPayload, WorkspacePayload, WorkspaceWatchEventPayload,
+        attachment_removal_code, attachment_removal_message, category_create_code,
+        category_create_message, category_remove_code, category_remove_message,
+        category_reorder_code, category_reorder_message, category_update_code,
+        category_update_message, empty_git_payload, git_clone_apply_code, git_clone_apply_message,
+        git_clone_code, git_clone_completion_confirmation, git_clone_confirmation_fields,
+        git_clone_materialize_code, git_clone_materialize_message, git_clone_message,
+        git_init_code, git_init_confirmation, git_init_message, git_remote_code,
+        git_remote_confirmation_fields, git_remote_message, guide_create_code,
+        guide_create_message, guide_remove_code, guide_remove_confirmation, guide_remove_message,
+        guide_update_code, guide_update_message, native_command_error,
         request_git_clone_cancellation, search_status_scope, take_matching_git_plan,
         workspace_initialization_message, workspace_refresh_code, workspace_refresh_message,
     };
@@ -3177,7 +3443,8 @@ mod tests {
             WorkspaceInitializationError, WorkspaceRefreshError,
         },
         git::{
-            GitCloneApplyError, GitCloneError, GitCloneValidation, GitInitError, GitRemoteError,
+            GitCloneApplyError, GitCloneError, GitCloneMaterializeError, GitCloneValidation,
+            GitInitError, GitRemoteError,
         },
         markdown::parse_safe_markdown,
         protocol::PlanToken,
@@ -3291,11 +3558,18 @@ mod tests {
         })
         .unwrap();
         assert_eq!(cancelled.as_object().unwrap().len(), 1);
+        let declined = serde_json::to_value(GitCloneCompleteResultPayload::Declined).unwrap();
+        assert_eq!(declined, serde_json::json!({ "kind": "declined" }));
 
         let confirmation =
             git_clone_confirmation_fields("https", "https://example.invalid/team/rehow.git");
         assert!(confirmation.contains("https://example.invalid/team/rehow.git"));
         assert!(confirmation.contains("will not change the selected folder"));
+        let completion =
+            git_clone_completion_confirmation("https://example.invalid/team/rehow.git");
+        assert!(completion.contains("https://example.invalid/team/rehow.git"));
+        assert!(completion.contains("writes only the validated Workspace"));
+        assert!(completion.contains("will not run Guide commands"));
         assert_eq!(
             git_clone_apply_code(GitCloneApplyError::Cancelled),
             "cancelled"
@@ -3309,6 +3583,19 @@ mod tests {
                 .contains("example.invalid")
         );
         assert!(git_clone_apply_message(GitCloneApplyError::Cancelled).contains("not changed"));
+        assert_eq!(
+            git_clone_materialize_code(GitCloneMaterializeError::StagingChanged),
+            "stagingChanged"
+        );
+        assert_eq!(
+            git_clone_materialize_code(GitCloneMaterializeError::ValidationMismatch),
+            "validationMismatch"
+        );
+        assert!(
+            git_clone_materialize_message(GitCloneMaterializeError::Conflict)
+                .contains("Nothing was overwritten")
+        );
+        assert!(!git_clone_materialize_message(GitCloneMaterializeError::Io).contains("path"));
 
         fn assert_send<T: Send>() {}
         assert_send::<GitCloneValidation>();
@@ -3327,6 +3614,15 @@ mod tests {
 
         let inactive = Mutex::new(GitCloneLifecycle::default());
         assert_eq!(request_git_clone_cancellation(&inactive), Ok(false));
+
+        let finalizing_flag = Arc::new(AtomicBool::new(false));
+        let finalizing = Mutex::new(GitCloneLifecycle {
+            active: Some(Arc::clone(&finalizing_flag)),
+            finalizing: true,
+            ..GitCloneLifecycle::default()
+        });
+        assert_eq!(request_git_clone_cancellation(&finalizing), Ok(false));
+        assert!(!finalizing_flag.load(Ordering::Relaxed));
     }
 
     #[test]
