@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 4D — automatic external-change reconciliation accepted; next is search interaction completion.
+Phase 4 accepted — search retrieval, indexing, external reconciliation, interaction, visual, and performance gates pass; next is Phase 5 Git read-only discovery/status.
 
 ## Current task
 
-Specify Phase 4E excerpts/highlights, scopes/archived search, renderer latency, and the final Phase 4 interaction/visual gate.
+Specify the first Phase 5 slice: confined read-only Git discovery/status with hostile-repository safeguards and no credential or mutation authority.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; automatically or manually reconcile external changes without discarding dirty edits; validate, import, and recoverably remove managed Attachments; and search a precomputed disposable index whose 5,000-Guide backend and incremental-reconciliation budgets pass. Search excerpts/highlights/scopes, Attachment viewing/export/reveal, and MCP mutation remain unimplemented; MCP remains read-only.
+In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; automatically or manually reconcile external changes without discarding dirty edits; validate, import, and recoverably remove managed Attachments; and retrieve Guides through a fast precomputed index with safe highlighted excerpts, explicit status scopes, keyboard interaction, and accepted wide/narrow UI. Attachment viewing/export/reveal, Git workflows, and MCP mutation remain unimplemented; MCP remains read-only.
 
 ## Completed work
 
@@ -86,17 +86,18 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Added the dependency-free disposable search index at signed checkpoint `c53378d`: normalized field extraction and Markdown parsing happen once per compatible Workspace view, every successful refresh atomically swaps content plus index, malformed Guides remain isolated, and accepted ranking/scope/reasons remain unchanged. Five enforced release runs over 5,000 Guides / 52,665,331 bytes measured worst-case 1.514 s cold rebuild, 5.382 ms warm backend p95, and about 140 MiB peak RSS.
 - Added revision-driven incremental search reconciliation at signed checkpoint `a4ca4e3`: successful canonical refreshes correlate stable Guide IDs and exact revisions, reuse unchanged indexed allocations, cheaply refresh Category/status wrappers, add/remove/rebuild changed Guides, and retain the exact prior view/index on failure. Six release measurements over 5,000 Guides reused 4,999 allocations and measured 1.234–1.424 ms.
 - Added loss-tolerant external-change reconciliation at signed checkpoint `f2edc2a`: descriptor-bound nonrecursive watches emit path-free invalidation hints; clean sessions refresh automatically; dirty or in-flight edits remain intact; stale sessions are rejected; degraded/refocus/manual recovery stays available. The single Security Reviewer passed the corrected boundary with no blocker/high/medium finding.
+- Completed search retrieval interaction at signed checkpoint `e17b7d1`: bounded plain excerpts and Unicode-scalar highlights, closed pre-cap status scopes, dirty-safe selection reconciliation, URL-restorable filters, actionable empty states, production latency evidence, and wide/narrow visual captures. The single Design Reviewer passed the correction recheck with no blocker/high/medium finding.
 
 ## Work in progress
 
-- External-change reconciliation is committed at signed checkpoint `f2edc2a`. The next batch is Phase 4E search excerpts/highlights/scopes, archived search, renderer latency, and interaction screenshots; Attachment viewing/export/reveal and MCP mutation remain deferred.
+- Phase 4 is complete at signed checkpoint `e17b7d1`. The next batch is Phase 5A confined read-only Git discovery/status; Attachment viewing/export/reveal and MCP mutation remain deferred.
 
 ## Remaining work
 
 - Phase 1D-C: finish deterministic emission and private mutation candidate authority; Phase 1E proves confinement/revisions and atomic recovery.
 - Phase 2: native shell and safe Workspace onboarding/import/migration.
 - Phase 3: Category/Guide/Attachment lifecycle and edit conflicts.
-- Phase 4: search/ranking/index performance.
+- Phase 4: complete at `e17b7d1`.
 - Phase 5: staged safe Git workflows.
 - Phase 6: standalone full MCP contract.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
@@ -107,7 +108,8 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Design and accessibility findings
 
-- 2026-09-19: Phase 4D adds concise toolbar health text and a named manual recovery action without changing shell geometry. Automatic refresh never steals focus; dirty/in-flight edits are retained and announced. The current guideline review found no blocking issue; the complete search-interaction screenshot matrix remains the Phase 4 gate.
+- 2026-09-19: Phase 4E current-guideline and screenshot review passes at 1440×900 light, 480×800 dark, and 720×900 light. The only high/medium findings—post-cap status filtering and an out-of-scope selected Guide—were corrected with pre-cap core scopes and guarded selection reconciliation; the same Design Reviewer passed the narrow recheck.
+- 2026-09-19: Phase 4D adds concise toolbar health text and a named manual recovery action without changing shell geometry. Automatic refresh never steals focus; dirty/in-flight edits are retained and announced. Its current-guideline review found no blocking issue; Phase 4E subsequently closed the combined screenshot gate.
 - 2026-09-19: Attachment removal adds one named semantic action to each existing Attachment row, with specific accessible naming, visible focus, busy/error/live feedback, cancellation focus restoration, and post-success focus on Add Attachment. The current upstream guideline review passed; no new screenshot gate was required for this bounded list action.
 - 2026-09-18: Mark Tested uses a named semantic control with busy/error/live feedback, mandatory native confirmation, visible focus, and post-success focus restoration. Fresh current-guideline static review found no issue; native dialog and screenshot smoke coverage remain in the combined manual UI gate.
 - 2026-09-18: Workspace refresh adds a labeled icon button with tooltip, visible focus, disabled/busy states, polite result/error announcements, dirty-form confirmation, selection fallback, and narrow-toolbar compatibility. The current upstream guideline review found no issue.
@@ -176,19 +178,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - The `c53378d` search index is derived in memory only, has no write authority or new product filesystem/process/network access, and is atomically paired with a successfully inspected Workspace view. ADR 0018 supersedes only ADR 0004's Tantivy presumption based on measured fit and defines explicit scale/p95/RSS/incremental revisit triggers. Independent Reviewer/high reports no blocker/high/medium finding.
 - The `a4ca4e3` reconciler trusts only freshly confined canonical records and exact revisions, never filesystem events or prior index content. A complete compatible view/index is built before the retained pair is replaced; independent Reviewer/high reports no remaining finding.
 - The `f2edc2a` watcher holds no-follow directory descriptors, emits no paths/content, treats events only as invalidation hints, rejects stale native sessions, and retains dirty/in-flight edits. Review corrections closed a lost-wakeup race and exact managed-directory selection; Security Reviewer/xhigh reports no remaining blocker/high/medium finding.
+- The `e17b7d1` result contract contains only bounded plain text, closed field names, IDs, and bounded integer spans; React constructs text/`mark` nodes without HTML. Closed scopes are validated natively and enforced in core before ranking/capping. No new filesystem, shell, Git, credential, or MCP mutation authority was added.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 4D used exactly one Security Reviewer/xhigh at its acceptance boundary and it is complete.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 4E used exactly one Design Reviewer/high at its acceptance boundary and it is complete.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`f2edc2a` — signed and verified automatic external-change reconciliation. This progress-only ledger update follows that feature commit.
+`e17b7d1` — signed and verified Phase 4 search-interaction completion. This progress-only ledger update follows that feature commit.
 
 ## Tests last run and results
 
+- 2026-09-19: Phase 4 search checkpoint at `e17b7d1`: 306 normal core tests plus 18 error-contract, 13 protocol, 1 public-API/trybuild, 11 unknown-YAML, 15 desktop Rust, 1 MCP, and 29 Vitest tests pass; the release-only incremental gate is intentionally ignored by the debug suite. `pnpm check/test/build`, locked all-target/all-feature Clippy with warnings denied, Cargo formatting, optimized Tauri no-bundle build, bootstrap/contract/whitespace checks, three 5,000-Guide performance runs, production browser latency, and screenshot review pass. Worst backend p95 is 7.676 ms and browser-visible p95 is 50.184 ms. Design Reviewer/high final verdict: PASS.
 - 2026-09-19: external-change checkpoint at `f2edc2a`: the full pre-review gate passed 301 normal core tests plus the protocol/error/public-API/unknown-YAML/desktop/MCP suites, 24 Vitest tests, production web/Cargo/Tauri builds, and one intentional release benchmark ignore. Corrections then passed 7/7 watcher, 13/13 desktop Rust, and 25/25 Vitest tests; full all-target/all-feature locked Workspace Clippy denies warnings, formatting, `pnpm check`, bootstrap, contracts, and whitespace checks pass. Security Reviewer/xhigh final verdict: PASS with no blocker/high/medium finding.
 - 2026-09-19: incremental search checkpoint at `a4ca4e3`: full locked all-feature Workspace tests passed before the review-only coverage correction — 296/296 normal core tests plus 18 error-contract, 13 protocol, 1 public-API/trybuild, 11 unknown-YAML, 12 desktop Rust, and 1 MCP test. After adding the requested archive-transition lifecycle test, focused search passed 7/7 with the production gate intentionally ignored; formatting, locked core Clippy with warnings denied, bootstrap validation, and whitespace checks pass. Six release processes over 5,000 Guides measured 1.234–1.424 ms and reused exactly 4,999/5,000 document allocations. Independent Reviewer/high final verdict: PASS with no finding.
 - 2026-09-19: disposable search checkpoint at `c53378d`: Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, all-feature Workspace tests, bootstrap validation, and whitespace checks pass. Counts include 294 core library tests, 12 desktop Rust tests, and 1 MCP test. Search lifecycle/ranking tests pass 4/4. Five final enforced release processes each generated 5,000 Guides / 52,665,331 bytes; worst observed cold rebuild was 1.514 s, warm backend p95 5.382 ms, and peak RSS 143,772 KiB. Independent Reviewer/high final verdict: PASS with no blocker/high/medium finding.
@@ -352,20 +356,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0018, `docs/task-packets/phase-4b-disposable-search-index.md`, `docs/evidence/phase-4b-search-performance.md`, the precomputed field index, refresh lifecycle test, and enforcing release benchmark implement the first indexed-search production gate at `c53378d`.
 - `docs/task-packets/phase-4c-incremental-search-reconciliation.md`, `docs/evidence/phase-4c-incremental-search.md`, and the revision-aware index/storage refresh path implement incremental reconciliation at `a4ca4e3`.
 - ADR 0019, `docs/task-packets/phase-4d-external-change-watching.md`, `docs/evidence/phase-4d-external-change-watching.md`, the core watcher, native path-free event adapter, and dirty-safe UI reconciliation implement automatic external-change handling at `f2edc2a`.
+- ADR 0020, `docs/task-packets/phase-4e-search-interaction-completion.md`, `docs/evidence/phase-4e-search-interaction.md`, bounded excerpt/highlight payloads, pre-cap status scopes, guarded selection reconciliation, and representative screenshots complete Phase 4 at `e17b7d1`.
 
 ## Next recommended action
 
-Implement Phase 4E search excerpts/highlights, scopes/archived search, renderer latency evidence, and the final Phase 4 search interaction/accessibility/screenshot gate.
+Specify and implement Phase 5A confined read-only Git discovery/status. Freeze subprocess/config isolation and hostile-repository behavior before adding any commit, sync, clone, or initialization authority.
 
 ## Recommended agent role and reasoning effort
 
-Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents during routine implementation; use one reviewer only at the Phase 4 acceptance boundary.
+Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents during routine implementation; use one security reviewer only at the Phase 5 security checkpoint.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read the search sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, ADRs 0004/0018/0019, and the Phase 4B/4C/4D evidence.
+2. Read the Git sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `f2edc2a`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `e17b7d1`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Resume with Phase 4E search interaction completion: excerpts/highlights, scopes/archived search, renderer latency, accessibility, and representative screenshots.
+6. Resume with Phase 5A Git read-only discovery/status; do not add mutation, credentials, hooks, aliases, shell execution, or sync authority in that slice.
