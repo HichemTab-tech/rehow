@@ -16,11 +16,14 @@ use rehow_core::{
     git::{
         GitCloneApplyError, GitCloneError, GitCloneMaterializeError, GitClonePlan,
         GitCloneValidation, GitCommitPlan, GitCommitPlanError, GitInitError, GitInitPlan,
-        GitReadError, GitRemoteError, GitRemotePlan, GitRepositoryStatus,
-        apply_git_clone_repository_finalization, apply_git_clone_validation, apply_git_commit,
-        apply_git_initialize, apply_git_remote_connect, cancel_git_commit_plan,
-        git_commit_recovery_required, plan_git_clone, plan_git_commit, plan_git_initialize,
-        plan_git_remote_connect, read_git_status, resume_pending_git_commit_publication,
+        GitReadError, GitRemoteError, GitRemotePlan, GitRepositoryStatus, GitSyncAncestry,
+        GitSyncClassification, GitSyncError, apply_git_clone_repository_finalization,
+        apply_git_clone_validation, apply_git_commit, apply_git_initialize,
+        apply_git_remote_connect, apply_git_sync_fast_forward, apply_git_sync_inspection,
+        cancel_git_commit_plan, classify_git_sync_ancestry, git_commit_recovery_required,
+        git_sync_recovery_required, plan_git_clone, plan_git_commit, plan_git_initialize,
+        plan_git_remote_connect, plan_git_sync, read_git_status,
+        resume_pending_git_commit_publication, resume_pending_git_sync_publication,
     },
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
     protocol::{AttachmentId, CategoryId, GuideId, PlanToken, Revision},
@@ -53,6 +56,7 @@ struct DesktopState {
     pending_git_remote: Mutex<Option<(PlanToken, GitRemotePlan)>>,
     git_commit: Mutex<GitCommitLifecycle>,
     git_clone: Mutex<GitCloneLifecycle>,
+    git_sync: Mutex<GitSyncLifecycle>,
     next_watch_session: AtomicU64,
 }
 
@@ -69,6 +73,14 @@ struct GitCloneLifecycle {
 struct GitCommitLifecycle {
     pending: Option<(PlanToken, GitCommitPlan)>,
     active: bool,
+}
+
+#[derive(Default)]
+struct GitSyncLifecycle {
+    active: Option<Arc<AtomicBool>>,
+    classified: Option<(PlanToken, GitSyncClassification)>,
+    applying: bool,
+    revoke_on_completion: bool,
 }
 
 impl DesktopState {
@@ -249,6 +261,44 @@ struct GitCommitCancelResultPayload {
 struct GitCommitRecoveryResultPayload {
     recovered: bool,
     workspace_changed: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitSyncInspectionPayload {
+    plan_token: PlanToken,
+    remote_name: String,
+    transport: &'static str,
+    host: String,
+    ancestry: &'static str,
+    local_changes: bool,
+    workspace_matches_remote: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitSyncCancelResultPayload {
+    cancellation_requested: bool,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum GitSyncApplyResultPayload {
+    Declined,
+    Completed {
+        workspace: WorkspacePayload,
+        changed: bool,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum GitSyncRecoveryResultPayload {
+    Declined,
+    Completed {
+        workspace: WorkspacePayload,
+        changed: bool,
+    },
 }
 
 #[derive(Serialize)]
@@ -628,17 +678,22 @@ fn git_status_open_workspace(
     let workspace = guard
         .as_ref()
         .ok_or_else(|| "No Workspace is open".to_owned())?;
-    if let Ok((state_home, runtime_directory)) = native_recovery_locations()
-        && matches!(
+    if let Ok((state_home, runtime_directory)) = native_recovery_locations() {
+        let commit_recovery = matches!(
             git_commit_recovery_required(
                 &workspace.view,
                 &state_home,
                 runtime_directory.as_deref(),
             ),
             Ok(true)
-        )
-    {
-        return Ok(empty_git_payload("recoveryRequired", None));
+        );
+        let sync_recovery = matches!(
+            git_sync_recovery_required(&workspace.view, &state_home, runtime_directory.as_deref(),),
+            Ok(true)
+        );
+        if commit_recovery || sync_recovery {
+            return Ok(empty_git_payload("recoveryRequired", None));
+        }
     }
     match read_git_status(&workspace.view) {
         Ok(status) => {
@@ -1458,6 +1513,468 @@ fn git_commit_message(error: GitCommitPlanError) -> String {
 }
 
 #[tauri::command]
+async fn git_sync_inspect_open_workspace(
+    app: tauri::AppHandle,
+) -> Result<GitSyncInspectionPayload, NativeCommandError> {
+    let (state_home, _) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    fs::create_dir_all(&state_home).map_err(|_| {
+        native_command_error(
+            "stateUnavailable",
+            "Rehow could not prepare its private sync staging folder.".to_owned(),
+        )
+    })?;
+    let state = app.state::<DesktopState>();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    {
+        let mut lifecycle = state.git_sync.lock().map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Git sync state is unavailable".to_owned(),
+            )
+        })?;
+        if lifecycle.active.is_some() || lifecycle.applying {
+            return Err(native_command_error(
+                "syncBusy",
+                "A Git sync operation is already running.".to_owned(),
+            ));
+        }
+        lifecycle.classified = None;
+        lifecycle.active = Some(Arc::clone(&cancelled));
+        lifecycle.revoke_on_completion = false;
+    }
+    let operation_cancelled = Arc::clone(&cancelled);
+    let worker_app = app.clone();
+    let operation = tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app.state::<DesktopState>();
+        let guard = state.workspace.lock().map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Workspace session is unavailable".to_owned(),
+            )
+        })?;
+        let workspace = guard.as_ref().ok_or_else(|| {
+            native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+        })?;
+        let plan = plan_git_sync(&workspace.view, &state_home)
+            .map_err(|error| native_command_error(git_sync_code(error), git_sync_message(error)))?;
+        let inspection =
+            apply_git_sync_inspection(&workspace.view, &state_home, plan, &operation_cancelled)
+                .map_err(|error| {
+                    native_command_error(git_sync_code(error), git_sync_message(error))
+                })?;
+        classify_git_sync_ancestry(&workspace.view, inspection, &operation_cancelled)
+            .map_err(|error| native_command_error(git_sync_code(error), git_sync_message(error)))
+    })
+    .await;
+    let mut lifecycle = state.git_sync.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Git sync state is unavailable".to_owned(),
+        )
+    })?;
+    let owns_operation = lifecycle
+        .active
+        .as_ref()
+        .is_some_and(|active| Arc::ptr_eq(active, &cancelled));
+    if !owns_operation {
+        return Err(native_command_error(
+            "sessionUnavailable",
+            "Git sync state changed unexpectedly. Refresh status and try again.".to_owned(),
+        ));
+    }
+    lifecycle.active = None;
+    let revoked = lifecycle.revoke_on_completion || cancelled.load(Ordering::Relaxed);
+    lifecycle.revoke_on_completion = false;
+    if revoked {
+        lifecycle.classified = None;
+        return Err(native_command_error(
+            git_sync_code(GitSyncError::Cancelled),
+            git_sync_message(GitSyncError::Cancelled),
+        ));
+    }
+    match operation {
+        Ok(Ok(classification)) => {
+            let payload = git_sync_inspection_payload(&classification);
+            lifecycle.classified = Some((payload.plan_token.clone(), classification));
+            Ok(payload)
+        }
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(native_command_error(
+            "sessionUnavailable",
+            "Git sync inspection stopped unexpectedly. Refresh status before retrying.".to_owned(),
+        )),
+    }
+}
+
+#[tauri::command]
+fn git_sync_cancel_active(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<GitSyncCancelResultPayload, NativeCommandError> {
+    let cancellation_requested =
+        request_git_sync_cancellation(&state.git_sync).map_err(|error| match error {
+            GitSyncCancelError::Busy => native_command_error(
+                "syncBusy",
+                "The confirmed Git sync is being applied and cannot be cancelled.".to_owned(),
+            ),
+            GitSyncCancelError::Unavailable => native_command_error(
+                "sessionUnavailable",
+                "Git sync state is unavailable".to_owned(),
+            ),
+        })?;
+    Ok(GitSyncCancelResultPayload {
+        cancellation_requested,
+    })
+}
+
+#[tauri::command]
+async fn git_sync_apply_open_workspace(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+    plan_token: PlanToken,
+) -> Result<GitSyncApplyResultPayload, NativeCommandError> {
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    let state = app.state::<DesktopState>();
+    let classification = {
+        let mut lifecycle = state.git_sync.lock().map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Git sync state is unavailable".to_owned(),
+            )
+        })?;
+        if lifecycle.active.is_some() || lifecycle.applying {
+            return Err(native_command_error(
+                "syncBusy",
+                "A Git sync operation is already running.".to_owned(),
+            ));
+        }
+        let classification = take_matching_git_plan(&mut lifecycle.classified, &plan_token)
+            .map_err(git_sync_pending_error)?;
+        if classification.ancestry() != GitSyncAncestry::RemoteFastForward
+            || classification.local_changes()
+        {
+            return Err(native_command_error(
+                "applyNotAllowed",
+                "This sync result cannot be applied automatically. Review the reported Git state."
+                    .to_owned(),
+            ));
+        }
+        lifecycle.applying = true;
+        classification
+    };
+    let confirmed = rfd::MessageDialog::new()
+        .set_parent(&window)
+        .set_level(rfd::MessageLevel::Warning)
+        .set_title("Apply Git Fast-forward?")
+        .set_description(git_sync_confirmation(&classification))
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes;
+    if !confirmed {
+        finish_git_sync_apply(&state)?;
+        return Ok(GitSyncApplyResultPayload::Declined);
+    }
+    let worker_app = app.clone();
+    let operation = tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app.state::<DesktopState>();
+        let mut guard = state.workspace.lock().map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Workspace session is unavailable".to_owned(),
+            )
+        })?;
+        let workspace = guard.as_mut().ok_or_else(|| {
+            native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+        })?;
+        let (fresh, outcome) = apply_git_sync_fast_forward(
+            &workspace.view,
+            &state_home,
+            runtime_directory.as_deref(),
+            classification,
+        )
+        .map_err(|error| native_command_error(git_sync_code(error), git_sync_message(error)))?;
+        workspace.view = fresh;
+        workspace.rebuild_watcher(&worker_app);
+        Ok((workspace.payload(), outcome.changed()))
+    })
+    .await;
+    finish_git_sync_apply(&state)?;
+    match operation {
+        Ok(Ok((workspace, changed))) => {
+            Ok(GitSyncApplyResultPayload::Completed { workspace, changed })
+        }
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(native_command_error(
+            "sessionUnavailable",
+            "Git sync publication stopped unexpectedly. Refresh Git status to recover safely."
+                .to_owned(),
+        )),
+    }
+}
+
+#[tauri::command]
+async fn git_sync_recover_open_workspace(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+) -> Result<GitSyncRecoveryResultPayload, NativeCommandError> {
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    let state = app.state::<DesktopState>();
+    {
+        let mut lifecycle = state.git_sync.lock().map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Git sync state is unavailable".to_owned(),
+            )
+        })?;
+        if lifecycle.active.is_some() || lifecycle.applying {
+            return Err(native_command_error(
+                "syncBusy",
+                "A Git sync operation is already running.".to_owned(),
+            ));
+        }
+        if lifecycle.classified.is_some() {
+            return Err(native_command_error(
+                "planPending",
+                "Cancel the current Git sync result before recovering another operation."
+                    .to_owned(),
+            ));
+        }
+        lifecycle.applying = true;
+    }
+    let recovery_required_result: Result<bool, NativeCommandError> = (|| {
+        let guard = state.workspace.lock().map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Workspace session is unavailable".to_owned(),
+            )
+        })?;
+        let workspace = guard.as_ref().ok_or_else(|| {
+            native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+        })?;
+        git_sync_recovery_required(&workspace.view, &state_home, runtime_directory.as_deref())
+            .map_err(|error| native_command_error(git_sync_code(error), git_sync_message(error)))
+    })();
+    let recovery_required = match recovery_required_result {
+        Ok(required) => required,
+        Err(error) => {
+            finish_git_sync_apply(&state)?;
+            return Err(error);
+        }
+    };
+    if !recovery_required {
+        finish_git_sync_apply(&state)?;
+        return Err(native_command_error(
+            "recoveryNotRequired",
+            "No interrupted Git sync needs recovery. Refresh Git status.".to_owned(),
+        ));
+    }
+    let confirmed = rfd::MessageDialog::new()
+        .set_parent(&window)
+        .set_level(rfd::MessageLevel::Warning)
+        .set_title("Resume Git Sync?")
+        .set_description(git_sync_recovery_confirmation())
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes;
+    if !confirmed {
+        finish_git_sync_apply(&state)?;
+        return Ok(GitSyncRecoveryResultPayload::Declined);
+    }
+    let worker_app = app.clone();
+    let operation = tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app.state::<DesktopState>();
+        let mut guard = state.workspace.lock().map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Workspace session is unavailable".to_owned(),
+            )
+        })?;
+        let workspace = guard.as_mut().ok_or_else(|| {
+            native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+        })?;
+        let (fresh, outcome) = resume_pending_git_sync_publication(
+            &workspace.view,
+            &state_home,
+            runtime_directory.as_deref(),
+        )
+        .map_err(|error| native_command_error(git_sync_code(error), git_sync_message(error)))?;
+        workspace.view = fresh;
+        workspace.rebuild_watcher(&worker_app);
+        Ok((workspace.payload(), outcome.changed()))
+    })
+    .await;
+    finish_git_sync_apply(&state)?;
+    match operation {
+        Ok(Ok((workspace, changed))) => {
+            Ok(GitSyncRecoveryResultPayload::Completed { workspace, changed })
+        }
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(native_command_error(
+            "sessionUnavailable",
+            "Git sync recovery stopped unexpectedly. Refresh Git status before retrying."
+                .to_owned(),
+        )),
+    }
+}
+
+fn finish_git_sync_apply(state: &tauri::State<'_, DesktopState>) -> Result<(), NativeCommandError> {
+    state
+        .git_sync
+        .lock()
+        .map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Git sync state is unavailable".to_owned(),
+            )
+        })?
+        .applying = false;
+    Ok(())
+}
+
+fn git_sync_inspection_payload(classification: &GitSyncClassification) -> GitSyncInspectionPayload {
+    GitSyncInspectionPayload {
+        plan_token: classification.token().clone(),
+        remote_name: classification.remote_name().to_owned(),
+        transport: classification.transport().as_str(),
+        host: classification.host().to_owned(),
+        ancestry: git_sync_ancestry(classification.ancestry()),
+        local_changes: classification.local_changes(),
+        workspace_matches_remote: classification.workspace_matches_remote(),
+    }
+}
+
+fn git_sync_ancestry(ancestry: GitSyncAncestry) -> &'static str {
+    match ancestry {
+        GitSyncAncestry::UpToDate => "upToDate",
+        GitSyncAncestry::LocalAhead => "localAhead",
+        GitSyncAncestry::RemoteFastForward => "remoteFastForward",
+        GitSyncAncestry::Diverged => "diverged",
+        GitSyncAncestry::HistoryLimit => "historyLimit",
+    }
+}
+
+fn git_sync_pending_error(error: PendingGitPlanError) -> NativeCommandError {
+    match error {
+        PendingGitPlanError::Missing => native_command_error(
+            "planMissing",
+            "Inspect the configured upstream before applying a Git sync.".to_owned(),
+        ),
+        PendingGitPlanError::Invalid => native_command_error(
+            "planInvalid",
+            "The Git sync result does not match this request.".to_owned(),
+        ),
+    }
+}
+
+fn git_sync_confirmation(classification: &GitSyncClassification) -> String {
+    git_sync_confirmation_fields(
+        classification.remote_name(),
+        classification.transport().as_str(),
+        classification.host(),
+    )
+}
+
+fn git_sync_confirmation_fields(remote_name: &str, transport: &str, host: &str) -> String {
+    format!(
+        "Apply the validated fast-forward from remote “{remote_name}” ({}, {host})?\n\nRehow will update portable Workspace files, the Git index, and the current branch. It will not push or run Git hooks.",
+        transport.to_uppercase()
+    )
+}
+
+fn git_sync_recovery_confirmation() -> &'static str {
+    "Resume the interrupted Git sync?\n\nRehow will verify the durable recovery record and either finish the approved Workspace/index/branch update or preserve conflicting state unchanged. It will not push or run Git hooks."
+}
+
+fn git_sync_code(error: GitSyncError) -> &'static str {
+    match error {
+        GitSyncError::NotRepository => "notRepository",
+        GitSyncError::NoUpstream => "noUpstream",
+        GitSyncError::InvalidConfiguration => "invalidConfiguration",
+        GitSyncError::UnsupportedTransport => "unsupportedTransport",
+        GitSyncError::RecoveryRequired => "recoveryRequired",
+        GitSyncError::ReadOnly => "readOnly",
+        GitSyncError::WorkspaceIssues => "workspaceIssues",
+        GitSyncError::PlanStale => "planStale",
+        GitSyncError::Cancelled => "cancelled",
+        GitSyncError::Timeout => "timeout",
+        GitSyncError::ResourceLimit => "resourceLimit",
+        GitSyncError::GitUnavailable => "gitUnavailable",
+        GitSyncError::SandboxUnavailable => "sandboxUnavailable",
+        GitSyncError::RemoteUnavailable => "remoteUnavailable",
+        GitSyncError::InvalidRepository => "invalidRepository",
+        GitSyncError::InvalidWorkspace => "invalidWorkspace",
+        GitSyncError::StagingConflict => "stagingConflict",
+        GitSyncError::Unsafe => "unsafeRepository",
+        GitSyncError::Unsupported => "unsupported",
+        GitSyncError::Io => "io",
+    }
+}
+
+fn git_sync_message(error: GitSyncError) -> String {
+    match error {
+        GitSyncError::NotRepository => "Initialize Git before synchronizing.".to_owned(),
+        GitSyncError::NoUpstream => {
+            "Configure one upstream branch before synchronizing.".to_owned()
+        }
+        GitSyncError::InvalidConfiguration => {
+            "The upstream or recovery configuration is invalid. Refresh Git status and inspect the repository."
+                .to_owned()
+        }
+        GitSyncError::UnsupportedTransport => {
+            "Anonymous HTTPS is the only sync transport enabled in this build.".to_owned()
+        }
+        GitSyncError::RecoveryRequired => {
+            "An interrupted Git operation needs recovery before another sync can start.".to_owned()
+        }
+        GitSyncError::ReadOnly => {
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned()
+        }
+        GitSyncError::WorkspaceIssues => {
+            "Resolve the Workspace validation issues before synchronizing.".to_owned()
+        }
+        GitSyncError::PlanStale => {
+            "The Workspace or repository changed. Inspect the upstream again.".to_owned()
+        }
+        GitSyncError::Cancelled => "Git sync inspection was cancelled safely.".to_owned(),
+        GitSyncError::Timeout => {
+            "The remote operation did not finish before the safety timeout.".to_owned()
+        }
+        GitSyncError::ResourceLimit => {
+            "The sync exceeded a safe time, file, history, object, or output limit.".to_owned()
+        }
+        GitSyncError::GitUnavailable => {
+            "Git is unavailable at the trusted system location.".to_owned()
+        }
+        GitSyncError::SandboxUnavailable => {
+            "The required local Git sandbox is unavailable.".to_owned()
+        }
+        GitSyncError::RemoteUnavailable => {
+            "The configured upstream could not be reached or authenticated.".to_owned()
+        }
+        GitSyncError::InvalidRepository => {
+            "The upstream repository returned invalid or inconsistent Git data.".to_owned()
+        }
+        GitSyncError::InvalidWorkspace => {
+            "The upstream does not contain this compatible Rehow Workspace.".to_owned()
+        }
+        GitSyncError::StagingConflict => {
+            "Private sync staging changed unexpectedly. Inspect the upstream again.".to_owned()
+        }
+        GitSyncError::Unsafe => {
+            "Git metadata is unsafe or ambiguous. Rehow preserved it unchanged.".to_owned()
+        }
+        GitSyncError::Unsupported => {
+            "This Git state cannot be synchronized automatically. Review it with Git.".to_owned()
+        }
+        GitSyncError::Io => {
+            "The Git sync could not finish. Check local access and refresh status.".to_owned()
+        }
+    }
+}
+
+#[tauri::command]
 fn git_clone_plan_selected_workspace(
     remote_url: String,
     state: tauri::State<'_, DesktopState>,
@@ -2113,6 +2630,12 @@ enum PendingGitPlanError {
     Invalid,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GitSyncCancelError {
+    Busy,
+    Unavailable,
+}
+
 fn take_matching_git_plan<T>(
     pending: &mut Option<(PlanToken, T)>,
     token: &PlanToken,
@@ -2124,6 +2647,23 @@ fn take_matching_git_plan<T>(
         return Err(PendingGitPlanError::Invalid);
     }
     Ok(pending.take().expect("checked pending Git plan").1)
+}
+
+fn request_git_sync_cancellation(
+    lifecycle: &Mutex<GitSyncLifecycle>,
+) -> Result<bool, GitSyncCancelError> {
+    let mut lifecycle = lifecycle
+        .lock()
+        .map_err(|_| GitSyncCancelError::Unavailable)?;
+    if lifecycle.applying {
+        return Err(GitSyncCancelError::Busy);
+    }
+    if let Some(cancelled) = lifecycle.active.as_ref() {
+        cancelled.store(true, Ordering::Relaxed);
+        lifecycle.revoke_on_completion = true;
+        return Ok(true);
+    }
+    Ok(lifecycle.classified.take().is_some())
 }
 
 fn search_status_scope(scope: &str) -> Option<SearchStatusScope> {
@@ -3821,6 +4361,20 @@ fn choose_workspace(
         return Ok(OpenWorkspaceResult::Cancelled);
     };
 
+    {
+        let mut lifecycle = state
+            .git_sync
+            .lock()
+            .map_err(|_| "Git sync state is unavailable".to_owned())?;
+        if lifecycle.active.is_some() || lifecycle.applying {
+            return Err(
+                "Wait for the active Git sync operation before choosing another Workspace."
+                    .to_owned(),
+            );
+        }
+        lifecycle.classified = None;
+    }
+
     let (report_facts, inspection) = inspect_workspace(&path)
         .map_err(|error| error.to_string())?
         .into_parts();
@@ -3920,6 +4474,10 @@ pub fn run() {
             git_commit_cancel_open_workspace,
             git_commit_apply_open_workspace,
             git_commit_recover_open_workspace,
+            git_sync_inspect_open_workspace,
+            git_sync_cancel_active,
+            git_sync_apply_open_workspace,
+            git_sync_recover_open_workspace,
             git_clone_plan_selected_workspace,
             git_clone_apply_selected_workspace,
             git_clone_complete_selected_workspace,
@@ -3938,7 +4496,9 @@ mod tests {
         GitCloneCancelResultPayload, GitCloneCompleteResultPayload, GitCloneLifecycle,
         GitClonePlanPayload, GitCommitCancelResultPayload, GitCommitPlanPayload,
         GitCommitRecoveryResultPayload, GitCommitResultPayload, GitInitPlanPayload,
-        GitInitResultPayload, GitRemotePlanPayload, GitRemoteResultPayload, GuideBodyPayload,
+        GitInitResultPayload, GitRemotePlanPayload, GitRemoteResultPayload,
+        GitSyncApplyResultPayload, GitSyncCancelError, GitSyncCancelResultPayload,
+        GitSyncInspectionPayload, GitSyncLifecycle, GitSyncRecoveryResultPayload, GuideBodyPayload,
         GuidePayload, PendingGitPlanError, SearchHighlightPayload, SearchHitPayload,
         WorkspacePayload, WorkspaceWatchEventPayload, attachment_removal_code,
         attachment_removal_message, category_create_code, category_create_message,
@@ -3950,11 +4510,12 @@ mod tests {
         git_commit_code, git_commit_confirmation_fields, git_commit_message,
         git_commit_message_input_allowed, git_commit_recovery_confirmation, git_init_code,
         git_init_confirmation, git_init_message, git_remote_code, git_remote_confirmation_fields,
-        git_remote_message, guide_create_code, guide_create_message, guide_remove_code,
-        guide_remove_confirmation, guide_remove_message, guide_update_code, guide_update_message,
-        native_command_error, request_git_clone_cancellation, search_status_scope,
-        take_matching_git_plan, workspace_initialization_message, workspace_refresh_code,
-        workspace_refresh_message,
+        git_remote_message, git_sync_ancestry, git_sync_code, git_sync_confirmation_fields,
+        git_sync_message, git_sync_recovery_confirmation, guide_create_code, guide_create_message,
+        guide_remove_code, guide_remove_confirmation, guide_remove_message, guide_update_code,
+        guide_update_message, native_command_error, request_git_clone_cancellation,
+        request_git_sync_cancellation, search_status_scope, take_matching_git_plan,
+        workspace_initialization_message, workspace_refresh_code, workspace_refresh_message,
     };
     use rehow_core::{
         application::{
@@ -3964,7 +4525,7 @@ mod tests {
         },
         git::{
             GitCloneApplyError, GitCloneError, GitCloneMaterializeError, GitCloneValidation,
-            GitCommitPlanError, GitInitError, GitRemoteError,
+            GitCommitPlanError, GitInitError, GitRemoteError, GitSyncAncestry, GitSyncError,
         },
         markdown::parse_safe_markdown,
         protocol::PlanToken,
@@ -4120,6 +4681,113 @@ mod tests {
             assert_eq!(git_commit_code(error), code);
             assert!(!git_commit_message(error).is_empty());
         }
+    }
+
+    #[test]
+    fn git_sync_payloads_confirmation_and_errors_are_closed() {
+        let token = PlanToken::from_str(&format!("plan:v1:{}", "A".repeat(43))).unwrap();
+        let inspection = serde_json::to_value(GitSyncInspectionPayload {
+            plan_token: token,
+            remote_name: "origin".to_owned(),
+            transport: "https",
+            host: "example.invalid".to_owned(),
+            ancestry: "remoteFastForward",
+            local_changes: false,
+            workspace_matches_remote: false,
+        })
+        .unwrap();
+        assert_eq!(inspection.as_object().unwrap().len(), 7);
+        assert!(inspection.get("url").is_none());
+        assert!(inspection.get("path").is_none());
+        assert!(inspection.get("ref").is_none());
+        assert!(inspection.get("objectId").is_none());
+        let cancelled = serde_json::to_value(GitSyncCancelResultPayload {
+            cancellation_requested: true,
+        })
+        .unwrap();
+        assert_eq!(
+            cancelled,
+            serde_json::json!({ "cancellationRequested": true })
+        );
+        assert_eq!(
+            serde_json::to_value(GitSyncApplyResultPayload::Declined).unwrap(),
+            serde_json::json!({ "kind": "declined" })
+        );
+        assert_eq!(
+            serde_json::to_value(GitSyncRecoveryResultPayload::Declined).unwrap(),
+            serde_json::json!({ "kind": "declined" })
+        );
+        for (ancestry, value) in [
+            (GitSyncAncestry::UpToDate, "upToDate"),
+            (GitSyncAncestry::LocalAhead, "localAhead"),
+            (GitSyncAncestry::RemoteFastForward, "remoteFastForward"),
+            (GitSyncAncestry::Diverged, "diverged"),
+            (GitSyncAncestry::HistoryLimit, "historyLimit"),
+        ] {
+            assert_eq!(git_sync_ancestry(ancestry), value);
+        }
+        let confirmation = git_sync_confirmation_fields("origin", "https", "example.invalid");
+        assert!(confirmation.contains("origin"));
+        assert!(confirmation.contains("HTTPS"));
+        assert!(confirmation.contains("example.invalid"));
+        assert!(confirmation.contains("will not push"));
+        assert!(!confirmation.contains("refs/"));
+        assert!(git_sync_recovery_confirmation().contains("durable recovery record"));
+        assert!(git_sync_recovery_confirmation().contains("will not push"));
+
+        for (error, code) in [
+            (GitSyncError::NotRepository, "notRepository"),
+            (GitSyncError::NoUpstream, "noUpstream"),
+            (GitSyncError::InvalidConfiguration, "invalidConfiguration"),
+            (GitSyncError::UnsupportedTransport, "unsupportedTransport"),
+            (GitSyncError::RecoveryRequired, "recoveryRequired"),
+            (GitSyncError::ReadOnly, "readOnly"),
+            (GitSyncError::WorkspaceIssues, "workspaceIssues"),
+            (GitSyncError::PlanStale, "planStale"),
+            (GitSyncError::Cancelled, "cancelled"),
+            (GitSyncError::Timeout, "timeout"),
+            (GitSyncError::ResourceLimit, "resourceLimit"),
+            (GitSyncError::GitUnavailable, "gitUnavailable"),
+            (GitSyncError::SandboxUnavailable, "sandboxUnavailable"),
+            (GitSyncError::RemoteUnavailable, "remoteUnavailable"),
+            (GitSyncError::InvalidRepository, "invalidRepository"),
+            (GitSyncError::InvalidWorkspace, "invalidWorkspace"),
+            (GitSyncError::StagingConflict, "stagingConflict"),
+            (GitSyncError::Unsafe, "unsafeRepository"),
+            (GitSyncError::Unsupported, "unsupported"),
+            (GitSyncError::Io, "io"),
+        ] {
+            assert_eq!(git_sync_code(error), code);
+            let message = git_sync_message(error);
+            assert!(!message.is_empty());
+            assert!(!message.contains("refs/"));
+            assert!(!message.contains("https://"));
+        }
+    }
+
+    #[test]
+    fn active_sync_cancellation_revokes_inspection_and_refuses_apply() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let active = Mutex::new(GitSyncLifecycle {
+            active: Some(Arc::clone(&flag)),
+            ..GitSyncLifecycle::default()
+        });
+        assert_eq!(request_git_sync_cancellation(&active), Ok(true));
+        assert!(flag.load(Ordering::Relaxed));
+        assert!(active.lock().unwrap().revoke_on_completion);
+        assert_eq!(request_git_sync_cancellation(&active), Ok(true));
+
+        let inactive = Mutex::new(GitSyncLifecycle::default());
+        assert_eq!(request_git_sync_cancellation(&inactive), Ok(false));
+
+        let applying = Mutex::new(GitSyncLifecycle {
+            applying: true,
+            ..GitSyncLifecycle::default()
+        });
+        assert_eq!(
+            request_git_sync_cancellation(&applying),
+            Err(GitSyncCancelError::Busy)
+        );
     }
 
     #[test]

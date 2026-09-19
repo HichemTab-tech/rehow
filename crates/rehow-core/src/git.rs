@@ -325,11 +325,11 @@ struct GitSyncCandidate {
     pack_sources: Vec<GitClonePackSource>,
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
-pub(crate) struct GitSyncPublicationOutcome {
+pub struct GitSyncPublicationOutcome {
+    #[allow(
+        dead_code,
+        reason = "retained for internal recovery correlation and tests"
+    )]
     operation_id: OperationId,
     changed: bool,
 }
@@ -344,12 +344,8 @@ impl fmt::Debug for GitSyncPublicationOutcome {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
 impl GitSyncPublicationOutcome {
-    pub(crate) fn changed(&self) -> bool {
+    pub fn changed(&self) -> bool {
         self.changed
     }
 }
@@ -1400,12 +1396,32 @@ impl fmt::Debug for GitSyncClassification {
 }
 
 impl GitSyncClassification {
+    pub fn token(&self) -> &PlanToken {
+        self.inspection.plan.token()
+    }
+
+    pub fn remote_name(&self) -> &str {
+        self.inspection.plan.remote_name()
+    }
+
+    pub fn transport(&self) -> GitRemoteTransport {
+        self.inspection.plan.transport()
+    }
+
+    pub fn host(&self) -> &str {
+        self.inspection.plan.host()
+    }
+
     pub fn ancestry(&self) -> GitSyncAncestry {
         self.ancestry
     }
 
     pub fn local_changes(&self) -> bool {
         self.inspection.local_changes()
+    }
+
+    pub fn workspace_matches_remote(&self) -> bool {
+        self.inspection.workspace_matches_remote()
     }
 }
 
@@ -1757,11 +1773,7 @@ pub(crate) fn apply_git_sync_workspace_materialization(
     ))
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
-pub(crate) fn apply_git_sync_fast_forward(
+pub fn apply_git_sync_fast_forward(
     workspace: &WorkspaceView,
     state_home: &Path,
     runtime_directory: Option<&Path>,
@@ -2272,6 +2284,25 @@ fn resume_git_sync_publication(
         advance_git_sync_intent(&session, &mut intent, GitSyncIntentStage::Complete)?;
     }
     Ok(final_fresh)
+}
+
+pub fn resume_pending_git_sync_publication(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+) -> Result<(Box<WorkspaceView>, GitSyncPublicationOutcome), GitSyncError> {
+    let operation_id = pending_git_sync_recovery_at(workspace, state_home, runtime_directory)
+        .map_err(map_commit_plan_to_sync)?
+        .ok_or(GitSyncError::InvalidConfiguration)?;
+    let fresh =
+        resume_git_sync_publication(workspace, state_home, runtime_directory, operation_id)?;
+    Ok((
+        fresh,
+        GitSyncPublicationOutcome {
+            operation_id,
+            changed: true,
+        },
+    ))
 }
 
 #[allow(
@@ -6798,6 +6829,18 @@ fn pending_git_sync_recovery_at(
         .into_iter()
         .find(|intent| intent.stage != GitSyncIntentStage::Complete)
         .map(|intent| intent.operation_id))
+}
+
+pub fn git_sync_recovery_required(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+) -> Result<bool, GitSyncError> {
+    Ok(
+        pending_git_sync_recovery_at(workspace, state_home, runtime_directory)
+            .map_err(map_commit_plan_to_sync)?
+            .is_some(),
+    )
 }
 
 pub fn git_commit_recovery_required(

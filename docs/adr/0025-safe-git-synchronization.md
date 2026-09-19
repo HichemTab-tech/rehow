@@ -1,6 +1,6 @@
 # ADR 0025: Safe Git synchronization
 
-- Status: Partially Accepted — safe fetch, ancestry, and internal fast-forward publication implemented; native workflow and push pending
+- Status: Partially Accepted — safe fetch, ancestry, durable fast-forward publication, and native lifecycle implemented; UI and push pending
 - Date: 2026-09-19
 
 ## Context
@@ -41,7 +41,13 @@ Packed-only current branches are deliberately refused by this gate. Publishing a
 
 ### Pending gates
 
-The native 5D2C gate must retain the opaque classification, require an explicit user apply action, expose pathless recovery, and explain unsupported packed branches, conflicts, dirty state, divergence, and history limits without leaking refs, OIDs, paths, URLs, or credentials.
+### 5D2C — native sync lifecycle
+
+The native adapter owns one `active` / `classified` / `applying` lifecycle and never exposes the classification authority. Its pathless inspection command plans, fetches, validates, and classifies against the retained open Workspace. IPC returns only a single-use token, bounded remote labels, closed ancestry, local-change state, and portable-snapshot equality; refs, OIDs, paths, URLs, output, credentials, and staging authority remain native-only. Cancellation revokes both an active inspection and any successful result that races with cancellation.
+
+Only a clean proven `remoteFastForward` can reach apply. Apply consumes the token once, requires an OS-native confirmation, invokes the durable publication state machine, replaces the retained Workspace view only after core success, and rebuilds external-change watching. Recovery is a separate pathless, natively confirmed command that first proves an incomplete sync intent exists. Workspace switching is blocked during active/applying work and otherwise revokes retained authority. Git status reports incomplete commit or sync intent uniformly as recovery-required.
+
+This gate deliberately adds no React UI. The next UI slice must explain unsupported packed branches, conflicts, dirty state, divergence, and history limits using only the closed native result. It must not add renderer URL/ref/OID/path authority.
 
 5D3 may push only an exact reviewed local commit from the expected remote OID using an explicit refspec and native confirmation. Non-fast-forward, changed remote, auth, host-key, and transport failures are preserved and reported. No force option exists.
 
@@ -52,5 +58,5 @@ Authenticated HTTPS/SSH requires the separately audited credential/agent provena
 - The first accepted slice can securely answer whether the configured upstream snapshot is valid and changed, but cannot yet modify or publish anything.
 - A changed remote is called remote-fast-forward, local-ahead, or diverged only when bounded history proves that result; otherwise it is history-limited.
 - Private staging is retained as exact evidence/input for the next gate; identity-safe retention/pruning remains required.
-- Portable fast-forward publication is now interruption-recoverable inside core, but no adapter may call it until the native authority lifecycle and recovery UX are accepted.
+- Portable fast-forward publication is interruption-recoverable and callable only through the accepted pathless native lifecycle; renderer presentation remains pending.
 - Unsupported authentication degrades to an actionable unavailable state rather than a token prompt.
