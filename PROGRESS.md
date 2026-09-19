@@ -9,7 +9,7 @@ Phase 5C manual commit architecture is accepted. Phase 5C1 read-only candidate p
 
 ## Current task
 
-Implement Phase 5C1's read-only safe manual-commit plan and private candidate construction in `rehow-core`. It must not change active repository or Workspace bytes.
+Continue Phase 5C1 from signed preflight checkpoint `c45eab2`: add descriptor-confined repository/Workspace snapshots, tree ownership checks, then private candidate construction. It must not change active repository or Workspace bytes.
 
 ## Overall status
 
@@ -98,10 +98,11 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Added native validated-clone completion at signed checkpoint `a8c2b3f`: a pathless command requires a second URL-bound native write confirmation, blocks competing lifecycle changes, finalizes off the UI thread, installs the watched Workspace on success, and retains exact retry authority across decline, cancellation, core failure, panic, join failure, or Workspace-session failure. The reused Security Reviewer passed the corrected boundary.
 - Added the clone onboarding UI at signed checkpoint `efc9fcf`: bounded anonymous-HTTPS entry, native-confirmed validation/cancellation, explicit completion, pathless ambiguous-state recovery, bounded completed-Workspace handoff, current-guideline review, and wide/narrow visual evidence. The single Design Reviewer passed the corrected flow with no blocker/high/medium finding.
 - Accepted ADR 0024 at signed checkpoint `a9acf15`: managed-only manual commit is split into read-only candidate construction, append-only object plus recoverable index/ref publication, and native-confirmed UI. The final single Security Reviewer verdict is PASS after missing-object, reflog, ref-representation, bounded-index/staging, path-collision, and indirect-ref issues were closed.
+- Added the first Phase 5C1 core preflight checkpoint `c45eab2`: bounded/redacted commit message and identity validation, exact direct loose/packed/unborn branch representation, SHA-1/SHA-256 Git index v2/v3 checksum parsing, and refusal of staged/extended/advanced/malformed/oversized indexes. It adds no process, staging, active repository, Workspace, native, renderer, or MCP authority.
 
 ## Work in progress
 
-- Phase 5C1 implementation is ready from accepted ADR 0024 and `docs/task-packets/phase-5c1-git-commit-plan.md`. It adds only read-only planning and private staging; active Git mutation remains deferred to 5C2.
+- Phase 5C1 is in progress at `c45eab2`. Pure message/identity/branch/index preflight is complete; descriptor snapshots, tree/object validation, managed-effect ownership, and private candidate construction remain. Active Git mutation remains deferred to 5C2.
 
 ## Remaining work
 
@@ -212,10 +213,11 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Latest verified commit
 
-`a9acf15` — signed and verified accepted safe manual Git commit architecture. This progress-only ledger update follows that decision commit.
+`c45eab2` — signed and verified Phase 5C1 pure Git commit preflight. This progress-only ledger update follows that implementation commit.
 
 ## Tests last run and results
 
+- 2026-09-19: Phase 5C1 preflight checkpoint at `c45eab2`: 6 focused commit tests pass; locked all-target/all-feature core Clippy denies warnings; Cargo formatting, bootstrap validation, whitespace checks, and signed-commit verification pass. No product build was needed for this core-only partial checkpoint.
 - 2026-09-19: Phase 5C decision checkpoint at `a9acf15`: bootstrap validation passes with 17 required files, 24 ADRs, and 8 pinned agents; whitespace checks pass; the reused Security Reviewer final verdict is PASS; the signed commit verifies. This docs-only checkpoint ran no product build.
 - 2026-09-19: Phase 5B3C4 checkpoint at `efc9fcf`: `pnpm check`, 34 Vitest tests, desktop production build, bootstrap validation, and whitespace checks pass. Three Playwright captures were visually inspected at 1200×800 light and 480×800 dark. The single Design Reviewer passed the recovery/bounds corrections with no remaining blocker/high/medium finding; the signed commit verifies.
 - 2026-09-19: Phase 5B3C3 checkpoint at `a8c2b3f`: combined all-feature core/desktop gate passes 350 core library tests with 2 intentional ignores, all error-contract/protocol/public-API/unknown-YAML/doc suites, and 21 desktop tests. The corrected native slice again passes all 21 desktop tests and strict core/desktop all-target/all-feature Clippy; Cargo formatting, bootstrap, whitespace, signed-commit verification, and the reused Security Reviewer closure pass.
@@ -405,10 +407,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `docs/task-packets/phase-5b3c3-native-clone-completion.md`, its evidence, the public opaque core completion boundary, and the pathless native lifecycle implement confirmed clone completion at `a8c2b3f`.
 - `docs/task-packets/phase-5b3c4-clone-onboarding-ui.md`, its evidence/screenshots, the bounded React lifecycle, and aligned architecture/ADR status complete anonymous-HTTPS clone onboarding at `efc9fcf`.
 - ADR 0024, `docs/task-packets/phase-5c1-git-commit-plan.md`, and `docs/evidence/phase-5c-git-commit-decision.md` accept the bounded manual-commit architecture at `a9acf15`; no active repository mutation exists yet.
+- `crates/rehow-core/src/git.rs` contains the bounded Phase 5C1 message/identity/branch/index preflight accepted at `c45eab2`; it remains private until the complete plan boundary is ready.
 
 ## Next recommended action
 
-Implement Phase 5C1 from its exact task packet: bounded message/identity/ref/index/tree validation and private filter-free candidate construction only. Do not install objects or write the active index/ref/reflogs.
+Continue Phase 5C1 with descriptor-confined repository/Workspace snapshots and bounded opaque-byte `HEAD` tree parsing, then managed ownership/collision checks. Do not install objects or write the active index/ref/reflogs.
 
 ## Recommended agent role and reasoning effort
 
@@ -419,6 +422,6 @@ Architect — `gpt-5.6-sol`, xhigh locally for the Phase 5C1 core security bound
 1. Read `AGENTS.md` and this file.
 2. Read the Git sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `a9acf15`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `c45eab2`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Implement only Phase 5C1 from `docs/task-packets/phase-5c1-git-commit-plan.md`; active object/index/ref/reflog mutation belongs to later Phase 5C2.
