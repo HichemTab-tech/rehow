@@ -27,6 +27,11 @@ pub(crate) struct GitCommitStaging {
     inner: store::CommitStaging,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GitCommitStagingSnapshot {
+    inner: store::CommitStagingSnapshot,
+}
+
 impl GitCommitStaging {
     pub(crate) fn git_path(&self) -> &str {
         self.inner.git_path()
@@ -42,6 +47,14 @@ impl GitCommitStaging {
 
     pub(crate) fn validation_path(&self) -> &str {
         self.inner.validation_path()
+    }
+
+    pub(crate) fn candidate_path(&self) -> &str {
+        self.inner.candidate_path()
+    }
+
+    pub(crate) fn candidate_descriptor(&self) -> i32 {
+        self.inner.candidate_descriptor()
     }
 
     pub(crate) fn write_validation_file(
@@ -60,10 +73,50 @@ impl GitCommitStaging {
             .map_err(map_commit_staging_error)
     }
 
+    pub(crate) fn write_candidate_file(
+        &self,
+        relative_path: &str,
+        bytes: &[u8],
+    ) -> Result<(), GitCommitStagingError> {
+        self.inner
+            .write_candidate_file(relative_path, bytes)
+            .map_err(map_commit_staging_error)
+    }
+
+    pub(crate) fn finish_candidate_tree(&self) -> Result<(), GitCommitStagingError> {
+        self.inner
+            .finish_candidate_tree()
+            .map_err(map_commit_staging_error)
+    }
+
     pub(crate) fn verify_size_limit(&self, limit: u64) -> Result<(), GitCommitStagingError> {
         self.inner
             .verify_size_limit(limit)
             .map_err(map_commit_staging_error)
+    }
+
+    pub(crate) fn snapshot(
+        &self,
+        limit: u64,
+    ) -> Result<GitCommitStagingSnapshot, GitCommitStagingError> {
+        self.inner
+            .snapshot(limit)
+            .map(|inner| GitCommitStagingSnapshot { inner })
+            .map_err(map_commit_staging_error)
+    }
+
+    pub(crate) fn verify_snapshot(
+        &self,
+        expected: GitCommitStagingSnapshot,
+        limit: u64,
+    ) -> Result<bool, GitCommitStagingError> {
+        self.inner
+            .verify_snapshot(expected.inner, limit)
+            .map_err(map_commit_staging_error)
+    }
+
+    pub(crate) fn quarantine(self) -> Result<(), GitCommitStagingError> {
+        self.inner.quarantine().map_err(map_commit_staging_error)
     }
 }
 

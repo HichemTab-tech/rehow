@@ -14,7 +14,7 @@ use std::{
 
 const MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_TREE_ENTRY_LIMIT: usize = 100_000;
-const COMMIT_TREE_ENTRY_LIMIT: usize = 160_256;
+const COMMIT_STAGING_ENTRY_LIMIT: usize = 240_512;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(test)]
@@ -67,12 +67,26 @@ pub(super) struct CloneStaging {
 }
 
 pub(super) struct CommitStaging {
+    commit_staging: Directory,
+    commit_quarantine: Directory,
     _stage: OwnedFd,
     _git: OwnedFd,
     validation: Directory,
+    candidate: Directory,
     stage_path: String,
     git_path: String,
     validation_path: String,
+    candidate_path: String,
+    stage_name: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CommitStagingSnapshot {
+    device: u64,
+    inode: u64,
+    bytes: u64,
+    entries: u64,
+    digest: [u8; 32],
 }
 
 impl CommitStaging {
@@ -115,7 +129,7 @@ impl CommitStaging {
                     .checked_add(operation.bounded_tree_bytes_with_entry_limit(
                         MAX_AGGREGATE_BYTES.saturating_sub(aggregate),
                         &mut operation_entries,
-                        COMMIT_TREE_ENTRY_LIMIT,
+                        COMMIT_STAGING_ENTRY_LIMIT,
                     )?)
                     .ok_or(StoreError::TooLarge)?;
                 if aggregate > MAX_AGGREGATE_BYTES {
@@ -134,6 +148,7 @@ impl CommitStaging {
         stage.write_new_file("provenance", provenance)?;
         let git = stage.ensure_new("repo.git")?;
         let validation = stage.ensure_new("validation")?;
+        let candidate = stage.ensure_new("candidate")?;
         git.write_new_file("HEAD", b"ref: refs/rehow/commit/head\n")?;
         git.write_new_file("config", git_config)?;
         if let Some(index) = index {
@@ -158,6 +173,7 @@ impl CommitStaging {
             &refs,
             &git,
             &validation,
+            &candidate,
             &stage,
         ] {
             directory.sync()?;
@@ -172,13 +188,19 @@ impl CommitStaging {
         let stage_path = format!("/proc/self/fd/{}", stage_descriptor.as_raw_fd());
         let git_path = format!("/proc/self/fd/{}", git_descriptor.as_raw_fd());
         let validation_path = format!("/proc/self/fd/{}", validation.descriptor.as_raw_fd());
+        let candidate_path = format!("/proc/self/fd/{}", candidate.descriptor.as_raw_fd());
         Ok(Self {
+            commit_staging,
+            commit_quarantine,
             _stage: stage_descriptor,
             _git: git_descriptor,
             validation,
+            candidate,
             stage_path,
             git_path,
             validation_path,
+            candidate_path,
+            stage_name: stage_name.to_owned(),
         })
     }
 
@@ -196,6 +218,14 @@ impl CommitStaging {
 
     pub(super) fn validation_path(&self) -> &str {
         &self.validation_path
+    }
+
+    pub(super) fn candidate_path(&self) -> &str {
+        &self.candidate_path
+    }
+
+    pub(super) fn candidate_descriptor(&self) -> i32 {
+        self.candidate.descriptor.as_raw_fd()
     }
 
     pub(super) fn write_validation_file(
@@ -224,6 +254,32 @@ impl CommitStaging {
         self.validation.sync()
     }
 
+    pub(super) fn write_candidate_file(
+        &self,
+        relative_path: &str,
+        bytes: &[u8],
+    ) -> Result<(), StoreError> {
+        if bytes.len() > MAX_OBJECT_BYTES || !super::valid_active_path(relative_path) {
+            return Err(StoreError::Unsafe);
+        }
+        let mut parts = relative_path.split('/').peekable();
+        let mut directory = self.candidate.duplicate()?;
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                directory.write_new_file(part, bytes)?;
+            } else {
+                directory = directory.ensure(part)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn finish_candidate_tree(&self) -> Result<(), StoreError> {
+        let categories = self.candidate.ensure("categories")?;
+        categories.sync()?;
+        self.candidate.sync()
+    }
+
     pub(super) fn verify_size_limit(&self, limit: u64) -> Result<(), StoreError> {
         let stage = Directory {
             descriptor: self._stage.try_clone().map_err(|_| StoreError::Io)?,
@@ -232,8 +288,68 @@ impl CommitStaging {
         let _ = stage.bounded_tree_bytes_with_entry_limit(
             limit,
             &mut entries,
-            COMMIT_TREE_ENTRY_LIMIT,
+            COMMIT_STAGING_ENTRY_LIMIT,
         )?;
+        Ok(())
+    }
+
+    pub(super) fn snapshot(&self, limit: u64) -> Result<CommitStagingSnapshot, StoreError> {
+        let root_status = status(self._stage.as_raw_fd())?;
+        if root_status.st_uid != unsafe { libc::geteuid() }
+            || root_status.st_mode & libc::S_IFMT != libc::S_IFDIR
+        {
+            return Err(StoreError::Unsafe);
+        }
+        let root = Directory {
+            descriptor: self._stage.try_clone().map_err(|_| StoreError::Io)?,
+        };
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"rehow:git-commit-staging-snapshot:v1\0");
+        let mut bytes = 0u64;
+        let mut entries = 0usize;
+        root.snapshot_tree(
+            &mut hasher,
+            b"",
+            limit,
+            &mut bytes,
+            &mut entries,
+            COMMIT_STAGING_ENTRY_LIMIT,
+        )?;
+        Ok(CommitStagingSnapshot {
+            device: root_status.st_dev,
+            inode: root_status.st_ino,
+            bytes,
+            entries: u64::try_from(entries).map_err(|_| StoreError::TooLarge)?,
+            digest: *hasher.finalize().as_bytes(),
+        })
+    }
+
+    pub(super) fn verify_snapshot(
+        &self,
+        expected: CommitStagingSnapshot,
+        limit: u64,
+    ) -> Result<bool, StoreError> {
+        self.snapshot(limit).map(|current| current == expected)
+    }
+
+    pub(super) fn quarantine(self) -> Result<(), StoreError> {
+        let expected_identity = identity(&self._stage)?;
+        let source = self.commit_staging.open_directory(&self.stage_name)?;
+        if identity(&source.descriptor)? != expected_identity {
+            return Err(StoreError::Conflict);
+        }
+        rename_no_replace_between(
+            &self.commit_staging,
+            &self.stage_name,
+            &self.commit_quarantine,
+            &self.stage_name,
+        )?;
+        self.commit_staging.sync()?;
+        self.commit_quarantine.sync()?;
+        let quarantined = self.commit_quarantine.open_directory(&self.stage_name)?;
+        if identity(&quarantined.descriptor)? != expected_identity {
+            return Err(StoreError::Conflict);
+        }
         Ok(())
     }
 }
@@ -1066,6 +1182,67 @@ impl Directory {
         self.bounded_tree_bytes_with_entry_limit(limit, entries, DEFAULT_TREE_ENTRY_LIMIT)
     }
 
+    fn snapshot_tree(
+        &self,
+        hasher: &mut blake3::Hasher,
+        prefix: &[u8],
+        limit: u64,
+        total: &mut u64,
+        entries: &mut usize,
+        entry_limit: usize,
+    ) -> Result<(), StoreError> {
+        let names = self.entries(entry_limit.saturating_sub(*entries).saturating_add(1))?;
+        for name in names {
+            *entries = entries.checked_add(1).ok_or(StoreError::TooLarge)?;
+            if *entries > entry_limit {
+                return Err(StoreError::TooLarge);
+            }
+            let mut path = Vec::new();
+            path.try_reserve_exact(prefix.len().saturating_add(name.len()).saturating_add(1))
+                .map_err(|_| StoreError::TooLarge)?;
+            if !prefix.is_empty() {
+                path.extend_from_slice(prefix);
+                path.push(b'/');
+            }
+            path.extend_from_slice(name.as_bytes());
+            let name_c = component(&name)?;
+            let entry_status = status_at(self.descriptor.as_raw_fd(), &name_c)?;
+            if entry_status.st_uid != unsafe { libc::geteuid() } {
+                return Err(StoreError::Unsafe);
+            }
+            snapshot_hash_frame(hasher, &path);
+            match entry_status.st_mode & libc::S_IFMT {
+                libc::S_IFREG if entry_status.st_nlink == 1 && entry_status.st_size >= 0 => {
+                    let remaining = limit.saturating_sub(*total);
+                    let (size, digest) = self.hash_regular_relaxed(&name, remaining)?;
+                    *total = total.checked_add(size).ok_or(StoreError::TooLarge)?;
+                    if *total > limit {
+                        return Err(StoreError::TooLarge);
+                    }
+                    hasher.update(b"file\0");
+                    hasher.update(&(entry_status.st_mode & 0o7777).to_be_bytes());
+                    hasher.update(&size.to_be_bytes());
+                    hasher.update(&digest);
+                }
+                libc::S_IFDIR => {
+                    hasher.update(b"directory\0");
+                    hasher.update(&(entry_status.st_mode & 0o7777).to_be_bytes());
+                    let child = self.open_directory_relaxed(&name)?;
+                    if identity(&child.descriptor)? != (entry_status.st_dev, entry_status.st_ino) {
+                        return Err(StoreError::Corrupt);
+                    }
+                    child.snapshot_tree(hasher, &path, limit, total, entries, entry_limit)?;
+                }
+                _ => return Err(StoreError::Unsafe),
+            }
+            let final_status = status_at(self.descriptor.as_raw_fd(), &name_c)?;
+            if !same_file_state(&entry_status, &final_status) {
+                return Err(StoreError::Corrupt);
+            }
+        }
+        Ok(())
+    }
+
     fn bounded_tree_bytes_with_entry_limit(
         &self,
         limit: u64,
@@ -1133,11 +1310,7 @@ impl Directory {
                 return Err(StoreError::Unsafe);
             }
             match status.st_mode & libc::S_IFMT {
-                libc::S_IFREG
-                    if status.st_nlink == 1
-                        && status.st_size >= 0
-                        && status.st_mode & 0o7777 == 0o600 =>
-                {
+                libc::S_IFREG if status.st_nlink == 1 && status.st_size >= 0 => {
                     total = total
                         .checked_add(status.st_size as u64)
                         .ok_or(StoreError::TooLarge)?;
@@ -1158,7 +1331,6 @@ impl Directory {
                     let child = Self {
                         descriptor: unsafe { OwnedFd::from_raw_fd(child) },
                     };
-                    validate_directory(&child.descriptor, true)?;
                     total = total
                         .checked_add(child.bounded_tree_bytes_with_entry_limit(
                             limit.saturating_sub(total),
@@ -1259,6 +1431,25 @@ impl Directory {
         // SAFETY: successful openat returned a newly owned descriptor.
         let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
         validate_directory(&descriptor, true)?;
+        Ok(Self { descriptor })
+    }
+
+    fn open_directory_relaxed(&self, name: &str) -> Result<Self, StoreError> {
+        let name = component(name)?;
+        // SAFETY: parent descriptor and component are valid; no symlink is followed.
+        let raw = unsafe {
+            libc::openat(
+                self.descriptor.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if raw < 0 {
+            return Err(map_open_error(io::Error::last_os_error()));
+        }
+        // SAFETY: successful openat returned a newly owned descriptor.
+        let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
+        validate_directory(&descriptor, false)?;
         Ok(Self { descriptor })
     }
 
@@ -1560,6 +1751,24 @@ fn status(descriptor: i32) -> Result<libc::stat, StoreError> {
     Ok(unsafe { status.assume_init() })
 }
 
+fn status_at(descriptor: i32, name: &CStr) -> Result<libc::stat, StoreError> {
+    let mut result = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: descriptor, name, and writable output storage are valid.
+    if unsafe {
+        libc::fstatat(
+            descriptor,
+            name.as_ptr(),
+            result.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(StoreError::Io);
+    }
+    // SAFETY: successful fstatat initialized the structure.
+    Ok(unsafe { result.assume_init() })
+}
+
 fn identity(descriptor: &OwnedFd) -> Result<(u64, u64), StoreError> {
     let status = status(descriptor.as_raw_fd())?;
     Ok((status.st_dev, status.st_ino))
@@ -1575,6 +1784,38 @@ fn rename_no_replace(directory: &Directory, from: &str, to: &str) -> Result<(), 
             directory.descriptor.as_raw_fd(),
             from.as_ptr(),
             directory.descriptor.as_raw_fd(),
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        match io::Error::last_os_error().raw_os_error() {
+            Some(libc::EEXIST) => Err(StoreError::Conflict),
+            Some(libc::ENOSYS) | Some(libc::EINVAL) | Some(libc::EOPNOTSUPP) => {
+                Err(StoreError::Unsupported)
+            }
+            _ => Err(StoreError::Io),
+        }
+    }
+}
+
+fn rename_no_replace_between(
+    source: &Directory,
+    from: &str,
+    destination: &Directory,
+    to: &str,
+) -> Result<(), StoreError> {
+    let from = component(from)?;
+    let to = component(to)?;
+    // SAFETY: both retained parent descriptors and validated names are valid.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            source.descriptor.as_raw_fd(),
+            from.as_ptr(),
+            destination.descriptor.as_raw_fd(),
             to.as_ptr(),
             libc::RENAME_NOREPLACE,
         )
@@ -1655,6 +1896,11 @@ fn hex(bytes: &[u8]) -> String {
         let _ = write!(result, "{byte:02x}");
     }
     result
+}
+
+fn snapshot_hash_frame(hasher: &mut blake3::Hasher, value: &[u8]) {
+    hasher.update(&(value.len() as u64).to_be_bytes());
+    hasher.update(value);
 }
 
 fn map_open_error(error: io::Error) -> StoreError {
@@ -1827,6 +2073,42 @@ mod tests {
             CommitStaging::create(&state.0, &format!("{:064x}", 8), b"p", b"[core]\n", None,),
             Err(StoreError::TooLarge)
         ));
+    }
+
+    #[test]
+    fn commit_staging_quarantine_moves_only_the_held_operation() {
+        let state = TestDirectory::new("commit-staging-quarantine");
+        let name = "d".repeat(64);
+        let staging = CommitStaging::create(&state.0, &name, b"p", b"[core]\n", None).unwrap();
+        staging.quarantine().unwrap();
+        assert!(!state.0.join("rehow/commit-staging").join(&name).exists());
+        assert!(state.0.join("rehow/commit-quarantine").join(&name).is_dir());
+
+        let other = "e".repeat(64);
+        let staging = CommitStaging::create(&state.0, &other, b"p", b"[core]\n", None).unwrap();
+        fs::create_dir(state.0.join("rehow/commit-quarantine").join(&other)).unwrap();
+        fs::set_permissions(
+            state.0.join("rehow/commit-quarantine").join(&other),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        assert!(matches!(staging.quarantine(), Err(StoreError::Conflict)));
+        assert!(state.0.join("rehow/commit-staging").join(other).is_dir());
+    }
+
+    #[test]
+    fn commit_staging_snapshot_detects_late_content_changes() {
+        let state = TestDirectory::new("commit-staging-snapshot");
+        let name = "f".repeat(64);
+        let staging = CommitStaging::create(&state.0, &name, b"p", b"[core]\n", None).unwrap();
+        let snapshot = staging.snapshot(1024 * 1024).unwrap();
+        assert!(staging.verify_snapshot(snapshot, 1024 * 1024).unwrap());
+        staging
+            .write_candidate_file("rehow.yaml", b"schema_version: 1\n")
+            .unwrap();
+        assert!(!staging.verify_snapshot(snapshot, 1024 * 1024).unwrap());
+        let updated = staging.snapshot(1024 * 1024).unwrap();
+        assert!(staging.verify_snapshot(updated, 1024 * 1024).unwrap());
     }
 
     #[test]
