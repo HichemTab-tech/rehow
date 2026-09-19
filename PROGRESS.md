@@ -5,11 +5,11 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 5D3D1 authenticated HTTPS credential-helper provenance is complete at `41a2549`. A fixed credential-protocol proxy and sealed helper invocation are the next Git gate.
+Phase 5D3D2 fixed HTTPS credential proxy/resources are complete at `0785bd3`. A minimal credential-backing capability plus authenticated HTTPS clone/sync/push integration is the next Git gate.
 
 ## Current task
 
-Specify Phase 5D3D2 so a fixed proxy can invoke only the retained helper capability with bounded credential-protocol fields, no Workspace mount, no secret disclosure, and no network operation.
+Implement Phase 5D3D3: retain only the minimal backing resource required by an approved helper, then connect the sealed proxy to authenticated HTTPS clone/sync/push without exposing credentials or mounting a Workspace.
 
 ## Overall status
 
@@ -123,16 +123,17 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Completed Phase 5D3C1 at signed checkpoint `cfc2d1a`: sync discovery, initial fetch, complete Workspace validation, bounded history deepening, and ancestry classification reuse the same sealed SSH authority. Missing authority and authentication/host-key failures are closed; renderer IPC receives no new choice or secret. A real loopback fixture proves success, wrong-host refusal, and unchanged active manifest/HEAD/index/config. The full gate and one reused Security Reviewer pass.
 - Completed Phase 5D3C2 at signed checkpoint `fd5532d`: the fixed proxy admits only exact upload-pack or receive-pack service grammar, and confirmed local-ahead publication reuses the sealed SSH authority for preflight, one normal full-OID-to-full-branch push, and exact postflight verification. A disposable loopback bare repository proves wrong-host refusal leaves the remote unchanged and successful publication advances it to exactly the validated commit. The full gate and one reused Security Reviewer pass.
 - Completed Phase 5D3D1 at signed checkpoint `41a2549`: native launch stably snapshots only fixed global Git config sources with includes disabled, applies helper reset semantics, rejects scoped/multiple/shell/argument/path ambiguity, and retains one approved root-owned helper inode. It invokes no helper, credential protocol, network, or renderer/MCP authority. Five adversarial core tests, native retention coverage, the full gate, and the one reused Security Reviewer correction recheck pass. Parent-directory link count was removed from provenance identity to eliminate unrelated-sibling test flakes while target files still require one link.
+- Completed Phase 5D3D2 at signed checkpoint `0785bd3`: a dedicated fixed proxy accepts only bounded `get`/`store`/`erase` records for one expected HTTPS host, invokes only the retained direct or exact `gh` helper under a cleared synthetic environment, validates output before forwarding it, and fails silently. Native-held descriptors become fixed read-only Bubblewrap mounts with no Workspace. The reviewer-found inherited-pipe descendant hang is fixed and regression-tested; the full gate and one reused Security Reviewer pass.
 
 ## Work in progress
 
-- Phase 5D3D1 is complete at signed checkpoint `41a2549`; Phase 5D3D2 fixed credential proxy and sealed helper invocation is next.
+- Phase 5D3D2 is complete at signed checkpoint `0785bd3`; Phase 5D3D3 credential backing resources and authenticated HTTPS Git integration is next.
 
 ## Remaining work
 
 - Workspace adoption/import/migration and Attachment viewing/export/reveal remain incomplete.
 - Phase 4: complete at `e17b7d1`.
-- Phase 5: read-only status, safe local initialization, metadata-only remote connection, anonymous-HTTPS and authenticated-SSH clone/sync/push including UI, native-confirmed recoverable managed-only commits, bounded ancestry, durable loose-branch fast-forward publication, pathless native recovery, and HTTPS helper provenance are complete; helper invocation, authenticated HTTPS operations, and packed-branch publication remain.
+- Phase 5: read-only status, safe local initialization, metadata-only remote connection, anonymous-HTTPS and authenticated-SSH clone/sync/push including UI, native-confirmed recoverable managed-only commits, bounded ancestry, durable loose-branch fast-forward publication, pathless native recovery, and the confined HTTPS helper/proxy boundary are complete; credential backing resources, authenticated HTTPS operations, and packed-branch publication remain.
 - Phase 6: standalone full MCP contract.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
@@ -242,19 +243,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - Phase 5D3C1 passes the same opaque resources only to sync remote discovery/fetch/history children selected by a core-validated SSH upstream. Active Workspace/repository authority is never mounted into those network children; the existing validated classification remains the only apply authority. The loopback fixture, closed native errors, full gate, and one reused Security Reviewer pass with no blocker/high/medium finding.
 - Phase 5D3C2 extends the fixed proxy only to exact receive-pack grammar and gives push the same sealed launch authority after native confirmation. The child receives one internal normal refspec, read-only local objects, synthetic metadata, and no Workspace or caller-selected Git controls. Wrong-host and successful loopback publication tests, the full gate, and the one reused Security Reviewer pass.
 - Phase 5D3D1 reads only stable bounded global-config snapshots through root-owned Git with includes disabled and retains only one fixed-directory root-owned helper inode. Empty values reset prior helpers; scoped, multiple, shell, argument-bearing, relative, unsafe, malformed, oversized, amplifying, or raced inputs fail closed. The reviewer-found empty-scope spelling is covered and the final reused Security Reviewer verdict is PASS.
+- Phase 5D3D2 invokes only the retained helper through a fixed proxy with bounded host-bound Git credential grammar, a cleared synthetic environment, fixed argv, bounded time/output, and no Workspace. The initial Security Review found that an exited leader could leave pipe-holding descendants; the runner now kills the group on leader exit and enforces bounds until all pipes close. The regression test and final reused Security Reviewer verdict pass.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5D3D1 used exactly one reused Security Reviewer at the completed authority gate and the final verdict is PASS.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5D3D2 used exactly one reused Security Reviewer at the completed authority gate and the final verdict is PASS.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`41a2549` — signed Phase 5D3D1 authenticated HTTPS credential-helper provenance; its configured GPG signature verifies. This progress-only ledger update follows that implementation commit.
+`0785bd3` — signed Phase 5D3D2 confined HTTPS credential proxy/resources. This progress-only ledger update follows that implementation commit.
 
 ## Tests last run and results
 
+- 2026-09-20: Phase 5D3D2 checkpoint `0785bd3` passes `pnpm check`, the packaged networkless proxy smoke test, 39 Vitest tests, 438 core tests with 2 intentional ignores, 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 25 desktop Rust, MCP, and example targets. Strict core Clippy, the prior strict all-Workspace Clippy/production/optimized-Tauri gates, Cargo formatting, whitespace checks, and the one reused Security Reviewer correction recheck pass.
 - 2026-09-20: Phase 5D3D1 checkpoint `41a2549` passes 5 focused credential-provenance tests, native launch-retention coverage, `pnpm check`, 39 Vitest tests, 432 core tests with 2 intentional ignores, 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 25 desktop Rust, MCP, and example targets. Strict all-Workspace Clippy, production build, optimized Tauri no-bundle build, Cargo formatting, bootstrap/whitespace checks, signed-commit verification, and the one reused Security Reviewer correction recheck pass.
 - 2026-09-20: Phase 5D3C2 checkpoint `fd5532d` passes focused proxy/push/real-loopback SSH tests, `pnpm check`, 39 Vitest tests, 427 core tests with 2 intentional ignores, 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 24 desktop Rust, MCP, and example targets. Strict all-Workspace Clippy, production build, optimized Tauri no-bundle build, Cargo formatting, bootstrap/whitespace checks, signed-commit verification, and the one reused Security Reviewer pass. One unrelated provenance test failed once under a parallel test/build run, then passed five focused repetitions and the clean sequential full suite.
 - 2026-09-20: Phase 5D3C1 checkpoint `cfc2d1a` passes `pnpm check`, 39 Vitest tests, the real loopback authenticated-SSH clone/sync/wrong-host fixture, 427 core tests with 2 intentional ignores, 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 24 desktop Rust, MCP, and example targets. Strict all-Workspace Clippy, production pnpm build, optimized Tauri no-bundle build, bootstrap/whitespace checks, signed-commit verification, and the one reused Security Reviewer gate pass.
@@ -491,20 +494,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0025, `docs/task-packets/phase-5d3c1-authenticated-ssh-sync-inspection.md`, its evidence, the SSH-aware sync inspection/classification pipeline, native resource selection, and closed error mapping implement authenticated SSH sync inspection at `cfc2d1a`.
 - ADR 0025, `docs/task-packets/phase-5d3c2-authenticated-ssh-push.md`, its evidence, fixed receive-pack proxy grammar, SSH-aware exact push boundary, native resource selection, and loopback publication fixture implement authenticated SSH push at `fd5532d`.
 - ADR 0025, `docs/task-packets/phase-5d3d1-https-credential-provenance.md`, its evidence, `git/https_credentials.rs`, and native launch retention implement non-invoking authenticated-HTTPS helper provenance at `41a2549`.
+- ADR 0025, `docs/task-packets/phase-5d3d2-credential-proxy-resources.md`, its evidence, `git/credential_proxy.rs`, the dedicated binary, fixed resource mounts, packaged smoke test, and native launch retention implement the confined helper invocation boundary at `0785bd3`.
 
 ## Next recommended action
 
-Specify Phase 5D3D2 as a fixed credential-protocol proxy and sealed helper-resource gate. Mount only the retained executable inode in a Workspace-free/networkless sandbox; accept only Git's bounded `get`/`store`/`erase` protocol fields required by the later broker; keep usernames/passwords out of plans, errors, `Debug`, logs, evidence, and IPC. Do not connect to a remote yet.
+Specify and implement one compact Phase 5D3D3 gate: retain the minimum helper backing resource (prefer exact descriptor-held `gh` configuration without parsing credential bytes), mount it read-only at a synthetic fixed path, then reuse the existing HTTPS clone/sync/push pipelines through the fixed proxy. Prove success and wrong-host refusal against a disposable authenticated loopback remote; keep credentials out of plans, errors, `Debug`, logs, evidence, and IPC.
 
 ## Recommended agent role and reasoning effort
 
-Architect/Orchestrator locally with `gpt-5.6-sol`, xhigh/high judgment for credential protocol and process confinement. Run zero extra agents during routine work; use at most one reused Security Reviewer only at the completed authority gate.
+Architect/Orchestrator locally with `gpt-5.6-sol`, xhigh/high judgment for credential-resource confinement and transport integration. Run zero extra agents during routine work; use at most one reused Security Reviewer only at the completed authority gate.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read the Git sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `41a2549`, `fd5532d`, `cfc2d1a`, and `547d55f`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoints `0785bd3`, `41a2549`, `fd5532d`, and `cfc2d1a`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 5D3D1 as complete. Specify Phase 5D3D2 fixed credential proxy/resources next; do not contact a remote, expose or persist credentials, mount a Workspace, add prompts, force/history rewrite/arbitrary refspecs, scheduling, packed-branch publication, or MCP mutation.
+6. Treat Phase 5D3D2 as complete. Implement the smallest descriptor-confined helper backing resource and authenticated HTTPS clone/sync/push integration next; do not expose or persist credential values outside the existing user-owned backing store, mount an active Workspace into a network child, add prompts, force/history rewrite/arbitrary refspecs, scheduling, packed-branch publication, or MCP mutation.
