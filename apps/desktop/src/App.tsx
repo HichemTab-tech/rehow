@@ -2235,7 +2235,7 @@ export function App() {
     setGitCloneStage("entry");
     setGitCloneHost("");
     setAnnouncement(
-      "Enter an anonymous HTTPS repository URL to validate a Git Workspace.",
+      "Enter an HTTPS or SSH repository address to validate a Git Workspace.",
     );
     requestAnimationFrame(() => gitCloneUrlRef.current?.focus());
   }
@@ -4366,7 +4366,7 @@ export function App() {
                     ? gitCloneStage === "idle"
                       ? "The selected folder is empty. Create a new Workspace or clone an existing one."
                       : gitCloneStage === "entry"
-                        ? "Enter an anonymous HTTPS repository URL. Rehow validates it privately before changing the selected folder."
+                        ? "Enter an HTTPS or SSH repository address. Rehow validates it privately before changing the selected folder."
                         : gitCloneStage === "validating" ||
                             gitCloneStage === "cancelling"
                           ? "Rehow is validating the remote Workspace in private staging. The selected folder remains unchanged."

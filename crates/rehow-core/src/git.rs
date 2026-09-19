@@ -1394,20 +1394,29 @@ pub(crate) fn discover_git_clone_remote_head(
 fn discover_git_sync_remote_head(
     plan: &GitSyncPlan,
     cancelled: &AtomicBool,
+    ssh: Option<&GitSshTransportResources>,
 ) -> Result<GitRemoteHead, GitSyncError> {
     if cancelled.load(Ordering::Relaxed) {
         return Err(GitSyncError::Cancelled);
     }
-    if plan.transport != GitRemoteTransport::Https {
+    if plan.transport == GitRemoteTransport::Ssh && ssh.is_none() {
         return Err(GitSyncError::UnsupportedTransport);
     }
     let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
     let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
-    let output = run_clone_command_with_missing_ref(
-        sync_discovery_command(&executable, &sandbox, &plan.remote_url, &plan.remote_ref),
+    let output = run_clone_command_for_transport_with_missing_ref(
+        sync_discovery_command(
+            &executable,
+            &sandbox,
+            &plan.remote_url,
+            &plan.remote_ref,
+            plan.transport,
+            ssh,
+        ),
         cancelled,
         CLONE_DISCOVERY_TIMEOUT,
         CLONE_DISCOVERY_OUTPUT_LIMIT,
+        plan.transport,
     )
     .map_err(map_clone_discovery_to_sync)?;
     parse_git_sync_remote_ref(&output.stdout, &plan.remote_ref)
@@ -1467,24 +1476,28 @@ fn fetch_git_sync_remote(
     remote_head: &GitRemoteHead,
     staging: &GitCloneStaging,
     cancelled: &AtomicBool,
+    ssh: Option<&GitSshTransportResources>,
 ) -> Result<(), GitSyncError> {
-    if plan.transport != GitRemoteTransport::Https {
+    if plan.transport == GitRemoteTransport::Ssh && ssh.is_none() {
         return Err(GitSyncError::UnsupportedTransport);
     }
     let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
     let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
-    let output = run_clone_command(
-        clone_fetch_command(
+    let output = run_clone_command_for_transport(
+        clone_fetch_command_with_transport(
             &executable,
             &sandbox,
             staging.git_path(),
             staging.git_descriptor(),
             &plan.remote_url,
             remote_head.object_id(),
+            plan.transport,
+            ssh,
         ),
         cancelled,
         CLONE_FETCH_TIMEOUT,
         CLONE_DISCOVERY_OUTPUT_LIMIT,
+        plan.transport,
     )
     .map_err(map_clone_discovery_to_sync)?;
     if !output.stdout.is_empty() {
@@ -1933,6 +1946,8 @@ pub enum GitSyncError {
     GitUnavailable,
     SandboxUnavailable,
     RemoteUnavailable,
+    AuthenticationFailed,
+    HostKeyRejected,
     RemoteChanged,
     RemoteStateUncertain,
     InvalidRepository,
@@ -2075,16 +2090,28 @@ pub fn apply_git_sync_inspection(
     plan: GitSyncPlan,
     cancelled: &AtomicBool,
 ) -> Result<GitSyncInspection, GitSyncError> {
-    if plan.transport != GitRemoteTransport::Https {
+    apply_git_sync_inspection_with_ssh(workspace, state_home, plan, cancelled, None)
+}
+
+/// Runs sync inspection with optional launch-captured SSH authority. HTTPS
+/// ignores the authority; SSH fails closed when it is absent.
+pub fn apply_git_sync_inspection_with_ssh(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    plan: GitSyncPlan,
+    cancelled: &AtomicBool,
+    ssh: Option<&GitSshTransportResources>,
+) -> Result<GitSyncInspection, GitSyncError> {
+    if plan.transport == GitRemoteTransport::Ssh && ssh.is_none() {
         return Err(GitSyncError::UnsupportedTransport);
     }
     revalidate_git_sync_plan(workspace, &plan)?;
-    let remote_head = discover_git_sync_remote_head(&plan, cancelled)?;
+    let remote_head = discover_git_sync_remote_head(&plan, cancelled, ssh)?;
     if remote_head.object_format != plan.preflight.object_format {
         return Err(GitSyncError::InvalidRepository);
     }
     let staging = prepare_git_sync_staging(&plan, &remote_head, state_home)?;
-    fetch_git_sync_remote(&plan, &remote_head, &staging, cancelled)?;
+    fetch_git_sync_remote(&plan, &remote_head, &staging, cancelled, ssh)?;
     finish_git_sync_inspection(workspace, plan, staging, remote_head, cancelled)
 }
 
@@ -2143,6 +2170,20 @@ pub fn classify_git_sync_ancestry(
     inspection: GitSyncInspection,
     cancelled: &AtomicBool,
 ) -> Result<GitSyncClassification, GitSyncError> {
+    classify_git_sync_ancestry_with_ssh(workspace, inspection, cancelled, None)
+}
+
+/// Extends ancestry inspection with the same optional SSH authority used for
+/// the initial fetch. The active repository remains read-only.
+pub fn classify_git_sync_ancestry_with_ssh(
+    workspace: &WorkspaceView,
+    inspection: GitSyncInspection,
+    cancelled: &AtomicBool,
+    ssh: Option<&GitSshTransportResources>,
+) -> Result<GitSyncClassification, GitSyncError> {
+    if inspection.plan.transport == GitRemoteTransport::Ssh && ssh.is_none() {
+        return Err(GitSyncError::UnsupportedTransport);
+    }
     revalidate_git_sync_plan(workspace, &inspection.plan)?;
     let local_head = inspection
         .plan
@@ -2165,7 +2206,7 @@ pub fn classify_git_sync_ancestry(
         });
     }
 
-    deepen_git_sync_remote(&inspection, cancelled)?;
+    deepen_git_sync_remote(&inspection, cancelled, ssh)?;
     let refreshed_tree =
         inspect_fetched_git_clone_tree(&inspection.staging, &inspection.remote_head, cancelled)
             .map_err(map_clone_inspection_to_sync)?;
@@ -2285,7 +2326,7 @@ pub fn apply_git_push(
     apply_git_push_with(
         workspace,
         classification,
-        |plan| discover_git_sync_remote_head(plan, &not_cancelled),
+        |plan| discover_git_sync_remote_head(plan, &not_cancelled, None),
         execute_exact_git_push,
     )
 }
@@ -3092,7 +3133,11 @@ fn git_sync_workspace_matches_tree(
 fn deepen_git_sync_remote(
     inspection: &GitSyncInspection,
     cancelled: &AtomicBool,
+    ssh: Option<&GitSshTransportResources>,
 ) -> Result<(), GitSyncError> {
+    if inspection.plan.transport == GitRemoteTransport::Ssh && ssh.is_none() {
+        return Err(GitSyncError::UnsupportedTransport);
+    }
     let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
     let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
     let before = inspection
@@ -3107,7 +3152,7 @@ fn deepen_git_sync_remote(
     if file_limit == 0 {
         return Err(GitSyncError::ResourceLimit);
     }
-    let output = run_clone_command(
+    let output = run_clone_command_for_transport(
         sync_history_fetch_command(
             &executable,
             &sandbox,
@@ -3116,10 +3161,13 @@ fn deepen_git_sync_remote(
             &inspection.plan.remote_url,
             inspection.remote_head.object_id(),
             file_limit,
+            inspection.plan.transport,
+            ssh,
         ),
         cancelled,
         CLONE_FETCH_TIMEOUT,
         CLONE_DISCOVERY_OUTPUT_LIMIT,
+        inspection.plan.transport,
     )
     .map_err(map_clone_discovery_to_sync)?;
     if !output.stdout.is_empty() {
@@ -4227,13 +4275,21 @@ fn run_clone_command_for_transport(
     )
 }
 
-fn run_clone_command_with_missing_ref(
+fn run_clone_command_for_transport_with_missing_ref(
     command: Command,
     cancelled: &AtomicBool,
     timeout: Duration,
     output_limit: usize,
+    transport: GitRemoteTransport,
 ) -> Result<ProcessOutput, GitCloneDiscoveryError> {
-    run_clone_command_inner(command, cancelled, timeout, output_limit, true, false)
+    run_clone_command_inner(
+        command,
+        cancelled,
+        timeout,
+        output_limit,
+        true,
+        transport == GitRemoteTransport::Ssh,
+    )
 }
 
 fn run_clone_command_inner(
@@ -4341,15 +4397,11 @@ fn sync_discovery_command(
     sandbox: &Path,
     remote_url: &str,
     remote_ref: &str,
+    transport: GitRemoteTransport,
+    ssh: Option<&GitSshTransportResources>,
 ) -> Command {
     remote_discovery_command(
-        executable,
-        sandbox,
-        remote_url,
-        remote_ref,
-        false,
-        GitRemoteTransport::Https,
-        None,
+        executable, sandbox, remote_url, remote_ref, false, transport, ssh,
     )
 }
 
@@ -4665,6 +4717,7 @@ fn clone_fetch_command_with_transport(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sync_history_fetch_command(
     executable: &Path,
     sandbox: &Path,
@@ -4673,6 +4726,8 @@ fn sync_history_fetch_command(
     remote_url: &str,
     object_id: &str,
     file_limit: u64,
+    transport: GitRemoteTransport,
+    ssh: Option<&GitSshTransportResources>,
 ) -> Command {
     remote_fetch_command(
         executable,
@@ -4683,8 +4738,8 @@ fn sync_history_fetch_command(
         object_id,
         SYNC_HISTORY_LIMIT,
         file_limit,
-        GitRemoteTransport::Https,
-        None,
+        transport,
+        ssh,
     )
 }
 
@@ -11526,9 +11581,8 @@ fn map_clone_discovery_to_sync(error: GitCloneDiscoveryError) -> GitSyncError {
         GitCloneDiscoveryError::OutputLimit => GitSyncError::ResourceLimit,
         GitCloneDiscoveryError::RemoteUnavailable => GitSyncError::RemoteUnavailable,
         GitCloneDiscoveryError::RemoteRefMissing => GitSyncError::RemoteChanged,
-        GitCloneDiscoveryError::AuthenticationFailed | GitCloneDiscoveryError::HostKeyRejected => {
-            GitSyncError::RemoteUnavailable
-        }
+        GitCloneDiscoveryError::AuthenticationFailed => GitSyncError::AuthenticationFailed,
+        GitCloneDiscoveryError::HostKeyRejected => GitSyncError::HostKeyRejected,
         GitCloneDiscoveryError::InvalidAdvertisement => GitSyncError::InvalidRepository,
         GitCloneDiscoveryError::Io => GitSyncError::Io,
     }
@@ -14496,11 +14550,12 @@ mod tests {
             command
         };
         assert_eq!(
-            run_clone_command_with_missing_ref(
+            run_clone_command_for_transport_with_missing_ref(
                 exit_two(),
                 &AtomicBool::new(false),
                 Duration::from_secs(2),
                 1024,
+                GitRemoteTransport::Https,
             )
             .err()
             .unwrap(),
@@ -14638,6 +14693,8 @@ mod tests {
             Path::new("/usr/bin/bwrap"),
             url,
             "refs/heads/team/main",
+            GitRemoteTransport::Https,
+            None,
         );
         let sync_arguments = sync
             .get_args()
@@ -14660,6 +14717,40 @@ mod tests {
             );
         }
         assert!(!sync_arguments.iter().any(|argument| argument == "--symref"));
+
+        let ssh_sync = sync_discovery_command(
+            Path::new("/usr/bin/git"),
+            Path::new("/usr/bin/bwrap"),
+            "ssh://git@example.invalid/team/rehow.git",
+            "refs/heads/team/main",
+            GitRemoteTransport::Ssh,
+            None,
+        );
+        let ssh_sync_arguments = ssh_sync
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let ssh_sync_environment = ssh_sync
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            ssh_sync_environment["GIT_SSH"].as_deref(),
+            Some("/home/rehow/bin/rehow-git-ssh")
+        );
+        for required in ["protocol.https.allow=never", "protocol.ssh.allow=always"] {
+            assert!(
+                ssh_sync_arguments
+                    .iter()
+                    .any(|argument| argument == required),
+                "{required}"
+            );
+        }
 
         let fetch = clone_fetch_command(
             Path::new("/usr/bin/git"),
@@ -14712,6 +14803,8 @@ mod tests {
             url,
             "0123456789abcdef0123456789abcdef01234567",
             1024 * 1024,
+            GitRemoteTransport::Https,
+            None,
         );
         let history_arguments = history_fetch
             .get_args()
@@ -14987,7 +15080,7 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_ssh_clone_uses_only_sealed_launch_resources() {
+    fn authenticated_ssh_clone_and_sync_use_only_sealed_launch_resources() {
         let infrastructure = Temp::new();
         fs::set_permissions(&infrastructure.0, fs::Permissions::from_mode(0o700)).unwrap();
         let home = Temp::new();
@@ -15212,6 +15305,102 @@ mod tests {
             GitCloneApplyError::HostKeyRejected
         );
         assert!(rejected_destination.0.read_dir().unwrap().next().is_none());
+
+        let sync_workspace = Temp::new();
+        drop(initialized_workspace(&sync_workspace));
+        configure_fixture_identity(&sync_workspace);
+        fixture_git(&sync_workspace, &["add", "--", "rehow.yaml"]);
+        fixture_git(&sync_workspace, &["commit", "-qm", "local base"]);
+        fixture_git(&sync_workspace, &["remote", "add", "origin", &url]);
+        fixture_git(&sync_workspace, &["config", "branch.main.remote", "origin"]);
+        fixture_git(
+            &sync_workspace,
+            &["config", "branch.main.merge", "refs/heads/main"],
+        );
+        let manifest_before = fs::read(sync_workspace.0.join("rehow.yaml")).unwrap();
+        let head_before = fs::read(sync_workspace.0.join(".git/HEAD")).unwrap();
+        let index_before = fs::read(sync_workspace.0.join(".git/index")).unwrap();
+        let config_before = fs::read(sync_workspace.0.join(".git/config")).unwrap();
+        let sync_view = open_workspace(&sync_workspace);
+        let missing_resource_state = Temp::new();
+        let missing_resource_plan = plan_git_sync(&sync_view, &missing_resource_state.0).unwrap();
+        assert_eq!(
+            apply_git_sync_inspection(
+                &sync_view,
+                &missing_resource_state.0,
+                missing_resource_plan,
+                &AtomicBool::new(false),
+            )
+            .err()
+            .unwrap(),
+            GitSyncError::UnsupportedTransport
+        );
+        let sync_state = Temp::new();
+        let sync_plan = plan_git_sync(&sync_view, &sync_state.0).unwrap();
+        assert_eq!(sync_plan.transport(), GitRemoteTransport::Ssh);
+        let inspection = apply_git_sync_inspection_with_ssh(
+            &sync_view,
+            &sync_state.0,
+            sync_plan,
+            &AtomicBool::new(false),
+            Some(&resources),
+        )
+        .unwrap();
+        let classification = classify_git_sync_ancestry_with_ssh(
+            &sync_view,
+            inspection,
+            &AtomicBool::new(false),
+            Some(&resources),
+        )
+        .unwrap();
+        assert_eq!(classification.ancestry(), GitSyncAncestry::Diverged);
+        assert_eq!(
+            fs::read(sync_workspace.0.join("rehow.yaml")).unwrap(),
+            manifest_before
+        );
+        assert_eq!(
+            fs::read(sync_workspace.0.join(".git/HEAD")).unwrap(),
+            head_before
+        );
+        assert_eq!(
+            fs::read(sync_workspace.0.join(".git/index")).unwrap(),
+            index_before
+        );
+        assert_eq!(
+            fs::read(sync_workspace.0.join(".git/config")).unwrap(),
+            config_before
+        );
+
+        let rejected_sync_state = Temp::new();
+        let rejected_sync_plan = plan_git_sync(&sync_view, &rejected_sync_state.0).unwrap();
+        assert_eq!(
+            apply_git_sync_inspection_with_ssh(
+                &sync_view,
+                &rejected_sync_state.0,
+                rejected_sync_plan,
+                &AtomicBool::new(false),
+                Some(&wrong_resources),
+            )
+            .err()
+            .unwrap(),
+            GitSyncError::HostKeyRejected
+        );
+        assert_eq!(
+            fs::read(sync_workspace.0.join("rehow.yaml")).unwrap(),
+            manifest_before
+        );
+        assert_eq!(
+            fs::read(sync_workspace.0.join(".git/HEAD")).unwrap(),
+            head_before
+        );
+        assert_eq!(
+            fs::read(sync_workspace.0.join(".git/index")).unwrap(),
+            index_before
+        );
+        assert_eq!(
+            fs::read(sync_workspace.0.join(".git/config")).unwrap(),
+            config_before
+        );
     }
 
     fn stage_sync_fixture(

@@ -1,6 +1,6 @@
 # ADR 0025: Safe Git synchronization
 
-- Status: Partially Accepted — manual anonymous-HTTPS synchronization/push and authenticated-SSH clone implemented; authenticated sync/push pending
+- Status: Partially Accepted — manual anonymous-HTTPS synchronization/push and authenticated-SSH clone/sync inspection implemented; authenticated SSH push pending
 - Date: 2026-09-19
 
 ## Context
@@ -15,7 +15,7 @@ Synchronization is a sequence of separately accepted gates. Every gate binds the
 
 Core reads the current branch's exact `branch.<name>.remote` and `branch.<name>.merge` plus that remote's single canonical URL from the held config with includes disabled. Duplicate, missing, local-dot, non-branch, noncanonical, credential-bearing, or otherwise ambiguous configuration is refused. Planning is single-use, redacted, and bound to the current Workspace fingerprint, manifest revision, root capability, Git directory identity, repository snapshots, direct branch, object format, managed inventory, and clean/dirty status. A pending recoverable commit blocks planning.
 
-Apply currently accepts anonymous canonical HTTPS only. It sends the canonical URL and exact upstream branch explicitly to the same config-free, credential-disabled Bubblewrap network boundary accepted for clone. Discovery accepts exactly one full-width OID/ref record. Fetch writes only a random owner-private XDG staging repository, requests exactly the advertised OID with depth one, retains packs, disables hooks/helpers/prompts/proxies/tags/submodules/maintenance, and enforces the existing time/output/file/aggregate limits.
+Apply accepts canonical anonymous HTTPS and authenticated SSH. It sends the canonical URL and exact upstream branch explicitly to the same config-free Bubblewrap network boundary accepted for clone; SSH receives only the accepted sealed launch resources. Discovery accepts exactly one full-width OID/ref record. Fetch writes only a random owner-private XDG staging repository, requests exactly the advertised OID with depth one, retains packs, disables hooks/untrusted helpers/prompts/proxies/tags/submodules/maintenance, and enforces the existing time/output/file/aggregate limits.
 
 The complete fetched commit, tree, paths, object identities, blob bytes, Workspace schemas, relationships, and Attachments pass the accepted clone validator. The incoming Workspace ID must equal the open Workspace ID. Core repeats the full local plan binding after validation. The result exposes only `upToDate` or `remoteChanged`, whether the active worktree has local changes, and whether the portable Workspace snapshots match. URL, paths, refs, OIDs, content, Git output, credentials, and staging authority remain private. This gate never changes the active Workspace, object database, index, refs, config, reflogs, or remote-tracking refs.
 
@@ -101,11 +101,17 @@ Host-key memfds remain sealed and are rewound in each Bubblewrap setup child bef
 
 The standard desktop dev and optimized no-bundle build scripts produce a one-link sibling helper, satisfying launch provenance for current builds. Final installer bundle sidecar layout remains part of the later packaging phase while Tauri bundling is disabled. A disposable loopback test uses a temporary agent, client/host keys, unprivileged `sshd`, Git repository, and compatible Workspace to prove real success and wrong-host-key refusal without public network or user credentials. The deferred Security Reviewer is required before this gate is accepted.
 
+#### 5D3C1 — authenticated SSH sync inspection
+
+The accepted sync plan, private staging, complete Workspace validation, and bounded ancestry classifier now reuse the same sealed SSH resources for remote-ref discovery, the initial depth-one fetch, and bounded history deepening. The native adapter selects SSH only from the core-validated configured upstream and prepares resources from launch-held provenance; renderer IPC receives no transport choice, URL, path, credential, ref, or Git output.
+
+Every remote child preserves the existing process-group cancellation, time, output, staging, history, revision, and active-state checks. Missing resources fail before network use; fixed authentication and host-key failures remain distinct closed errors. The active Workspace, objects, index, refs, config, and reflogs stay read-only during inspection. Authenticated push remains a separate later gate.
+
 - SSH accepts only the launch-inherited, owner-safe Unix `SSH_AUTH_SOCK`; a compiled fixed-grammar proxy invokes the exact descriptor-mounted system SSH client with a synthetic home, no user config, strict host verification, batch mode, fixed timeouts, and bounded owner-safe `known_hosts` snapshots. It never reads private-key files or accepts proxy/local commands.
 - HTTPS reconstructs only an accepted helper from root-owned system or owner-safe user Git config read with includes disabled. Executables must be root-owned absolute binaries in `/usr/bin` or `/usr/lib/git-core` with no free-form arguments, except the exact root-owned `gh auth git-credential` argv. Shell, relative, owner-writable, URL-scoped executable, proxy, header, askpass, and repository overrides are refused.
 - A compiled credential proxy forwards Git's credential protocol without exposing secret fields to Rehow plans, renderer IPC, errors, `Debug`, logs, evidence, or storage. Credential and SSH processes receive no Workspace or repository mount. Stable results distinguish authentication-required, host-key, unavailable, timeout, remote-changed, and rejected-non-fast-forward outcomes without returning raw Git output.
 
-Authenticated SSH clone is accepted only after the 5D3B3 Security Review; authenticated sync/push and HTTPS helpers remain gated on equivalent credential canaries and operation-specific review. Scheduled or start-time sync remains opt-in and cannot precede acceptance of the same gates used by manual sync.
+Authenticated SSH clone and sync inspection are accepted only after their Security Reviews; authenticated SSH push and HTTPS helpers remain gated on equivalent credential canaries and operation-specific review. Scheduled or start-time sync remains opt-in and cannot precede acceptance of the same gates used by manual sync.
 
 ## Consequences
 

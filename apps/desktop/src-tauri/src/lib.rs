@@ -20,11 +20,11 @@ use rehow_core::{
         GitSshTransportError, GitSshTransportResources, GitSyncAncestry, GitSyncClassification,
         GitSyncError, apply_git_clone_repository_finalization, apply_git_clone_validation_with_ssh,
         apply_git_commit, apply_git_initialize, apply_git_push, apply_git_remote_connect,
-        apply_git_sync_fast_forward, apply_git_sync_inspection, cancel_git_commit_plan,
+        apply_git_sync_fast_forward, apply_git_sync_inspection_with_ssh, cancel_git_commit_plan,
         capture_git_ssh_agent_provenance, capture_git_ssh_host_keys_provenance,
-        capture_git_ssh_proxy_provenance, classify_git_sync_ancestry, git_commit_recovery_required,
-        git_sync_recovery_required, plan_git_clone, plan_git_commit, plan_git_initialize,
-        plan_git_remote_connect, plan_git_sync, read_git_status,
+        capture_git_ssh_proxy_provenance, classify_git_sync_ancestry_with_ssh,
+        git_commit_recovery_required, git_sync_recovery_required, plan_git_clone, plan_git_commit,
+        plan_git_initialize, plan_git_remote_connect, plan_git_sync, read_git_status,
         resume_pending_git_commit_publication, resume_pending_git_sync_publication,
     },
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -1587,13 +1587,38 @@ async fn git_sync_inspect_open_workspace(
         })?;
         let plan = plan_git_sync(&workspace.view, &state_home)
             .map_err(|error| native_command_error(git_sync_code(error), git_sync_message(error)))?;
-        let inspection =
-            apply_git_sync_inspection(&workspace.view, &state_home, plan, &operation_cancelled)
+        let ssh = if plan.transport() == GitRemoteTransport::Ssh {
+            Some(
+                GitSshTransportResources::prepare(
+                    &state.ssh_agent_provenance,
+                    &state.ssh_host_keys_provenance,
+                    &state.ssh_proxy_provenance,
+                )
                 .map_err(|error| {
-                    native_command_error(git_sync_code(error), git_sync_message(error))
-                })?;
-        classify_git_sync_ancestry(&workspace.view, inspection, &operation_cancelled)
-            .map_err(|error| native_command_error(git_sync_code(error), git_sync_message(error)))
+                    native_command_error(
+                        git_ssh_transport_code(error),
+                        git_ssh_transport_message(error),
+                    )
+                })?,
+            )
+        } else {
+            None
+        };
+        let inspection = apply_git_sync_inspection_with_ssh(
+            &workspace.view,
+            &state_home,
+            plan,
+            &operation_cancelled,
+            ssh.as_ref(),
+        )
+        .map_err(|error| native_command_error(git_sync_code(error), git_sync_message(error)))?;
+        classify_git_sync_ancestry_with_ssh(
+            &workspace.view,
+            inspection,
+            &operation_cancelled,
+            ssh.as_ref(),
+        )
+        .map_err(|error| native_command_error(git_sync_code(error), git_sync_message(error)))
     })
     .await;
     let mut lifecycle = state.git_sync.lock().map_err(|_| {
@@ -2025,6 +2050,8 @@ fn git_sync_code(error: GitSyncError) -> &'static str {
         GitSyncError::GitUnavailable => "gitUnavailable",
         GitSyncError::SandboxUnavailable => "sandboxUnavailable",
         GitSyncError::RemoteUnavailable => "remoteUnavailable",
+        GitSyncError::AuthenticationFailed => "authenticationFailed",
+        GitSyncError::HostKeyRejected => "hostKeyRejected",
         GitSyncError::RemoteChanged => "remoteChanged",
         GitSyncError::RemoteStateUncertain => "remoteStateUncertain",
         GitSyncError::InvalidRepository => "invalidRepository",
@@ -2047,7 +2074,7 @@ fn git_sync_message(error: GitSyncError) -> String {
                 .to_owned()
         }
         GitSyncError::UnsupportedTransport => {
-            "Anonymous HTTPS is the only sync transport enabled in this build.".to_owned()
+            "This upstream transport is not supported for sync.".to_owned()
         }
         GitSyncError::RecoveryRequired => {
             "An interrupted Git operation needs recovery before another sync can start.".to_owned()
@@ -2076,6 +2103,14 @@ fn git_sync_message(error: GitSyncError) -> String {
         }
         GitSyncError::RemoteUnavailable => {
             "The configured upstream could not be reached or authenticated.".to_owned()
+        }
+        GitSyncError::AuthenticationFailed => {
+            "SSH authentication failed. Check that your launch-time SSH agent has the required key."
+                .to_owned()
+        }
+        GitSyncError::HostKeyRejected => {
+            "SSH host verification failed. Check your trusted known-host entries and restart Rehow."
+                .to_owned()
         }
         GitSyncError::RemoteChanged => {
             "The upstream changed after inspection. Nothing was forced; inspect it again before retrying."
@@ -4992,6 +5027,8 @@ mod tests {
             (GitSyncError::GitUnavailable, "gitUnavailable"),
             (GitSyncError::SandboxUnavailable, "sandboxUnavailable"),
             (GitSyncError::RemoteUnavailable, "remoteUnavailable"),
+            (GitSyncError::AuthenticationFailed, "authenticationFailed"),
+            (GitSyncError::HostKeyRejected, "hostKeyRejected"),
             (GitSyncError::RemoteChanged, "remoteChanged"),
             (GitSyncError::RemoteStateUncertain, "remoteStateUncertain"),
             (GitSyncError::InvalidRepository, "invalidRepository"),
