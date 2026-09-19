@@ -5,11 +5,11 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 5C2A append-only manual-commit object publication is complete at signed checkpoint `0057e06`. Phase 5C2B recoverable index/direct-ref-last publication is next; native confirmation, synchronization, and authenticated clone transports remain separate gates.
+Phase 5C2A append-only object publication is complete at `0057e06`, and Phase 5C2B's verified private candidate index is complete at `8439b78`. The durable index/direct-ref-last recovery transaction is next; native confirmation, synchronization, and authenticated clone transports remain separate gates.
 
 ## Current task
 
-Implement Phase 5C2B from the approved packet at `3a13689`: add the operation-bound recovery intent and exact index-first/direct-ref-last compare-and-swap transaction over the already accepted append-only candidate objects.
+Continue Phase 5C2B from the approved packet at `3a13689`: add the operation-bound recovery intent and exact index-first/direct-ref-last compare-and-swap transaction using the verified private candidate index.
 
 ## Overall status
 
@@ -105,10 +105,11 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Completed Phase 5C1 at signed checkpoint `4ffc4f8`: the opaque public plan binds fresh repository/Workspace state, managed effects, unrelated-status count, private candidate tree/unsigned commit, and a deterministic staging snapshot. Candidate blobs/trees/commits are independently verified for SHA-1/SHA-256; unrelated `HEAD` leaves are preserved; cache-tree extensions are stripped before index equality proof; preserved objects are streamed and independently rehashed; cancellation quarantines rather than deletes. No active Workspace, object, index, ref, reflog, or configuration byte is changed. The single reused Security Reviewer passed the correction delta.
 - Defined the exact Phase 5C2 append-only-pack and recoverable index/ref-last publication boundary in `docs/task-packets/phase-5c2-git-commit-publication.md` at signed checkpoint `3a13689`.
 - Completed Phase 5C2A at signed checkpoint `0057e06`: exact private loose candidates are packed with fixed plumbing; pack/index checksums, object closure, and recomputed SHA-1/SHA-256 identities are independently verified through a pack-only sandbox; a fresh preflight and staging snapshot are required under the cooperating writer lock; and the retained active object store accepts only durable no-replace `.pack`/`.idx` installation or byte-identical existing files. Branch, index, refs, reflogs, configuration, and Workspace bytes remain unchanged.
+- Added the Phase 5C2B private-index prerequisite at signed checkpoint `8439b78`: config-free `read-tree` generates the candidate index, `write-tree` must reproduce the candidate tree before and after cache-tree stripping, the v2/v3 stage-zero index is bounded and independently parsed, and the active index remains byte-identical.
 
 ## Work in progress
 
-- Phase 5C2A is complete at `0057e06`. Immutable candidate objects may now be installed append-only; index/ref publication authority does not yet exist.
+- Phase 5C2A and private candidate-index preparation are complete. Immutable candidate objects may be installed append-only; active index/ref publication authority does not yet exist.
 
 ## Remaining work
 
@@ -220,10 +221,11 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Latest verified commit
 
-`0057e06` — signed Phase 5C2A append-only Git commit object publication checkpoint. This progress-only ledger update follows that implementation commit.
+`8439b78` — signed Phase 5C2B verified private candidate-index checkpoint. This progress-only ledger update follows that implementation commit.
 
 ## Tests last run and results
 
+- 2026-09-19: Phase 5C2B candidate-index checkpoint `8439b78`: full locked all-feature core gate passes 386 unit tests with 2 intentional ignores plus all 43 error-contract/protocol/public-API/unknown-YAML tests. Formatting, locked all-target/all-feature core Clippy with warnings denied, bootstrap, and whitespace checks pass.
 - 2026-09-19: Phase 5C2A checkpoint `0057e06`: full locked all-feature core gate passes 385 unit tests with 2 intentional ignores plus 18 error-contract, 13 protocol, 1 public-API/trybuild, and 11 unknown-YAML tests. Locked all-target/all-feature core Clippy denies warnings; Cargo formatting, bootstrap validation, and whitespace checks pass. Focused tests cover exact pack verification, idempotent append-only install, unchanged branch/index, stale refusal, and collision preservation.
 - 2026-09-19: Phase 5C1 checkpoint `4ffc4f8`: 31 focused commit/staging tests pass; the full locked all-feature core gate passes 381 unit tests with 2 intentional ignores plus 18 error-contract, 13 protocol, 1 public-API/trybuild, and 11 unknown-YAML tests. Locked all-target/all-feature core Clippy denies warnings; Cargo formatting, bootstrap validation, whitespace, signature verification, and the single Security Reviewer correction recheck pass.
 - 2026-09-19: Phase 5C1 copied-index/prior-snapshot checkpoint at `91763a0`: 22 focused commit tests pass, including SHA-1/SHA-256, unborn/parented, semantically dirty copied index, valid/malformed/replaced prior Workspace identity, and ignored Git replace refs. Locked all-target/all-feature core Clippy denies warnings; Cargo formatting, whitespace, and signed-commit verification pass.
@@ -424,10 +426,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `crates/rehow-core/src/storage/recovery.rs` and `storage/recovery/store.rs` add private bounded commit staging at `79afdee`; no active repository path is writable through this boundary.
 - `crates/rehow-core/src/git.rs`, `storage/recovery.rs`, `storage/recovery/store.rs`, and `docs/evidence/phase-5c-git-commit-decision.md` complete the read-only candidate plan, verified private object construction, staging snapshot/quarantine, and security evidence at `4ffc4f8`.
 - `crates/rehow-core/src/git.rs`, `storage.rs`, `storage/recovery.rs`, `storage/recovery/store.rs`, and `docs/evidence/phase-5c-git-commit-decision.md` implement exact private candidate packing and append-only active object installation at `0057e06`.
+- `crates/rehow-core/src/git.rs`, `storage/recovery.rs`, `storage/recovery/store.rs`, and the Phase 5C evidence prepare and verify the stripped private candidate index at `8439b78`.
 
 ## Next recommended action
 
-Implement Phase 5C2B recoverable index-first/direct-ref-last publication. Keep native/UI confirmation, synchronization, and MCP out of this checkpoint.
+Implement Phase 5C2B's operation-bound durable intent and index-first/direct-ref-last replay/CAS transaction. Keep native/UI confirmation, synchronization, and MCP out of this checkpoint.
 
 ## Recommended agent role and reasoning effort
 
@@ -438,6 +441,6 @@ Architect — `gpt-5.6-sol`, xhigh locally for the Phase 5C2B recovery boundary.
 1. Read `AGENTS.md` and this file.
 2. Read the Git sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `0057e06` and `3a13689`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoints `8439b78`, `0057e06`, and `3a13689`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 5C1, Phase 5C2A, and the Phase 5C2 packet as complete. Implement only 5C2B's recoverable index/direct-ref-last transaction next; native/UI authority remains later.
+6. Treat Phase 5C1, Phase 5C2A, the verified private candidate index, and the Phase 5C2 packet as complete. Implement only 5C2B's durable index/direct-ref-last transaction next; native/UI authority remains later.
