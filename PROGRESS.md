@@ -5,11 +5,11 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 5B3 anonymous-HTTPS clone is complete through React onboarding; authenticated clone transports remain a separate gate. Phase 5C manual commit/synchronization architecture is next.
+Phase 5C manual commit architecture is accepted. Phase 5C1 read-only candidate planning/construction is next; synchronization and authenticated clone transports remain separate gates.
 
 ## Current task
 
-Define the safe manual Git commit gate before implementation. Keep synchronization, authenticated clone transports, and credentials separate.
+Implement Phase 5C1's read-only safe manual-commit plan and private candidate construction in `rehow-core`. It must not change active repository or Workspace bytes.
 
 ## Overall status
 
@@ -97,10 +97,11 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Added core clone Git finalization at signed checkpoint `e9d5e58`: bounded paired pack/index transfer, unique retry-safe staging indexes, exact shallow/config/ref/`HEAD` installation, clean zero-divergence status validation, ignored-residue rechecks, and an append-only completion seal all fail closed without checkout or overwrite. The single reused Security Reviewer passed the correction closure.
 - Added native validated-clone completion at signed checkpoint `a8c2b3f`: a pathless command requires a second URL-bound native write confirmation, blocks competing lifecycle changes, finalizes off the UI thread, installs the watched Workspace on success, and retains exact retry authority across decline, cancellation, core failure, panic, join failure, or Workspace-session failure. The reused Security Reviewer passed the corrected boundary.
 - Added the clone onboarding UI at signed checkpoint `efc9fcf`: bounded anonymous-HTTPS entry, native-confirmed validation/cancellation, explicit completion, pathless ambiguous-state recovery, bounded completed-Workspace handoff, current-guideline review, and wide/narrow visual evidence. The single Design Reviewer passed the corrected flow with no blocker/high/medium finding.
+- Accepted ADR 0024 at signed checkpoint `a9acf15`: managed-only manual commit is split into read-only candidate construction, append-only object plus recoverable index/ref publication, and native-confirmed UI. The final single Security Reviewer verdict is PASS after missing-object, reflog, ref-representation, bounded-index/staging, path-collision, and indirect-ref issues were closed.
 
 ## Work in progress
 
-- Phase 5B3 anonymous-HTTPS clone is complete at signed checkpoint `efc9fcf`. The next security-sensitive work is the safe manual Git commit decision; authenticated transports, synchronization, Attachment viewing/export/reveal, and MCP mutation remain deferred.
+- Phase 5C1 implementation is ready from accepted ADR 0024 and `docs/task-packets/phase-5c1-git-commit-plan.md`. It adds only read-only planning and private staging; active Git mutation remains deferred to 5C2.
 
 ## Remaining work
 
@@ -108,7 +109,7 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Phase 2: native shell and safe Workspace onboarding/import/migration.
 - Phase 3: Category/Guide/Attachment lifecycle and edit conflicts.
 - Phase 4: complete at `e17b7d1`.
-- Phase 5: read-only status, safe local initialization, metadata-only remote connection, and anonymous-HTTPS clone including UI are complete; authenticated clone, commit, and synchronization remain.
+- Phase 5: read-only status, safe local initialization, metadata-only remote connection, and anonymous-HTTPS clone including UI are complete; manual commit architecture is accepted but unimplemented; authenticated clone and synchronization remain.
 - Phase 6: standalone full MCP contract.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
@@ -205,16 +206,17 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5B3C4 used exactly one Design Reviewer/high and it is complete.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5C used one reused Security Reviewer/xhigh and its decision review is complete.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`efc9fcf` — signed and verified Phase 5B3C4 safe clone onboarding. This progress-only ledger update follows that feature commit.
+`a9acf15` — signed and verified accepted safe manual Git commit architecture. This progress-only ledger update follows that decision commit.
 
 ## Tests last run and results
 
+- 2026-09-19: Phase 5C decision checkpoint at `a9acf15`: bootstrap validation passes with 17 required files, 24 ADRs, and 8 pinned agents; whitespace checks pass; the reused Security Reviewer final verdict is PASS; the signed commit verifies. This docs-only checkpoint ran no product build.
 - 2026-09-19: Phase 5B3C4 checkpoint at `efc9fcf`: `pnpm check`, 34 Vitest tests, desktop production build, bootstrap validation, and whitespace checks pass. Three Playwright captures were visually inspected at 1200×800 light and 480×800 dark. The single Design Reviewer passed the recovery/bounds corrections with no remaining blocker/high/medium finding; the signed commit verifies.
 - 2026-09-19: Phase 5B3C3 checkpoint at `a8c2b3f`: combined all-feature core/desktop gate passes 350 core library tests with 2 intentional ignores, all error-contract/protocol/public-API/unknown-YAML/doc suites, and 21 desktop tests. The corrected native slice again passes all 21 desktop tests and strict core/desktop all-target/all-feature Clippy; Cargo formatting, bootstrap, whitespace, signed-commit verification, and the reused Security Reviewer closure pass.
 - 2026-09-19: Phase 5B3C2 checkpoint at `e9d5e58`: full all-feature core gate passes 350 library tests with 2 intentional ignores, 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, and doc tests. Focused finalization passes 5/5 across publication replay, pack collision, staging mutation, nested branches, and ignored-file races; the fast-exit output-limit regression also passes. Core all-target/all-feature Clippy denies warnings; Cargo formatting, bootstrap validation, whitespace checks, signed-commit verification, and the reused Security Reviewer correction closure pass.
@@ -402,20 +404,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `docs/task-packets/phase-5b3c2-git-finalization.md`, its evidence, ADR 0023 delta, and the confined core object/config/ref/seal state machine implement clone Git finalization at `e9d5e58`.
 - `docs/task-packets/phase-5b3c3-native-clone-completion.md`, its evidence, the public opaque core completion boundary, and the pathless native lifecycle implement confirmed clone completion at `a8c2b3f`.
 - `docs/task-packets/phase-5b3c4-clone-onboarding-ui.md`, its evidence/screenshots, the bounded React lifecycle, and aligned architecture/ADR status complete anonymous-HTTPS clone onboarding at `efc9fcf`.
+- ADR 0024, `docs/task-packets/phase-5c1-git-commit-plan.md`, and `docs/evidence/phase-5c-git-commit-decision.md` accept the bounded manual-commit architecture at `a9acf15`; no active repository mutation exists yet.
 
 ## Next recommended action
 
-Define ADR/task-packet boundaries for a deliberate manual Git commit over managed Workspace content: exact status/index preservation, native confirmation, commit-message limits, author/config handling, race checks, hooks/signing policy, and failure recovery. Do not combine synchronization, push, credentials, or authenticated clone.
+Implement Phase 5C1 from its exact task packet: bounded message/identity/ref/index/tree validation and private filter-free candidate construction only. Do not install objects or write the active index/ref/reflogs.
 
 ## Recommended agent role and reasoning effort
 
-Architect — `gpt-5.6-sol`, xhigh locally for the manual-commit trust boundary. Run zero extra agents during routine drafting; use at most one Security Reviewer/xhigh at the decision checkpoint.
+Architect — `gpt-5.6-sol`, xhigh locally for the Phase 5C1 core security boundary. Run zero extra agents during routine implementation; use at most one reused Security Reviewer/xhigh at the completed implementation checkpoint.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read the Git sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `efc9fcf`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `a9acf15`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Begin Phase 5C with the manual-commit ADR/task packet only. Keep synchronization/push, credentials, authenticated clone, and implementation out until the commit boundary is reviewed.
+6. Implement only Phase 5C1 from `docs/task-packets/phase-5c1-git-commit-plan.md`; active object/index/ref/reflog mutation belongs to later Phase 5C2.
