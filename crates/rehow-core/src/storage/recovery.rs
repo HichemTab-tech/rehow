@@ -2999,7 +2999,9 @@ impl GitCommitIntent {
                 GitCommitIntentStage::RefPublished,
                 GitCommitIntentStage::Complete
             ) | (
-                GitCommitIntentStage::Prepared | GitCommitIntentStage::IndexPublished,
+                GitCommitIntentStage::Prepared
+                    | GitCommitIntentStage::IndexPublished
+                    | GitCommitIntentStage::RefPublished,
                 GitCommitIntentStage::Conflict
             )
         );
@@ -3973,6 +3975,10 @@ mod tests {
         let complete = reference
             .next_stage(GitCommitIntentStage::Complete)
             .unwrap();
+        let reference_conflict = reference
+            .next_stage(GitCommitIntentStage::Conflict)
+            .unwrap();
+        assert_eq!(reference_conflict.stage, GitCommitIntentStage::Conflict);
         assert_eq!(complete.generation, 4);
         assert_eq!(complete.stage, GitCommitIntentStage::Complete);
         assert_eq!(

@@ -68,3 +68,23 @@ Verified checks:
 - `git diff --check`
 
 Focused coverage includes all six index/ref interruption boundaries, every quarantine durability boundary, exact intent codec/transition validation, plan refusal during recovery, valid post-ref Workspace edits, before/after-publication ref races, foreign index/ref preservation, unborn and packed branches, and SHA-256 repositories. The reused Security Reviewer found two initial gaps—successful staging retention and missing fresh Workspace-effect verification—and one retry-sync durability gap. All three were corrected; final verdict: **PASS**.
+
+## Phase 5C3 native confirmation and Reference Desk workflow
+
+The core now exposes consuming apply and pathless pending-recovery wrappers. A final writer-lock check refuses a second resumable intent, and error cleanup quarantines the new staging only when no retained intent owns its exact name/device/inode. Conflict intents become terminal only after their exact staging is durably quarantined; they are then excluded from recovery selection so current Git preflight, rather than an endless Resume loop, governs later work. Native code holds the only `GitCommitPlan`, serializes plan/apply/cancel/recovery operations, and runs candidate planning plus publication/replay off the UI thread. Apply consumes the matching one-use token before a parented confirmation that displays the exact normalized message, safe branch, managed counts, unrelated-change count, unsigned policy, and no-push/no-network guarantee. Decline quarantines the exact staging. Recovery is selected internally and exposes no operation identifier.
+
+Renderer IPC is closed and pathless: planning sends only the message and receives token, branch, and five bounded counts; apply/cancel send only the token; recovery sends no target. Git status exposes only `recoveryRequired`. The Reference Desk adds one compact bottom panel with labeled bounded input, plan facts, explicit Cancel/Review/Create actions, busy and focused inline error states, polite announcements, and a separate Resume Commit action. Focus moves from the removed message input to Create Commit after the review state renders. Successful publication/recovery refreshes Git status and refreshes the Workspace when a newer managed edit remains.
+
+The project-pinned web-design skill and current upstream rules were applied. Representative screenshots were inspected at 1200×800 and 480×800: `docs/evidence/screenshots/git-commit-review-wide-light.png` and `git-commit-review-narrow-light.png`. The panel remains inside the viewport above the status bar; long message/branch/error content wraps; counts use locale formatting and tabular alignment; controls retain visible keyboard focus; and narrow actions wrap without changing the accepted Reference Desk hierarchy.
+
+Verified checks:
+
+- `pnpm check`
+- `pnpm test` — 37 Vitest tests; 395 core tests passed with 2 intentional ignores; all 43 contract/API suites, 22 desktop Rust tests, and the MCP smoke test passed.
+- `cargo fmt --all --check`
+- locked strict all-target/all-feature Clippy for core and desktop
+- `pnpm build`
+- optimized `pnpm tauri:build`
+- bootstrap, contract-drift, and whitespace checks
+
+The single reused Security Reviewer initially found a terminal-conflict recovery loop and lost keyboard focus when the review state replaced the message input. Exact staging quarantine now precedes terminal conflict, recovery excludes terminal intents, and a deferred focus regression moves focus to Create Commit. The correction-only recheck returned **PASS**.

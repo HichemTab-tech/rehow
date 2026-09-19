@@ -15,10 +15,12 @@ use rehow_core::{
     domain::GuideStatus,
     git::{
         GitCloneApplyError, GitCloneError, GitCloneMaterializeError, GitClonePlan,
-        GitCloneValidation, GitInitError, GitInitPlan, GitReadError, GitRemoteError, GitRemotePlan,
-        GitRepositoryStatus, apply_git_clone_repository_finalization, apply_git_clone_validation,
-        apply_git_initialize, apply_git_remote_connect, plan_git_clone, plan_git_initialize,
-        plan_git_remote_connect, read_git_status,
+        GitCloneValidation, GitCommitPlan, GitCommitPlanError, GitInitError, GitInitPlan,
+        GitReadError, GitRemoteError, GitRemotePlan, GitRepositoryStatus,
+        apply_git_clone_repository_finalization, apply_git_clone_validation, apply_git_commit,
+        apply_git_initialize, apply_git_remote_connect, cancel_git_commit_plan,
+        git_commit_recovery_required, plan_git_clone, plan_git_commit, plan_git_initialize,
+        plan_git_remote_connect, read_git_status, resume_pending_git_commit_publication,
     },
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
     protocol::{AttachmentId, CategoryId, GuideId, PlanToken, Revision},
@@ -41,6 +43,7 @@ use std::{
 use tauri::{Emitter, Manager};
 
 const WORKSPACE_INVALIDATED_EVENT: &str = "rehow://workspace-invalidated/v1";
+const GIT_COMMIT_MESSAGE_INPUT_BYTES: usize = 800;
 
 #[derive(Default)]
 struct DesktopState {
@@ -48,6 +51,7 @@ struct DesktopState {
     pending_empty: Mutex<Option<PendingWorkspace>>,
     pending_git_init: Mutex<Option<(PlanToken, GitInitPlan)>>,
     pending_git_remote: Mutex<Option<(PlanToken, GitRemotePlan)>>,
+    git_commit: Mutex<GitCommitLifecycle>,
     git_clone: Mutex<GitCloneLifecycle>,
     next_watch_session: AtomicU64,
 }
@@ -59,6 +63,12 @@ struct GitCloneLifecycle {
     validated: Option<PendingValidatedClone>,
     revoke_on_completion: bool,
     finalizing: bool,
+}
+
+#[derive(Default)]
+struct GitCommitLifecycle {
+    pending: Option<(PlanToken, GitCommitPlan)>,
+    active: bool,
 }
 
 impl DesktopState {
@@ -208,6 +218,37 @@ struct GitRemotePlanPayload {
 #[serde(rename_all = "camelCase")]
 struct GitRemoteResultPayload {
     connected: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitPlanPayload {
+    plan_token: PlanToken,
+    branch: String,
+    created: u32,
+    updated: u32,
+    deleted: u32,
+    unrelated_changes: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitResultPayload {
+    committed: bool,
+    workspace_changed: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitCancelResultPayload {
+    cancelled: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitRecoveryResultPayload {
+    recovered: bool,
+    workspace_changed: bool,
 }
 
 #[derive(Serialize)]
@@ -587,6 +628,18 @@ fn git_status_open_workspace(
     let workspace = guard
         .as_ref()
         .ok_or_else(|| "No Workspace is open".to_owned())?;
+    if let Ok((state_home, runtime_directory)) = native_recovery_locations()
+        && matches!(
+            git_commit_recovery_required(
+                &workspace.view,
+                &state_home,
+                runtime_directory.as_deref(),
+            ),
+            Ok(true)
+        )
+    {
+        return Ok(empty_git_payload("recoveryRequired", None));
+    }
     match read_git_status(&workspace.view) {
         Ok(status) => {
             let version = status.version().map(str::to_owned);
@@ -943,6 +996,465 @@ fn git_remote_confirmation(plan: &GitRemotePlan) -> String {
         plan.transport().as_str(),
         plan.remote_url(),
     )
+}
+
+#[tauri::command]
+async fn git_commit_plan_open_workspace(
+    app: tauri::AppHandle,
+    message: String,
+) -> Result<GitCommitPlanPayload, NativeCommandError> {
+    if !git_commit_message_input_allowed(&message) {
+        return Err(native_command_error(
+            git_commit_code(GitCommitPlanError::InvalidMessage),
+            git_commit_message(GitCommitPlanError::InvalidMessage),
+        ));
+    }
+    let (state_home, _) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    let state = app.state::<DesktopState>();
+    let previous = {
+        let mut lifecycle = state.git_commit.lock().map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Git commit state is unavailable".to_owned(),
+            )
+        })?;
+        if lifecycle.active {
+            return Err(native_command_error(
+                "commitBusy",
+                "A Git commit operation is already running.".to_owned(),
+            ));
+        }
+        lifecycle.active = true;
+        lifecycle.pending.take()
+    };
+    let worker_app = app.clone();
+    let operation = tauri::async_runtime::spawn_blocking(move || {
+        if fs::create_dir_all(&state_home).is_err() {
+            return Err(native_command_error(
+                "stateUnavailable",
+                "Rehow could not prepare its private commit staging folder.".to_owned(),
+            ));
+        }
+        if let Some((_, plan)) = previous {
+            cancel_git_commit_plan(plan).map_err(|error| {
+                native_command_error(git_commit_code(error), git_commit_message(error))
+            })?;
+        }
+        let state = worker_app.state::<DesktopState>();
+        let guard = state.workspace.lock().map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Workspace session is unavailable".to_owned(),
+            )
+        })?;
+        let workspace = guard.as_ref().ok_or_else(|| {
+            native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+        })?;
+        if !workspace.facts.writable() {
+            return Err(native_command_error(
+                "readOnly",
+                "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+            ));
+        }
+        let plan = plan_git_commit(&workspace.view, &state_home, &message).map_err(|error| {
+            native_command_error(git_commit_code(error), git_commit_message(error))
+        })?;
+        let payload = git_commit_plan_payload(&plan);
+        Ok((payload, plan))
+    })
+    .await;
+    let result = match operation {
+        Ok(result) => result,
+        Err(_) => Err(native_command_error(
+            "sessionUnavailable",
+            "Git commit planning stopped unexpectedly. Create a fresh plan and try again."
+                .to_owned(),
+        )),
+    };
+    let mut lifecycle = state.git_commit.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Git commit state is unavailable".to_owned(),
+        )
+    })?;
+    lifecycle.active = false;
+    match result {
+        Ok((payload, plan)) => {
+            lifecycle.pending = Some((payload.plan_token.clone(), plan));
+            Ok(payload)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[tauri::command]
+async fn git_commit_cancel_open_workspace(
+    app: tauri::AppHandle,
+    plan_token: PlanToken,
+) -> Result<GitCommitCancelResultPayload, NativeCommandError> {
+    let state = app.state::<DesktopState>();
+    let plan = {
+        let mut lifecycle = state.git_commit.lock().map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Git commit state is unavailable".to_owned(),
+            )
+        })?;
+        if lifecycle.active {
+            return Err(native_command_error(
+                "commitBusy",
+                "A Git commit operation is already running.".to_owned(),
+            ));
+        }
+        let plan = take_matching_git_plan(&mut lifecycle.pending, &plan_token)
+            .map_err(git_commit_pending_error)?;
+        lifecycle.active = true;
+        plan
+    };
+    let result = tauri::async_runtime::spawn_blocking(move || cancel_git_commit_plan(plan)).await;
+    let mut lifecycle = state.git_commit.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Git commit state is unavailable".to_owned(),
+        )
+    })?;
+    lifecycle.active = false;
+    match result {
+        Ok(Ok(())) => Ok(GitCommitCancelResultPayload { cancelled: true }),
+        Ok(Err(error)) => Err(native_command_error(
+            git_commit_code(error),
+            git_commit_message(error),
+        )),
+        Err(_) => Err(native_command_error(
+            "sessionUnavailable",
+            "Git commit cancellation stopped unexpectedly. Reopen the Workspace before retrying."
+                .to_owned(),
+        )),
+    }
+}
+
+#[tauri::command]
+async fn git_commit_apply_open_workspace(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+    plan_token: PlanToken,
+) -> Result<GitCommitResultPayload, NativeCommandError> {
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    let state = app.state::<DesktopState>();
+    let plan = {
+        let mut lifecycle = state.git_commit.lock().map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Git commit state is unavailable".to_owned(),
+            )
+        })?;
+        if lifecycle.active {
+            return Err(native_command_error(
+                "commitBusy",
+                "A Git commit operation is already running.".to_owned(),
+            ));
+        }
+        let plan = take_matching_git_plan(&mut lifecycle.pending, &plan_token)
+            .map_err(git_commit_pending_error)?;
+        lifecycle.active = true;
+        plan
+    };
+    let confirmed = rfd::MessageDialog::new()
+        .set_parent(&window)
+        .set_level(rfd::MessageLevel::Info)
+        .set_title("Create Git Commit?")
+        .set_description(git_commit_confirmation(&plan))
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes;
+    if !confirmed {
+        let result =
+            tauri::async_runtime::spawn_blocking(move || cancel_git_commit_plan(plan)).await;
+        finish_git_commit_operation(&state)?;
+        return match result {
+            Ok(Ok(())) => Ok(GitCommitResultPayload {
+                committed: false,
+                workspace_changed: false,
+            }),
+            Ok(Err(error)) => Err(native_command_error(
+                git_commit_code(error),
+                git_commit_message(error),
+            )),
+            Err(_) => Err(native_command_error(
+                "sessionUnavailable",
+                "Git commit cancellation stopped unexpectedly. Reopen the Workspace before retrying."
+                    .to_owned(),
+            )),
+        };
+    }
+    let worker_app = app.clone();
+    let operation = tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app.state::<DesktopState>();
+        let guard = state.workspace.lock().map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Workspace session is unavailable".to_owned(),
+            )
+        })?;
+        let workspace = guard.as_ref().ok_or_else(|| {
+            native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+        })?;
+        apply_git_commit(
+            &workspace.view,
+            &state_home,
+            runtime_directory.as_deref(),
+            plan,
+        )
+        .map_err(|error| native_command_error(git_commit_code(error), git_commit_message(error)))
+    })
+    .await;
+    finish_git_commit_operation(&state)?;
+    match operation {
+        Ok(Ok(outcome)) => Ok(GitCommitResultPayload {
+            committed: true,
+            workspace_changed: outcome.workspace_changed(),
+        }),
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(native_command_error(
+            "sessionUnavailable",
+            "Git commit publication stopped unexpectedly. Refresh Git status to recover safely."
+                .to_owned(),
+        )),
+    }
+}
+
+#[tauri::command]
+async fn git_commit_recover_open_workspace(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+) -> Result<GitCommitRecoveryResultPayload, NativeCommandError> {
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    let state = app.state::<DesktopState>();
+    {
+        let mut lifecycle = state.git_commit.lock().map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Git commit state is unavailable".to_owned(),
+            )
+        })?;
+        if lifecycle.active {
+            return Err(native_command_error(
+                "commitBusy",
+                "A Git commit operation is already running.".to_owned(),
+            ));
+        }
+        if lifecycle.pending.is_some() {
+            return Err(native_command_error(
+                "planPending",
+                "Cancel the current Git commit plan before recovering another operation."
+                    .to_owned(),
+            ));
+        }
+        lifecycle.active = true;
+    }
+    let confirmed = rfd::MessageDialog::new()
+        .set_parent(&window)
+        .set_level(rfd::MessageLevel::Warning)
+        .set_title("Resume Git Commit?")
+        .set_description(git_commit_recovery_confirmation())
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes;
+    if !confirmed {
+        finish_git_commit_operation(&state)?;
+        return Ok(GitCommitRecoveryResultPayload {
+            recovered: false,
+            workspace_changed: false,
+        });
+    }
+    let worker_app = app.clone();
+    let operation = tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app.state::<DesktopState>();
+        let guard = state.workspace.lock().map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Workspace session is unavailable".to_owned(),
+            )
+        })?;
+        let workspace = guard.as_ref().ok_or_else(|| {
+            native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+        })?;
+        resume_pending_git_commit_publication(
+            &workspace.view,
+            &state_home,
+            runtime_directory.as_deref(),
+        )
+        .map_err(|error| native_command_error(git_commit_code(error), git_commit_message(error)))
+    })
+    .await;
+    finish_git_commit_operation(&state)?;
+    match operation {
+        Ok(Ok(outcome)) => Ok(GitCommitRecoveryResultPayload {
+            recovered: true,
+            workspace_changed: outcome.workspace_changed(),
+        }),
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(native_command_error(
+            "sessionUnavailable",
+            "Git commit recovery stopped unexpectedly. Refresh Git status before retrying."
+                .to_owned(),
+        )),
+    }
+}
+
+fn finish_git_commit_operation(
+    state: &tauri::State<'_, DesktopState>,
+) -> Result<(), NativeCommandError> {
+    state
+        .git_commit
+        .lock()
+        .map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Git commit state is unavailable".to_owned(),
+            )
+        })?
+        .active = false;
+    Ok(())
+}
+
+fn git_commit_plan_payload(plan: &GitCommitPlan) -> GitCommitPlanPayload {
+    GitCommitPlanPayload {
+        plan_token: plan.token().clone(),
+        branch: plan.branch().to_owned(),
+        created: plan.created(),
+        updated: plan.updated(),
+        deleted: plan.deleted(),
+        unrelated_changes: plan.unrelated_changes(),
+    }
+}
+
+fn git_commit_message_input_allowed(message: &str) -> bool {
+    message.len() <= GIT_COMMIT_MESSAGE_INPUT_BYTES
+}
+
+fn git_commit_pending_error(error: PendingGitPlanError) -> NativeCommandError {
+    match error {
+        PendingGitPlanError::Missing => native_command_error(
+            "planMissing",
+            "Create a fresh Git commit plan and try again.".to_owned(),
+        ),
+        PendingGitPlanError::Invalid => native_command_error(
+            "planInvalid",
+            "The Git commit plan does not match this request.".to_owned(),
+        ),
+    }
+}
+
+fn git_commit_confirmation(plan: &GitCommitPlan) -> String {
+    git_commit_confirmation_fields(
+        plan.message(),
+        plan.branch(),
+        plan.created(),
+        plan.updated(),
+        plan.deleted(),
+        plan.unrelated_changes(),
+    )
+}
+
+fn git_commit_confirmation_fields(
+    message: &str,
+    branch: &str,
+    created: u32,
+    updated: u32,
+    deleted: u32,
+    unrelated_changes: u32,
+) -> String {
+    format!(
+        "Create unsigned commit “{message}” on branch “{branch}”?\n\nManaged changes: {created} created, {updated} updated, {deleted} deleted.\nUnrelated worktree changes: {unrelated_changes}; they remain uncommitted.\n\nRehow will not push, connect to a network, run hooks, or sign this commit."
+    )
+}
+
+fn git_commit_recovery_confirmation() -> &'static str {
+    "Resume the interrupted managed commit?\n\nRehow will inspect its exact recovery record and either finish the approved index/branch update or preserve conflicting Git state unchanged. It will not push or connect to a network."
+}
+
+fn git_commit_code(error: GitCommitPlanError) -> &'static str {
+    match error {
+        GitCommitPlanError::InvalidMessage => "invalidMessage",
+        GitCommitPlanError::InvalidIdentity => "invalidIdentity",
+        GitCommitPlanError::WorkspaceIssues => "workspaceIssues",
+        GitCommitPlanError::ReadOnly => "readOnly",
+        GitCommitPlanError::NotRepository => "notRepository",
+        GitCommitPlanError::UnsafeRepository => "unsafeRepository",
+        GitCommitPlanError::UnsupportedRepository => "unsupportedRepository",
+        GitCommitPlanError::OperationInProgress => "recoveryRequired",
+        GitCommitPlanError::UnsupportedIndex => "unsupportedIndex",
+        GitCommitPlanError::AmbiguousManagedHistory => "ambiguousHistory",
+        GitCommitPlanError::PathCollision => "pathCollision",
+        GitCommitPlanError::NothingToCommit => "nothingToCommit",
+        GitCommitPlanError::ResourceLimit => "resourceLimit",
+        GitCommitPlanError::PlanStale => "planStale",
+        GitCommitPlanError::RecoveryNotRequired => "recoveryNotRequired",
+        GitCommitPlanError::Io => "io",
+    }
+}
+
+fn git_commit_message(error: GitCommitPlanError) -> String {
+    match error {
+        GitCommitPlanError::InvalidMessage => {
+            "Enter a one-line commit message between 1 and 200 characters.".to_owned()
+        }
+        GitCommitPlanError::InvalidIdentity => {
+            "Set one safe user.name and user.email in this repository’s local Git config, then try again."
+                .to_owned()
+        }
+        GitCommitPlanError::WorkspaceIssues => {
+            "Resolve the Workspace validation issues before creating a commit.".to_owned()
+        }
+        GitCommitPlanError::ReadOnly => {
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned()
+        }
+        GitCommitPlanError::NotRepository => "Initialize Git before creating a commit.".to_owned(),
+        GitCommitPlanError::UnsafeRepository => {
+            "Git metadata is unsafe or ambiguous. Rehow preserved it unchanged; inspect the repository before retrying."
+                .to_owned()
+        }
+        GitCommitPlanError::UnsupportedRepository => {
+            "This repository or filesystem cannot provide the isolated, durable commit operation Rehow requires."
+                .to_owned()
+        }
+        GitCommitPlanError::OperationInProgress => {
+            "An interrupted Git commit needs recovery before another commit can start.".to_owned()
+        }
+        GitCommitPlanError::UnsupportedIndex => {
+            "The Git index contains staged, conflicted, or advanced state. Resolve it with Git before using Rehow commit."
+                .to_owned()
+        }
+        GitCommitPlanError::AmbiguousManagedHistory => {
+            "The previous commit does not contain one complete, compatible Rehow Workspace. Review its history before retrying."
+                .to_owned()
+        }
+        GitCommitPlanError::PathCollision => {
+            "An unrelated committed path collides with current Rehow content. Resolve the collision with Git first."
+                .to_owned()
+        }
+        GitCommitPlanError::NothingToCommit => {
+            "The managed Workspace has no changes to commit.".to_owned()
+        }
+        GitCommitPlanError::ResourceLimit => {
+            "The commit exceeded a safe time, file, object, output, or staging limit.".to_owned()
+        }
+        GitCommitPlanError::PlanStale => {
+            "The Workspace or repository changed. Refresh Git status and create a fresh plan."
+                .to_owned()
+        }
+        GitCommitPlanError::RecoveryNotRequired => {
+            "No interrupted Git commit needs recovery. Refresh Git status.".to_owned()
+        }
+        GitCommitPlanError::Io => {
+            "The Git commit operation could not finish. Check local access and refresh Git status."
+                .to_owned()
+        }
+    }
 }
 
 #[tauri::command]
@@ -3404,6 +3916,10 @@ pub fn run() {
             git_initialize_apply_open_workspace,
             git_remote_plan_open_workspace,
             git_remote_apply_open_workspace,
+            git_commit_plan_open_workspace,
+            git_commit_cancel_open_workspace,
+            git_commit_apply_open_workspace,
+            git_commit_recover_open_workspace,
             git_clone_plan_selected_workspace,
             git_clone_apply_selected_workspace,
             git_clone_complete_selected_workspace,
@@ -3420,21 +3936,25 @@ mod tests {
     use super::{
         APPLICATION_NAME, CategoryPayload, FolderFactsPayload, GitCloneApplyResultPayload,
         GitCloneCancelResultPayload, GitCloneCompleteResultPayload, GitCloneLifecycle,
-        GitClonePlanPayload, GitInitPlanPayload, GitInitResultPayload, GitRemotePlanPayload,
-        GitRemoteResultPayload, GuideBodyPayload, GuidePayload, PendingGitPlanError,
-        SearchHighlightPayload, SearchHitPayload, WorkspacePayload, WorkspaceWatchEventPayload,
-        attachment_removal_code, attachment_removal_message, category_create_code,
-        category_create_message, category_remove_code, category_remove_message,
-        category_reorder_code, category_reorder_message, category_update_code,
-        category_update_message, empty_git_payload, git_clone_apply_code, git_clone_apply_message,
-        git_clone_code, git_clone_completion_confirmation, git_clone_confirmation_fields,
+        GitClonePlanPayload, GitCommitCancelResultPayload, GitCommitPlanPayload,
+        GitCommitRecoveryResultPayload, GitCommitResultPayload, GitInitPlanPayload,
+        GitInitResultPayload, GitRemotePlanPayload, GitRemoteResultPayload, GuideBodyPayload,
+        GuidePayload, PendingGitPlanError, SearchHighlightPayload, SearchHitPayload,
+        WorkspacePayload, WorkspaceWatchEventPayload, attachment_removal_code,
+        attachment_removal_message, category_create_code, category_create_message,
+        category_remove_code, category_remove_message, category_reorder_code,
+        category_reorder_message, category_update_code, category_update_message, empty_git_payload,
+        git_clone_apply_code, git_clone_apply_message, git_clone_code,
+        git_clone_completion_confirmation, git_clone_confirmation_fields,
         git_clone_materialize_code, git_clone_materialize_message, git_clone_message,
-        git_init_code, git_init_confirmation, git_init_message, git_remote_code,
-        git_remote_confirmation_fields, git_remote_message, guide_create_code,
-        guide_create_message, guide_remove_code, guide_remove_confirmation, guide_remove_message,
-        guide_update_code, guide_update_message, native_command_error,
-        request_git_clone_cancellation, search_status_scope, take_matching_git_plan,
-        workspace_initialization_message, workspace_refresh_code, workspace_refresh_message,
+        git_commit_code, git_commit_confirmation_fields, git_commit_message,
+        git_commit_message_input_allowed, git_commit_recovery_confirmation, git_init_code,
+        git_init_confirmation, git_init_message, git_remote_code, git_remote_confirmation_fields,
+        git_remote_message, guide_create_code, guide_create_message, guide_remove_code,
+        guide_remove_confirmation, guide_remove_message, guide_update_code, guide_update_message,
+        native_command_error, request_git_clone_cancellation, search_status_scope,
+        take_matching_git_plan, workspace_initialization_message, workspace_refresh_code,
+        workspace_refresh_message,
     };
     use rehow_core::{
         application::{
@@ -3444,7 +3964,7 @@ mod tests {
         },
         git::{
             GitCloneApplyError, GitCloneError, GitCloneMaterializeError, GitCloneValidation,
-            GitInitError, GitRemoteError,
+            GitCommitPlanError, GitInitError, GitRemoteError,
         },
         markdown::parse_safe_markdown,
         protocol::PlanToken,
@@ -3523,6 +4043,83 @@ mod tests {
         assert!(confirmation.contains("origin"));
         assert!(confirmation.contains("https://example.invalid/team/rehow.git"));
         assert!(confirmation.contains("will not connect"));
+    }
+
+    #[test]
+    fn git_commit_payloads_confirmation_and_errors_are_closed() {
+        let token = PlanToken::from_str(&format!("plan:v1:{}", "A".repeat(43))).unwrap();
+        let plan = serde_json::to_value(GitCommitPlanPayload {
+            plan_token: token,
+            branch: "main".to_owned(),
+            created: 2,
+            updated: 3,
+            deleted: 1,
+            unrelated_changes: 4,
+        })
+        .unwrap();
+        assert_eq!(plan.as_object().unwrap().len(), 6);
+        assert_eq!(plan["branch"], "main");
+        assert!(plan.get("path").is_none());
+        assert!(plan.get("objectId").is_none());
+        assert!(plan.get("operationId").is_none());
+        let result = serde_json::to_value(GitCommitResultPayload {
+            committed: true,
+            workspace_changed: false,
+        })
+        .unwrap();
+        assert_eq!(result.as_object().unwrap().len(), 2);
+        let cancelled =
+            serde_json::to_value(GitCommitCancelResultPayload { cancelled: true }).unwrap();
+        assert_eq!(cancelled.as_object().unwrap().len(), 1);
+        let recovered = serde_json::to_value(GitCommitRecoveryResultPayload {
+            recovered: true,
+            workspace_changed: true,
+        })
+        .unwrap();
+        assert_eq!(recovered.as_object().unwrap().len(), 2);
+
+        let confirmation = git_commit_confirmation_fields("Update guides", "main", 2, 3, 1, 4);
+        assert!(confirmation.contains("Update guides"));
+        assert!(confirmation.contains("main"));
+        assert!(confirmation.contains("2 created, 3 updated, 1 deleted"));
+        assert!(confirmation.contains("4; they remain uncommitted"));
+        assert!(confirmation.contains("will not push"));
+        assert!(confirmation.contains("sign"));
+        assert!(git_commit_recovery_confirmation().contains("exact recovery record"));
+        assert!(git_commit_recovery_confirmation().contains("will not push"));
+        assert!(git_commit_message_input_allowed(&"x".repeat(800)));
+        assert!(!git_commit_message_input_allowed(&"x".repeat(801)));
+
+        for (error, code) in [
+            (GitCommitPlanError::InvalidMessage, "invalidMessage"),
+            (GitCommitPlanError::InvalidIdentity, "invalidIdentity"),
+            (GitCommitPlanError::WorkspaceIssues, "workspaceIssues"),
+            (GitCommitPlanError::ReadOnly, "readOnly"),
+            (GitCommitPlanError::NotRepository, "notRepository"),
+            (GitCommitPlanError::UnsafeRepository, "unsafeRepository"),
+            (
+                GitCommitPlanError::UnsupportedRepository,
+                "unsupportedRepository",
+            ),
+            (GitCommitPlanError::OperationInProgress, "recoveryRequired"),
+            (GitCommitPlanError::UnsupportedIndex, "unsupportedIndex"),
+            (
+                GitCommitPlanError::AmbiguousManagedHistory,
+                "ambiguousHistory",
+            ),
+            (GitCommitPlanError::PathCollision, "pathCollision"),
+            (GitCommitPlanError::NothingToCommit, "nothingToCommit"),
+            (GitCommitPlanError::ResourceLimit, "resourceLimit"),
+            (GitCommitPlanError::PlanStale, "planStale"),
+            (
+                GitCommitPlanError::RecoveryNotRequired,
+                "recoveryNotRequired",
+            ),
+            (GitCommitPlanError::Io, "io"),
+        ] {
+            assert_eq!(git_commit_code(error), code);
+            assert!(!git_commit_message(error).is_empty());
+        }
     }
 
     #[test]

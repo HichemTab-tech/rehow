@@ -57,7 +57,13 @@ type WorkspacePayload = {
 };
 
 type GitStatusPayload = {
-  kind: "unavailable" | "notRepository" | "unsafe" | "ready" | "failed";
+  kind:
+    | "unavailable"
+    | "notRepository"
+    | "unsafe"
+    | "ready"
+    | "failed"
+    | "recoveryRequired";
   version: string | null;
   branch: string | null;
   detached: boolean;
@@ -92,6 +98,36 @@ type GitRemotePlanPayload = {
 type GitRemoteResultPayload = {
   connected: boolean;
 };
+
+type GitCommitPlanPayload = {
+  planToken: string;
+  branch: string;
+  created: number;
+  updated: number;
+  deleted: number;
+  unrelatedChanges: number;
+};
+
+type GitCommitResultPayload = {
+  committed: boolean;
+  workspaceChanged: boolean;
+};
+
+type GitCommitCancelResultPayload = {
+  cancelled: boolean;
+};
+
+type GitCommitRecoveryResultPayload = {
+  recovered: boolean;
+  workspaceChanged: boolean;
+};
+
+type GitCommitStage =
+  | "idle"
+  | "planning"
+  | "applying"
+  | "cancelling"
+  | "recovering";
 
 type GitClonePlanPayload = {
   planToken: string;
@@ -184,6 +220,7 @@ export function automaticRefreshBlocked(states: {
   dirtyCategoryRename: boolean;
   dirtyCategoryCreate: boolean;
   dirtyGuideCreate: boolean;
+  dirtyGitCommit: boolean;
 }) {
   return Object.values(states).some(Boolean);
 }
@@ -630,6 +667,7 @@ export function gitStatusLabel(status: GitStatusPayload | null) {
   if (status.kind === "unavailable") return "Git unavailable";
   if (status.kind === "notRepository") return "No Git repository";
   if (status.kind === "unsafe") return "Git repository needs attention";
+  if (status.kind === "recoveryRequired") return "Git commit needs recovery";
   if (status.kind === "failed")
     return status.failure ?? "Git status unavailable";
   const branch = status.detached
@@ -649,9 +687,14 @@ export function isGitStatusPayload(value: unknown): value is GitStatusPayload {
     Record<string, unknown>;
   if (
     Object.keys(status).length !== 14 ||
-    !["unavailable", "notRepository", "unsafe", "ready", "failed"].includes(
-      String(status.kind),
-    )
+    ![
+      "unavailable",
+      "notRepository",
+      "unsafe",
+      "ready",
+      "failed",
+      "recoveryRequired",
+    ].includes(String(status.kind))
   )
     return false;
   for (const key of ["version", "branch", "upstream", "failure"] as const) {
@@ -741,6 +784,92 @@ export function isGitRemoteResultPayload(
     Record<string, unknown>;
   return (
     Object.keys(result).length === 1 && typeof result.connected === "boolean"
+  );
+}
+
+function isUint32(value: unknown) {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= 0xffff_ffff
+  );
+}
+
+function isUnsafeDisplayCodePoint(code: number) {
+  return (
+    code <= 0x1f ||
+    (code >= 0x7f && code <= 0x9f) ||
+    code === 0x2028 ||
+    code === 0x2029 ||
+    (code >= 0x202a && code <= 0x202e) ||
+    (code >= 0x2066 && code <= 0x2069) ||
+    (code >= 0xfdd0 && code <= 0xfdef) ||
+    (code & 0xffff) === 0xfffe ||
+    (code & 0xffff) === 0xffff
+  );
+}
+
+function containsUnsafeDisplayCodePoint(value: string) {
+  return Array.from(value).some((scalar) =>
+    isUnsafeDisplayCodePoint(scalar.codePointAt(0) ?? 0),
+  );
+}
+
+export function isGitCommitPlanPayload(
+  value: unknown,
+): value is GitCommitPlanPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const plan = value as Partial<GitCommitPlanPayload> & Record<string, unknown>;
+  return (
+    Object.keys(plan).length === 6 &&
+    typeof plan.planToken === "string" &&
+    /^plan:v1:[A-Za-z0-9_-]{43}$/.test(plan.planToken) &&
+    typeof plan.branch === "string" &&
+    plan.branch.length >= 1 &&
+    plan.branch.length <= 4096 &&
+    !containsUnsafeDisplayCodePoint(plan.branch) &&
+    isUint32(plan.created) &&
+    isUint32(plan.updated) &&
+    isUint32(plan.deleted) &&
+    isUint32(plan.unrelatedChanges)
+  );
+}
+
+export function isGitCommitResultPayload(
+  value: unknown,
+): value is GitCommitResultPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as Partial<GitCommitResultPayload> &
+    Record<string, unknown>;
+  return (
+    Object.keys(result).length === 2 &&
+    typeof result.committed === "boolean" &&
+    typeof result.workspaceChanged === "boolean" &&
+    (!result.workspaceChanged || result.committed)
+  );
+}
+
+export function isGitCommitCancelResultPayload(
+  value: unknown,
+): value is GitCommitCancelResultPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as Partial<GitCommitCancelResultPayload> &
+    Record<string, unknown>;
+  return Object.keys(result).length === 1 && result.cancelled === true;
+}
+
+export function isGitCommitRecoveryResultPayload(
+  value: unknown,
+): value is GitCommitRecoveryResultPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as Partial<GitCommitRecoveryResultPayload> &
+    Record<string, unknown>;
+  return (
+    Object.keys(result).length === 2 &&
+    typeof result.recovered === "boolean" &&
+    typeof result.workspaceChanged === "boolean" &&
+    (!result.workspaceChanged || result.recovered)
   );
 }
 
@@ -918,6 +1047,26 @@ export function normalizedRemoteUrl(value: string) {
     : null;
 }
 
+export function normalizedGitCommitMessage(value: string) {
+  const normalized = value.trim();
+  const scalars = Array.from(normalized);
+  if (
+    scalars.length < 1 ||
+    scalars.length > 200 ||
+    containsUnsafeDisplayCodePoint(normalized)
+  )
+    return null;
+  return normalized;
+}
+
+export function focusGitCommitReview(
+  target: () => { focus(): void } | null,
+  schedule: (callback: () => void) => unknown = (callback) =>
+    requestAnimationFrame(callback),
+) {
+  schedule(() => target()?.focus());
+}
+
 export function normalizedCloneUrl(value: string) {
   const normalized = value.trim();
   if (
@@ -1035,6 +1184,13 @@ export function App() {
   const [remoteName, setRemoteName] = useState("origin");
   const [remoteUrl, setRemoteUrl] = useState("");
   const [remoteError, setRemoteError] = useState("");
+  const [commitFormOpen, setCommitFormOpen] = useState(false);
+  const [commitMessage, setCommitMessage] = useState("");
+  const [commitPlan, setCommitPlan] = useState<GitCommitPlanPayload | null>(
+    null,
+  );
+  const [commitStage, setCommitStage] = useState<GitCommitStage>("idle");
+  const [commitError, setCommitError] = useState("");
   const [selectedId, setSelectedId] = useState(
     () => initialParameter("guide") ?? "",
   );
@@ -1117,6 +1273,10 @@ export function App() {
   const remoteButtonRef = useRef<HTMLButtonElement>(null);
   const remoteNameRef = useRef<HTMLInputElement>(null);
   const remoteErrorRef = useRef<HTMLParagraphElement>(null);
+  const commitButtonRef = useRef<HTMLButtonElement>(null);
+  const commitMessageRef = useRef<HTMLInputElement>(null);
+  const commitApplyRef = useRef<HTMLButtonElement>(null);
+  const commitErrorRef = useRef<HTMLParagraphElement>(null);
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const editDetailsButtonRef = useRef<HTMLButtonElement>(null);
   const guideStatusButtonRef = useRef<HTMLButtonElement>(null);
@@ -1225,13 +1385,21 @@ export function App() {
     gitCloneStage === "completing";
   const gitCloneRequiresResolution =
     gitCloneStage === "validated" || gitCloneStage === "recovery";
+  const commitOperationBusy = commitStage !== "idle";
+  const dirtyGitCommit =
+    commitFormOpen && (commitMessage.trim() !== "" || commitPlan !== null);
   const autoRefreshBlocked = automaticRefreshBlocked({
-    busy: workspaceOperationBusy || openingWorkspace || gitCloneOperationBusy,
+    busy:
+      workspaceOperationBusy ||
+      openingWorkspace ||
+      gitCloneOperationBusy ||
+      commitOperationBusy,
     dirtyGuide,
     dirtyGuideDetails,
     dirtyCategoryRename,
     dirtyCategoryCreate,
     dirtyGuideCreate,
+    dirtyGitCommit,
   });
   const externalChangePending =
     workspace !== null && externalChangeWorkspaceId === workspace.id;
@@ -1247,6 +1415,9 @@ export function App() {
   }
   const refreshWorkspaceFromEffect = useEffectEvent(() => {
     void refreshWorkspace(true);
+  });
+  const cancelGitCommitFromEffect = useEffectEvent(() => {
+    void cancelGitCommit();
   });
 
   useEffect(() => {
@@ -1360,6 +1531,11 @@ export function App() {
         event.preventDefault();
         searchRef.current?.focus();
       } else if (event.key === "Escape") {
+        if (commitFormOpen && !commitOperationBusy) {
+          event.preventDefault();
+          cancelGitCommitFromEffect();
+          return;
+        }
         if (remoteFormOpen && !connectingRemote) {
           event.preventDefault();
           setRemoteFormOpen(false);
@@ -1385,6 +1561,8 @@ export function App() {
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
   }, [
+    commitFormOpen,
+    commitOperationBusy,
     connectingRemote,
     editingGuide,
     editingGuideDetails,
@@ -1398,7 +1576,8 @@ export function App() {
       !dirtyGuide &&
       !dirtyGuideDetails &&
       !dirtyCategoryRename &&
-      !dirtyCategoryCreate
+      !dirtyCategoryCreate &&
+      !dirtyGitCommit
     )
       return;
     function warnBeforeUnload(event: BeforeUnloadEvent) {
@@ -1407,7 +1586,13 @@ export function App() {
     }
     window.addEventListener("beforeunload", warnBeforeUnload);
     return () => window.removeEventListener("beforeunload", warnBeforeUnload);
-  }, [dirtyCategoryCreate, dirtyCategoryRename, dirtyGuide, dirtyGuideDetails]);
+  }, [
+    dirtyCategoryCreate,
+    dirtyCategoryRename,
+    dirtyGitCommit,
+    dirtyGuide,
+    dirtyGuideDetails,
+  ]);
 
   useEffect(() => {
     if (workspace === null || selectedId === "") {
@@ -2044,7 +2229,13 @@ export function App() {
   }
 
   function beginRemoteConnection() {
-    if (workspace === null || gitStatus?.kind !== "ready") return;
+    if (
+      workspace === null ||
+      gitStatus?.kind !== "ready" ||
+      commitFormOpen ||
+      commitOperationBusy
+    )
+      return;
     setRemoteName("origin");
     setRemoteUrl("");
     setRemoteError("");
@@ -2108,6 +2299,175 @@ export function App() {
       requestAnimationFrame(() => remoteErrorRef.current?.focus());
     } finally {
       setConnectingRemote(false);
+    }
+  }
+
+  function beginGitCommit() {
+    if (
+      workspace === null ||
+      gitStatus?.kind !== "ready" ||
+      remoteFormOpen ||
+      commitOperationBusy ||
+      workspaceOperationBusy ||
+      dirtyGuide ||
+      dirtyGuideDetails ||
+      dirtyCategoryCreate ||
+      dirtyCategoryRename ||
+      dirtyGuideCreate
+    )
+      return;
+    setCommitMessage("");
+    setCommitPlan(null);
+    setCommitError("");
+    setCommitFormOpen(true);
+    requestAnimationFrame(() => commitMessageRef.current?.focus());
+  }
+
+  function resetGitCommitUi() {
+    setCommitFormOpen(false);
+    setCommitMessage("");
+    setCommitPlan(null);
+    setCommitError("");
+    setCommitStage("idle");
+  }
+
+  async function cancelGitCommit() {
+    if (commitOperationBusy) return;
+    if (commitPlan === null) {
+      resetGitCommitUi();
+      requestAnimationFrame(() => commitButtonRef.current?.focus());
+      return;
+    }
+    setCommitStage("cancelling");
+    setCommitError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<unknown>("git_commit_cancel_open_workspace", {
+        planToken: commitPlan.planToken,
+      });
+      if (!isGitCommitCancelResultPayload(result))
+        throw new Error("invalid Git commit cancellation result");
+      resetGitCommitUi();
+      setAnnouncement("Git commit plan cancelled.");
+      requestAnimationFrame(() => commitButtonRef.current?.focus());
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setCommitStage("idle");
+      setCommitError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => commitErrorRef.current?.focus());
+    }
+  }
+
+  async function planGitCommit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (workspace === null || commitOperationBusy || commitPlan !== null)
+      return;
+    const message = normalizedGitCommitMessage(commitMessage);
+    if (message === null) {
+      setCommitError("Enter a one-line message between 1 and 200 characters.");
+      requestAnimationFrame(() => commitErrorRef.current?.focus());
+      return;
+    }
+    setCommitMessage(message);
+    setCommitError("");
+    setCommitStage("planning");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const plan = await invoke<unknown>("git_commit_plan_open_workspace", {
+        message,
+      });
+      if (!isGitCommitPlanPayload(plan))
+        throw new Error("invalid Git commit plan");
+      setCommitPlan(plan);
+      focusGitCommitReview(() => commitApplyRef.current);
+      setAnnouncement(
+        `Commit plan ready for branch ${plan.branch}. Review the managed change counts.`,
+      );
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setCommitError(failure.message);
+      setAnnouncement(failure.message);
+      if (failure.code === "recoveryRequired") {
+        setWorkspace((current) => (current === null ? null : { ...current }));
+      }
+      requestAnimationFrame(() => commitErrorRef.current?.focus());
+    } finally {
+      setCommitStage("idle");
+    }
+  }
+
+  async function applyGitCommit() {
+    if (workspace === null || commitOperationBusy || commitPlan === null)
+      return;
+    setCommitError("");
+    setCommitStage("applying");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<unknown>("git_commit_apply_open_workspace", {
+        planToken: commitPlan.planToken,
+      });
+      if (!isGitCommitResultPayload(result))
+        throw new Error("invalid Git commit result");
+      if (!result.committed) {
+        resetGitCommitUi();
+        setAnnouncement("Git commit cancelled.");
+        requestAnimationFrame(() => commitButtonRef.current?.focus());
+        return;
+      }
+      resetGitCommitUi();
+      if (result.workspaceChanged) await refreshWorkspace();
+      else
+        setWorkspace((current) => (current === null ? null : { ...current }));
+      setAnnouncement(
+        result.workspaceChanged
+          ? "Git commit created. Newer Workspace changes remain uncommitted."
+          : "Git commit created. No network connection was made.",
+      );
+      requestAnimationFrame(() => searchRef.current?.focus());
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setCommitStage("idle");
+      setCommitPlan(null);
+      setCommitError(failure.message);
+      setAnnouncement(failure.message);
+      setWorkspace((current) => (current === null ? null : { ...current }));
+      requestAnimationFrame(() => commitErrorRef.current?.focus());
+    }
+  }
+
+  async function recoverGitCommit() {
+    if (
+      workspace === null ||
+      gitStatus?.kind !== "recoveryRequired" ||
+      commitOperationBusy
+    )
+      return;
+    setCommitStage("recovering");
+    setGitInitError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<unknown>("git_commit_recover_open_workspace");
+      if (!isGitCommitRecoveryResultPayload(result))
+        throw new Error("invalid Git commit recovery result");
+      if (!result.recovered) {
+        setAnnouncement("Git commit recovery cancelled.");
+        return;
+      }
+      if (result.workspaceChanged) await refreshWorkspace();
+      else
+        setWorkspace((current) => (current === null ? null : { ...current }));
+      setAnnouncement(
+        result.workspaceChanged
+          ? "Git commit recovered. Newer Workspace changes remain uncommitted."
+          : "Git commit recovered successfully.",
+      );
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setGitInitError(failure.message);
+      setAnnouncement(failure.message);
+    } finally {
+      setCommitStage("idle");
     }
   }
 
@@ -4283,6 +4643,155 @@ export function App() {
         )}
       </main>
 
+      {commitFormOpen ? (
+        <section
+          id="git-commit-panel"
+          className="git-commit-panel"
+          aria-labelledby="git-commit-heading"
+        >
+          <form
+            className="git-commit-form"
+            aria-busy={commitOperationBusy}
+            onSubmit={(event) => {
+              if (commitPlan === null) void planGitCommit(event);
+              else {
+                event.preventDefault();
+                void applyGitCommit();
+              }
+            }}
+          >
+            <div className="git-commit-heading">
+              <div>
+                <h2 id="git-commit-heading">
+                  {commitPlan === null
+                    ? "Create a Git Commit"
+                    : "Review Managed Commit"}
+                </h2>
+                <p>
+                  {commitPlan === null
+                    ? "Commit Rehow-managed content without including unrelated worktree changes."
+                    : "Review the exact managed effect before native confirmation."}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="panel-close"
+                aria-label="Close Git commit form"
+                disabled={commitOperationBusy}
+                onClick={() => void cancelGitCommit()}
+              >
+                ×
+              </button>
+            </div>
+            {commitPlan === null ? (
+              <>
+                <label htmlFor="git-commit-message">Commit message</label>
+                <input
+                  ref={commitMessageRef}
+                  id="git-commit-message"
+                  name="git-commit-message"
+                  type="text"
+                  autoComplete="off"
+                  spellCheck={true}
+                  maxLength={200}
+                  placeholder="Document the Workspace change…"
+                  value={commitMessage}
+                  aria-invalid={commitError !== ""}
+                  aria-describedby={
+                    commitError !== ""
+                      ? "git-commit-help git-commit-error"
+                      : "git-commit-help"
+                  }
+                  onChange={(event) => {
+                    setCommitMessage(event.target.value);
+                    setCommitError("");
+                  }}
+                />
+                <p id="git-commit-help" className="field-help">
+                  One line, 1–200 characters. Rehow creates an unsigned local
+                  commit and does not push.
+                </p>
+              </>
+            ) : (
+              <div className="git-commit-review">
+                <p className="git-commit-message">“{commitMessage}”</p>
+                <dl>
+                  <div>
+                    <dt>Branch</dt>
+                    <dd translate="no">{commitPlan.branch}</dd>
+                  </div>
+                  <div>
+                    <dt>Created</dt>
+                    <dd>
+                      {new Intl.NumberFormat().format(commitPlan.created)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Updated</dt>
+                    <dd>
+                      {new Intl.NumberFormat().format(commitPlan.updated)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Deleted</dt>
+                    <dd>
+                      {new Intl.NumberFormat().format(commitPlan.deleted)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Unrelated Changes</dt>
+                    <dd>
+                      {new Intl.NumberFormat().format(
+                        commitPlan.unrelatedChanges,
+                      )}
+                    </dd>
+                  </div>
+                </dl>
+                <p className="field-help">
+                  Unrelated changes stay uncommitted. Native confirmation is
+                  required before Git metadata changes.
+                </p>
+              </div>
+            )}
+            {commitError !== "" ? (
+              <p
+                ref={commitErrorRef}
+                id="git-commit-error"
+                className="git-action-error"
+                role="alert"
+                tabIndex={-1}
+              >
+                {commitError}
+              </p>
+            ) : null}
+            <div className="git-commit-actions">
+              <button
+                type="button"
+                className="button"
+                disabled={commitOperationBusy}
+                onClick={() => void cancelGitCommit()}
+              >
+                {commitPlan === null ? "Cancel" : "Cancel Plan"}
+              </button>
+              <button
+                ref={commitPlan === null ? undefined : commitApplyRef}
+                type="submit"
+                className="button button-primary"
+                disabled={commitOperationBusy}
+              >
+                {commitStage === "planning"
+                  ? "Planning…"
+                  : commitStage === "applying"
+                    ? "Committing…"
+                    : commitPlan === null
+                      ? "Review Commit"
+                      : "Create Commit"}
+              </button>
+            </div>
+          </form>
+        </section>
+      ) : null}
+
       {remoteFormOpen ? (
         <section
           id="git-remote-panel"
@@ -4421,9 +4930,43 @@ export function App() {
               className="status-action"
               aria-expanded={remoteFormOpen}
               aria-controls="git-remote-panel"
+              disabled={commitFormOpen || commitOperationBusy}
               onClick={beginRemoteConnection}
             >
               Connect Remote
+            </button>
+          ) : null}
+          {workspace?.facts.writable && gitStatus?.kind === "ready" ? (
+            <button
+              ref={commitButtonRef}
+              type="button"
+              className="status-action"
+              aria-expanded={commitFormOpen}
+              aria-controls="git-commit-panel"
+              disabled={
+                remoteFormOpen ||
+                commitOperationBusy ||
+                workspaceOperationBusy ||
+                dirtyGuide ||
+                dirtyGuideDetails ||
+                dirtyCategoryCreate ||
+                dirtyCategoryRename ||
+                dirtyGuideCreate
+              }
+              onClick={beginGitCommit}
+            >
+              Commit Changes
+            </button>
+          ) : null}
+          {workspace?.facts.writable &&
+          gitStatus?.kind === "recoveryRequired" ? (
+            <button
+              type="button"
+              className="status-action"
+              disabled={commitOperationBusy}
+              onClick={() => void recoverGitCommit()}
+            >
+              {commitStage === "recovering" ? "Recovering…" : "Resume Commit"}
             </button>
           ) : null}
           {gitInitError !== "" ? (

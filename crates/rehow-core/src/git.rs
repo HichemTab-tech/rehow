@@ -240,6 +240,7 @@ pub enum GitCommitPlanError {
     NothingToCommit,
     ResourceLimit,
     PlanStale,
+    RecoveryNotRequired,
     Io,
 }
 
@@ -312,9 +313,15 @@ struct GitCommitIndexCandidate {
     dead_code,
     reason = "Phase 5C3 returns this pathless result to the native commit workflow"
 )]
-struct GitCommitPublicationOutcome {
+pub struct GitCommitPublicationOutcome {
     operation_id: OperationId,
     workspace_changed: bool,
+}
+
+impl GitCommitPublicationOutcome {
+    pub fn workspace_changed(&self) -> bool {
+        self.workspace_changed
+    }
 }
 
 impl fmt::Debug for GitCommitPublicationOutcome {
@@ -422,6 +429,10 @@ impl GitCommitPlan {
 
     pub fn unrelated_changes(&self) -> u32 {
         self.unrelated_changes
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
     }
 }
 
@@ -4774,15 +4785,52 @@ pub fn pending_git_commit_recovery(
     workspace: &WorkspaceView,
     state_home: &Path,
 ) -> Result<Option<OperationId>, GitCommitPlanError> {
+    pending_git_commit_recovery_at(workspace, state_home, None)
+}
+
+fn pending_git_commit_recovery_at(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+) -> Result<Option<OperationId>, GitCommitPlanError> {
     let session = workspace
-        .open_git_commit_recovery_session(state_home, None)
+        .open_git_commit_recovery_session(state_home, runtime_directory)
         .map_err(map_git_commit_intent_error)?;
-    Ok(session
+    let intents = session
         .list_intents()
-        .map_err(map_git_commit_intent_error)?
-        .into_iter()
-        .find(|intent| intent.stage != GitCommitIntentStage::Complete)
-        .map(|intent| intent.operation_id))
+        .map_err(map_git_commit_intent_error)?;
+    for intent in intents {
+        if intent.stage == GitCommitIntentStage::Conflict {
+            session
+                .quarantine_staging(
+                    &intent.staging_name,
+                    (intent.staging_device, intent.staging_inode),
+                )
+                .map_err(map_git_commit_intent_error)?;
+            continue;
+        }
+        if git_commit_intent_is_resumable(intent.stage) {
+            return Ok(Some(intent.operation_id));
+        }
+    }
+    Ok(None)
+}
+
+fn git_commit_intent_is_resumable(stage: GitCommitIntentStage) -> bool {
+    matches!(
+        stage,
+        GitCommitIntentStage::Prepared
+            | GitCommitIntentStage::IndexPublished
+            | GitCommitIntentStage::RefPublished
+    )
+}
+
+pub fn git_commit_recovery_required(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+) -> Result<bool, GitCommitPlanError> {
+    Ok(pending_git_commit_recovery_at(workspace, state_home, runtime_directory)?.is_some())
 }
 
 pub fn cancel_git_commit_plan(plan: GitCommitPlan) -> Result<(), GitCommitPlanError> {
@@ -5110,6 +5158,21 @@ fn publish_git_commit_with_intent(
     let session = workspace
         .open_git_commit_recovery_session(state_home, runtime_directory)
         .map_err(map_git_commit_intent_error)?;
+    for intent in session
+        .list_intents()
+        .map_err(map_git_commit_intent_error)?
+    {
+        if intent.stage == GitCommitIntentStage::Conflict {
+            session
+                .quarantine_staging(
+                    &intent.staging_name,
+                    (intent.staging_device, intent.staging_inode),
+                )
+                .map_err(map_git_commit_intent_error)?;
+        } else if git_commit_intent_is_resumable(intent.stage) {
+            return Err(GitCommitPlanError::OperationInProgress);
+        }
+    }
     let current = inspect_git_commit_repository(workspace)?;
     if !same_git_commit_preflight(&plan.preflight, &current)
         || !plan
@@ -5282,6 +5345,70 @@ fn publish_git_commit_with_intent(
     })
 }
 
+pub fn apply_git_commit(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    mut plan: GitCommitPlan,
+) -> Result<GitCommitPublicationOutcome, GitCommitPlanError> {
+    match publish_git_commit_with_intent(workspace, state_home, runtime_directory, &mut plan) {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            if matches!(
+                pending_git_commit_intent_owns_plan_staging(
+                    workspace,
+                    state_home,
+                    runtime_directory,
+                    &plan,
+                ),
+                Ok(false)
+            ) {
+                let _ = cancel_git_commit_plan(plan);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn pending_git_commit_intent_owns_plan_staging(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    plan: &GitCommitPlan,
+) -> Result<bool, GitCommitPlanError> {
+    let expected_name = plan.candidate.prepared.staging.stage_name();
+    let expected_identity = plan
+        .candidate
+        .prepared
+        .staging
+        .stage_identity()
+        .map_err(map_git_commit_staging_error)?;
+    let session = workspace
+        .open_git_commit_recovery_session(state_home, runtime_directory)
+        .map_err(map_git_commit_intent_error)?;
+    let intents = session
+        .list_intents()
+        .map_err(map_git_commit_intent_error)?;
+    for intent in intents {
+        if intent.stage == GitCommitIntentStage::Conflict {
+            session
+                .quarantine_staging(
+                    &intent.staging_name,
+                    (intent.staging_device, intent.staging_inode),
+                )
+                .map_err(map_git_commit_intent_error)?;
+            continue;
+        }
+        if git_commit_intent_is_resumable(intent.stage)
+            && intent.staging_name == expected_name
+            && (intent.staging_device, intent.staging_inode) == expected_identity
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[allow(
     dead_code,
     reason = "Phase 5C3 and Git status call this for discovered incomplete intents"
@@ -5299,6 +5426,12 @@ fn resume_git_commit_publication(
         .read_intent(operation_id)
         .map_err(map_git_commit_intent_error)?;
     if intent.stage == GitCommitIntentStage::Conflict {
+        session
+            .quarantine_staging(
+                &intent.staging_name,
+                (intent.staging_device, intent.staging_inode),
+            )
+            .map_err(map_git_commit_intent_error)?;
         return Err(GitCommitPlanError::PlanStale);
     }
     let capability = workspace
@@ -5487,6 +5620,21 @@ fn resume_git_commit_publication(
         advance_git_commit_intent(&session, &mut intent, GitCommitIntentStage::Complete)?;
     }
     Ok(workspace_changed)
+}
+
+pub fn resume_pending_git_commit_publication(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+) -> Result<GitCommitPublicationOutcome, GitCommitPlanError> {
+    let operation_id = pending_git_commit_recovery_at(workspace, state_home, runtime_directory)?
+        .ok_or(GitCommitPlanError::RecoveryNotRequired)?;
+    let workspace_changed =
+        resume_git_commit_publication(workspace, state_home, runtime_directory, operation_id)?;
+    Ok(GitCommitPublicationOutcome {
+        operation_id,
+        workspace_changed,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5703,10 +5851,13 @@ fn mark_git_commit_intent_conflict<T>(
     session: &crate::storage::recovery::GitCommitRecoverySession,
     intent: &mut GitCommitIntent,
 ) -> Result<T, GitCommitPlanError> {
-    if matches!(
-        intent.stage,
-        GitCommitIntentStage::Prepared | GitCommitIntentStage::IndexPublished
-    ) {
+    session
+        .quarantine_staging(
+            &intent.staging_name,
+            (intent.staging_device, intent.staging_inode),
+        )
+        .map_err(map_git_commit_intent_error)?;
+    if git_commit_intent_is_resumable(intent.stage) {
         advance_git_commit_intent(session, intent, GitCommitIntentStage::Conflict)?;
     }
     Err(GitCommitPlanError::PlanStale)
@@ -9476,14 +9627,13 @@ mod tests {
         let branch_log_before = fs::read(&branch_log_path).unwrap();
         let workspace = open_workspace(&temp);
         let state = Temp::new();
-        let mut plan = plan_git_commit(&workspace, &state.0, "Publish managed metadata").unwrap();
+        let plan = plan_git_commit(&workspace, &state.0, "Publish managed metadata").unwrap();
         let commit_id = plan.candidate.commit_object_id.clone();
         let tree_id = plan.candidate.tree_object_id.clone();
         let staging_name = plan.candidate.prepared.staging.stage_name().to_owned();
 
-        let outcome =
-            publish_git_commit_with_intent(&workspace, &state.0, None, &mut plan).unwrap();
-        assert!(!outcome.workspace_changed);
+        let outcome = apply_git_commit(&workspace, &state.0, None, plan).unwrap();
+        assert!(!outcome.workspace_changed());
         let operation_id = outcome.operation_id;
 
         assert_eq!(fixture_git_stdout(&temp, &["rev-parse", "HEAD"]), commit_id);
@@ -9523,6 +9673,11 @@ mod tests {
         assert_eq!(
             session.read_bytes(&intent.candidate_ref_hash).unwrap(),
             format!("{commit_id}\n").as_bytes()
+        );
+        drop(session);
+        assert_eq!(
+            resume_pending_git_commit_publication(&workspace, &state.0, None).unwrap_err(),
+            GitCommitPlanError::RecoveryNotRequired
         );
     }
 
@@ -9599,7 +9754,9 @@ mod tests {
             }
 
             assert_eq!(
-                resume_git_commit_publication(&workspace, &state.0, None, operation_id).unwrap(),
+                resume_pending_git_commit_publication(&workspace, &state.0, None)
+                    .unwrap()
+                    .workspace_changed(),
                 workspace_changed
             );
             assert_eq!(fixture_git_stdout(&temp, &["rev-parse", "HEAD"]), commit_id);
@@ -9636,6 +9793,63 @@ mod tests {
             );
             drop(session);
         }
+    }
+
+    #[test]
+    fn commit_apply_refuses_a_second_intent_and_quarantines_only_its_staging() {
+        let temp = Temp::new();
+        drop(initialized_workspace(&temp));
+        configure_fixture_identity(&temp);
+        fixture_git(&temp, &["add", "--", "rehow.yaml"]);
+        fixture_git(&temp, &["commit", "-qm", "base"]);
+        let changed = fs::read_to_string(temp.0.join("rehow.yaml"))
+            .unwrap()
+            .replace("name: Git", "name: Concurrent intent");
+        fs::write(temp.0.join("rehow.yaml"), changed).unwrap();
+        let workspace = open_workspace(&temp);
+        let state = Temp::new();
+        let mut first = plan_git_commit(&workspace, &state.0, "First plan").unwrap();
+        let second = plan_git_commit(&workspace, &state.0, "Second plan").unwrap();
+        let first_staging = first.candidate.prepared.staging.stage_name().to_owned();
+        let second_staging = second.candidate.prepared.staging.stage_name().to_owned();
+
+        set_git_commit_metadata_fault(GitCommitMetadataFault::IndexLockPublished);
+        assert_eq!(
+            publish_git_commit_with_intent(&workspace, &state.0, None, &mut first).unwrap_err(),
+            GitCommitPlanError::UnsupportedRepository
+        );
+        assert_eq!(
+            apply_git_commit(&workspace, &state.0, None, second).unwrap_err(),
+            GitCommitPlanError::OperationInProgress
+        );
+        assert!(
+            state
+                .0
+                .join("rehow/commit-staging")
+                .join(&first_staging)
+                .is_dir()
+        );
+        assert!(
+            state
+                .0
+                .join("rehow/commit-quarantine")
+                .join(&second_staging)
+                .is_dir()
+        );
+        let session = workspace
+            .open_git_commit_recovery_session(&state.0, None)
+            .unwrap();
+        assert_eq!(
+            session
+                .list_intents()
+                .unwrap()
+                .into_iter()
+                .filter(|intent| intent.stage != GitCommitIntentStage::Complete)
+                .count(),
+            1
+        );
+        drop(session);
+        resume_pending_git_commit_publication(&workspace, &state.0, None).unwrap();
     }
 
     #[test]
@@ -9676,6 +9890,7 @@ mod tests {
             assert_eq!(intents.len(), 1);
             assert_eq!(intents[0].stage, GitCommitIntentStage::IndexPublished);
             let operation_id = intents[0].operation_id;
+            let staging_name = intents[0].staging_name.clone();
             drop(session);
             assert_eq!(
                 resume_git_commit_publication(&workspace, &state.0, None, operation_id)
@@ -9695,7 +9910,29 @@ mod tests {
                 GitCommitIntentStage::Conflict
             );
             drop(session);
-            cancel_git_commit_plan(plan).unwrap();
+            assert!(
+                !state
+                    .0
+                    .join("rehow/commit-staging")
+                    .join(&staging_name)
+                    .exists()
+            );
+            assert!(
+                state
+                    .0
+                    .join("rehow/commit-quarantine")
+                    .join(&staging_name)
+                    .is_dir()
+            );
+            assert_eq!(
+                pending_git_commit_recovery(&workspace, &state.0).unwrap(),
+                None
+            );
+            assert_eq!(
+                resume_pending_git_commit_publication(&workspace, &state.0, None).unwrap_err(),
+                GitCommitPlanError::RecoveryNotRequired
+            );
+            drop(plan);
         }
     }
 
@@ -9750,14 +9987,21 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 session.read_intent(intent.operation_id).unwrap().stage,
-                if replace_index {
-                    GitCommitIntentStage::Conflict
-                } else {
-                    GitCommitIntentStage::RefPublished
-                }
+                GitCommitIntentStage::Conflict
             );
             drop(session);
-            cancel_git_commit_plan(plan).unwrap();
+            assert_eq!(
+                pending_git_commit_recovery(&workspace, &state.0).unwrap(),
+                None
+            );
+            assert!(
+                state
+                    .0
+                    .join("rehow/commit-quarantine")
+                    .join(&intent.staging_name)
+                    .is_dir()
+            );
+            drop(plan);
         }
     }
 

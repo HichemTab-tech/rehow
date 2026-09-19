@@ -1,6 +1,6 @@
 # ADR 0024: Safe managed Git commit
 
-- Status: Accepted for phased implementation
+- Status: Accepted and implemented through Phase 5C3
 - Date: 2026-09-19
 
 ## Context

@@ -1,6 +1,6 @@
 # ADR 0006: Staged Safe Git Integration
 
-- Status: Partially Accepted — discovery/status, ADR 0022 init/connect, and ADR 0023 anonymous clone implemented; ADR 0024 accepts phased manual commit and sync remains proposed
+- Status: Partially Accepted — discovery/status, ADR 0022 init/connect, ADR 0023 anonymous clone, and ADR 0024 manual commit implemented; sync remains proposed
 - Date: 2026-09-05
 
 ## Context
@@ -9,7 +9,7 @@ Git is required and must eventually support init/connect/clone/commit/sync, but 
 
 ## Decision
 
-Accept stage 1, ADR 0022's process-free local initialization/remote connection, and ADR 0023's anonymous-HTTPS clone. The remaining required product stages must each receive a separate operation ADR/security gate:
+Accept stage 1, ADR 0022's process-free local initialization/remote connection, ADR 0023's anonymous-HTTPS clone, and ADR 0024's managed-only manual commit. The remaining required product stages must each receive a separate operation ADR/security gate:
 
 1. executable/repository discovery and bounded machine-readable status/branch/remotes/divergence/conflict;
 2. safe init/connect/clone plans for unchanged destinations (implemented by ADRs 0022–0023 for local init, metadata-only connect, and anonymous HTTPS);

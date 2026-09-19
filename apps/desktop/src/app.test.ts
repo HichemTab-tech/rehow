@@ -7,6 +7,7 @@ import {
   automaticRefreshBlocked,
   canMarkGuideTested,
   filterGuides,
+  focusGitCommitReview,
   gitFactLabel,
   gitStatusLabel,
   guideLifecycleLabel,
@@ -18,6 +19,10 @@ import {
   isGitCloneCancelResultPayload,
   isGitCloneCompleteResultPayload,
   isGitClonePlanPayload,
+  isGitCommitCancelResultPayload,
+  isGitCommitPlanPayload,
+  isGitCommitRecoveryResultPayload,
+  isGitCommitResultPayload,
   isGitInitPlanPayload,
   isGitInitResultPayload,
   isGitRemotePlanPayload,
@@ -30,6 +35,7 @@ import {
   nextResultIndex,
   normalizedCategoryDetails,
   normalizedCloneUrl,
+  normalizedGitCommitMessage,
   normalizedGuideDetails,
   normalizedGuideMetadata,
   normalizedGuideTerms,
@@ -105,6 +111,22 @@ describe("application identity", () => {
     expect(gitStatusLabel({ ...status, conflicts: 2 })).toBe(
       "main · 2 conflicts",
     );
+    const recovery = {
+      ...status,
+      kind: "recoveryRequired" as const,
+      version: null,
+      branch: null,
+      upstream: null,
+      divergenceKnown: false,
+      ahead: 0,
+      behind: 0,
+      changed: 0,
+      untracked: 0,
+      remotes: [],
+      remoteCount: 0,
+    };
+    expect(isGitStatusPayload(recovery)).toBe(true);
+    expect(gitStatusLabel(recovery)).toBe("Git commit needs recovery");
   });
 
   it("accepts only closed Git initialization plan and result payloads", () => {
@@ -148,6 +170,73 @@ describe("application identity", () => {
       "ssh://git@example.invalid/a.git",
     );
     expect(normalizedRemoteUrl("   ")).toBeNull();
+  });
+
+  it("accepts only bounded path-free Git commit payloads", () => {
+    const plan = {
+      planToken: `plan:v1:${"A".repeat(43)}`,
+      branch: "main",
+      created: 2,
+      updated: 3,
+      deleted: 1,
+      unrelatedChanges: 4,
+    };
+    expect(isGitCommitPlanPayload(plan)).toBe(true);
+    expect(isGitCommitPlanPayload({ ...plan, path: "/tmp/workspace" })).toBe(
+      false,
+    );
+    expect(isGitCommitPlanPayload({ ...plan, objectId: "a".repeat(40) })).toBe(
+      false,
+    );
+    expect(isGitCommitPlanPayload({ ...plan, created: -1 })).toBe(false);
+    expect(isGitCommitPlanPayload({ ...plan, branch: "x\nmain" })).toBe(false);
+    expect(
+      isGitCommitResultPayload({ committed: true, workspaceChanged: false }),
+    ).toBe(true);
+    expect(
+      isGitCommitResultPayload({ committed: false, workspaceChanged: true }),
+    ).toBe(false);
+    expect(isGitCommitCancelResultPayload({ cancelled: true })).toBe(true);
+    expect(isGitCommitCancelResultPayload({ cancelled: false })).toBe(false);
+    expect(
+      isGitCommitRecoveryResultPayload({
+        recovered: true,
+        workspaceChanged: true,
+      }),
+    ).toBe(true);
+    expect(
+      isGitCommitRecoveryResultPayload({
+        recovered: false,
+        workspaceChanged: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("normalizes the same safe one-line Git commit message envelope", () => {
+    expect(normalizedGitCommitMessage(" Update Guides ")).toBe("Update Guides");
+    expect(normalizedGitCommitMessage(" ")).toBeNull();
+    expect(normalizedGitCommitMessage("one\ntwo")).toBeNull();
+    expect(
+      normalizedGitCommitMessage(`safe${String.fromCodePoint(0x202e)}`),
+    ).toBeNull();
+    expect(normalizedGitCommitMessage(String.fromCodePoint(0xfdd0))).toBeNull();
+    expect(normalizedGitCommitMessage("x".repeat(201))).toBeNull();
+  });
+
+  it("moves focus into the commit review after the planned state renders", () => {
+    let rendered = false;
+    let focused = false;
+    let deferred: (() => void) | undefined;
+    focusGitCommitReview(
+      () => (rendered ? { focus: () => (focused = true) } : null),
+      (callback) => {
+        deferred = callback;
+      },
+    );
+    expect(focused).toBe(false);
+    rendered = true;
+    deferred?.();
+    expect(focused).toBe(true);
   });
 
   it("accepts only closed path-free Git clone lifecycle payloads", () => {
@@ -307,6 +396,7 @@ describe("application identity", () => {
       dirtyCategoryRename: false,
       dirtyCategoryCreate: false,
       dirtyGuideCreate: false,
+      dirtyGitCommit: false,
     };
     expect(automaticRefreshBlocked(clean)).toBe(false);
     for (const key of Object.keys(clean) as Array<keyof typeof clean>) {
