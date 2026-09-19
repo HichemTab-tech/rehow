@@ -1,6 +1,6 @@
 # ADR 0022: Staged Git onboarding
 
-- Status: Partially Accepted — local initialization and remote connection; clone remains proposed
+- Status: Accepted for local initialization and remote connection; clone continues in ADR 0023
 - Date: 2026-09-19
 
 ## Context
@@ -23,7 +23,7 @@ Duplicate remote names are an error rather than an update. Remote edit/rename/re
 
 Later network phases must run from a synthetic config-free Git environment and pass a freshly revalidated canonical remote URL explicitly. Repository configuration can never choose credential helpers, transports, proxies, SSH commands, hooks, aliases, filters, or executables. SSH may use only the launch-inherited agent socket after descriptor/type/ownership checks. HTTPS credentials may use only separately audited system/user Git credential configuration and the normal Git credential protocol; secrets remain in process pipes, never enter renderer IPC, logs, plans, errors, or Rehow storage. Exact provenance and hostile-config tests remain a required acceptance gate for the first network operation.
 
-Phase 5B3 clone will receive a follow-up accepted delta before code exists. It must use a natively selected unchanged empty destination, fetch without checkout into confined Git metadata, validate the complete incoming tree/path/type/size/schema set, materialize accepted Workspace bytes only through the core recovery journal, and install refs with expected-OID CAS. It must define fixed SSH-agent and audited credential-helper behavior, cleanup/recovery, cancellation, authentication, and hostile remote evidence. Git never checks out directly into active content.
+ADR 0023 supplies the Phase 5B3 clone decision. It requires a natively selected unchanged empty destination, fetch without checkout into confined Git metadata, complete incoming tree/path/type/size/schema validation, core-journaled materialization, expected-OID ref CAS, fixed SSH-agent and audited credential-helper behavior, marker-bound recovery, cancellation, authentication states, and hostile-remote evidence. Git never checks out directly into active content.
 
 ## Consequences
 

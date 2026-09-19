@@ -3,8 +3,10 @@
 use crate::{
     protocol::{PlanToken, Revision},
     storage::{
-        GitConfigStorageError, GitInitializeStorageError, GitRepositoryCapabilityError,
-        WorkspaceView,
+        ATTACHMENT_BYTES_LIMIT, ATTACHMENT_COUNT_LIMIT, CATEGORY_LIMIT, GUIDE_COUNT_LIMIT,
+        GitConfigStorageError, GitInitializeStorageError, GitMaterializationPathKind,
+        GitRepositoryCapabilityError, MANAGED_BYTES_LIMIT, WorkspaceView,
+        classify_git_materialization_path,
     },
 };
 use std::{
@@ -30,6 +32,11 @@ const MAX_REMOTES: usize = 32;
 const MAX_REMOTE_NAME_BYTES: usize = 64;
 const MAX_REMOTE_URL_BYTES: usize = 2048;
 const MAX_GIT_CONFIG_BYTES: usize = 1024 * 1024;
+#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+const MAX_CLONE_TREE_LISTING_BYTES: usize = 32 * 1024 * 1024;
+#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+const MAX_CLONE_TREE_ENTRIES: usize =
+    1 + CATEGORY_LIMIT + GUIDE_COUNT_LIMIT + ATTACHMENT_COUNT_LIMIT + 1;
 
 #[cfg(test)]
 thread_local! {
@@ -245,6 +252,263 @@ pub enum GitRemoteError {
     Unsupported,
     GitUnavailable,
     Io,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitCloneTreeError {
+    InvalidCommit,
+    InvalidOutput,
+    UnsupportedObject,
+    UnsafePath,
+    MissingManifest,
+    ResourceLimit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+pub(crate) enum GitObjectFormat {
+    Sha1,
+    Sha256,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+pub(crate) struct GitCloneTreeEntry {
+    relative_path: String,
+    object_id: String,
+    size: u64,
+    kind: GitMaterializationPathKind,
+}
+
+impl GitCloneTreeEntry {
+    #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+    pub(crate) fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+
+    #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+    pub(crate) fn object_id(&self) -> &str {
+        &self.object_id
+    }
+
+    #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+    pub(crate) fn size(&self) -> u64 {
+        self.size
+    }
+
+    #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+    pub(crate) fn kind(&self) -> GitMaterializationPathKind {
+        self.kind
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+pub(crate) struct GitCloneTree {
+    commit_id: String,
+    object_format: GitObjectFormat,
+    entries: Vec<GitCloneTreeEntry>,
+    plan_hash: [u8; 32],
+}
+
+impl fmt::Debug for GitCloneTree {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitCloneTree")
+            .field("commit_id", &"<redacted>")
+            .field("object_format", &self.object_format)
+            .field("entries", &self.entries.len())
+            .field("plan_hash", &"<redacted>")
+            .finish()
+    }
+}
+
+impl GitCloneTree {
+    #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+    pub(crate) fn commit_id(&self) -> &str {
+        &self.commit_id
+    }
+
+    #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+    pub(crate) fn object_format(&self) -> GitObjectFormat {
+        self.object_format
+    }
+
+    #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+    pub(crate) fn entries(&self) -> &[GitCloneTreeEntry] {
+        &self.entries
+    }
+
+    #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+    pub(crate) fn plan_hash(&self) -> [u8; 32] {
+        self.plan_hash
+    }
+}
+
+#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+pub(crate) fn validate_git_clone_tree(
+    commit_id: &str,
+    listing: &[u8],
+) -> Result<GitCloneTree, GitCloneTreeError> {
+    let object_format = validate_object_id(commit_id).ok_or(GitCloneTreeError::InvalidCommit)?;
+    if listing.len() > MAX_CLONE_TREE_LISTING_BYTES {
+        return Err(GitCloneTreeError::ResourceLimit);
+    }
+    if !listing.is_empty() && !listing.ends_with(&[0]) {
+        return Err(GitCloneTreeError::InvalidOutput);
+    }
+    if listing.is_empty() {
+        return Err(GitCloneTreeError::MissingManifest);
+    }
+    let records = listing.strip_suffix(&[0]).unwrap_or(listing);
+
+    let mut entries = Vec::new();
+    let mut previous_path: Option<&[u8]> = None;
+    let mut category_count = 0usize;
+    let mut guide_count = 0usize;
+    let mut attachment_count = 0usize;
+    let mut managed_bytes = 0u64;
+    let mut attachment_bytes = 0u64;
+    let mut has_manifest = false;
+
+    for record in records.split(|byte| *byte == 0) {
+        if record.is_empty() {
+            return Err(GitCloneTreeError::InvalidOutput);
+        }
+        if entries.len() >= MAX_CLONE_TREE_ENTRIES {
+            return Err(GitCloneTreeError::ResourceLimit);
+        }
+        let tab = record
+            .iter()
+            .position(|byte| *byte == b'\t')
+            .ok_or(GitCloneTreeError::InvalidOutput)?;
+        let header =
+            std::str::from_utf8(&record[..tab]).map_err(|_| GitCloneTreeError::InvalidOutput)?;
+        let path_bytes = &record[tab + 1..];
+        let path = std::str::from_utf8(path_bytes).map_err(|_| GitCloneTreeError::UnsafePath)?;
+        if previous_path.is_some_and(|previous| previous >= path_bytes) {
+            return Err(GitCloneTreeError::InvalidOutput);
+        }
+        previous_path = Some(path_bytes);
+
+        let mut fields = header.split_ascii_whitespace();
+        let mode = fields.next().ok_or(GitCloneTreeError::InvalidOutput)?;
+        let object_type = fields.next().ok_or(GitCloneTreeError::InvalidOutput)?;
+        let object_id = fields.next().ok_or(GitCloneTreeError::InvalidOutput)?;
+        let size_text = fields.next().ok_or(GitCloneTreeError::InvalidOutput)?;
+        if fields.next().is_some()
+            || mode != "100644"
+            || object_type != "blob"
+            || validate_object_id(object_id) != Some(object_format)
+        {
+            return Err(GitCloneTreeError::UnsupportedObject);
+        }
+        let size = parse_canonical_u64(size_text).ok_or(GitCloneTreeError::InvalidOutput)?;
+        let (kind, file_limit) =
+            classify_git_materialization_path(path).ok_or(GitCloneTreeError::UnsafePath)?;
+        if size > file_limit {
+            return Err(GitCloneTreeError::ResourceLimit);
+        }
+        match kind {
+            GitMaterializationPathKind::Manifest => {
+                if has_manifest {
+                    return Err(GitCloneTreeError::InvalidOutput);
+                }
+                has_manifest = true;
+                managed_bytes = managed_bytes
+                    .checked_add(size)
+                    .ok_or(GitCloneTreeError::ResourceLimit)?;
+            }
+            GitMaterializationPathKind::Category => {
+                category_count = category_count
+                    .checked_add(1)
+                    .ok_or(GitCloneTreeError::ResourceLimit)?;
+                managed_bytes = managed_bytes
+                    .checked_add(size)
+                    .ok_or(GitCloneTreeError::ResourceLimit)?;
+            }
+            GitMaterializationPathKind::Guide => {
+                guide_count = guide_count
+                    .checked_add(1)
+                    .ok_or(GitCloneTreeError::ResourceLimit)?;
+                managed_bytes = managed_bytes
+                    .checked_add(size)
+                    .ok_or(GitCloneTreeError::ResourceLimit)?;
+            }
+            GitMaterializationPathKind::Attachment => {
+                attachment_count = attachment_count
+                    .checked_add(1)
+                    .ok_or(GitCloneTreeError::ResourceLimit)?;
+                attachment_bytes = attachment_bytes
+                    .checked_add(size)
+                    .ok_or(GitCloneTreeError::ResourceLimit)?;
+            }
+            GitMaterializationPathKind::Ignore => {}
+        }
+        if category_count > CATEGORY_LIMIT
+            || guide_count > GUIDE_COUNT_LIMIT
+            || attachment_count > ATTACHMENT_COUNT_LIMIT
+            || managed_bytes > MANAGED_BYTES_LIMIT
+            || attachment_bytes > ATTACHMENT_BYTES_LIMIT
+        {
+            return Err(GitCloneTreeError::ResourceLimit);
+        }
+        entries.push(GitCloneTreeEntry {
+            relative_path: path.to_owned(),
+            object_id: object_id.to_owned(),
+            size,
+            kind,
+        });
+    }
+    if !has_manifest {
+        return Err(GitCloneTreeError::MissingManifest);
+    }
+
+    let mut plan = blake3::Hasher::new();
+    plan.update(b"rehow:git-clone-tree:v1\0");
+    hash_clone_field(&mut plan, commit_id.as_bytes());
+    plan.update(&(entries.len() as u64).to_le_bytes());
+    for entry in &entries {
+        hash_clone_field(&mut plan, entry.relative_path.as_bytes());
+        hash_clone_field(&mut plan, entry.object_id.as_bytes());
+        plan.update(&entry.size.to_le_bytes());
+    }
+    Ok(GitCloneTree {
+        commit_id: commit_id.to_owned(),
+        object_format,
+        entries,
+        plan_hash: *plan.finalize().as_bytes(),
+    })
+}
+
+#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+fn validate_object_id(value: &str) -> Option<GitObjectFormat> {
+    let format = match value.len() {
+        40 => GitObjectFormat::Sha1,
+        64 => GitObjectFormat::Sha256,
+        _ => return None,
+    };
+    value
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        .then_some(format)
+}
+
+#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+fn parse_canonical_u64(value: &str) -> Option<u64> {
+    if value.is_empty()
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+        || (value.len() > 1 && value.starts_with('0'))
+    {
+        return None;
+    }
+    value.parse().ok()
+}
+
+#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+fn hash_clone_field(hasher: &mut blake3::Hasher, value: &[u8]) {
+    hasher.update(&(value.len() as u64).to_le_bytes());
+    hasher.update(value);
 }
 
 #[derive(Debug)]
@@ -1225,6 +1489,307 @@ mod tests {
             .collect::<Vec<_>>();
         backups.sort();
         backups
+    }
+
+    fn clone_tree_listing(entries: &[(&str, &str, u64)]) -> Vec<u8> {
+        let mut entries = entries.to_vec();
+        entries.sort_unstable_by_key(|entry| entry.0);
+        let mut listing = Vec::new();
+        for (path, object_id, size) in entries {
+            listing
+                .extend_from_slice(format!("100644 blob {object_id} {size}\t{path}\0").as_bytes());
+        }
+        listing
+    }
+
+    #[test]
+    fn clone_tree_accepts_only_bounded_canonical_workspace_files() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let blob = "89abcdef0123456789abcdef0123456789abcdef";
+        let listing = clone_tree_listing(&[
+            ("rehow.yaml", blob, 160),
+            ("categories/linux--f936c5735e10/category.yaml", blob, 220),
+            (
+                "categories/linux--f936c5735e10/install--36c5735e10.md",
+                blob,
+                1_024,
+            ),
+            (
+                "attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/example.desktop",
+                blob,
+                512,
+            ),
+            (".gitignore", blob, 16),
+        ]);
+        let tree = validate_git_clone_tree(commit, &listing).unwrap();
+        assert_eq!(tree.commit_id(), commit);
+        assert_eq!(tree.object_format(), GitObjectFormat::Sha1);
+        assert_eq!(tree.entries().len(), 5);
+        assert_eq!(tree.entries()[0].relative_path(), ".gitignore");
+        assert_eq!(tree.entries()[0].object_id(), blob);
+        assert_eq!(tree.entries()[0].size(), 16);
+        assert_eq!(tree.entries()[0].kind(), GitMaterializationPathKind::Ignore);
+        assert_ne!(tree.plan_hash(), [0; 32]);
+
+        let sha256_commit = "a".repeat(64);
+        let sha256_blob = "b".repeat(64);
+        let sha256_listing = clone_tree_listing(&[("rehow.yaml", &sha256_blob, 1)]);
+        assert_eq!(
+            validate_git_clone_tree(&sha256_commit, &sha256_listing)
+                .unwrap()
+                .object_format(),
+            GitObjectFormat::Sha256
+        );
+    }
+
+    #[test]
+    fn clone_tree_rejects_hostile_types_paths_and_framing() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let blob = "89abcdef0123456789abcdef0123456789abcdef";
+        for record in [
+            format!("100755 blob {blob} 1\trehow.yaml\0"),
+            format!("120000 blob {blob} 1\trehow.yaml\0"),
+            format!("160000 commit {blob} 1\trehow.yaml\0"),
+        ] {
+            assert_eq!(
+                validate_git_clone_tree(commit, record.as_bytes()),
+                Err(GitCloneTreeError::UnsupportedObject)
+            );
+        }
+        for path in [
+            ".git/config",
+            "README.md",
+            "categories/../rehow.yaml",
+            "categories/linux/guide.txt",
+            "attachments/not-a-guide-id/file",
+            "categories/linux/line\nbreak.md",
+        ] {
+            let listing = clone_tree_listing(&[(path, blob, 1)]);
+            assert_eq!(
+                validate_git_clone_tree(commit, &listing),
+                Err(GitCloneTreeError::UnsafePath),
+                "{path:?}"
+            );
+        }
+        let missing_nul = format!("100644 blob {blob} 1\trehow.yaml");
+        assert_eq!(
+            validate_git_clone_tree(commit, missing_nul.as_bytes()),
+            Err(GitCloneTreeError::InvalidOutput)
+        );
+        let duplicate =
+            format!("100644 blob {blob} 1\trehow.yaml\0100644 blob {blob} 1\trehow.yaml\0");
+        assert_eq!(
+            validate_git_clone_tree(commit, duplicate.as_bytes()),
+            Err(GitCloneTreeError::InvalidOutput)
+        );
+        let unsorted =
+            format!("100644 blob {blob} 1\trehow.yaml\0100644 blob {blob} 1\t.gitignore\0");
+        assert_eq!(
+            validate_git_clone_tree(commit, unsorted.as_bytes()),
+            Err(GitCloneTreeError::InvalidOutput)
+        );
+    }
+
+    #[test]
+    fn clone_tree_enforces_object_ids_sizes_counts_and_totals() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let blob = "89abcdef0123456789abcdef0123456789abcdef";
+        for bad_commit in ["", "ABCDEF", &"g".repeat(40), &"a".repeat(41)] {
+            assert_eq!(
+                validate_git_clone_tree(bad_commit, &[]),
+                Err(GitCloneTreeError::InvalidCommit)
+            );
+        }
+        let missing_manifest = clone_tree_listing(&[(".gitignore", blob, 1)]);
+        assert_eq!(
+            validate_git_clone_tree(commit, &missing_manifest),
+            Err(GitCloneTreeError::MissingManifest)
+        );
+        let wrong_object = clone_tree_listing(&[("rehow.yaml", &"a".repeat(64), 1)]);
+        assert_eq!(
+            validate_git_clone_tree(commit, &wrong_object),
+            Err(GitCloneTreeError::UnsupportedObject)
+        );
+        for size in [262_145, u64::MAX] {
+            let oversized = clone_tree_listing(&[("rehow.yaml", blob, size)]);
+            assert_eq!(
+                validate_git_clone_tree(commit, &oversized),
+                Err(GitCloneTreeError::ResourceLimit)
+            );
+        }
+        let leading_zero = format!("100644 blob {blob} 01\trehow.yaml\0");
+        assert_eq!(
+            validate_git_clone_tree(commit, leading_zero.as_bytes()),
+            Err(GitCloneTreeError::InvalidOutput)
+        );
+
+        let guide_size = 2 * 1024 * 1024u64;
+        let mut entries = vec![("rehow.yaml".to_owned(), blob.to_owned(), 1)];
+        for index in 0..1_025 {
+            entries.push((
+                format!("categories/linux/guide-{index:04}.md"),
+                blob.to_owned(),
+                guide_size,
+            ));
+        }
+        let borrowed = entries
+            .iter()
+            .map(|(path, oid, size)| (path.as_str(), oid.as_str(), *size))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            validate_git_clone_tree(commit, &clone_tree_listing(&borrowed)),
+            Err(GitCloneTreeError::ResourceLimit)
+        );
+    }
+
+    #[test]
+    fn clone_tree_enforces_exact_and_one_over_collection_envelopes() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let blob = "89abcdef0123456789abcdef0123456789abcdef";
+
+        let mut managed_exact = vec![("rehow.yaml".to_owned(), blob.to_owned(), 0)];
+        for index in 0..1_024 {
+            managed_exact.push((
+                format!("categories/linux/guide-{index:04}.md"),
+                blob.to_owned(),
+                2 * 1024 * 1024,
+            ));
+        }
+        let borrowed = managed_exact
+            .iter()
+            .map(|(path, oid, size)| (path.as_str(), oid.as_str(), *size))
+            .collect::<Vec<_>>();
+        assert!(validate_git_clone_tree(commit, &clone_tree_listing(&borrowed)).is_ok());
+        managed_exact[0].2 = 1;
+        let borrowed = managed_exact
+            .iter()
+            .map(|(path, oid, size)| (path.as_str(), oid.as_str(), *size))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            validate_git_clone_tree(commit, &clone_tree_listing(&borrowed)),
+            Err(GitCloneTreeError::ResourceLimit)
+        );
+
+        let mut attachment_exact = vec![("rehow.yaml".to_owned(), blob.to_owned(), 1)];
+        for index in 0..64 {
+            attachment_exact.push((
+                format!("attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/file-{index:02}"),
+                blob.to_owned(),
+                64 * 1024 * 1024,
+            ));
+        }
+        let borrowed = attachment_exact
+            .iter()
+            .map(|(path, oid, size)| (path.as_str(), oid.as_str(), *size))
+            .collect::<Vec<_>>();
+        assert!(validate_git_clone_tree(commit, &clone_tree_listing(&borrowed)).is_ok());
+        attachment_exact.push((
+            "attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/one-over".to_owned(),
+            blob.to_owned(),
+            1,
+        ));
+        let borrowed = attachment_exact
+            .iter()
+            .map(|(path, oid, size)| (path.as_str(), oid.as_str(), *size))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            validate_git_clone_tree(commit, &clone_tree_listing(&borrowed)),
+            Err(GitCloneTreeError::ResourceLimit)
+        );
+
+        let over_listing = vec![b'x'; MAX_CLONE_TREE_LISTING_BYTES + 1];
+        assert_eq!(
+            validate_git_clone_tree(commit, &over_listing),
+            Err(GitCloneTreeError::ResourceLimit)
+        );
+    }
+
+    #[test]
+    fn clone_tree_accepts_root_git_ls_tree_long_output() {
+        let temp = Temp::new();
+        fs::create_dir(temp.0.join("categories")).unwrap();
+        fs::write(temp.0.join("rehow.yaml"), "schema_version: 1\n").unwrap();
+        fs::write(temp.0.join(".gitignore"), ".rehow/\n").unwrap();
+
+        let run = |arguments: &[&str]| {
+            Command::new("/usr/bin/git")
+                .env_clear()
+                .env("LANG", "C")
+                .env("LC_ALL", "C")
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .args(["-C", temp.0.to_str().unwrap()])
+                .args([
+                    "--no-pager",
+                    "--literal-pathspecs",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "-c",
+                    "core.fsmonitor=false",
+                ])
+                .args(arguments)
+                .output()
+                .unwrap()
+        };
+        assert!(
+            Command::new("/usr/bin/git")
+                .env_clear()
+                .env("LANG", "C")
+                .env("LC_ALL", "C")
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .args(["init", "--quiet", "--template="])
+                .arg(&temp.0)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            run(&["add", "--", ".gitignore", "rehow.yaml"])
+                .status
+                .success()
+        );
+        let tree = run(&["write-tree"]);
+        assert!(tree.status.success());
+        let tree_id = std::str::from_utf8(&tree.stdout).unwrap().trim();
+        let commit = Command::new("/usr/bin/git")
+            .env_clear()
+            .env("LANG", "C")
+            .env("LC_ALL", "C")
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "Rehow Test")
+            .env("GIT_AUTHOR_EMAIL", "test@rehow.invalid")
+            .env("GIT_COMMITTER_NAME", "Rehow Test")
+            .env("GIT_COMMITTER_EMAIL", "test@rehow.invalid")
+            .args(["-C", temp.0.to_str().unwrap(), "commit-tree", tree_id])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(commit.status.success());
+        let commit_id = std::str::from_utf8(&commit.stdout).unwrap().trim();
+        let listing = run(&["ls-tree", "-r", "-l", "-z", "--full-tree", commit_id]);
+        assert!(listing.status.success());
+        let validated = validate_git_clone_tree(commit_id, &listing.stdout).unwrap();
+        assert_eq!(validated.entries().len(), 2);
+    }
+
+    #[test]
+    fn clone_tree_debug_redacts_paths_object_ids_and_hashes() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let blob = "89abcdef0123456789abcdef0123456789abcdef";
+        let listing = clone_tree_listing(&[("rehow.yaml", blob, 1)]);
+        let debug = format!("{:?}", validate_git_clone_tree(commit, &listing).unwrap());
+        assert!(!debug.contains(commit));
+        assert!(!debug.contains(blob));
+        assert!(!debug.contains("rehow.yaml"));
+        assert!(debug.contains("entries: 1"));
     }
 
     #[test]

@@ -896,14 +896,54 @@ impl std::error::Error for WorkspaceInspectError {}
 
 const DESCRIPTOR_LIMIT: usize = 256 * 1024;
 const GUIDE_LIMIT: usize = 2 * 1024 * 1024;
-const CATEGORY_LIMIT: usize = 1_000;
-const GUIDE_COUNT_LIMIT: usize = 10_000;
-const MANAGED_BYTES_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
-const ATTACHMENT_COUNT_LIMIT: usize = 10_000;
+pub(crate) const CATEGORY_LIMIT: usize = 1_000;
+pub(crate) const GUIDE_COUNT_LIMIT: usize = 10_000;
+pub(crate) const MANAGED_BYTES_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
+pub(crate) const ATTACHMENT_COUNT_LIMIT: usize = 10_000;
 const ATTACHMENT_FILE_LIMIT: u64 = 64 * 1024 * 1024;
-const ATTACHMENT_BYTES_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
+pub(crate) const ATTACHMENT_BYTES_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
 const ISSUE_LIMIT: usize = 10_000;
 const GIT_ANCESTOR_LIMIT: usize = 64;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+pub(crate) enum GitMaterializationPathKind {
+    Manifest,
+    Category,
+    Guide,
+    Attachment,
+    Ignore,
+}
+
+#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+pub(crate) fn classify_git_materialization_path(
+    relative_path: &str,
+) -> Option<(GitMaterializationPathKind, u64)> {
+    if relative_path == ".gitignore" {
+        return Some((GitMaterializationPathKind::Ignore, 64 * 1024));
+    }
+    if !recovery::valid_active_path(relative_path) {
+        return None;
+    }
+    if relative_path == "rehow.yaml" {
+        Some((
+            GitMaterializationPathKind::Manifest,
+            DESCRIPTOR_LIMIT as u64,
+        ))
+    } else if relative_path.ends_with("/category.yaml") {
+        Some((
+            GitMaterializationPathKind::Category,
+            DESCRIPTOR_LIMIT as u64,
+        ))
+    } else if relative_path.starts_with("categories/") {
+        Some((GitMaterializationPathKind::Guide, GUIDE_LIMIT as u64))
+    } else {
+        Some((
+            GitMaterializationPathKind::Attachment,
+            ATTACHMENT_FILE_LIMIT,
+        ))
+    }
+}
 
 pub(crate) struct DocumentUpdateRequest {
     relative_path: String,
