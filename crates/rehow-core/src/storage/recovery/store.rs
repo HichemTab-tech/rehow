@@ -13,6 +13,8 @@ use std::{
 };
 
 const MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
+const DEFAULT_TREE_ENTRY_LIMIT: usize = 100_000;
+const COMMIT_TREE_ENTRY_LIMIT: usize = 160_256;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(test)]
@@ -64,6 +66,185 @@ pub(super) struct CloneStaging {
     validation_path: String,
 }
 
+pub(super) struct CommitStaging {
+    _stage: OwnedFd,
+    _git: OwnedFd,
+    validation: Directory,
+    stage_path: String,
+    git_path: String,
+    validation_path: String,
+}
+
+impl CommitStaging {
+    pub(super) fn create(
+        state_home: &Path,
+        stage_name: &str,
+        provenance: &[u8],
+        git_config: &[u8],
+        index: Option<&[u8]>,
+    ) -> Result<Self, StoreError> {
+        const MAX_OPERATIONS: usize = 8;
+        const MAX_AGGREGATE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+        const MAX_INDEX_BYTES: usize = 64 * 1024 * 1024;
+        if !valid_stage_name(stage_name)
+            || provenance.len() > 16 * 1024
+            || git_config.len() > 16 * 1024
+            || index.is_some_and(|bytes| bytes.len() > MAX_INDEX_BYTES)
+        {
+            return Err(StoreError::Unsafe);
+        }
+        let state_home = Directory::open_base(state_home)?;
+        let state_rehow = state_home.ensure("rehow")?;
+        let commit_staging = state_rehow.ensure("commit-staging")?;
+        let commit_quarantine = state_rehow.ensure("commit-quarantine")?;
+        let mut operations = 0usize;
+        let mut aggregate = 0u64;
+        for root in [&commit_staging, &commit_quarantine] {
+            let names = root.entries(MAX_OPERATIONS + 1)?;
+            for name in names {
+                if !valid_stage_name(&name) {
+                    return Err(StoreError::Unsafe);
+                }
+                operations = operations.checked_add(1).ok_or(StoreError::TooLarge)?;
+                if operations >= MAX_OPERATIONS {
+                    return Err(StoreError::TooLarge);
+                }
+                let operation = root.open_directory(&name)?;
+                let mut operation_entries = 0usize;
+                aggregate = aggregate
+                    .checked_add(operation.bounded_tree_bytes_with_entry_limit(
+                        MAX_AGGREGATE_BYTES.saturating_sub(aggregate),
+                        &mut operation_entries,
+                        COMMIT_TREE_ENTRY_LIMIT,
+                    )?)
+                    .ok_or(StoreError::TooLarge)?;
+                if aggregate > MAX_AGGREGATE_BYTES {
+                    return Err(StoreError::TooLarge);
+                }
+            }
+        }
+        let prospective = provenance.len() as u64
+            + git_config.len() as u64
+            + index.map_or(0, |bytes| bytes.len() as u64);
+        if aggregate.saturating_add(prospective) > MAX_AGGREGATE_BYTES {
+            return Err(StoreError::TooLarge);
+        }
+
+        let stage = commit_staging.ensure_new(stage_name)?;
+        stage.write_new_file("provenance", provenance)?;
+        let git = stage.ensure_new("repo.git")?;
+        let validation = stage.ensure_new("validation")?;
+        git.write_new_file("HEAD", b"ref: refs/rehow/commit/head\n")?;
+        git.write_new_file("config", git_config)?;
+        if let Some(index) = index {
+            git.write_new_file("index", index)?;
+        }
+        let objects = git.ensure_new("objects")?;
+        let object_info = objects.ensure_new("info")?;
+        let object_pack = objects.ensure_new("pack")?;
+        let refs = git.ensure_new("refs")?;
+        let rehow = refs.ensure_new("rehow")?;
+        let commit = rehow.ensure_new("commit")?;
+        let heads = refs.ensure_new("heads")?;
+        let tags = refs.ensure_new("tags")?;
+        for directory in [
+            &object_info,
+            &object_pack,
+            &commit,
+            &heads,
+            &tags,
+            &objects,
+            &rehow,
+            &refs,
+            &git,
+            &validation,
+            &stage,
+        ] {
+            directory.sync()?;
+        }
+        commit_staging.sync()?;
+        commit_quarantine.sync()?;
+        state_rehow.sync()?;
+        state_home.sync()?;
+
+        let stage_descriptor = stage.cloexec_duplicate()?;
+        let git_descriptor = git.cloexec_duplicate()?;
+        let stage_path = format!("/proc/self/fd/{}", stage_descriptor.as_raw_fd());
+        let git_path = format!("/proc/self/fd/{}", git_descriptor.as_raw_fd());
+        let validation_path = format!("/proc/self/fd/{}", validation.descriptor.as_raw_fd());
+        Ok(Self {
+            _stage: stage_descriptor,
+            _git: git_descriptor,
+            validation,
+            stage_path,
+            git_path,
+            validation_path,
+        })
+    }
+
+    pub(super) fn stage_path(&self) -> &str {
+        &self.stage_path
+    }
+
+    pub(super) fn git_path(&self) -> &str {
+        &self.git_path
+    }
+
+    pub(super) fn git_descriptor(&self) -> i32 {
+        self._git.as_raw_fd()
+    }
+
+    pub(super) fn validation_path(&self) -> &str {
+        &self.validation_path
+    }
+
+    pub(super) fn write_validation_file(
+        &self,
+        relative_path: &str,
+        bytes: &[u8],
+    ) -> Result<(), StoreError> {
+        if bytes.len() > MAX_OBJECT_BYTES || !super::valid_active_path(relative_path) {
+            return Err(StoreError::Unsafe);
+        }
+        let mut parts = relative_path.split('/').peekable();
+        let mut directory = self.validation.duplicate()?;
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                directory.write_new_file(part, bytes)?;
+            } else {
+                directory = directory.ensure(part)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn finish_validation_tree(&self) -> Result<(), StoreError> {
+        let categories = self.validation.ensure("categories")?;
+        categories.sync()?;
+        self.validation.sync()
+    }
+
+    pub(super) fn verify_size_limit(&self, limit: u64) -> Result<(), StoreError> {
+        let stage = Directory {
+            descriptor: self._stage.try_clone().map_err(|_| StoreError::Io)?,
+        };
+        let mut entries = 0usize;
+        let _ = stage.bounded_tree_bytes_with_entry_limit(
+            limit,
+            &mut entries,
+            COMMIT_TREE_ENTRY_LIMIT,
+        )?;
+        Ok(())
+    }
+}
+
+fn valid_stage_name(stage_name: &str) -> bool {
+    stage_name.len() == 64
+        && stage_name
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 impl CloneStaging {
     pub(super) fn create(
         state_home: &Path,
@@ -71,10 +252,7 @@ impl CloneStaging {
         provenance: &[u8],
         git_config: &[u8],
     ) -> Result<Self, StoreError> {
-        if stage_name.len() != 64
-            || !stage_name
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        if !valid_stage_name(stage_name)
             || provenance.len() > 16 * 1024
             || git_config.len() > 16 * 1024
         {
@@ -885,6 +1063,15 @@ impl Directory {
     }
 
     fn bounded_tree_bytes(&self, limit: u64, entries: &mut usize) -> Result<u64, StoreError> {
+        self.bounded_tree_bytes_with_entry_limit(limit, entries, DEFAULT_TREE_ENTRY_LIMIT)
+    }
+
+    fn bounded_tree_bytes_with_entry_limit(
+        &self,
+        limit: u64,
+        entries: &mut usize,
+        entry_limit: usize,
+    ) -> Result<u64, StoreError> {
         // SAFETY: openat on `.` creates an independent no-follow directory description.
         let raw = unsafe {
             libc::openat(
@@ -924,7 +1111,7 @@ impl Directory {
                 continue;
             }
             *entries = entries.checked_add(1).ok_or(StoreError::TooLarge)?;
-            if *entries > 100_000 {
+            if *entries > entry_limit {
                 return Err(StoreError::TooLarge);
             }
             let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
@@ -946,7 +1133,11 @@ impl Directory {
                 return Err(StoreError::Unsafe);
             }
             match status.st_mode & libc::S_IFMT {
-                libc::S_IFREG if status.st_nlink == 1 && status.st_size >= 0 => {
+                libc::S_IFREG
+                    if status.st_nlink == 1
+                        && status.st_size >= 0
+                        && status.st_mode & 0o7777 == 0o600 =>
+                {
                     total = total
                         .checked_add(status.st_size as u64)
                         .ok_or(StoreError::TooLarge)?;
@@ -967,10 +1158,13 @@ impl Directory {
                     let child = Self {
                         descriptor: unsafe { OwnedFd::from_raw_fd(child) },
                     };
+                    validate_directory(&child.descriptor, true)?;
                     total = total
-                        .checked_add(
-                            child.bounded_tree_bytes(limit.saturating_sub(total), entries)?,
-                        )
+                        .checked_add(child.bounded_tree_bytes_with_entry_limit(
+                            limit.saturating_sub(total),
+                            entries,
+                            entry_limit,
+                        )?)
                         .ok_or(StoreError::TooLarge)?;
                 }
                 _ => {
@@ -1547,6 +1741,92 @@ mod tests {
             stage: JournalStage::Prepared,
             completion: false,
         }
+    }
+
+    #[test]
+    fn commit_staging_is_private_complete_and_retained() {
+        let state = TestDirectory::new("commit-staging");
+        let name = "a".repeat(64);
+        {
+            let staging = CommitStaging::create(
+                &state.0,
+                &name,
+                b"provenance",
+                b"[core]\n\trepositoryformatversion = 0\n",
+                Some(b"index"),
+            )
+            .unwrap();
+            assert!(staging.stage_path().starts_with("/proc/self/fd/"));
+            assert!(staging.git_path().starts_with("/proc/self/fd/"));
+            assert!(staging.validation_path().starts_with("/proc/self/fd/"));
+            assert!(staging.git_descriptor() >= 3);
+            staging
+                .write_validation_file("rehow.yaml", b"schema-version: 1\n")
+                .unwrap();
+            staging.finish_validation_tree().unwrap();
+            staging.verify_size_limit(1024 * 1024).unwrap();
+        }
+
+        let stage = state.0.join("rehow/commit-staging").join(name);
+        assert_eq!(
+            fs::metadata(&stage).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+        for path in [
+            "provenance",
+            "repo.git/HEAD",
+            "repo.git/config",
+            "repo.git/index",
+            "repo.git/objects/info",
+            "repo.git/objects/pack",
+            "repo.git/refs/rehow/commit",
+            "repo.git/refs/heads",
+            "repo.git/refs/tags",
+            "validation/categories",
+        ] {
+            assert!(stage.join(path).exists(), "missing {path}");
+        }
+        assert_eq!(
+            fs::metadata(stage.join("repo.git/index"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn commit_staging_refuses_collisions_and_unrecognized_entries() {
+        let state = TestDirectory::new("commit-staging-unsafe");
+        let name = "b".repeat(64);
+        CommitStaging::create(&state.0, &name, b"p", b"[core]\n", None).unwrap();
+        assert!(matches!(
+            CommitStaging::create(&state.0, &name, b"p", b"[core]\n", None),
+            Err(StoreError::Conflict)
+        ));
+        fs::write(
+            state.0.join("rehow/commit-quarantine/unrecognized"),
+            b"hostile",
+        )
+        .unwrap();
+        assert!(matches!(
+            CommitStaging::create(&state.0, &"c".repeat(64), b"p", b"[core]\n", None),
+            Err(StoreError::Unsafe)
+        ));
+    }
+
+    #[test]
+    fn commit_staging_enforces_operation_quota() {
+        let state = TestDirectory::new("commit-staging-quota");
+        for index in 0..8 {
+            CommitStaging::create(&state.0, &format!("{index:064x}"), b"p", b"[core]\n", None)
+                .unwrap();
+        }
+        assert!(matches!(
+            CommitStaging::create(&state.0, &format!("{:064x}", 8), b"p", b"[core]\n", None,),
+            Err(StoreError::TooLarge)
+        ));
     }
 
     #[test]

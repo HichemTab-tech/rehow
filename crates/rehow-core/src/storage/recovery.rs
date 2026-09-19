@@ -23,6 +23,59 @@ pub(crate) struct GitCloneStaging {
     inner: store::CloneStaging,
 }
 
+pub(crate) struct GitCommitStaging {
+    inner: store::CommitStaging,
+}
+
+impl GitCommitStaging {
+    pub(crate) fn git_path(&self) -> &str {
+        self.inner.git_path()
+    }
+
+    pub(crate) fn git_descriptor(&self) -> i32 {
+        self.inner.git_descriptor()
+    }
+
+    pub(crate) fn stage_path(&self) -> &str {
+        self.inner.stage_path()
+    }
+
+    pub(crate) fn validation_path(&self) -> &str {
+        self.inner.validation_path()
+    }
+
+    pub(crate) fn write_validation_file(
+        &self,
+        relative_path: &str,
+        bytes: &[u8],
+    ) -> Result<(), GitCommitStagingError> {
+        self.inner
+            .write_validation_file(relative_path, bytes)
+            .map_err(map_commit_staging_error)
+    }
+
+    pub(crate) fn finish_validation_tree(&self) -> Result<(), GitCommitStagingError> {
+        self.inner
+            .finish_validation_tree()
+            .map_err(map_commit_staging_error)
+    }
+
+    pub(crate) fn verify_size_limit(&self, limit: u64) -> Result<(), GitCommitStagingError> {
+        self.inner
+            .verify_size_limit(limit)
+            .map_err(map_commit_staging_error)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitCommitStagingError {
+    Conflict,
+    Unsafe,
+    Unsupported,
+    TooLarge,
+    Io,
+}
+
 impl GitCloneStaging {
     pub(crate) fn git_path(&self) -> &str {
         self.inner.git_path()
@@ -155,6 +208,30 @@ pub(crate) fn create_git_clone_staging(
     store::CloneStaging::create(state_home, stage_name, provenance, git_config)
         .map(|inner| GitCloneStaging { inner })
         .map_err(map_clone_staging_error)
+}
+
+pub(crate) fn create_git_commit_staging(
+    state_home: &Path,
+    stage_name: &str,
+    provenance: &[u8],
+    git_config: &[u8],
+    index: Option<&[u8]>,
+) -> Result<GitCommitStaging, GitCommitStagingError> {
+    store::CommitStaging::create(state_home, stage_name, provenance, git_config, index)
+        .map(|inner| GitCommitStaging { inner })
+        .map_err(map_commit_staging_error)
+}
+
+fn map_commit_staging_error(error: store::StoreError) -> GitCommitStagingError {
+    match error {
+        store::StoreError::Conflict | store::StoreError::Busy => GitCommitStagingError::Conflict,
+        store::StoreError::Unsafe | store::StoreError::Corrupt => GitCommitStagingError::Unsafe,
+        store::StoreError::Unsupported => GitCommitStagingError::Unsupported,
+        store::StoreError::TooLarge => GitCommitStagingError::TooLarge,
+        store::StoreError::Io => GitCommitStagingError::Io,
+        #[cfg(test)]
+        store::StoreError::Injected => GitCommitStagingError::Io,
+    }
 }
 
 fn map_clone_staging_error(error: store::StoreError) -> GitCloneStagingError {
