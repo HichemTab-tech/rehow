@@ -14,10 +14,12 @@ use crate::{
         GitCloneStagingError, GitCommitMetadataStage, GitCommitMetadataStorageError,
         GitCommitPackInstallError, GitCommitRepositorySnapshot, GitCommitSnapshotError,
         GitConfigStorageError, GitInitializeStorageError, GitMaterializationPathKind,
-        GitRepositoryCapabilityError, MANAGED_BYTES_LIMIT, WorkspaceInspection, WorkspaceView,
-        classify_git_materialization_path, create_git_clone_staging,
-        execute_git_clone_materialization, finalize_git_clone_repository, inspect_workspace,
-        open_initialized_workspace, seal_git_clone_repository,
+        GitRepositoryCapabilityError, GitSyncMaterializationCurrent, GitSyncMaterializationSource,
+        GitSyncMaterializationStorageError, MANAGED_BYTES_LIMIT, WorkspaceInspection,
+        WorkspaceView, classify_git_materialization_path, create_git_clone_staging,
+        execute_git_clone_materialization, execute_git_sync_materialization,
+        finalize_git_clone_repository, inspect_workspace, open_initialized_workspace,
+        seal_git_clone_repository,
     },
 };
 use std::{
@@ -456,6 +458,7 @@ struct GitCandidateDirectory {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GitCommitManagedKind {
     Manifest,
+    GitIgnore,
     Category,
     Guide,
     Attachment,
@@ -475,6 +478,7 @@ struct GitCommitManagedFile {
     kind: GitCommitManagedKind,
     size: u64,
     revision: Revision,
+    mode: u32,
     blob_object_id: String,
 }
 
@@ -486,6 +490,7 @@ impl fmt::Debug for GitCommitManagedFile {
             .field("kind", &self.kind)
             .field("size", &self.size)
             .field("revision", &"<redacted>")
+            .field("mode", &format_args!("{:o}", self.mode))
             .field("blob_object_id", &"<redacted>")
             .finish()
     }
@@ -1313,6 +1318,38 @@ pub struct GitSyncClassification {
     ancestry: GitSyncAncestry,
 }
 
+#[allow(
+    dead_code,
+    reason = "opaque authority is consumed by the following Git metadata publication gate"
+)]
+pub(crate) struct GitSyncWorkspaceMaterialization {
+    classification: GitSyncClassification,
+    operation_id: OperationId,
+    created_at: Timestamp,
+    plan_hash: [u8; 32],
+    changed: bool,
+}
+
+impl fmt::Debug for GitSyncWorkspaceMaterialization {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitSyncWorkspaceMaterialization")
+            .field("changed", &self.changed)
+            .field("authority", &"<redacted>")
+            .finish()
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "consumed with the authority by the following Git metadata publication gate"
+)]
+impl GitSyncWorkspaceMaterialization {
+    pub(crate) fn changed(&self) -> bool {
+        self.changed
+    }
+}
+
 impl fmt::Debug for GitSyncClassification {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -1631,6 +1668,159 @@ pub fn classify_git_sync_ancestry(
         inspection,
         ancestry,
     })
+}
+
+/// Applies only the portable Workspace portion of a proven remote
+/// fast-forward through the recovery journal. Git objects, index, and refs are
+/// deliberately left for the following durable publication gate.
+#[allow(
+    dead_code,
+    reason = "internal Phase 5D2B1 primitive awaiting the atomic metadata publication gate"
+)]
+pub(crate) fn apply_git_sync_workspace_materialization(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    classification: GitSyncClassification,
+) -> Result<(Box<WorkspaceView>, GitSyncWorkspaceMaterialization), GitSyncError> {
+    if classification.ancestry != GitSyncAncestry::RemoteFastForward
+        || classification.inspection.local_changes()
+    {
+        return Err(GitSyncError::Unsupported);
+    }
+    let inspection = &classification.inspection;
+    revalidate_git_sync_plan(workspace, &inspection.plan)?;
+    let current_tree = inspect_fetched_git_clone_tree(
+        &inspection.staging,
+        &inspection.remote_head,
+        &AtomicBool::new(false),
+    )
+    .map_err(map_clone_inspection_to_sync)?;
+    if &current_tree != inspection.validated.tree() {
+        return Err(GitSyncError::PlanStale);
+    }
+
+    let mut current = Vec::new();
+    current
+        .try_reserve_exact(inspection.plan.preflight.managed.files.len())
+        .map_err(|_| GitSyncError::ResourceLimit)?;
+    for file in &inspection.plan.preflight.managed.files {
+        current.push(GitSyncMaterializationCurrent {
+            relative_path: file.path.clone(),
+            revision: file.revision,
+            size: file.size,
+            mode: file.mode,
+        });
+    }
+    let tree = inspection.validated.tree();
+    let mut incoming = Vec::new();
+    incoming
+        .try_reserve_exact(tree.entries().len())
+        .map_err(|_| GitSyncError::ResourceLimit)?;
+    for entry in tree.entries() {
+        incoming.push(GitSyncMaterializationSource {
+            relative_path: entry.relative_path().to_owned(),
+            size: entry.size(),
+        });
+    }
+    let operation_id = new_operation_id();
+    let created_at = current_timestamp();
+    let plan_hash = git_sync_materialization_plan_hash(inspection, operation_id);
+    let outcome = execute_git_sync_materialization(
+        workspace,
+        state_home,
+        runtime_directory,
+        operation_id,
+        created_at,
+        plan_hash,
+        &current,
+        &incoming,
+        || {
+            revalidate_git_sync_plan(workspace, &inspection.plan)
+                .map_err(|_| GitSyncMaterializationStorageError::SourceChanged)
+        },
+        |index, relative_path, size| {
+            let entry = tree
+                .entries()
+                .get(index)
+                .ok_or(GitSyncMaterializationStorageError::SourceChanged)?;
+            if entry.relative_path() != relative_path || entry.size() != size {
+                return Err(GitSyncMaterializationStorageError::SourceChanged);
+            }
+            let bytes = inspection
+                .staging
+                .read_validation_file(relative_path, size)
+                .map_err(map_sync_staging_to_materialization)?;
+            if !git_blob_object_id_matches(tree.object_format(), &bytes, entry.object_id()) {
+                return Err(GitSyncMaterializationStorageError::SourceChanged);
+            }
+            Ok(bytes)
+        },
+    )
+    .map_err(map_sync_materialization_to_sync)?;
+    let fresh = workspace.fresh_snapshot().map_err(|error| match error {
+        crate::storage::WorkspaceInspectError::ResourceLimit => GitSyncError::ResourceLimit,
+        crate::storage::WorkspaceInspectError::ChangedDuringRead => GitSyncError::PlanStale,
+        _ => GitSyncError::Io,
+    })?;
+    if !fresh.issues().is_empty()
+        || fresh.manifest().workspace_id()
+            != inspection.validated.workspace().manifest().workspace_id()
+        || !git_sync_workspace_matches_tree(&fresh, tree)?
+    {
+        return Err(GitSyncError::InvalidWorkspace);
+    }
+    Ok((
+        fresh,
+        GitSyncWorkspaceMaterialization {
+            classification,
+            operation_id,
+            created_at,
+            plan_hash,
+            changed: outcome.changed,
+        },
+    ))
+}
+
+#[allow(
+    dead_code,
+    reason = "used by the staged sync materialization primitive"
+)]
+fn git_sync_materialization_plan_hash(
+    inspection: &GitSyncInspection,
+    operation_id: OperationId,
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"rehow:git-sync-materialization:v1\0");
+    hash_clone_field(&mut hasher, operation_id.to_string().as_bytes());
+    hasher.update(&inspection.plan.preflight.root_capability_hash);
+    hasher.update(inspection.validated.tree().plan_hash().as_slice());
+    hash_clone_field(&mut hasher, inspection.remote_head.object_id().as_bytes());
+    *hasher.finalize().as_bytes()
+}
+
+#[allow(
+    dead_code,
+    reason = "used by the staged sync materialization primitive"
+)]
+fn git_sync_workspace_matches_tree(
+    workspace: &WorkspaceView,
+    tree: &GitCloneTree,
+) -> Result<bool, GitSyncError> {
+    let inventory = inspect_git_commit_managed_inventory(workspace, tree.object_format())
+        .map_err(map_commit_plan_to_sync)?;
+    if inventory.files.len() != tree.entries().len() {
+        return Ok(false);
+    }
+    Ok(inventory
+        .files
+        .iter()
+        .zip(tree.entries())
+        .all(|(current, remote)| {
+            current.path == remote.relative_path()
+                && current.size == remote.size()
+                && current.blob_object_id == remote.object_id()
+        }))
 }
 
 fn deepen_git_sync_remote(
@@ -9259,20 +9449,33 @@ fn inspect_git_commit_managed_inventory(
             Ok::<_, GitCommitPlanError>((guides, attachments))
         },
     )?;
-    let expected_count = 1usize
+    let mut expected_count = 1usize
         .checked_add(workspace.categories().len())
         .and_then(|count| count.checked_add(guide_count))
         .and_then(|count| count.checked_add(attachment_count))
         .ok_or(GitCommitPlanError::ResourceLimit)?;
     let mut expected = Vec::new();
     expected
-        .try_reserve_exact(expected_count)
+        .try_reserve_exact(expected_count.saturating_add(1))
         .map_err(|_| GitCommitPlanError::ResourceLimit)?;
     expected.push((
         "rehow.yaml".to_owned(),
         GitCommitManagedKind::Manifest,
         GitCommitManagedExpectation::Document(workspace.manifest_revision()),
     ));
+    if let Some(snapshot) = workspace
+        .read_optional_git_commit_managed_file(".gitignore", 64 * 1024)
+        .map_err(map_git_commit_workspace_read_error)?
+    {
+        expected_count = expected_count
+            .checked_add(1)
+            .ok_or(GitCommitPlanError::ResourceLimit)?;
+        expected.push((
+            ".gitignore".to_owned(),
+            GitCommitManagedKind::GitIgnore,
+            GitCommitManagedExpectation::Document(snapshot.revision),
+        ));
+    }
     for category in workspace.categories() {
         let descriptor = format!("{}/category.yaml", category.relative_directory());
         expected.push((
@@ -9300,7 +9503,7 @@ fn inspect_git_commit_managed_inventory(
     }
     if expected.len() != expected_count
         || expected.len()
-            > 1usize
+            > 2usize
                 .saturating_add(CATEGORY_LIMIT)
                 .saturating_add(GUIDE_COUNT_LIMIT)
                 .saturating_add(ATTACHMENT_COUNT_LIMIT)
@@ -9329,6 +9532,7 @@ fn inspect_git_commit_managed_inventory(
             classify_git_materialization_path(&path).ok_or(GitCommitPlanError::WorkspaceIssues)?;
         let expected_class = match kind {
             GitCommitManagedKind::Manifest => GitMaterializationPathKind::Manifest,
+            GitCommitManagedKind::GitIgnore => GitMaterializationPathKind::Ignore,
             GitCommitManagedKind::Category => GitMaterializationPathKind::Category,
             GitCommitManagedKind::Guide => GitMaterializationPathKind::Guide,
             GitCommitManagedKind::Attachment => GitMaterializationPathKind::Attachment,
@@ -9375,6 +9579,7 @@ fn inspect_git_commit_managed_inventory(
             kind,
             size,
             revision: snapshot.revision,
+            mode: snapshot.mode,
             blob_object_id: git_blob_object_id(object_format, &snapshot.bytes),
         });
     }
@@ -9528,6 +9733,38 @@ fn map_clone_staging_to_sync(error: GitCloneStagingError) -> GitSyncError {
         GitCloneStagingError::Unsafe => GitSyncError::Unsafe,
         GitCloneStagingError::Unsupported => GitSyncError::Unsupported,
         GitCloneStagingError::Io => GitSyncError::Io,
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "used by the staged sync materialization primitive"
+)]
+fn map_sync_staging_to_materialization(
+    error: GitCloneStagingError,
+) -> GitSyncMaterializationStorageError {
+    match error {
+        GitCloneStagingError::Conflict => GitSyncMaterializationStorageError::Conflict,
+        GitCloneStagingError::Unsafe => GitSyncMaterializationStorageError::Unsafe,
+        GitCloneStagingError::Unsupported => GitSyncMaterializationStorageError::Unsupported,
+        GitCloneStagingError::TooLarge => GitSyncMaterializationStorageError::TooLarge,
+        GitCloneStagingError::Io => GitSyncMaterializationStorageError::Io,
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "used by the staged sync materialization primitive"
+)]
+fn map_sync_materialization_to_sync(error: GitSyncMaterializationStorageError) -> GitSyncError {
+    match error {
+        GitSyncMaterializationStorageError::SourceChanged
+        | GitSyncMaterializationStorageError::Conflict => GitSyncError::PlanStale,
+        GitSyncMaterializationStorageError::Busy => GitSyncError::RecoveryRequired,
+        GitSyncMaterializationStorageError::Unsafe => GitSyncError::Unsafe,
+        GitSyncMaterializationStorageError::Unsupported => GitSyncError::Unsupported,
+        GitSyncMaterializationStorageError::TooLarge => GitSyncError::ResourceLimit,
+        GitSyncMaterializationStorageError::Io => GitSyncError::Io,
     }
 }
 
@@ -9720,10 +9957,11 @@ mod tests {
     use super::*;
     use crate::storage::{
         GitCloneFinalizeFault, GitCloneScaffoldFault, GitCommitMetadataFault,
-        GitCommitMetadataRace, GitConfigFault, GitConfigRace, GitInitFault, WorkspaceFault,
-        WorkspaceInspection, inspect_workspace, set_git_clone_finalize_fault,
+        GitCommitMetadataRace, GitConfigFault, GitConfigRace, GitInitFault, GitSyncDirectoryRace,
+        WorkspaceFault, WorkspaceInspection, inspect_workspace, set_git_clone_finalize_fault,
         set_git_clone_scaffold_fault, set_git_commit_metadata_fault, set_git_commit_metadata_race,
-        set_git_config_fault, set_git_config_race, set_git_init_fault, set_workspace_fault,
+        set_git_config_fault, set_git_config_race, set_git_init_fault, set_git_sync_directory_race,
+        set_git_sync_fail_after_directory_preparation, set_workspace_fault,
     };
     use std::{
         fs,
@@ -12486,6 +12724,62 @@ mod tests {
             .to_owned()
     }
 
+    fn stage_sync_fixture(
+        workspace: &WorkspaceView,
+        plan: GitSyncPlan,
+        state: &Temp,
+        source: &Temp,
+        remote_manifest: &[u8],
+    ) -> GitSyncInspection {
+        let commit_id = commit_clone_fixture(source, remote_manifest);
+        let remote_head = GitRemoteHead {
+            branch_ref: "refs/heads/main".to_owned(),
+            object_id: commit_id,
+            object_format: GitObjectFormat::Sha1,
+        };
+        let staging = prepare_git_sync_staging(&plan, &remote_head, &state.0).unwrap();
+        let mut fetch = Command::new("/usr/bin/git");
+        fetch
+            .env_clear()
+            .env("LANG", "C")
+            .env("LC_ALL", "C")
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args([
+                "--no-pager",
+                "--literal-pathspecs",
+                &format!("--git-dir={}", staging.git_path()),
+                "-c",
+                "protocol.file.allow=always",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "fetch.unpackLimit=1",
+                "-c",
+                "transfer.unpackLimit=1",
+                "-c",
+                "pack.writeReverseIndex=false",
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--no-write-fetch-head",
+            ])
+            .arg(source.0.to_str().unwrap())
+            .arg(format!("{}:refs/rehow/clone/head", remote_head.object_id()));
+        configure_clone_child(&mut fetch, staging.git_descriptor(), None);
+        assert!(fetch.status().unwrap().success());
+        finish_git_sync_inspection(
+            workspace,
+            plan,
+            staging,
+            remote_head,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    }
+
     fn stage_clone_fixture(
         target: &EmptyWorkspaceTarget,
         state: &Temp,
@@ -13346,6 +13640,368 @@ mod tests {
             classify_git_sync_ancestry(&workspace, inspection, &AtomicBool::new(true)),
             Err(GitSyncError::Cancelled)
         ));
+    }
+
+    #[test]
+    fn sync_materialization_updates_creates_and_trashes_without_publishing_git() {
+        let temp = Temp::new();
+        let state = Temp::new();
+        drop(configured_sync_workspace(&temp));
+        write_fixture_guide(&temp);
+        let removed_path = temp
+            .0
+            .join("categories/linux-system--b6ba3a5551/remove--36c5735e11.md");
+        fs::write(
+            &removed_path,
+            b"---\nschema_version: 1\nid: 0199a1d7-7b0d-7d8e-a38d-f936c5735e11\ntitle: Remove Me\nsummary: This Guide exists only locally.\ncategory_id: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5551\ntags: []\naliases: []\nstatus: draft\ncreated_at: \"2026-09-05T10:04:00Z\"\nupdated_at: \"2026-09-05T10:04:00Z\"\n---\n\n## Steps\n\nRemove it.\n",
+        )
+        .unwrap();
+        let removed_category = temp.0.join("categories/obsolete--b6ba3a5552");
+        fs::create_dir(&removed_category).unwrap();
+        fs::write(
+            removed_category.join("category.yaml"),
+            b"schema_version: 1\nid: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5552\nname: Obsolete\norder: 2000\nstatus: active\ncreated_at: \"2026-09-05T10:05:00Z\"\nupdated_at: \"2026-09-05T10:05:00Z\"\n",
+        )
+        .unwrap();
+        fixture_git(&temp, &["add", "--all", "--"]);
+        fixture_git(&temp, &["commit", "-qm", "local guides"]);
+
+        let workspace = open_workspace(&temp);
+        let plan = plan_git_sync(&workspace, &state.0).unwrap();
+        let before_head = fixture_git_stdout(&temp, &["rev-parse", "HEAD"]);
+
+        let source = Temp::new();
+        write_fixture_guide(&source);
+        let remote_guide_path = source
+            .0
+            .join("categories/linux-system--b6ba3a5551/install--36c5735e10.md");
+        let remote_guide = fs::read_to_string(&remote_guide_path)
+            .unwrap()
+            .replace("Extract it.", "Extract the remote archive.");
+        fs::write(&remote_guide_path, remote_guide).unwrap();
+        fs::write(source.0.join(".gitignore"), b"*.tmp\n").unwrap();
+        let remote_manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Remote\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T01:00:00Z\"\n";
+        let inspection = stage_sync_fixture(&workspace, plan, &state, &source, remote_manifest);
+        let classification = GitSyncClassification {
+            inspection,
+            ancestry: GitSyncAncestry::RemoteFastForward,
+        };
+
+        let (fresh, materialization) =
+            apply_git_sync_workspace_materialization(&workspace, &state.0, None, classification)
+                .unwrap();
+
+        assert!(materialization.changed());
+        assert_eq!(fresh.manifest().name(), "Remote");
+        assert_eq!(fs::read(temp.0.join(".gitignore")).unwrap(), b"*.tmp\n");
+        assert!(
+            fs::read_to_string(&remote_guide_path)
+                .unwrap()
+                .contains("remote archive")
+        );
+        assert!(
+            fs::read_to_string(
+                temp.0
+                    .join("categories/linux-system--b6ba3a5551/install--36c5735e10.md")
+            )
+            .unwrap()
+            .contains("remote archive")
+        );
+        assert!(!removed_path.exists());
+        assert!(!removed_category.exists());
+        assert!(
+            temp.0
+                .join(format!(
+                    ".rehow/trash/{}/categories/linux-system--b6ba3a5551/remove--36c5735e11.md",
+                    materialization.operation_id
+                ))
+                .is_file()
+        );
+        assert!(
+            temp.0
+                .join(format!(
+                    ".rehow/trash/{}/categories/obsolete--b6ba3a5552/category.yaml",
+                    materialization.operation_id
+                ))
+                .is_file()
+        );
+        assert_eq!(
+            fixture_git_stdout(&temp, &["rev-parse", "HEAD"]),
+            before_head
+        );
+        let debug = format!("{materialization:?}");
+        assert!(!debug.contains(&materialization.operation_id.to_string()));
+        assert!(!debug.contains("Remote"));
+    }
+
+    #[test]
+    fn sync_materialization_preserves_a_replacement_directory_during_cleanup() {
+        let temp = Temp::new();
+        let state = Temp::new();
+        drop(configured_sync_workspace(&temp));
+        let removed_category = temp.0.join("categories/obsolete--b6ba3a5552");
+        fs::create_dir(&removed_category).unwrap();
+        fs::write(
+            removed_category.join("category.yaml"),
+            b"schema_version: 1\nid: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5552\nname: Obsolete\norder: 2000\nstatus: active\ncreated_at: \"2026-09-05T10:05:00Z\"\nupdated_at: \"2026-09-05T10:05:00Z\"\n",
+        )
+        .unwrap();
+        fixture_git(&temp, &["add", "--all", "--"]);
+        fixture_git(&temp, &["commit", "-qm", "obsolete category"]);
+        let workspace = open_workspace(&temp);
+        let plan = plan_git_sync(&workspace, &state.0).unwrap();
+
+        let source = Temp::new();
+        let remote_manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Remote\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T01:00:00Z\"\n";
+        let inspection = stage_sync_fixture(&workspace, plan, &state, &source, remote_manifest);
+        let classification = GitSyncClassification {
+            inspection,
+            ancestry: GitSyncAncestry::RemoteFastForward,
+        };
+        set_git_sync_directory_race(GitSyncDirectoryRace::ReplaceCategory);
+
+        assert_eq!(
+            apply_git_sync_workspace_materialization(&workspace, &state.0, None, classification,)
+                .err()
+                .unwrap(),
+            GitSyncError::PlanStale
+        );
+        assert!(temp.0.join("categories/.rehow-race-original").is_dir());
+        let operation = fs::read_dir(temp.0.join(".rehow/trash"))
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|entry| entry.path().join("directories").is_dir())
+            .unwrap()
+            .path();
+        assert_eq!(
+            fs::read(
+                operation.join("directories/categories/obsolete--b6ba3a5552/replacement-marker")
+            )
+            .unwrap(),
+            b"preserve"
+        );
+    }
+
+    #[test]
+    fn sync_materialization_preserves_a_replacement_attachment_directory() {
+        use sha2::Digest as _;
+
+        let temp = Temp::new();
+        let state = Temp::new();
+        drop(configured_sync_workspace(&temp));
+        write_fixture_guide(&temp);
+        let bytes = b"attachment\n";
+        let sha = hex_lower(&sha2::Sha256::digest(bytes));
+        let guide_path = temp
+            .0
+            .join("categories/linux-system--b6ba3a5551/install--36c5735e10.md");
+        let guide = fs::read_to_string(&guide_path).unwrap().replace(
+            "aliases: []\nstatus:",
+            &format!(
+                "aliases: []\nattachments:\n  - id: 0199a264-ef5f-73b4-a238-a71ba1509898\n    path: attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/example.txt\n    title: Example\n    sha256: {sha}\n    size_bytes: {}\nstatus:",
+                bytes.len()
+            ),
+        );
+        fs::write(&guide_path, guide).unwrap();
+        let attachment_directory = temp
+            .0
+            .join("attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10");
+        fs::create_dir_all(&attachment_directory).unwrap();
+        fs::write(attachment_directory.join("example.txt"), bytes).unwrap();
+        fixture_git(&temp, &["add", "--all", "--"]);
+        fixture_git(&temp, &["commit", "-qm", "local attachment"]);
+        let workspace = open_workspace(&temp);
+        let plan = plan_git_sync(&workspace, &state.0).unwrap();
+
+        let source = Temp::new();
+        write_fixture_guide(&source);
+        let remote_manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Remote\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T01:00:00Z\"\n";
+        let inspection = stage_sync_fixture(&workspace, plan, &state, &source, remote_manifest);
+        let classification = GitSyncClassification {
+            inspection,
+            ancestry: GitSyncAncestry::RemoteFastForward,
+        };
+        set_git_sync_directory_race(GitSyncDirectoryRace::ReplaceAttachment);
+
+        assert_eq!(
+            apply_git_sync_workspace_materialization(&workspace, &state.0, None, classification,)
+                .err()
+                .unwrap(),
+            GitSyncError::PlanStale
+        );
+        assert!(temp.0.join("attachments/.rehow-race-original").is_dir());
+        let operation = fs::read_dir(temp.0.join(".rehow/trash"))
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|entry| entry.path().join("directories").is_dir())
+            .unwrap()
+            .path();
+        assert_eq!(
+            fs::read(operation.join(
+                "directories/attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/replacement-marker"
+            ))
+            .unwrap(),
+            b"preserve"
+        );
+    }
+
+    #[test]
+    fn sync_materialization_quarantines_an_empty_new_directory_after_failure() {
+        let temp = Temp::new();
+        let state = Temp::new();
+        let workspace = configured_sync_workspace(&temp);
+        let plan = plan_git_sync(&workspace, &state.0).unwrap();
+        let source = Temp::new();
+        write_fixture_guide(&source);
+        let remote_manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Remote\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T01:00:00Z\"\n";
+        let inspection = stage_sync_fixture(&workspace, plan, &state, &source, remote_manifest);
+        let classification = GitSyncClassification {
+            inspection,
+            ancestry: GitSyncAncestry::RemoteFastForward,
+        };
+        set_git_sync_fail_after_directory_preparation();
+
+        assert_eq!(
+            apply_git_sync_workspace_materialization(&workspace, &state.0, None, classification,)
+                .err()
+                .unwrap(),
+            GitSyncError::PlanStale
+        );
+        assert!(!temp.0.join("categories/linux-system--b6ba3a5551").exists());
+        let operation = fs::read_dir(temp.0.join(".rehow/trash"))
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|entry| entry.path().join("directories").is_dir())
+            .unwrap()
+            .path();
+        let quarantined = operation.join("directories/categories/linux-system--b6ba3a5551");
+        assert!(quarantined.is_dir());
+        assert!(fs::read_dir(quarantined).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn sync_materialization_quarantines_a_new_attachment_root_after_failure() {
+        use sha2::Digest as _;
+
+        let temp = Temp::new();
+        let state = Temp::new();
+        let workspace = configured_sync_workspace(&temp);
+        let plan = plan_git_sync(&workspace, &state.0).unwrap();
+        let source = Temp::new();
+        write_fixture_guide(&source);
+        let guide_id = "0199a1d7-7b0d-7d8e-a38d-f936c5735e10";
+        let bytes = b"attachment\n";
+        let sha = hex_lower(&sha2::Sha256::digest(bytes));
+        let guide_path = source
+            .0
+            .join("categories/linux-system--b6ba3a5551/install--36c5735e10.md");
+        let guide = fs::read_to_string(&guide_path).unwrap().replace(
+            "aliases: []\nstatus:",
+            &format!(
+                "aliases: []\nattachments:\n  - id: 0199a264-ef5f-73b4-a238-a71ba1509898\n    path: attachments/{guide_id}/example.txt\n    title: Example\n    sha256: {sha}\n    size_bytes: {}\nstatus:",
+                bytes.len()
+            ),
+        );
+        fs::write(&guide_path, guide).unwrap();
+        let source_attachment_directory = source.0.join(format!("attachments/{guide_id}"));
+        fs::create_dir_all(&source_attachment_directory).unwrap();
+        fs::write(source_attachment_directory.join("example.txt"), bytes).unwrap();
+        let remote_manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Remote\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T01:00:00Z\"\n";
+        let inspection = stage_sync_fixture(&workspace, plan, &state, &source, remote_manifest);
+        let classification = GitSyncClassification {
+            inspection,
+            ancestry: GitSyncAncestry::RemoteFastForward,
+        };
+        set_git_sync_fail_after_directory_preparation();
+
+        assert_eq!(
+            apply_git_sync_workspace_materialization(&workspace, &state.0, None, classification,)
+                .err()
+                .unwrap(),
+            GitSyncError::PlanStale
+        );
+        assert!(!temp.0.join("attachments").exists());
+        let operation = fs::read_dir(temp.0.join(".rehow/trash"))
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|entry| entry.path().join("directories").is_dir())
+            .unwrap()
+            .path();
+        let leaf = operation.join(format!("directories/attachments/{guide_id}"));
+        let root = operation.join("directories/roots/attachments");
+        assert!(leaf.is_dir());
+        assert!(root.is_dir());
+        assert!(fs::read_dir(leaf).unwrap().next().is_none());
+        assert!(fs::read_dir(root).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn sync_materialization_preserves_a_preexisting_empty_attachment_directory() {
+        use sha2::Digest as _;
+
+        let temp = Temp::new();
+        let state = Temp::new();
+        drop(configured_sync_workspace(&temp));
+        write_fixture_guide(&temp);
+        fixture_git(&temp, &["add", "--all", "--"]);
+        fixture_git(&temp, &["commit", "-qm", "local guide"]);
+        let guide_id = "0199a1d7-7b0d-7d8e-a38d-f936c5735e10";
+        let attachment_directory = temp.0.join(format!("attachments/{guide_id}"));
+        fs::create_dir_all(&attachment_directory).unwrap();
+        let workspace = open_workspace(&temp);
+        let plan = plan_git_sync(&workspace, &state.0).unwrap();
+
+        let source = Temp::new();
+        write_fixture_guide(&source);
+        let bytes = b"attachment\n";
+        let sha = hex_lower(&sha2::Sha256::digest(bytes));
+        let guide_path = source
+            .0
+            .join("categories/linux-system--b6ba3a5551/install--36c5735e10.md");
+        let guide = fs::read_to_string(&guide_path).unwrap().replace(
+            "aliases: []\nstatus:",
+            &format!(
+                "aliases: []\nattachments:\n  - id: 0199a264-ef5f-73b4-a238-a71ba1509898\n    path: attachments/{guide_id}/example.txt\n    title: Example\n    sha256: {sha}\n    size_bytes: {}\nstatus:",
+                bytes.len()
+            ),
+        );
+        fs::write(&guide_path, guide).unwrap();
+        let source_attachment_directory = source.0.join(format!("attachments/{guide_id}"));
+        fs::create_dir_all(&source_attachment_directory).unwrap();
+        fs::write(source_attachment_directory.join("example.txt"), bytes).unwrap();
+        let remote_manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Remote\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T01:00:00Z\"\n";
+        let inspection = stage_sync_fixture(&workspace, plan, &state, &source, remote_manifest);
+        let classification = GitSyncClassification {
+            inspection,
+            ancestry: GitSyncAncestry::RemoteFastForward,
+        };
+        set_git_sync_fail_after_directory_preparation();
+
+        assert_eq!(
+            apply_git_sync_workspace_materialization(&workspace, &state.0, None, classification,)
+                .err()
+                .unwrap(),
+            GitSyncError::PlanStale
+        );
+        assert!(attachment_directory.is_dir());
+        assert!(
+            fs::read_dir(&attachment_directory)
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        let trash = temp.0.join(".rehow/trash");
+        if trash.exists() {
+            for operation in fs::read_dir(trash).unwrap() {
+                assert!(
+                    !operation
+                        .unwrap()
+                        .path()
+                        .join(format!("directories/attachments/{guide_id}"))
+                        .exists()
+                );
+            }
+        }
     }
 
     #[test]

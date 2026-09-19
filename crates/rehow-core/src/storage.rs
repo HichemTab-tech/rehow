@@ -15,7 +15,9 @@ pub(crate) use recovery::{
     DocumentRemoveOutcome, DocumentUpdateError, DocumentUpdateOutcome,
     GitCloneMaterializationSource, GitCloneMaterializationStorageError,
     GitCloneMaterializationStorageOutcome, GitClonePackSource, GitCloneStaging,
-    GitCloneStagingError, MultiDocumentUpdateError, MultiDocumentUpdateOutcome, PreparedDocument,
+    GitCloneStagingError, GitSyncMaterializationCurrent, GitSyncMaterializationSource,
+    GitSyncMaterializationStorageError, GitSyncMaterializationStorageOutcome,
+    MultiDocumentUpdateError, MultiDocumentUpdateOutcome, PreparedDocument,
     WorkspaceInitializeError, WorkspaceInitializeOutcome, create_git_clone_staging,
 };
 pub use watch::{WorkspaceWatchError, WorkspaceWatchSignal, WorkspaceWatcher};
@@ -37,7 +39,9 @@ pub(crate) use linux::{
 };
 
 #[cfg(test)]
-pub(crate) use recovery::{WorkspaceFault, set_workspace_fault};
+pub(crate) use recovery::{
+    WorkspaceFault, set_git_sync_fail_after_directory_preparation, set_workspace_fault,
+};
 
 #[cfg(not(target_os = "linux"))]
 compile_error!("Rehow's confined Workspace storage currently requires Linux");
@@ -255,9 +259,94 @@ pub(crate) enum GitConfigRace {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitSyncDirectoryRace {
+    ReplaceCategory,
+    ReplaceAttachment,
+}
+
+#[cfg(test)]
 thread_local! {
     static GIT_CONFIG_FAULT: std::cell::Cell<Option<GitConfigFault>> = const { std::cell::Cell::new(None) };
     static GIT_CONFIG_RACE: std::cell::Cell<Option<GitConfigRace>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    static GIT_SYNC_DIRECTORY_RACE: std::cell::Cell<Option<GitSyncDirectoryRace>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_git_sync_directory_race(race: GitSyncDirectoryRace) {
+    GIT_SYNC_DIRECTORY_RACE.set(Some(race));
+}
+
+#[cfg(test)]
+fn git_sync_directory_race(
+    point: GitSyncDirectoryRace,
+    parent: &OwnedFd,
+    name: &str,
+) -> Result<(), linux::MutationIoError> {
+    if GIT_SYNC_DIRECTORY_RACE.get() != Some(point) {
+        return Ok(());
+    }
+    GIT_SYNC_DIRECTORY_RACE.set(None);
+    let name = std::ffi::CString::new(name).map_err(|_| linux::MutationIoError::Unsafe)?;
+    let backup = c".rehow-race-original";
+    // SAFETY: the retained parent and NUL-terminated names are valid.
+    if unsafe {
+        libc::renameat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            parent.as_raw_fd(),
+            backup.as_ptr(),
+        )
+    } != 0
+    {
+        return Err(linux::MutationIoError::Io);
+    }
+    // SAFETY: the retained parent and validated component are valid.
+    if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+        return Err(linux::MutationIoError::Io);
+    }
+    let replacement = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if replacement < 0 {
+        return Err(linux::MutationIoError::Io);
+    }
+    // SAFETY: successful `openat` returned a newly owned descriptor.
+    let replacement = unsafe { OwnedFd::from_raw_fd(replacement) };
+    let marker = unsafe {
+        libc::openat(
+            replacement.as_raw_fd(),
+            c"replacement-marker".as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            0o600,
+        )
+    };
+    if marker < 0 {
+        return Err(linux::MutationIoError::Io);
+    }
+    // SAFETY: successful `openat` returned a newly owned descriptor.
+    let mut marker = unsafe { File::from_raw_fd(marker) };
+    marker
+        .write_all(b"preserve")
+        .map_err(|_| linux::MutationIoError::Io)?;
+    marker
+        .sync_all()
+        .map_err(|_| linux::MutationIoError::Unsupported)?;
+    // SAFETY: both retained directory descriptors are valid.
+    if unsafe { libc::fsync(replacement.as_raw_fd()) } != 0
+        || unsafe { libc::fsync(parent.as_raw_fd()) } != 0
+    {
+        return Err(linux::MutationIoError::Unsupported);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2324,6 +2413,26 @@ impl WorkspaceView {
         })
     }
 
+    pub(crate) fn read_optional_git_commit_managed_file(
+        &self,
+        relative_path: &str,
+        limit: u64,
+    ) -> Result<Option<GitCommitManagedFileSnapshot>, GitCommitSnapshotError> {
+        let limit = usize::try_from(limit).map_err(|_| GitCommitSnapshotError::TooLarge)?;
+        let target = self
+            ._root
+            .open_managed_target(relative_path)
+            .map_err(map_git_commit_managed_read)?;
+        match target.state(limit).map_err(map_git_commit_managed_read)? {
+            linux::ManagedState::Missing => Ok(None),
+            linux::ManagedState::Regular(state) => Ok(Some(GitCommitManagedFileSnapshot {
+                revision: document_revision(relative_path, &state.bytes),
+                bytes: state.bytes,
+                mode: state.mode,
+            })),
+        }
+    }
+
     pub(crate) fn git_initialization_binding(&self) -> (String, Revision, [u8; 32]) {
         (
             self.manifest.workspace_id().to_string(),
@@ -2850,6 +2959,42 @@ where
         plan_hash,
         marker,
         sources,
+        read_file,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(
+    dead_code,
+    reason = "internal Phase 5D2B1 primitive awaiting the atomic metadata publication gate"
+)]
+pub(crate) fn execute_git_sync_materialization<V, F>(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    operation_id: crate::protocol::OperationId,
+    created_at: crate::protocol::Timestamp,
+    plan_hash: [u8; 32],
+    current: &[GitSyncMaterializationCurrent],
+    incoming: &[GitSyncMaterializationSource],
+    validate_current: V,
+    read_file: F,
+) -> Result<GitSyncMaterializationStorageOutcome, GitSyncMaterializationStorageError>
+where
+    V: FnOnce() -> Result<(), GitSyncMaterializationStorageError>,
+    F: FnMut(usize, &str, u64) -> Result<Vec<u8>, GitSyncMaterializationStorageError>,
+{
+    recovery::execute_git_sync_materialization(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        operation_id,
+        created_at,
+        plan_hash,
+        current,
+        incoming,
+        validate_current,
         read_file,
     )
 }
@@ -5164,6 +5309,196 @@ mod linux {
             self.sync_directory().map_err(map_clone_materialization_git)
         }
 
+        pub(super) fn prepare_git_sync_directories(
+            &self,
+            operation_id: crate::protocol::OperationId,
+            category_directories: &[String],
+            attachment_directories: &[String],
+        ) -> Result<(), MutationIoError> {
+            let categories = self.open_owned_workspace_directory("categories")?;
+            for name in category_directories {
+                if !super::valid_category_directory(name) {
+                    return Err(MutationIoError::Unsafe);
+                }
+                self.open_or_publish_git_sync_directory(
+                    &categories,
+                    operation_id,
+                    "categories",
+                    name,
+                )?;
+            }
+            categories
+                .sync_directory()
+                .map_err(map_clone_materialization_git)?;
+
+            if !attachment_directories.is_empty() {
+                let attachments = self.open_or_publish_git_sync_directory(
+                    self,
+                    operation_id,
+                    "roots",
+                    "attachments",
+                )?;
+                for guide_id in attachment_directories {
+                    if guide_id.parse::<crate::protocol::GuideId>().is_err() {
+                        return Err(MutationIoError::Unsafe);
+                    }
+                    self.open_or_publish_git_sync_directory(
+                        &attachments,
+                        operation_id,
+                        "attachments",
+                        guide_id,
+                    )?;
+                }
+                attachments
+                    .sync_directory()
+                    .map_err(map_clone_materialization_git)?;
+            }
+            self.sync_directory().map_err(map_clone_materialization_git)
+        }
+
+        fn open_or_publish_git_sync_directory(
+            &self,
+            active_parent: &Self,
+            operation_id: crate::protocol::OperationId,
+            kind: &str,
+            name: &str,
+        ) -> Result<Self, MutationIoError> {
+            if !matches!(kind, "roots" | "categories" | "attachments") {
+                return Err(MutationIoError::Unsafe);
+            }
+            match active_parent.open_owned_workspace_directory(name) {
+                Ok(directory) => {
+                    self.prepare_git_sync_directory_owner(
+                        operation_id,
+                        kind,
+                        name,
+                        &directory,
+                        false,
+                    )?;
+                    return Ok(directory);
+                }
+                Err(MutationIoError::Conflict) => {}
+                Err(error) => return Err(error),
+            }
+
+            let rehow = self.ensure_private_directory(".rehow")?;
+            let trash = rehow.ensure_private_directory("trash")?;
+            let operation = trash.ensure_private_directory(&operation_id.to_string())?;
+            let staging = operation.ensure_private_directory("directory-staging")?;
+            let staging_kind = staging.ensure_private_directory(kind)?;
+            let staged = match staging_kind.optional_private_directory(name)? {
+                Some(directory) => directory,
+                None => staging_kind.create_private_directory_exclusive(name)?,
+            };
+            if !staged
+                .entries(1)
+                .map_err(map_clone_materialization_inspect)?
+                .is_empty()
+            {
+                return Err(MutationIoError::Conflict);
+            }
+            self.prepare_git_sync_directory_owner(operation_id, kind, name, &staged, true)?;
+            let staged_identity = staged.identity()?;
+            let source = ManagedTarget {
+                directory: staging_kind.duplicate().map_err(|_| MutationIoError::Io)?,
+                name: name.to_owned(),
+            };
+            let destination = ManagedTarget {
+                directory: active_parent.duplicate().map_err(|_| MutationIoError::Io)?,
+                name: name.to_owned(),
+            };
+            source.move_to(&destination)?;
+            let active = active_parent.open_owned_workspace_directory(name)?;
+            if active.identity()? != staged_identity {
+                return Err(MutationIoError::Conflict);
+            }
+            staging_kind
+                .sync_directory()
+                .map_err(map_clone_materialization_git)?;
+            active_parent
+                .sync_directory()
+                .map_err(map_clone_materialization_git)?;
+            Ok(active)
+        }
+
+        fn prepare_git_sync_directory_owner(
+            &self,
+            operation_id: crate::protocol::OperationId,
+            kind: &str,
+            name: &str,
+            directory: &Self,
+            created: bool,
+        ) -> Result<(), MutationIoError> {
+            let identity = directory.identity()?;
+            let expected = git_sync_directory_owner_record(operation_id, kind, name, identity);
+            let Some(records) =
+                self.git_sync_directory_owner_records(operation_id, kind, created)?
+            else {
+                return Ok(());
+            };
+            if created {
+                records
+                    .create_or_verify_private_file(name, &expected)
+                    .map_err(map_clone_materialization_git)
+            } else if records
+                .entry_exists(name)
+                .map_err(|_| MutationIoError::Io)?
+            {
+                records
+                    .verify_private_file(name, &expected)
+                    .map_err(map_clone_materialization_git)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn git_sync_directory_owner_records(
+            &self,
+            operation_id: crate::protocol::OperationId,
+            kind: &str,
+            create: bool,
+        ) -> Result<Option<Self>, MutationIoError> {
+            if !matches!(kind, "roots" | "categories" | "attachments") {
+                return Err(MutationIoError::Unsafe);
+            }
+            let operation = operation_id.to_string();
+            let mut directory = self.duplicate().map_err(|_| MutationIoError::Io)?;
+            for part in [".rehow", "trash", &operation, "directory-owners", kind] {
+                directory = if create {
+                    directory.ensure_private_directory(part)?
+                } else {
+                    let Some(next) = directory.optional_private_directory(part)? else {
+                        return Ok(None);
+                    };
+                    next
+                };
+            }
+            Ok(Some(directory))
+        }
+
+        fn open_owned_workspace_directory(&self, name: &str) -> Result<Self, MutationIoError> {
+            let directory = match self.open_directory(name) {
+                Ok(directory) => directory,
+                Err(OpenDirectoryError::Missing) => return Err(MutationIoError::Conflict),
+                Err(OpenDirectoryError::Unsafe) => return Err(MutationIoError::Unsafe),
+                Err(OpenDirectoryError::Io(_)) => return Err(MutationIoError::Io),
+            };
+            let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: descriptor/status are valid.
+            if unsafe { libc::fstat(directory.descriptor.as_raw_fd(), status.as_mut_ptr()) } != 0 {
+                return Err(MutationIoError::Io);
+            }
+            // SAFETY: successful `fstat` initialized the structure.
+            let status = unsafe { status.assume_init() };
+            if status.st_uid != unsafe { libc::geteuid() }
+                || status.st_mode & libc::S_IFMT != libc::S_IFDIR
+                || status.st_mode & 0o022 != 0
+            {
+                return Err(MutationIoError::Unsafe);
+            }
+            Ok(directory)
+        }
+
         pub(super) fn git_initialization_resumable(
             &self,
             marker: &[u8],
@@ -5468,7 +5803,7 @@ mod linux {
             if !super::valid_category_directory(name) {
                 return Err(MutationIoError::Unsafe);
             }
-            let categories = self.open_private_directory("categories")?;
+            let categories = self.open_owned_workspace_directory("categories")?;
             categories.create_private_directory_exclusive(name)?;
             Ok(())
         }
@@ -5520,39 +5855,198 @@ mod linux {
             available_attachment_path_in(&directory, guide_id, filename)
         }
 
-        pub(super) fn remove_empty_category_directory(
+        pub(super) fn quarantine_empty_category_directory(
             &self,
             relative_directory: &str,
-        ) -> Result<(), MutationIoError> {
+            operation_id: crate::protocol::OperationId,
+        ) -> Result<bool, MutationIoError> {
             let Some(name) = relative_directory.strip_prefix("categories/") else {
                 return Err(MutationIoError::Unsafe);
             };
             if !super::valid_category_directory(name) {
                 return Err(MutationIoError::Unsafe);
             }
-            let categories = self.open_private_directory("categories")?;
-            let name = component(name).map_err(|_| MutationIoError::Unsafe)?;
-            // SAFETY: `categories` is retained and `name` is a validated component.
-            if unsafe {
-                libc::unlinkat(
-                    categories.descriptor.as_raw_fd(),
-                    name.as_ptr(),
-                    libc::AT_REMOVEDIR,
-                )
-            } != 0
-            {
-                return match io::Error::last_os_error().raw_os_error() {
-                    Some(libc::ENOENT) => Ok(()),
-                    Some(libc::ENOTEMPTY) | Some(libc::EEXIST) => Err(MutationIoError::Conflict),
-                    Some(libc::ENOTDIR) | Some(libc::ELOOP) => Err(MutationIoError::Unsafe),
-                    _ => Err(MutationIoError::Io),
+            let categories = self.open_owned_workspace_directory("categories")?;
+            self.quarantine_empty_owned_directory(
+                &categories,
+                name,
+                "categories",
+                operation_id,
+                false,
+            )
+        }
+
+        pub(super) fn quarantine_empty_attachment_directory(
+            &self,
+            relative_path: &str,
+            operation_id: crate::protocol::OperationId,
+        ) -> Result<bool, MutationIoError> {
+            let Some(remainder) = relative_path.strip_prefix("attachments/") else {
+                return Err(MutationIoError::Unsafe);
+            };
+            let Some((guide_id, _)) = remainder.split_once('/') else {
+                return Err(MutationIoError::Unsafe);
+            };
+            if guide_id.parse::<crate::protocol::GuideId>().is_err() {
+                return Err(MutationIoError::Unsafe);
+            }
+            let attachments = match self.open_owned_workspace_directory("attachments") {
+                Ok(directory) => directory,
+                Err(MutationIoError::Conflict) => return Ok(true),
+                Err(error) => return Err(error),
+            };
+            self.quarantine_empty_owned_directory(
+                &attachments,
+                guide_id,
+                "attachments",
+                operation_id,
+                false,
+            )
+        }
+
+        pub(super) fn quarantine_empty_git_sync_category_directory(
+            &self,
+            relative_directory: &str,
+            operation_id: crate::protocol::OperationId,
+        ) -> Result<bool, MutationIoError> {
+            let Some(name) = relative_directory.strip_prefix("categories/") else {
+                return Err(MutationIoError::Unsafe);
+            };
+            if !super::valid_category_directory(name) {
+                return Err(MutationIoError::Unsafe);
+            }
+            let categories = self.open_owned_workspace_directory("categories")?;
+            self.quarantine_empty_owned_directory(
+                &categories,
+                name,
+                "categories",
+                operation_id,
+                true,
+            )
+        }
+
+        pub(super) fn quarantine_empty_git_sync_attachment_directory(
+            &self,
+            relative_path: &str,
+            operation_id: crate::protocol::OperationId,
+        ) -> Result<bool, MutationIoError> {
+            let Some(remainder) = relative_path.strip_prefix("attachments/") else {
+                return Err(MutationIoError::Unsafe);
+            };
+            let Some((guide_id, _)) = remainder.split_once('/') else {
+                return Err(MutationIoError::Unsafe);
+            };
+            if guide_id.parse::<crate::protocol::GuideId>().is_err() {
+                return Err(MutationIoError::Unsafe);
+            }
+            let attachments = match self.open_owned_workspace_directory("attachments") {
+                Ok(directory) => directory,
+                Err(MutationIoError::Conflict) => return Ok(true),
+                Err(error) => return Err(error),
+            };
+            self.quarantine_empty_owned_directory(
+                &attachments,
+                guide_id,
+                "attachments",
+                operation_id,
+                true,
+            )
+        }
+
+        pub(super) fn quarantine_empty_git_sync_attachments_root(
+            &self,
+            operation_id: crate::protocol::OperationId,
+        ) -> Result<bool, MutationIoError> {
+            self.quarantine_empty_owned_directory(self, "attachments", "roots", operation_id, true)
+        }
+
+        fn quarantine_empty_owned_directory(
+            &self,
+            active_parent: &Self,
+            name: &str,
+            kind: &str,
+            operation_id: crate::protocol::OperationId,
+            require_git_sync_owner: bool,
+        ) -> Result<bool, MutationIoError> {
+            let active = match active_parent.open_owned_workspace_directory(name) {
+                Ok(directory) => directory,
+                Err(MutationIoError::Conflict) => return Ok(true),
+                Err(error) => return Err(error),
+            };
+            if require_git_sync_owner {
+                let identity = active.identity()?;
+                let expected = git_sync_directory_owner_record(operation_id, kind, name, identity);
+                let Some(records) =
+                    self.git_sync_directory_owner_records(operation_id, kind, false)?
+                else {
+                    return Ok(false);
                 };
+                if !records
+                    .entry_exists(name)
+                    .map_err(|_| MutationIoError::Io)?
+                {
+                    return Ok(false);
+                }
+                records
+                    .verify_private_file(name, &expected)
+                    .map_err(map_clone_materialization_git)?;
             }
-            // SAFETY: the retained `categories` descriptor is valid.
-            if unsafe { libc::fsync(categories.descriptor.as_raw_fd()) } != 0 {
-                return Err(MutationIoError::Unsupported);
+            if !active
+                .entries(1)
+                .map_err(map_clone_materialization_inspect)?
+                .is_empty()
+            {
+                return Ok(false);
             }
-            Ok(())
+            let active_identity = active.identity()?;
+            let rehow = self.ensure_private_directory(".rehow")?;
+            let trash = rehow.ensure_private_directory("trash")?;
+            let operation = trash.ensure_private_directory(&operation_id.to_string())?;
+            let directories = operation.ensure_private_directory("directories")?;
+            let destination_parent = directories.ensure_private_directory(kind)?;
+            match destination_parent.open_directory(name) {
+                Err(OpenDirectoryError::Missing) => {}
+                Ok(_) => return Err(MutationIoError::Conflict),
+                Err(OpenDirectoryError::Unsafe) => return Err(MutationIoError::Unsafe),
+                Err(OpenDirectoryError::Io(_)) => return Err(MutationIoError::Io),
+            }
+            let source = ManagedTarget {
+                directory: active_parent.duplicate().map_err(|_| MutationIoError::Io)?,
+                name: name.to_owned(),
+            };
+            let destination = ManagedTarget {
+                directory: destination_parent
+                    .duplicate()
+                    .map_err(|_| MutationIoError::Io)?,
+                name: name.to_owned(),
+            };
+            #[cfg(test)]
+            super::git_sync_directory_race(
+                if kind == "categories" {
+                    super::GitSyncDirectoryRace::ReplaceCategory
+                } else {
+                    super::GitSyncDirectoryRace::ReplaceAttachment
+                },
+                &active_parent.descriptor,
+                name,
+            )?;
+            source.move_to(&destination)?;
+            let quarantined = destination_parent.open_owned_workspace_directory(name)?;
+            if quarantined.identity()? != active_identity
+                || !quarantined
+                    .entries(1)
+                    .map_err(map_clone_materialization_inspect)?
+                    .is_empty()
+            {
+                return Err(MutationIoError::Conflict);
+            }
+            active_parent
+                .sync_directory()
+                .map_err(map_clone_materialization_git)?;
+            destination_parent
+                .sync_directory()
+                .map_err(map_clone_materialization_git)?;
+            Ok(true)
         }
 
         pub(super) fn category_directory_exists(
@@ -5565,8 +6059,8 @@ mod linux {
             if !super::valid_category_directory(name) {
                 return Err(MutationIoError::Unsafe);
             }
-            let categories = self.open_private_directory("categories")?;
-            match categories.open_private_directory(name) {
+            let categories = self.open_owned_workspace_directory("categories")?;
+            match categories.open_owned_workspace_directory(name) {
                 Ok(_) => Ok(true),
                 Err(MutationIoError::Conflict) => Ok(false),
                 Err(error) => Err(error),
@@ -6139,6 +6633,18 @@ mod linux {
             GitInitializeStorageError::Unsupported => MutationIoError::Unsupported,
             GitInitializeStorageError::Io => MutationIoError::Io,
         }
+    }
+
+    fn git_sync_directory_owner_record(
+        operation_id: crate::protocol::OperationId,
+        kind: &str,
+        name: &str,
+        (device, inode): (u64, u64),
+    ) -> Vec<u8> {
+        format!(
+            "rehow-git-sync-directory-owner-v1\n{operation_id}\n{kind}\n{name}\n{device}\n{inode}\n"
+        )
+        .into_bytes()
     }
 
     fn map_clone_materialization_inspect(error: WorkspaceInspectError) -> MutationIoError {

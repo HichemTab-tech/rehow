@@ -20,6 +20,25 @@ mod workspace;
 #[cfg(test)]
 pub(crate) use workspace::{WorkspaceFault, set_workspace_fault};
 
+#[cfg(test)]
+thread_local! {
+    static GIT_SYNC_FAIL_AFTER_DIRECTORY_PREPARATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_git_sync_fail_after_directory_preparation() {
+    GIT_SYNC_FAIL_AFTER_DIRECTORY_PREPARATION.set(true);
+}
+
+#[cfg(test)]
+fn git_sync_fail_after_directory_preparation() -> Result<(), GitSyncMaterializationStorageError> {
+    if GIT_SYNC_FAIL_AFTER_DIRECTORY_PREPARATION.replace(false) {
+        Err(GitSyncMaterializationStorageError::Conflict)
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) struct GitCloneStaging {
     inner: store::CloneStaging,
 }
@@ -396,6 +415,27 @@ pub(crate) struct GitCloneMaterializationSource {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GitSyncMaterializationCurrent {
+    pub(crate) relative_path: String,
+    pub(crate) revision: Revision,
+    pub(crate) size: u64,
+    pub(crate) mode: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GitSyncMaterializationSource {
+    pub(crate) relative_path: String,
+    pub(crate) size: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GitSyncMaterializationStorageOutcome {
+    pub(crate) changed: bool,
+}
+
+pub(crate) type GitSyncMaterializationStorageError = GitCloneMaterializationStorageError;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GitClonePackSource {
     pub(crate) name: String,
     pub(crate) size: u64,
@@ -752,6 +792,444 @@ where
     workspace::resume_journal(root, &store, &lock, operation_id)
         .map_err(map_workspace_clone_materialization)?;
     Ok(GitCloneMaterializationStorageOutcome)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_git_sync_materialization<V, F>(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    operation_id: OperationId,
+    created_at: Timestamp,
+    plan_hash: [u8; 32],
+    current: &[GitSyncMaterializationCurrent],
+    incoming: &[GitSyncMaterializationSource],
+    validate_current: V,
+    mut read_file: F,
+) -> Result<GitSyncMaterializationStorageOutcome, GitSyncMaterializationStorageError>
+where
+    V: FnOnce() -> Result<(), GitSyncMaterializationStorageError>,
+    F: FnMut(usize, &str, u64) -> Result<Vec<u8>, GitSyncMaterializationStorageError>,
+{
+    if incoming.is_empty()
+        || current.len() > MAX_TARGETS
+        || incoming.len() > MAX_TARGETS
+        || !sync_materialization_paths_valid(current, incoming)
+        || !sync_materialization_union_within_limit(current, incoming)
+    {
+        return Err(GitCloneMaterializationStorageError::Unsafe);
+    }
+    let store = store::RecoveryStore::open(
+        state_home,
+        workspace_id,
+        root.root_hash(),
+        root.capability_hash(),
+    )
+    .map_err(map_store_clone_materialization)?;
+    let lock = store
+        .acquire_lock(runtime_directory)
+        .map_err(map_store_clone_materialization)?;
+    let (root_device, root_inode) = root.identity().map_err(map_io_clone_materialization)?;
+
+    match store.read_journal(&lock, operation_id) {
+        Ok(journal) => {
+            if journal.operation_kind != OperationKind::Migration
+                || journal.workspace_id != workspace_id
+                || journal.root_hash != root.root_hash()
+                || journal.root_device != root_device
+                || journal.root_inode != root_inode
+                || journal.created_at != created_at
+                || journal.plan_hash != plan_hash
+            {
+                return Err(GitCloneMaterializationStorageError::Conflict);
+            }
+            resume_git_sync_journal(root, &store, &lock, &journal)?;
+            return Ok(GitSyncMaterializationStorageOutcome {
+                changed: !journal.targets.is_empty(),
+            });
+        }
+        Err(read_error) => match store.journal_missing(&lock, operation_id) {
+            Ok(true) => {}
+            Ok(false) => return Err(map_store_clone_materialization(read_error)),
+            Err(error) => return Err(map_store_clone_materialization(error)),
+        },
+    }
+
+    validate_current()?;
+    let mut targets = Vec::new();
+    targets
+        .try_reserve_exact(current.len().saturating_add(incoming.len()))
+        .map_err(|_| GitCloneMaterializationStorageError::TooLarge)?;
+    let mut current_index = 0usize;
+    let mut incoming_index = 0usize;
+    while current_index < current.len() || incoming_index < incoming.len() {
+        let current_item = current.get(current_index);
+        let incoming_item = incoming.get(incoming_index);
+        match (current_item, incoming_item) {
+            (Some(existing), Some(candidate))
+                if existing.relative_path == candidate.relative_path =>
+            {
+                let (old_hash, old_mode) = read_git_sync_current(root, &store, &lock, existing)?;
+                let bytes = read_file(incoming_index, &candidate.relative_path, candidate.size)?;
+                if bytes.len() as u64 != candidate.size {
+                    return Err(GitCloneMaterializationStorageError::SourceChanged);
+                }
+                let new_hash = store
+                    .store_object(&lock, &bytes)
+                    .map_err(map_store_clone_materialization)?;
+                if old_hash != new_hash {
+                    targets.push(Target {
+                        relative_path: existing.relative_path.clone(),
+                        expected: ExpectedState::Existing {
+                            revision: existing.revision,
+                            object_hash: old_hash,
+                            mode: old_mode,
+                        },
+                        intended: IntendedState::Object {
+                            object_hash: new_hash,
+                            mode: old_mode,
+                        },
+                        temp_name: format!(".rehow-tmp-{operation_id}-{}", targets.len()),
+                        step: TargetStep::Prepared,
+                    });
+                }
+                current_index += 1;
+                incoming_index += 1;
+            }
+            (Some(existing), Some(candidate))
+                if existing.relative_path < candidate.relative_path =>
+            {
+                push_git_sync_deletion(root, &store, &lock, operation_id, existing, &mut targets)?;
+                current_index += 1;
+            }
+            (Some(_), Some(candidate)) => {
+                push_git_sync_creation(
+                    &store,
+                    &lock,
+                    operation_id,
+                    incoming_index,
+                    candidate,
+                    &mut targets,
+                    &mut read_file,
+                )?;
+                incoming_index += 1;
+            }
+            (Some(existing), None) => {
+                push_git_sync_deletion(root, &store, &lock, operation_id, existing, &mut targets)?;
+                current_index += 1;
+            }
+            (None, Some(candidate)) => {
+                push_git_sync_creation(
+                    &store,
+                    &lock,
+                    operation_id,
+                    incoming_index,
+                    candidate,
+                    &mut targets,
+                    &mut read_file,
+                )?;
+                incoming_index += 1;
+            }
+            (None, None) => break,
+        }
+        if targets.len() > MAX_TARGETS {
+            return Err(GitSyncMaterializationStorageError::TooLarge);
+        }
+    }
+    if targets.is_empty() {
+        return Ok(GitSyncMaterializationStorageOutcome { changed: false });
+    }
+    targets.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    let journal = Journal {
+        generation: 1,
+        operation_id,
+        operation_kind: OperationKind::Migration,
+        workspace_id,
+        root_hash: root.root_hash(),
+        root_device,
+        root_inode,
+        created_at,
+        plan_hash,
+        targets,
+        stage: JournalStage::Prepared,
+        completion: false,
+    };
+    journal.encode().map_err(|error| match error {
+        JournalCodecError::TooLarge | JournalCodecError::ResourceLimit => {
+            GitSyncMaterializationStorageError::TooLarge
+        }
+        JournalCodecError::Invalid => GitSyncMaterializationStorageError::Unsafe,
+    })?;
+    store
+        .install_journal(&lock, &journal)
+        .map_err(map_store_clone_materialization)?;
+    resume_git_sync_journal(root, &store, &lock, &journal)?;
+    Ok(GitSyncMaterializationStorageOutcome { changed: true })
+}
+
+fn sync_materialization_paths_valid(
+    current: &[GitSyncMaterializationCurrent],
+    incoming: &[GitSyncMaterializationSource],
+) -> bool {
+    let current_valid = current
+        .windows(2)
+        .all(|pair| pair[0].relative_path < pair[1].relative_path)
+        && current.iter().all(|item| {
+            valid_active_path(&item.relative_path)
+                && item.size <= 64 * 1024 * 1024
+                && item.mode & 0o111 == 0
+        });
+    let incoming_valid = incoming
+        .windows(2)
+        .all(|pair| pair[0].relative_path < pair[1].relative_path)
+        && incoming
+            .iter()
+            .all(|item| valid_active_path(&item.relative_path) && item.size <= 64 * 1024 * 1024);
+    current_valid
+        && incoming_valid
+        && incoming
+            .iter()
+            .any(|item| item.relative_path == "rehow.yaml")
+}
+
+fn sync_materialization_union_within_limit(
+    current: &[GitSyncMaterializationCurrent],
+    incoming: &[GitSyncMaterializationSource],
+) -> bool {
+    let mut current_index = 0usize;
+    let mut incoming_index = 0usize;
+    let mut union_len = 0usize;
+    while current_index < current.len() || incoming_index < incoming.len() {
+        union_len = union_len.saturating_add(1);
+        if union_len > MAX_TARGETS {
+            return false;
+        }
+        match (current.get(current_index), incoming.get(incoming_index)) {
+            (Some(existing), Some(candidate))
+                if existing.relative_path == candidate.relative_path =>
+            {
+                current_index += 1;
+                incoming_index += 1;
+            }
+            (Some(existing), Some(candidate))
+                if existing.relative_path < candidate.relative_path =>
+            {
+                current_index += 1;
+            }
+            (Some(_), Some(_)) => incoming_index += 1,
+            (Some(_), None) => current_index += 1,
+            (None, Some(_)) => incoming_index += 1,
+            (None, None) => break,
+        }
+    }
+    true
+}
+
+fn read_git_sync_current(
+    root: &super::linux::DirectoryCapability,
+    store: &store::RecoveryStore,
+    lock: &store::WriterLock,
+    existing: &GitSyncMaterializationCurrent,
+) -> Result<(ContentHash, u32), GitSyncMaterializationStorageError> {
+    let (_, limit) = super::classify_git_materialization_path(&existing.relative_path)
+        .ok_or(GitSyncMaterializationStorageError::Unsafe)?;
+    let limit = usize::try_from(limit).map_err(|_| GitSyncMaterializationStorageError::TooLarge)?;
+    let target = root
+        .open_managed_target(&existing.relative_path)
+        .map_err(map_io_clone_materialization)?;
+    let state = match target.state(limit).map_err(map_io_clone_materialization)? {
+        super::linux::ManagedState::Missing => {
+            return Err(GitSyncMaterializationStorageError::Conflict);
+        }
+        super::linux::ManagedState::Regular(state) => state,
+    };
+    if state.bytes.len() as u64 != existing.size
+        || state.mode != existing.mode
+        || super::document_revision(&existing.relative_path, &state.bytes) != existing.revision
+    {
+        return Err(GitSyncMaterializationStorageError::Conflict);
+    }
+    let hash = store
+        .store_object(lock, &state.bytes)
+        .map_err(map_store_clone_materialization)?;
+    Ok((hash, state.mode))
+}
+
+fn push_git_sync_creation<F>(
+    store: &store::RecoveryStore,
+    lock: &store::WriterLock,
+    operation_id: OperationId,
+    incoming_index: usize,
+    candidate: &GitSyncMaterializationSource,
+    targets: &mut Vec<Target>,
+    read_file: &mut F,
+) -> Result<(), GitSyncMaterializationStorageError>
+where
+    F: FnMut(usize, &str, u64) -> Result<Vec<u8>, GitSyncMaterializationStorageError>,
+{
+    let bytes = read_file(incoming_index, &candidate.relative_path, candidate.size)?;
+    if bytes.len() as u64 != candidate.size {
+        return Err(GitSyncMaterializationStorageError::SourceChanged);
+    }
+    let object_hash = store
+        .store_object(lock, &bytes)
+        .map_err(map_store_clone_materialization)?;
+    targets.push(Target {
+        relative_path: candidate.relative_path.clone(),
+        expected: ExpectedState::Absent,
+        intended: IntendedState::Object {
+            object_hash,
+            mode: 0o600,
+        },
+        temp_name: format!(".rehow-tmp-{operation_id}-{}", targets.len()),
+        step: TargetStep::Prepared,
+    });
+    Ok(())
+}
+
+fn push_git_sync_deletion(
+    root: &super::linux::DirectoryCapability,
+    store: &store::RecoveryStore,
+    lock: &store::WriterLock,
+    operation_id: OperationId,
+    existing: &GitSyncMaterializationCurrent,
+    targets: &mut Vec<Target>,
+) -> Result<(), GitSyncMaterializationStorageError> {
+    let (object_hash, mode) = read_git_sync_current(root, store, lock, existing)?;
+    targets.push(Target {
+        relative_path: existing.relative_path.clone(),
+        expected: ExpectedState::Existing {
+            revision: existing.revision,
+            object_hash,
+            mode,
+        },
+        intended: IntendedState::Trash {
+            object_hash,
+            mode,
+            destination: format!(".rehow/trash/{operation_id}/{}", existing.relative_path),
+        },
+        temp_name: format!(".rehow-tmp-{operation_id}-{}", targets.len()),
+        step: TargetStep::Prepared,
+    });
+    Ok(())
+}
+
+fn prepare_git_sync_directories(
+    root: &super::linux::DirectoryCapability,
+    operation_id: OperationId,
+    targets: &[Target],
+) -> Result<(), GitSyncMaterializationStorageError> {
+    let mut categories = HashSet::new();
+    let mut attachments = HashSet::new();
+    for target in targets {
+        if target.relative_path.starts_with("attachments/")
+            && let IntendedState::Trash { destination, .. } = &target.intended
+        {
+            root.prepare_trash_target(destination)
+                .map_err(map_io_clone_materialization)?
+                .sync_directory()
+                .map_err(map_io_clone_materialization)?;
+        }
+        if !matches!(target.intended, IntendedState::Object { .. }) {
+            continue;
+        }
+        if let Some(remainder) = target.relative_path.strip_prefix("categories/")
+            && let Some((directory, _)) = remainder.split_once('/')
+        {
+            categories.insert(directory.to_owned());
+        }
+        if let Some(remainder) = target.relative_path.strip_prefix("attachments/")
+            && let Some((guide_id, _)) = remainder.split_once('/')
+        {
+            attachments.insert(guide_id.to_owned());
+        }
+    }
+    let mut categories = categories.into_iter().collect::<Vec<_>>();
+    categories.sort_unstable();
+    let mut attachments = attachments.into_iter().collect::<Vec<_>>();
+    attachments.sort_unstable();
+    root.prepare_git_sync_directories(operation_id, &categories, &attachments)
+        .map_err(map_io_clone_materialization)
+}
+
+fn resume_git_sync_journal(
+    root: &super::linux::DirectoryCapability,
+    store: &store::RecoveryStore,
+    lock: &store::WriterLock,
+    journal: &Journal,
+) -> Result<(), GitSyncMaterializationStorageError> {
+    let preparation = if matches!(
+        journal.stage,
+        JournalStage::Conflict | JournalStage::Committed
+    ) {
+        Ok(())
+    } else {
+        prepare_git_sync_directories(root, journal.operation_id, &journal.targets)
+    };
+    if let Err(error) = preparation {
+        quarantine_empty_git_sync_directories(root, journal.operation_id, &journal.targets)?;
+        return Err(error);
+    }
+    #[cfg(test)]
+    if let Err(error) = git_sync_fail_after_directory_preparation() {
+        quarantine_empty_git_sync_directories(root, journal.operation_id, &journal.targets)?;
+        return Err(error);
+    }
+    let resumed = workspace::resume_journal(root, store, lock, journal.operation_id)
+        .map_err(map_workspace_clone_materialization);
+    if let Err(error) = resumed {
+        quarantine_empty_git_sync_directories(root, journal.operation_id, &journal.targets)?;
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn quarantine_empty_git_sync_directories(
+    root: &super::linux::DirectoryCapability,
+    operation_id: OperationId,
+    targets: &[Target],
+) -> Result<(), GitSyncMaterializationStorageError> {
+    let mut categories = HashSet::new();
+    let mut attachments = HashSet::new();
+    for target in targets {
+        if !matches!(target.expected, ExpectedState::Absent)
+            || !matches!(target.intended, IntendedState::Object { .. })
+        {
+            continue;
+        }
+        if let Some(remainder) = target.relative_path.strip_prefix("categories/")
+            && let Some((directory, _)) = remainder.split_once('/')
+        {
+            categories.insert(format!("categories/{directory}"));
+        }
+        if let Some(remainder) = target.relative_path.strip_prefix("attachments/")
+            && let Some((guide_id, _)) = remainder.split_once('/')
+        {
+            attachments.insert(format!("attachments/{guide_id}/placeholder"));
+        }
+    }
+    let mut categories = categories.into_iter().collect::<Vec<_>>();
+    categories.sort_unstable();
+    for category in categories {
+        let _ = root
+            .quarantine_empty_git_sync_category_directory(&category, operation_id)
+            .map_err(map_io_clone_materialization)?;
+    }
+    let mut attachments = attachments.into_iter().collect::<Vec<_>>();
+    attachments.sort_unstable();
+    let has_attachments = !attachments.is_empty();
+    for attachment in attachments {
+        let _ = root
+            .quarantine_empty_git_sync_attachment_directory(&attachment, operation_id)
+            .map_err(map_io_clone_materialization)?;
+    }
+    if has_attachments {
+        let _ = root
+            .quarantine_empty_git_sync_attachments_root(operation_id)
+            .map_err(map_io_clone_materialization)?;
+    }
+    Ok(())
 }
 
 fn journal_matches_plan(persisted: &Journal, prepared: &Journal) -> bool {

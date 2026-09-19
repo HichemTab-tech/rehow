@@ -25,9 +25,15 @@ Core consumes the opaque validated inspection, honors cancellation before every 
 
 History output is capped and accepts only full-width object IDs headed by the expected commit. Exact shallow-file content and metadata are plan-bound and checked around local reads; staged shallow state and repository metadata are checked around staged reads. Proven containment yields `remoteFastForward` or `localAhead`; non-containment yields `diverged` only when both histories are complete. A shallow boundary or cap yields `historyLimit`, never a guessed relationship. The result retains integration authority opaquely and exposes only the ancestry class and prior bounded facts. No active content, object, index, ref, config, or reflog is changed.
 
+### 5D2B1 — internal journaled Workspace materialization
+
+Core has an internal-only primitive that accepts a clean, proven remote fast-forward; revalidates the local plan and staged tree; and applies the exact portable snapshot through the Workspace recovery journal. It handles create, replace, and operation-bound trash effects across the Manifest, `.gitignore`, Categories, Guides, and Attachments. Managed directories are descriptor-confined, owner-checked, non-group/world-writable, privately staged with durable operation/path/inode ownership before no-replace publication, and quarantined after failure only when that exact identity is still empty. Every staged blob is re-read and its Git object ID is recomputed; a fresh Workspace scan must reproduce the validated remote tree exactly. Active Git objects, index, refs, config, reflogs, and `HEAD` are unchanged.
+
+This primitive remains crate-private because it is not independently crash-atomic with Git metadata publication. The next gate must install a durable sync intent before invoking it and use that intent to resume the Workspace journal plus object/index/ref publication.
+
 ### Pending gates
 
-5D2B must materialize proven remote-fast-forward content through the Workspace recovery journal and update objects, index, and the direct branch ref by expected-OID/state compare-and-swap. Ambiguous, history-limited, or locally dirty states require explanation, not automatic resolution.
+5D2B2 must compose the accepted internal materialization with append-only object installation and index/direct-branch publication by expected-OID/state compare-and-swap. The durable intent must precede Workspace mutation so interruption at every boundary resumes or reports a conflict. Ambiguous, history-limited, or locally dirty states require explanation, not automatic resolution.
 
 5D3 may push only an exact reviewed local commit from the expected remote OID using an explicit refspec and native confirmation. Non-fast-forward, changed remote, auth, host-key, and transport failures are preserved and reported. No force option exists.
 
@@ -38,4 +44,5 @@ Authenticated HTTPS/SSH requires the separately audited credential/agent provena
 - The first accepted slice can securely answer whether the configured upstream snapshot is valid and changed, but cannot yet modify or publish anything.
 - A changed remote is called remote-fast-forward, local-ahead, or diverged only when bounded history proves that result; otherwise it is history-limited.
 - Private staging is retained as exact evidence/input for the next gate; identity-safe retention/pruning remains required.
+- Portable fast-forward materialization is now independently proven, but no adapter may call it until the cross-Workspace/Git sync intent is complete.
 - Unsupported authentication degrades to an actionable unavailable state rather than a token prompt.

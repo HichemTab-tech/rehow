@@ -655,7 +655,7 @@ fn continue_journal(
         journal.targets[index].step = TargetStep::Complete;
         advance(store, lock, &mut journal)?;
     }
-    if let Err(error) = remove_committed_category_directories(root, &journal) {
+    if let Err(error) = quarantine_committed_empty_directories(root, &journal) {
         return match error {
             WorkspaceMutationError::Conflict | WorkspaceMutationError::Unsafe => {
                 mark_conflict(store, lock, &mut journal)
@@ -671,11 +671,14 @@ fn continue_journal(
     Ok(journal)
 }
 
-fn remove_committed_category_directories(
+fn quarantine_committed_empty_directories(
     root: &DirectoryCapability,
     journal: &Journal,
 ) -> Result<(), WorkspaceMutationError> {
-    if journal.operation_kind != OperationKind::Delete {
+    if !matches!(
+        journal.operation_kind,
+        OperationKind::Delete | OperationKind::Migration
+    ) {
         return Ok(());
     }
     for target in &journal.targets {
@@ -683,13 +686,27 @@ fn remove_committed_category_directories(
             continue;
         }
         let Some(relative_directory) = target.relative_path.strip_suffix("/category.yaml") else {
+            if journal.operation_kind == OperationKind::Migration
+                && target.relative_path.starts_with("attachments/")
+            {
+                let _ = root
+                    .quarantine_empty_attachment_directory(
+                        &target.relative_path,
+                        journal.operation_id,
+                    )
+                    .map_err(map_io)?;
+            }
             continue;
         };
         if !relative_directory.starts_with("categories/") {
             continue;
         }
-        root.remove_empty_category_directory(relative_directory)
-            .map_err(map_io)?;
+        if !root
+            .quarantine_empty_category_directory(relative_directory, journal.operation_id)
+            .map_err(map_io)?
+        {
+            return Err(WorkspaceMutationError::Conflict);
+        }
     }
     Ok(())
 }
@@ -703,10 +720,7 @@ fn apply_prepared_target(
 ) -> Result<(), WorkspaceMutationError> {
     match &target.intended {
         IntendedState::Object { object_hash, mode } => {
-            if is_attachment_path(&target.relative_path) {
-                if expected.is_some() {
-                    return Err(WorkspaceMutationError::Conflict);
-                }
+            if is_attachment_path(&target.relative_path) && expected.is_none() {
                 return install_streamed_object(
                     root,
                     store,
@@ -874,10 +888,7 @@ fn verify_applied_target(
     active.sync_directory().map_err(map_io)?;
     match &target.intended {
         IntendedState::Object { object_hash, mode } => {
-            if is_attachment_path(&target.relative_path) {
-                if expected.is_some() {
-                    return Err(WorkspaceMutationError::Conflict);
-                }
+            if is_attachment_path(&target.relative_path) && expected.is_none() {
                 let (_, size) = store.open_object(lock, object_hash).map_err(map_store)?;
                 if active.hashed_state(TARGET_LIMIT as u64).map_err(map_io)?
                     != (HashedState::Regular {
