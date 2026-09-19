@@ -5,11 +5,11 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 5D3A exact anonymous-HTTPS push is complete at `de848d7`. Trusted authenticated transport provenance is the next Git gate.
+Phase 5D3B1 launch SSH-agent provenance is complete at `93b19e9`. The fixed SSH proxy and host-key provenance are the next Git gate.
 
 ## Current task
 
-Specify the first bounded Phase 5D3B trusted-authentication slice without adding credential storage or weakening the accepted Git sandbox.
+Specify Phase 5D3B2's fixed SSH proxy/host-key boundary without connecting to an agent or enabling authenticated Git yet.
 
 ## Overall status
 
@@ -115,10 +115,11 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Completed Phase 5D2C at signed checkpoint `4f984fd`: pathless native inspect/cancel/apply/recover commands retain the opaque classification in Rust, expose only a closed redacted result and single-use token, require OS-native confirmation for apply/recovery, replace the retained Workspace view only after core success, rebuild watching, and block Workspace switching during active publication. The single reused Security Reviewer returned PASS.
 - Completed Phase 5D2D at signed checkpoint `b1907ee`: the status bar and compact sync panel expose every closed ancestry/dirty/cancellation/apply/recovery state without renderer authority. Exact payload guards, deterministic focus/live feedback, wide/narrow captures, production build, and the corrected forced-dark contrast pass. The single reused Design Reviewer final verdict is PASS.
 - Completed Phase 5D3A at signed checkpoint `de848d7`: only an opaque `localAhead` authority can publish one exact full-OID-to-full-branch refspec through an anonymous canonical HTTPS, config-free sandbox. Fresh preflight and postflight discovery detect remote races; force, deletion, tags, arbitrary options, credentials, paths, refs, OIDs, and raw Git output never cross renderer IPC. The single reused Security Reviewer final verdict is PASS.
+- Completed Phase 5D3B1 at signed checkpoint `93b19e9`: native startup captures only a bounded, private, owner-safe launch-inherited SSH-agent Unix socket as a path-redacted `O_PATH` inode capability. Missing/unsafe inputs do not block startup. This slice performs no connect, process, network, key/config read, IPC, or mutation; its combined local gate passed with zero extra agents.
 
 ## Work in progress
 
-- Phase 5D3A is complete at signed checkpoint `de848d7`; a small trusted-authentication provenance slice is next.
+- Phase 5D3B1 is complete at signed checkpoint `93b19e9`; the fixed SSH proxy/host-key provenance slice is next.
 
 ## Remaining work
 
@@ -226,6 +227,7 @@ No known regression in accepted phases. If the process is killed after the initi
 - Phase 5D2C exposes no renderer path, URL, ref, OID, Git output, credential, staging handle, or classification authority. Cancellation revokes active/retained results, tokens are single-use, apply accepts only a clean proven fast-forward after native confirmation, and recovery requires a pending durable intent. The single reused Security Reviewer verdict is PASS.
 - Phase 5D2D validates exact closed payloads before rendering or installing state, exposes Apply only for a clean proven fast-forward, and routes generic recovery through sync first with fallback only on `recoveryNotRequired`. It adds no renderer Git/filesystem/credential authority.
 - Phase 5D3A revalidates the complete local plan and exact upstream immediately before publication, uses only a normal server-enforced fast-forward with an internally constructed full refspec, and verifies the upstream afterward. The synthetic repository exposes read-only objects but no active refs, Workspace, config, helper, prompt, proxy, or credential authority. The single reused Security Reviewer verdict is PASS with no blocker/high/medium finding.
+- Phase 5D3B1 accepts only a private, one-link, effective-user-owned Unix socket beneath safe non-symlink ancestry, repeats path/ancestor identity checks around `O_PATH | O_NOFOLLOW | O_CLOEXEC` capture, and retains no public path/inode/descriptor. It deliberately adds no authenticated transport authority; specialist review is deferred to the completed SSH invocation gate.
 
 ## Blockers and human checkpoints
 
@@ -235,10 +237,11 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Latest verified commit
 
-`de848d786181c20f932d1207bf1f3d7f6b58e113` — signed Phase 5D3A exact anonymous Git push; its configured GPG signature verifies. This progress-only ledger update follows that implementation commit.
+`93b19e9235cabd7f08faf8bc46f1aec83d52d358` — signed Phase 5D3B1 launch SSH-agent provenance; its configured GPG signature verifies. This progress-only ledger update follows that implementation commit.
 
 ## Tests last run and results
 
+- 2026-09-19: Phase 5D3B1 checkpoint `93b19e9` passes 2 focused agent-provenance tests; 418 core tests with 2 intentional network/performance ignores; 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 24 desktop Rust, and MCP tests. Formatting, strict core/desktop all-target/all-feature Clippy, `pnpm check`, contract drift, TypeScript, Biome, production Vite/Cargo builds, optimized Tauri build, bootstrap validation, whitespace checks, and signed-commit verification pass. No process, socket connection, or network operation was performed.
 - 2026-09-19: Phase 5D3A checkpoint `de848d7` passes 416 core tests with 2 intentional network/performance ignores; 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 24 desktop Rust, 39 Vitest, MCP, and doc tests pass. Formatting, strict all-Workspace/all-target/all-feature Clippy, `pnpm check`, production Vite/Cargo builds, optimized Tauri build, bootstrap validation, whitespace checks, signed-commit verification, and the single reused Security Reviewer correction gate pass. No live external push was performed because that requires external mutation authorization; deterministic production-state-machine and exact command tests cover preflight, publication, postflight, remote races, and uncertain outcomes.
 - 2026-09-19: Phase 5D2D checkpoint `b1907ee` passes 38 desktop Vitest tests, `pnpm check`, contract drift, TypeScript, Biome, the production Vite/Cargo Workspace build, bootstrap validation, whitespace checks, wide/narrow screenshot inspection, signed-commit verification, and the single reused Design Reviewer correction gate.
 - 2026-09-19: Phase 5D2C checkpoint `4f984fd` passes 412 core tests with 2 intentional network/performance ignores; 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 24 desktop, MCP, and doc tests pass. Focused sync coverage passes 18 tests. Strict all-Workspace/all-target/all-feature Clippy, formatting, bootstrap validation, whitespace checks, signed-commit verification, and the single reused Security Reviewer gate pass.
@@ -459,10 +462,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0025, `docs/task-packets/phase-5d2c-native-sync-lifecycle.md`, its evidence, the public opaque core boundary, and the pathless native inspect/cancel/apply/recover lifecycle implement Phase 5D2C at `4f984fd`.
 - ADR 0025, `docs/task-packets/phase-5d2d-sync-ui.md`, its evidence/screenshots, exact React payload guards, and the compact Reference Desk sync/recovery lifecycle implement Phase 5D2D at `b1907ee`.
 - ADR 0025, `docs/task-packets/phase-5d3a-anonymous-push.md`, its evidence, the exact core publication boundary, native single-use confirmation lifecycle, and local-ahead Reference Desk action implement Phase 5D3A at `de848d7`.
+- ADR 0025, `docs/task-packets/phase-5d3b1-ssh-agent-provenance.md`, its evidence, the core inode-held capability, and native launch retention implement Phase 5D3B1 at `93b19e9`.
 
 ## Next recommended action
 
-Specify Phase 5D3B1 as a small read-only trusted-transport provenance boundary, beginning with owner-safe launch-inherited `SSH_AUTH_SOCK` and fixed SSH configuration validation. Do not combine credential-helper execution or a live authenticated network operation into the same slice.
+Specify Phase 5D3B2 as a bounded fixed-grammar SSH proxy and trusted host-key provenance layer. Keep it process-testable with local fake executables/fixtures but do not connect the retained agent, contact a remote host, or integrate clone/sync/push yet.
 
 ## Recommended agent role and reasoning effort
 
@@ -473,6 +477,6 @@ Architect/Orchestrator locally with `gpt-5.6-sol`, xhigh/high judgment for authe
 1. Read `AGENTS.md` and this file.
 2. Read the Git sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `de848d7`, `b1907ee`, `4f984fd`, and `983b3da`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoints `93b19e9`, `de848d7`, `b1907ee`, and `4f984fd`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 5D3A as complete. Specify the bounded Phase 5D3B1 trusted-transport provenance slice next; do not implement force, history rewrite, automatic conflict resolution, credential storage, scheduling, packed-branch publication, or MCP mutation.
+6. Treat Phase 5D3B1 as complete. Specify the bounded Phase 5D3B2 fixed SSH proxy/host-key provenance slice next; do not enable live authenticated transport, force, history rewrite, automatic conflict resolution, credential storage, scheduling, packed-branch publication, or MCP mutation.
