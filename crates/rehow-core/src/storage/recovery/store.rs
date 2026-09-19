@@ -1,4 +1,4 @@
-use super::{ContentHash, Journal, JournalCodecError, MAX_JOURNAL_BYTES};
+use super::{ContentHash, GitClonePackSource, Journal, JournalCodecError, MAX_JOURNAL_BYTES};
 use crate::protocol::{OperationId, WorkspaceId};
 use std::{
     ffi::{CStr, CString, OsStr},
@@ -209,6 +209,145 @@ impl CloneStaging {
         let mut entries = 0usize;
         let _ = git.bounded_tree_bytes(limit, &mut entries)?;
         Ok(())
+    }
+
+    pub(super) fn inspect_pack_sources(
+        &self,
+        object_id_hex_len: usize,
+        aggregate_limit: u64,
+    ) -> Result<Vec<GitClonePackSource>, StoreError> {
+        if !matches!(object_id_hex_len, 40 | 64) {
+            return Err(StoreError::Unsafe);
+        }
+        let git = Directory {
+            descriptor: self._git.try_clone().map_err(|_| StoreError::Io)?,
+        };
+        let pack = git.open_directory("objects")?.open_directory("pack")?;
+        let entries = pack.entries(192)?;
+        let mut stems = std::collections::BTreeMap::<String, (bool, bool)>::new();
+        for name in &entries {
+            let Some((stem, suffix)) = name.rsplit_once('.') else {
+                return Err(StoreError::Unsafe);
+            };
+            if stem.len() != 5 + object_id_hex_len
+                || !stem.starts_with("pack-")
+                || !stem[5..]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(StoreError::Unsafe);
+            }
+            let pair = stems.entry(stem.to_owned()).or_default();
+            match suffix {
+                "pack" if !pair.0 => pair.0 = true,
+                "idx" if !pair.1 => pair.1 = true,
+                "promisor" => {}
+                _ => return Err(StoreError::Unsafe),
+            }
+        }
+        if stems.is_empty() || stems.values().any(|pair| *pair != (true, true)) {
+            return Err(StoreError::Corrupt);
+        }
+
+        let mut sources = Vec::new();
+        let mut total = 0u64;
+        for name in entries
+            .into_iter()
+            .filter(|name| name.ends_with(".pack") || name.ends_with(".idx"))
+        {
+            let (size, hash) = pack.hash_regular_relaxed(&name, aggregate_limit)?;
+            total = total.checked_add(size).ok_or(StoreError::TooLarge)?;
+            if total > aggregate_limit {
+                return Err(StoreError::TooLarge);
+            }
+            sources.push(GitClonePackSource { name, size, hash });
+        }
+        sources.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(sources)
+    }
+
+    pub(super) fn open_pack_source(&self, source: &GitClonePackSource) -> Result<File, StoreError> {
+        let git = Directory {
+            descriptor: self._git.try_clone().map_err(|_| StoreError::Io)?,
+        };
+        let pack = git.open_directory("objects")?.open_directory("pack")?;
+        let mut file = pack.open_regular_relaxed(&source.name, source.size)?;
+        let before = status(file.as_raw_fd())?;
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut size = 0u64;
+        loop {
+            let read = file.read(&mut buffer).map_err(|_| StoreError::Io)?;
+            if read == 0 {
+                break;
+            }
+            size = size.checked_add(read as u64).ok_or(StoreError::TooLarge)?;
+            if size > source.size {
+                return Err(StoreError::Corrupt);
+            }
+            hasher.update(&buffer[..read]);
+        }
+        let after = status(file.as_raw_fd())?;
+        if size != source.size
+            || !same_file_state(&before, &after)
+            || hasher.finalize().as_bytes() != &source.hash
+        {
+            return Err(StoreError::Corrupt);
+        }
+        file.seek(SeekFrom::Start(0)).map_err(|_| StoreError::Io)?;
+        Ok(file)
+    }
+
+    pub(super) fn inspect_index_source(
+        &self,
+        staging_name: &str,
+    ) -> Result<GitClonePackSource, StoreError> {
+        validate_clone_index_name(staging_name)?;
+        let git = Directory {
+            descriptor: self._git.try_clone().map_err(|_| StoreError::Io)?,
+        };
+        let (size, hash) = git.hash_regular_relaxed(staging_name, 32 * 1024 * 1024)?;
+        Ok(GitClonePackSource {
+            name: "index".to_owned(),
+            size,
+            hash,
+        })
+    }
+
+    pub(super) fn open_index_source(
+        &self,
+        staging_name: &str,
+        source: &GitClonePackSource,
+    ) -> Result<File, StoreError> {
+        validate_clone_index_name(staging_name)?;
+        if source.name != "index" || source.size > 32 * 1024 * 1024 {
+            return Err(StoreError::Unsafe);
+        }
+        let git = Directory {
+            descriptor: self._git.try_clone().map_err(|_| StoreError::Io)?,
+        };
+        let mut file = git.open_regular_relaxed(staging_name, source.size)?;
+        let before = status(file.as_raw_fd())?;
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut size = 0u64;
+        loop {
+            let read = file.read(&mut buffer).map_err(|_| StoreError::Io)?;
+            if read == 0 {
+                break;
+            }
+            size = size.checked_add(read as u64).ok_or(StoreError::TooLarge)?;
+            hasher.update(&buffer[..read]);
+        }
+        let after = status(file.as_raw_fd())?;
+        if size != source.size
+            || !same_file_state(&before, &after)
+            || hasher.finalize().as_bytes() != &source.hash
+        {
+            return Err(StoreError::Corrupt);
+        }
+        file.seek(SeekFrom::Start(0)).map_err(|_| StoreError::Io)?;
+        Ok(file)
     }
 }
 
@@ -649,6 +788,102 @@ impl Drop for DirectoryStream {
 }
 
 impl Directory {
+    fn entries(&self, limit: usize) -> Result<Vec<String>, StoreError> {
+        // SAFETY: openat on `.` creates an independent no-follow directory description.
+        let raw = unsafe {
+            libc::openat(
+                self.descriptor.as_raw_fd(),
+                c".".as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if raw < 0 {
+            return Err(StoreError::Io);
+        }
+        // SAFETY: fdopendir consumes the duplicated descriptor on success.
+        let stream = unsafe { libc::fdopendir(raw) };
+        if stream.is_null() {
+            // SAFETY: fdopendir did not consume the descriptor on failure.
+            unsafe { libc::close(raw) };
+            return Err(StoreError::Io);
+        }
+        let stream = DirectoryStream(stream);
+        let mut names = Vec::new();
+        loop {
+            // SAFETY: clear and inspect the current thread's errno around readdir.
+            unsafe { *libc::__errno_location() = 0 };
+            // SAFETY: stream remains valid for this call.
+            let entry = unsafe { libc::readdir(stream.0) };
+            if entry.is_null() {
+                if unsafe { *libc::__errno_location() } != 0 {
+                    return Err(StoreError::Io);
+                }
+                break;
+            }
+            // SAFETY: d_name is NUL-terminated for the live entry.
+            let bytes = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+            if bytes == b"." || bytes == b".." {
+                continue;
+            }
+            if names.len() >= limit {
+                return Err(StoreError::TooLarge);
+            }
+            let name = std::str::from_utf8(bytes).map_err(|_| StoreError::Unsafe)?;
+            names.push(name.to_owned());
+        }
+        names.sort_unstable();
+        Ok(names)
+    }
+
+    fn open_regular_relaxed(&self, name: &str, expected_size: u64) -> Result<File, StoreError> {
+        let descriptor = self.open_file(name, libc::O_RDONLY)?;
+        let current = status(descriptor.as_raw_fd())?;
+        if current.st_uid != unsafe { libc::geteuid() }
+            || current.st_mode & libc::S_IFMT != libc::S_IFREG
+            || current.st_nlink != 1
+            || current.st_size < 0
+            || current.st_size as u64 != expected_size
+            || current.st_mode & 0o022 != 0
+        {
+            return Err(StoreError::Unsafe);
+        }
+        Ok(File::from(descriptor))
+    }
+
+    fn hash_regular_relaxed(&self, name: &str, limit: u64) -> Result<(u64, [u8; 32]), StoreError> {
+        let descriptor = self.open_file(name, libc::O_RDONLY)?;
+        let before = status(descriptor.as_raw_fd())?;
+        if before.st_uid != unsafe { libc::geteuid() }
+            || before.st_mode & libc::S_IFMT != libc::S_IFREG
+            || before.st_nlink != 1
+            || before.st_size < 0
+            || before.st_size as u64 > limit
+            || before.st_mode & 0o022 != 0
+        {
+            return Err(StoreError::Unsafe);
+        }
+        let mut file = File::from(descriptor);
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut size = 0u64;
+        loop {
+            let read = file.read(&mut buffer).map_err(|_| StoreError::Io)?;
+            if read == 0 {
+                break;
+            }
+            size = size.checked_add(read as u64).ok_or(StoreError::TooLarge)?;
+            if size > limit {
+                return Err(StoreError::TooLarge);
+            }
+            hasher.update(&buffer[..read]);
+        }
+        let after = status(file.as_raw_fd())?;
+        if size != before.st_size as u64 || !same_file_state(&before, &after) {
+            return Err(StoreError::Corrupt);
+        }
+        Ok((size, *hasher.finalize().as_bytes()))
+    }
+
     fn bounded_tree_bytes(&self, limit: u64, entries: &mut usize) -> Result<u64, StoreError> {
         // SAFETY: openat on `.` creates an independent no-follow directory description.
         let raw = unsafe {
@@ -1194,6 +1429,24 @@ fn component(value: &str) -> Result<CString, StoreError> {
         return Err(StoreError::Unsafe);
     }
     CString::new(bytes).map_err(|_| StoreError::Unsafe)
+}
+
+fn validate_clone_index_name(value: &str) -> Result<(), StoreError> {
+    let Some(suffix) = value.strip_prefix("rehow-index-") else {
+        return Err(StoreError::Unsafe);
+    };
+    if suffix.len() != 36
+        || !suffix.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+            }
+        })
+    {
+        return Err(StoreError::Unsafe);
+    }
+    component(value).map(|_| ())
 }
 
 fn temp_name(kind: &str) -> String {

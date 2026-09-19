@@ -71,6 +71,44 @@ impl GitCloneStaging {
             .verify_git_size_limit(limit)
             .map_err(map_clone_staging_error)
     }
+
+    pub(crate) fn inspect_pack_sources(
+        &self,
+        object_id_hex_len: usize,
+        aggregate_limit: u64,
+    ) -> Result<Vec<GitClonePackSource>, GitCloneStagingError> {
+        self.inner
+            .inspect_pack_sources(object_id_hex_len, aggregate_limit)
+            .map_err(map_clone_staging_error)
+    }
+
+    pub(crate) fn open_pack_source(
+        &self,
+        source: &GitClonePackSource,
+    ) -> Result<File, GitCloneStagingError> {
+        self.inner
+            .open_pack_source(source)
+            .map_err(map_clone_staging_error)
+    }
+
+    pub(crate) fn inspect_index_source(
+        &self,
+        staging_name: &str,
+    ) -> Result<GitClonePackSource, GitCloneStagingError> {
+        self.inner
+            .inspect_index_source(staging_name)
+            .map_err(map_clone_staging_error)
+    }
+
+    pub(crate) fn open_index_source(
+        &self,
+        staging_name: &str,
+        source: &GitClonePackSource,
+    ) -> Result<File, GitCloneStagingError> {
+        self.inner
+            .open_index_source(staging_name, source)
+            .map_err(map_clone_staging_error)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -85,6 +123,13 @@ pub(crate) enum GitCloneStagingError {
 pub(crate) struct GitCloneMaterializationSource {
     pub(crate) relative_path: String,
     pub(crate) size: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GitClonePackSource {
+    pub(crate) name: String,
+    pub(crate) size: u64,
+    pub(crate) hash: [u8; 32],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -249,7 +294,7 @@ where
         if !journal_matches_plan(&persisted, &journal) {
             return Err(GitCloneMaterializationStorageError::Conflict);
         }
-        root.verify_git_clone_inventory(marker, &expected_paths, &temp_names, false)
+        root.verify_git_clone_inventory(marker, &expected_paths, &temp_names, false, true)
             .map_err(map_io_clone_materialization)?;
     } else {
         let root_entries = root.entries(2).map_err(map_inspect_clone_materialization)?;

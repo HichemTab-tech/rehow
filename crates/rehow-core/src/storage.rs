@@ -14,8 +14,8 @@ pub(crate) use recovery::{
     DocumentCreateError, DocumentCreateOutcome, DocumentMoveOutcome, DocumentRemoveError,
     DocumentRemoveOutcome, DocumentUpdateError, DocumentUpdateOutcome,
     GitCloneMaterializationSource, GitCloneMaterializationStorageError,
-    GitCloneMaterializationStorageOutcome, GitCloneStaging, GitCloneStagingError,
-    MultiDocumentUpdateError, MultiDocumentUpdateOutcome, PreparedDocument,
+    GitCloneMaterializationStorageOutcome, GitClonePackSource, GitCloneStaging,
+    GitCloneStagingError, MultiDocumentUpdateError, MultiDocumentUpdateOutcome, PreparedDocument,
     WorkspaceInitializeError, WorkspaceInitializeOutcome, create_git_clone_staging,
 };
 pub use watch::{WorkspaceWatchError, WorkspaceWatchSignal, WorkspaceWatcher};
@@ -32,7 +32,8 @@ pub(crate) fn set_attachment_import_source_changed_fault() {
 
 #[cfg(test)]
 pub(crate) use linux::{
-    GitCloneScaffoldFault, GitInitFault, set_git_clone_scaffold_fault, set_git_init_fault,
+    GitCloneFinalizeFault, GitCloneScaffoldFault, GitInitFault, set_git_clone_finalize_fault,
+    set_git_clone_scaffold_fault, set_git_init_fault,
 };
 
 #[cfg(test)]
@@ -720,7 +721,18 @@ impl EmptyWorkspaceTarget {
     ) -> Result<(), WorkspaceInspectError> {
         let temp_names = vec![String::new(); expected_paths.len()];
         self.root
-            .verify_git_clone_inventory(marker, expected_paths, &temp_names, true)
+            .verify_git_clone_inventory(marker, expected_paths, &temp_names, true, true)
+            .map_err(map_clone_destination_error)
+    }
+
+    pub(crate) fn verify_git_clone_portable_content(
+        &self,
+        marker: &[u8],
+        expected_paths: &[String],
+    ) -> Result<(), WorkspaceInspectError> {
+        let temp_names = vec![String::new(); expected_paths.len()];
+        self.root
+            .verify_git_clone_inventory(marker, expected_paths, &temp_names, true, false)
             .map_err(map_clone_destination_error)
     }
 
@@ -1383,6 +1395,63 @@ where
         marker,
         sources,
         read_file,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn finalize_git_clone_repository<F>(
+    target: &EmptyWorkspaceTarget,
+    marker: &[u8],
+    completion_seal: &[u8],
+    pack_sources: &[GitClonePackSource],
+    index_source: &GitClonePackSource,
+    config: &[u8],
+    head: &[u8],
+    shallow: &[u8],
+    branch_relative: &str,
+    object_id: &[u8],
+    open_source: F,
+) -> Result<(), GitCloneMaterializationStorageError>
+where
+    F: FnMut(&GitClonePackSource) -> Result<File, GitCloneMaterializationStorageError>,
+{
+    target.root.finalize_git_clone_repository(
+        marker,
+        completion_seal,
+        pack_sources,
+        index_source,
+        config,
+        head,
+        shallow,
+        branch_relative,
+        object_id,
+        open_source,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn seal_git_clone_repository(
+    target: &EmptyWorkspaceTarget,
+    marker: &[u8],
+    completion_seal: &[u8],
+    pack_sources: &[GitClonePackSource],
+    index_source: &GitClonePackSource,
+    config: &[u8],
+    head: &[u8],
+    shallow: &[u8],
+    branch_relative: &str,
+    object_id: &[u8],
+) -> Result<(), GitCloneMaterializationStorageError> {
+    target.root.seal_git_clone_repository(
+        marker,
+        completion_seal,
+        pack_sources,
+        index_source,
+        config,
+        head,
+        shallow,
+        branch_relative,
+        object_id,
     )
 }
 
@@ -2161,7 +2230,10 @@ fn map_io(error: std::io::Error) -> WorkspaceInspectError {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{GitInitializeStorageError, WorkspaceInspectError};
+    use super::{
+        GitCloneMaterializationStorageError, GitClonePackSource, GitInitializeStorageError,
+        WorkspaceInspectError,
+    };
     use crate::protocol::Revision;
     use std::{
         collections::{BTreeMap, BTreeSet},
@@ -2293,6 +2365,18 @@ mod linux {
     }
 
     #[cfg(test)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) enum GitCloneFinalizeFault {
+        Pack,
+        Shallow,
+        Config,
+        LocalRef,
+        RemoteRef,
+        Head,
+        Seal,
+    }
+
+    #[cfg(test)]
     thread_local! {
         static MANAGED_FAULT: std::cell::Cell<Option<ManagedFault>> = const { std::cell::Cell::new(None) };
         static ATTACHMENT_CHANGED_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -2300,6 +2384,7 @@ mod linux {
         static ATTACHMENT_STATE_CHANGED_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static GIT_INIT_FAULT: std::cell::Cell<Option<GitInitFault>> = const { std::cell::Cell::new(None) };
         static GIT_CLONE_SCAFFOLD_FAULT: std::cell::Cell<Option<GitCloneScaffoldFault>> = const { std::cell::Cell::new(None) };
+        static GIT_CLONE_FINALIZE_FAULT: std::cell::Cell<Option<GitCloneFinalizeFault>> = const { std::cell::Cell::new(None) };
     }
 
     #[cfg(test)]
@@ -2316,6 +2401,21 @@ mod linux {
     fn git_clone_scaffold_fail(point: GitCloneScaffoldFault) -> Result<(), MutationIoError> {
         if GIT_CLONE_SCAFFOLD_FAULT.get() == Some(point) {
             GIT_CLONE_SCAFFOLD_FAULT.set(None);
+            Err(MutationIoError::Unsupported)
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_git_clone_finalize_fault(fault: GitCloneFinalizeFault) {
+        GIT_CLONE_FINALIZE_FAULT.set(Some(fault));
+    }
+
+    #[cfg(test)]
+    fn git_clone_finalize_fail(point: GitCloneFinalizeFault) -> Result<(), MutationIoError> {
+        if GIT_CLONE_FINALIZE_FAULT.get() == Some(point) {
+            GIT_CLONE_FINALIZE_FAULT.set(None);
             Err(MutationIoError::Unsupported)
         } else {
             Ok(())
@@ -2981,11 +3081,18 @@ mod linux {
             expected_paths: &[String],
             temp_names: &[String],
             complete: bool,
+            exact_scaffold: bool,
         ) -> Result<(), MutationIoError> {
             if expected_paths.len() != temp_names.len() {
                 return Err(MutationIoError::Unsafe);
             }
-            self.verify_git_clone_scaffold(marker)?;
+            if exact_scaffold {
+                self.verify_git_clone_scaffold(marker)?;
+            } else {
+                let git = self.open_private_directory(".git")?;
+                git.verify_private_file("rehow-clone", marker)
+                    .map_err(map_clone_materialization_git)?;
+            }
 
             let mut child_directories = BTreeMap::<String, BTreeSet<String>>::new();
             let mut final_files = BTreeMap::<String, BTreeSet<String>>::new();
@@ -3089,6 +3196,477 @@ mod linux {
                 return Err(MutationIoError::Conflict);
             }
             Ok(state.bytes)
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        pub(super) fn finalize_git_clone_repository<F>(
+            &self,
+            marker: &[u8],
+            completion_seal: &[u8],
+            pack_sources: &[GitClonePackSource],
+            index_source: &GitClonePackSource,
+            config: &[u8],
+            head: &[u8],
+            shallow: &[u8],
+            branch_relative: &str,
+            object_id: &[u8],
+            mut open_source: F,
+        ) -> Result<(), GitCloneMaterializationStorageError>
+        where
+            F: FnMut(&GitClonePackSource) -> Result<File, GitCloneMaterializationStorageError>,
+        {
+            if pack_sources.is_empty()
+                || pack_sources.len() > 128
+                || config.len() > 64 * 1024
+                || head.len() > 1024
+                || shallow.len() > 1024
+                || completion_seal.len() > 16 * 1024
+                || index_source.name != "index"
+                || index_source.size > 32 * 1024 * 1024
+                || !valid_clone_branch_path(branch_relative)
+                || !matches!(object_id.len(), 40 | 64)
+                || !object_id
+                    .iter()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+            {
+                return Err(GitCloneMaterializationStorageError::Unsafe);
+            }
+            let mut previous: Option<&str> = None;
+            for source in pack_sources {
+                if previous.is_some_and(|name| name >= source.name.as_str())
+                    || !valid_clone_pack_name(&source.name, object_id.len())
+                    || source.size > 7 * 1024 * 1024 * 1024
+                {
+                    return Err(GitCloneMaterializationStorageError::Unsafe);
+                }
+                previous = Some(&source.name);
+            }
+
+            self.verify_git_clone_finalization_inventory(
+                marker,
+                completion_seal,
+                pack_sources,
+                index_source,
+                config,
+                head,
+                shallow,
+                branch_relative,
+                object_id,
+                false,
+                false,
+            )
+            .map_err(map_clone_finalization_io)?;
+            let git = self
+                .open_private_directory(".git")
+                .map_err(map_clone_finalization_io)?;
+            let objects = git
+                .open_private_directory("objects")
+                .map_err(map_clone_finalization_io)?;
+            let pack = objects
+                .open_private_directory("pack")
+                .map_err(map_clone_finalization_io)?;
+            for source in pack_sources {
+                let mut input = open_source(source)?;
+                pack.create_or_verify_private_streamed_file(
+                    &source.name,
+                    &mut input,
+                    source.size,
+                    &source.hash,
+                )
+                .map_err(map_clone_finalization_io)?;
+                #[cfg(test)]
+                git_clone_finalize_fail(GitCloneFinalizeFault::Pack)
+                    .map_err(map_clone_finalization_io)?;
+            }
+            let mut index = open_source(index_source)?;
+            git.create_or_verify_private_streamed_file(
+                "index",
+                &mut index,
+                index_source.size,
+                &index_source.hash,
+            )
+            .map_err(map_clone_finalization_io)?;
+            git.create_or_verify_private_file("shallow", shallow)
+                .map_err(map_clone_materialization_git)
+                .map_err(map_clone_finalization_io)?;
+            #[cfg(test)]
+            git_clone_finalize_fail(GitCloneFinalizeFault::Shallow)
+                .map_err(map_clone_finalization_io)?;
+            git.create_or_verify_private_file("config", config)
+                .map_err(map_clone_materialization_git)
+                .map_err(map_clone_finalization_io)?;
+            #[cfg(test)]
+            git_clone_finalize_fail(GitCloneFinalizeFault::Config)
+                .map_err(map_clone_finalization_io)?;
+
+            let refs = git
+                .open_private_directory("refs")
+                .map_err(map_clone_finalization_io)?;
+            let heads = refs
+                .open_private_directory("heads")
+                .map_err(map_clone_finalization_io)?;
+            let remotes = refs
+                .open_private_directory("remotes")
+                .map_err(map_clone_finalization_io)?;
+            let origin = remotes
+                .open_private_directory("origin")
+                .map_err(map_clone_finalization_io)?;
+            install_clone_ref(&heads, branch_relative, object_id)
+                .map_err(map_clone_finalization_io)?;
+            #[cfg(test)]
+            git_clone_finalize_fail(GitCloneFinalizeFault::LocalRef)
+                .map_err(map_clone_finalization_io)?;
+            install_clone_ref(&origin, branch_relative, object_id)
+                .map_err(map_clone_finalization_io)?;
+            #[cfg(test)]
+            git_clone_finalize_fail(GitCloneFinalizeFault::RemoteRef)
+                .map_err(map_clone_finalization_io)?;
+            git.create_or_verify_private_file("HEAD", head)
+                .map_err(map_clone_materialization_git)
+                .map_err(map_clone_finalization_io)?;
+            #[cfg(test)]
+            git_clone_finalize_fail(GitCloneFinalizeFault::Head)
+                .map_err(map_clone_finalization_io)?;
+            self.verify_git_clone_finalization_inventory(
+                marker,
+                completion_seal,
+                pack_sources,
+                index_source,
+                config,
+                head,
+                shallow,
+                branch_relative,
+                object_id,
+                true,
+                false,
+            )
+            .map_err(map_clone_finalization_io)
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        pub(super) fn seal_git_clone_repository(
+            &self,
+            marker: &[u8],
+            completion_seal: &[u8],
+            pack_sources: &[GitClonePackSource],
+            index_source: &GitClonePackSource,
+            config: &[u8],
+            head: &[u8],
+            shallow: &[u8],
+            branch_relative: &str,
+            object_id: &[u8],
+        ) -> Result<(), GitCloneMaterializationStorageError> {
+            self.verify_git_clone_finalization_inventory(
+                marker,
+                completion_seal,
+                pack_sources,
+                index_source,
+                config,
+                head,
+                shallow,
+                branch_relative,
+                object_id,
+                true,
+                false,
+            )
+            .map_err(map_clone_finalization_io)?;
+            let git = self
+                .open_private_directory(".git")
+                .map_err(map_clone_finalization_io)?;
+            git.create_or_verify_private_file("rehow-clone-complete", completion_seal)
+                .map_err(map_clone_materialization_git)
+                .map_err(map_clone_finalization_io)?;
+            #[cfg(test)]
+            git_clone_finalize_fail(GitCloneFinalizeFault::Seal)
+                .map_err(map_clone_finalization_io)?;
+            self.verify_git_clone_finalization_inventory(
+                marker,
+                completion_seal,
+                pack_sources,
+                index_source,
+                config,
+                head,
+                shallow,
+                branch_relative,
+                object_id,
+                true,
+                true,
+            )
+            .map_err(map_clone_finalization_io)
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn verify_git_clone_finalization_inventory(
+            &self,
+            marker: &[u8],
+            completion_seal: &[u8],
+            pack_sources: &[GitClonePackSource],
+            index_source: &GitClonePackSource,
+            config: &[u8],
+            head: &[u8],
+            shallow: &[u8],
+            branch_relative: &str,
+            object_id: &[u8],
+            metadata_complete: bool,
+            seal_required: bool,
+        ) -> Result<(), MutationIoError> {
+            let git = self.open_private_directory(".git")?;
+            let allowed = BTreeSet::from([
+                "HEAD".to_owned(),
+                "config".to_owned(),
+                "index".to_owned(),
+                "objects".to_owned(),
+                "refs".to_owned(),
+                "rehow-clone".to_owned(),
+                "rehow-clone-complete".to_owned(),
+                "shallow".to_owned(),
+            ]);
+            let actual = git
+                .entries(allowed.len().saturating_add(1))
+                .map_err(map_clone_materialization_inspect)?
+                .into_iter()
+                .collect::<BTreeSet<_>>();
+            let required = ["objects", "refs", "rehow-clone"];
+            let mut metadata_without_seal = allowed.clone();
+            metadata_without_seal.remove("rehow-clone-complete");
+            if (metadata_complete && actual != metadata_without_seal && actual != allowed)
+                || (!metadata_complete && !actual.is_subset(&allowed))
+                || (seal_required && actual != allowed)
+                || required.iter().any(|name| !actual.contains(*name))
+            {
+                return Err(MutationIoError::Conflict);
+            }
+            git.verify_private_file("rehow-clone", marker)
+                .map_err(map_clone_materialization_git)?;
+            for (name, expected) in [
+                ("HEAD", head),
+                ("config", config),
+                ("shallow", shallow),
+                ("rehow-clone-complete", completion_seal),
+            ] {
+                if actual.contains(name) {
+                    git.verify_private_file(name, expected)
+                        .map_err(map_clone_materialization_git)?;
+                } else if metadata_complete && (name != "rehow-clone-complete" || seal_required) {
+                    return Err(MutationIoError::Conflict);
+                }
+            }
+            if actual.contains("index") {
+                git.verify_private_file_hash("index", index_source.size, &index_source.hash)?;
+            } else if metadata_complete {
+                return Err(MutationIoError::Conflict);
+            }
+
+            let objects = git.open_private_directory("objects")?;
+            verify_exact_entries(&objects, &["info", "pack"])?;
+            let info = objects.open_private_directory("info")?;
+            verify_exact_entries(&info, &[])?;
+            let pack = objects.open_private_directory("pack")?;
+            let expected_pack = pack_sources
+                .iter()
+                .map(|source| source.name.clone())
+                .collect::<BTreeSet<_>>();
+            let actual_pack = pack
+                .entries(expected_pack.len().saturating_add(1))
+                .map_err(map_clone_materialization_inspect)?
+                .into_iter()
+                .collect::<BTreeSet<_>>();
+            if (metadata_complete && actual_pack != expected_pack)
+                || (!metadata_complete && !actual_pack.is_subset(&expected_pack))
+            {
+                return Err(MutationIoError::Conflict);
+            }
+            for name in &actual_pack {
+                let source = pack_sources
+                    .iter()
+                    .find(|source| &source.name == name)
+                    .ok_or(MutationIoError::Unsafe)?;
+                pack.verify_private_file_hash(name, source.size, &source.hash)?;
+            }
+
+            let refs = git.open_private_directory("refs")?;
+            verify_exact_entries(&refs, &["heads", "remotes", "tags"])?;
+            let tags = refs.open_private_directory("tags")?;
+            verify_exact_entries(&tags, &[])?;
+            let remotes = refs.open_private_directory("remotes")?;
+            verify_exact_entries(&remotes, &["origin"])?;
+            let heads = refs.open_private_directory("heads")?;
+            let origin = remotes.open_private_directory("origin")?;
+            verify_clone_ref_tree(&heads, branch_relative, object_id, metadata_complete)?;
+            verify_clone_ref_tree(&origin, branch_relative, object_id, metadata_complete)
+        }
+
+        fn verify_private_file_hash(
+            &self,
+            name: &str,
+            expected_size: u64,
+            expected_hash: &[u8; 32],
+        ) -> Result<(), MutationIoError> {
+            let name = component(name).map_err(|_| MutationIoError::Unsafe)?;
+            // SAFETY: retained directory and validated component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+                )
+            };
+            if raw < 0 {
+                return match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::ELOOP | libc::ENXIO | libc::ENODEV) => Err(MutationIoError::Unsafe),
+                    Some(libc::ENOENT) => Err(MutationIoError::Conflict),
+                    _ => Err(MutationIoError::Io),
+                };
+            }
+            // SAFETY: successful openat returned an owned descriptor.
+            let mut file = unsafe { File::from_raw_fd(raw) };
+            let before = file.metadata().map_err(|_| MutationIoError::Io)?;
+            if !before.file_type().is_file()
+                || before.nlink() != 1
+                || before.mode() & 0o7777 != 0o600
+                || before.len() != expected_size
+            {
+                return Err(MutationIoError::Unsafe);
+            }
+            let mut hasher = blake3::Hasher::new();
+            let mut buffer = [0_u8; 64 * 1024];
+            let mut size = 0u64;
+            loop {
+                let read = file.read(&mut buffer).map_err(|_| MutationIoError::Io)?;
+                if read == 0 {
+                    break;
+                }
+                size = size
+                    .checked_add(read as u64)
+                    .ok_or(MutationIoError::TooLarge)?;
+                if size > expected_size {
+                    return Err(MutationIoError::Conflict);
+                }
+                hasher.update(&buffer[..read]);
+            }
+            let after = file.metadata().map_err(|_| MutationIoError::Io)?;
+            if !same_metadata(&before, &after)
+                || size != expected_size
+                || hasher.finalize().as_bytes() != expected_hash
+            {
+                return Err(MutationIoError::Conflict);
+            }
+            Ok(())
+        }
+
+        fn create_or_verify_private_streamed_file(
+            &self,
+            name: &str,
+            source: &mut File,
+            expected_size: u64,
+            expected_hash: &[u8; 32],
+        ) -> Result<(), MutationIoError> {
+            let original_name = name;
+            let name = component(name).map_err(|_| MutationIoError::Unsafe)?;
+            let source_before = source.metadata().map_err(|_| MutationIoError::Io)?;
+            if !source_before.file_type().is_file()
+                || source_before.nlink() != 1
+                || source_before.len() != expected_size
+            {
+                return Err(MutationIoError::Unsafe);
+            }
+            source
+                .seek(SeekFrom::Start(0))
+                .map_err(|_| MutationIoError::Io)?;
+            // SAFETY: retained directory and static dot component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    c".".as_ptr(),
+                    libc::O_WRONLY | libc::O_TMPFILE | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                    0o600,
+                )
+            };
+            if raw < 0 {
+                return match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::EOPNOTSUPP | libc::EINVAL | libc::EISDIR) => {
+                        Err(MutationIoError::Unsupported)
+                    }
+                    _ => Err(MutationIoError::Io),
+                };
+            }
+            // SAFETY: successful openat returned an owned descriptor.
+            let mut output = unsafe { File::from_raw_fd(raw) };
+            if unsafe { libc::fchmod(output.as_raw_fd(), 0o600) } != 0 {
+                return Err(MutationIoError::Io);
+            }
+            let mut hasher = blake3::Hasher::new();
+            let mut buffer = [0_u8; 64 * 1024];
+            let mut size = 0u64;
+            loop {
+                let read = source.read(&mut buffer).map_err(|_| MutationIoError::Io)?;
+                if read == 0 {
+                    break;
+                }
+                size = size
+                    .checked_add(read as u64)
+                    .ok_or(MutationIoError::TooLarge)?;
+                if size > expected_size {
+                    return Err(MutationIoError::Conflict);
+                }
+                hasher.update(&buffer[..read]);
+                output
+                    .write_all(&buffer[..read])
+                    .map_err(|_| MutationIoError::Io)?;
+            }
+            let source_after = source.metadata().map_err(|_| MutationIoError::Io)?;
+            if !same_metadata(&source_before, &source_after)
+                || size != expected_size
+                || hasher.finalize().as_bytes() != expected_hash
+            {
+                return Err(MutationIoError::Conflict);
+            }
+            output
+                .sync_all()
+                .map_err(|_| MutationIoError::Unsupported)?;
+            // SAFETY: both descriptors and NUL-terminated names are valid.
+            let mut published = unsafe {
+                libc::linkat(
+                    output.as_raw_fd(),
+                    c"".as_ptr(),
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::AT_EMPTY_PATH,
+                )
+            };
+            if published != 0
+                && matches!(
+                    io::Error::last_os_error().raw_os_error(),
+                    Some(libc::EPERM | libc::EINVAL | libc::ENOENT)
+                )
+            {
+                let source_path = CString::new(format!("/proc/self/fd/{}", output.as_raw_fd()))
+                    .map_err(|_| MutationIoError::Io)?;
+                // SAFETY: source names the still-open inode and target is confined.
+                published = unsafe {
+                    libc::linkat(
+                        libc::AT_FDCWD,
+                        source_path.as_ptr(),
+                        self.descriptor.as_raw_fd(),
+                        name.as_ptr(),
+                        libc::AT_SYMLINK_FOLLOW,
+                    )
+                };
+            }
+            if published != 0 {
+                return match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::EEXIST) => {
+                        self.verify_private_file_hash(original_name, expected_size, expected_hash)
+                    }
+                    Some(libc::EOPNOTSUPP | libc::EINVAL | libc::EPERM) => {
+                        Err(MutationIoError::Unsupported)
+                    }
+                    _ => Err(MutationIoError::Io),
+                };
+            }
+            self.sync_directory()
+                .map_err(map_clone_materialization_git)?;
+            self.verify_private_file_hash(original_name, expected_size, expected_hash)
         }
 
         fn open_git_clone_directory_path(&self, path: &str) -> Result<Self, MutationIoError> {
@@ -3994,6 +4572,99 @@ mod linux {
         }
     }
 
+    fn valid_clone_pack_name(name: &str, object_id_hex_len: usize) -> bool {
+        let Some((stem, suffix)) = name.rsplit_once('.') else {
+            return false;
+        };
+        stem.len() == 5 + object_id_hex_len
+            && stem.starts_with("pack-")
+            && stem[5..]
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            && matches!(suffix, "pack" | "idx")
+    }
+
+    fn valid_clone_branch_path(path: &str) -> bool {
+        !path.is_empty()
+            && path.len() <= 1024
+            && !path.starts_with('/')
+            && !path.ends_with('/')
+            && !path.contains("//")
+            && !path.contains("..")
+            && !path.contains("@{")
+            && !path.ends_with('.')
+            && path.split('/').all(|part| {
+                !part.is_empty()
+                    && part != "."
+                    && part != ".."
+                    && !part.starts_with('.')
+                    && !part.ends_with(".lock")
+                    && part.len() <= 255
+                    && part.bytes().all(|byte| {
+                        byte > 0x20
+                            && byte != 0x7f
+                            && !matches!(byte, b'~' | b'^' | b':' | b'?' | b'*' | b'[' | b'\\')
+                    })
+            })
+    }
+
+    fn install_clone_ref(
+        root: &DirectoryCapability,
+        branch_relative: &str,
+        object_id: &[u8],
+    ) -> Result<(), MutationIoError> {
+        let mut parts = branch_relative.split('/').peekable();
+        let mut directory = root.duplicate().map_err(|_| MutationIoError::Io)?;
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                let mut value = Vec::with_capacity(object_id.len() + 1);
+                value.extend_from_slice(object_id);
+                value.push(b'\n');
+                return directory
+                    .create_or_verify_private_file(part, &value)
+                    .map_err(map_clone_materialization_git);
+            }
+            directory = directory.ensure_private_directory(part)?;
+        }
+        Err(MutationIoError::Unsafe)
+    }
+
+    fn verify_clone_ref_tree(
+        root: &DirectoryCapability,
+        branch_relative: &str,
+        object_id: &[u8],
+        complete: bool,
+    ) -> Result<(), MutationIoError> {
+        let parts = branch_relative.split('/').collect::<Vec<_>>();
+        let mut directory = root.duplicate().map_err(|_| MutationIoError::Io)?;
+        for (index, part) in parts.iter().enumerate() {
+            let actual = directory
+                .entries(2)
+                .map_err(map_clone_materialization_inspect)?;
+            if actual.iter().any(|entry| entry != part) || actual.len() > 1 {
+                return Err(MutationIoError::Conflict);
+            }
+            let present = actual.iter().any(|entry| entry == part);
+            if !present {
+                return if complete {
+                    Err(MutationIoError::Conflict)
+                } else {
+                    Ok(())
+                };
+            }
+            if index + 1 == parts.len() {
+                let mut value = Vec::with_capacity(object_id.len() + 1);
+                value.extend_from_slice(object_id);
+                value.push(b'\n');
+                return directory
+                    .verify_private_file(part, &value)
+                    .map_err(map_clone_materialization_git);
+            }
+            directory = directory.open_private_directory(part)?;
+        }
+        Err(MutationIoError::Unsafe)
+    }
+
     fn map_git_init_mutation(error: MutationIoError) -> GitInitializeStorageError {
         match error {
             MutationIoError::Conflict => GitInitializeStorageError::Conflict,
@@ -4023,6 +4694,16 @@ mod linux {
             | WorkspaceInspectError::NotDirectory
             | WorkspaceInspectError::PermissionDenied
             | WorkspaceInspectError::Io => MutationIoError::Io,
+        }
+    }
+
+    fn map_clone_finalization_io(error: MutationIoError) -> GitCloneMaterializationStorageError {
+        match error {
+            MutationIoError::Conflict => GitCloneMaterializationStorageError::Conflict,
+            MutationIoError::Unsafe => GitCloneMaterializationStorageError::Unsafe,
+            MutationIoError::Unsupported => GitCloneMaterializationStorageError::Unsupported,
+            MutationIoError::TooLarge => GitCloneMaterializationStorageError::TooLarge,
+            MutationIoError::Io => GitCloneMaterializationStorageError::Io,
         }
     }
 

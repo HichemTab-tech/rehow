@@ -9,7 +9,8 @@ use crate::{
         GitConfigStorageError, GitInitializeStorageError, GitMaterializationPathKind,
         GitRepositoryCapabilityError, MANAGED_BYTES_LIMIT, WorkspaceInspection, WorkspaceView,
         classify_git_materialization_path, create_git_clone_staging,
-        execute_git_clone_materialization, inspect_workspace, open_initialized_workspace,
+        execute_git_clone_materialization, finalize_git_clone_repository, inspect_workspace,
+        open_initialized_workspace, seal_git_clone_repository,
     },
 };
 use std::{
@@ -53,6 +54,7 @@ const MAX_CLONE_TREE_ENTRIES: usize =
 #[cfg(test)]
 thread_local! {
     static POST_CHECK_ALTERNATES: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    static CLONE_PRESEAL_PAUSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -904,6 +906,214 @@ pub(crate) fn apply_git_clone_content_materialization(
     Ok(workspace)
 }
 
+#[allow(
+    dead_code,
+    reason = "connected by the Phase 5B3C2 native finalization gate"
+)]
+pub(crate) fn apply_git_clone_repository_finalization(
+    destination: &EmptyWorkspaceTarget,
+    validation: &GitCloneValidation,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+) -> Result<Box<WorkspaceView>, GitCloneMaterializeError> {
+    if !destination
+        .matches_clone_destination(validation.plan.destination)
+        .map_err(|_| GitCloneMaterializeError::DestinationChanged)?
+    {
+        return Err(GitCloneMaterializeError::DestinationChanged);
+    }
+    let tree = validation.validated.tree();
+    let marker = git_clone_materialization_marker(
+        validation.operation_id,
+        tree.plan_hash(),
+        validation.plan.destination.root_hash(),
+    );
+    let expected_paths = tree
+        .entries()
+        .iter()
+        .map(|entry| entry.relative_path().to_owned())
+        .collect::<Vec<_>>();
+    if destination
+        .verify_git_clone_portable_content(&marker, &expected_paths)
+        .is_err()
+    {
+        apply_git_clone_content_materialization(
+            destination,
+            validation,
+            state_home,
+            runtime_directory,
+        )?;
+    }
+    destination
+        .verify_git_clone_portable_content(&marker, &expected_paths)
+        .map_err(map_clone_materialization_inspection)?;
+    for entry in tree.entries() {
+        let bytes = destination
+            .read_git_clone_materialized_file(entry.relative_path(), entry.size())
+            .map_err(map_clone_materialization_inspection)?;
+        if !git_blob_object_id_matches(tree.object_format(), &bytes, entry.object_id()) {
+            return Err(GitCloneMaterializeError::ValidationMismatch);
+        }
+    }
+
+    let cancelled = AtomicBool::new(false);
+    let current_tree =
+        inspect_fetched_git_clone_tree(&validation.staging, &validation.remote_head, &cancelled)
+            .map_err(|_| GitCloneMaterializeError::StagingChanged)?;
+    if current_tree.plan_hash() != tree.plan_hash() || current_tree.commit_id() != tree.commit_id()
+    {
+        return Err(GitCloneMaterializeError::StagingChanged);
+    }
+    let index_staging_name =
+        prepare_clone_index(&validation.staging, validation.remote_head.object_id())?;
+    let index = validation
+        .staging
+        .inspect_index_source(&index_staging_name)
+        .map_err(map_clone_materialization_staging)?;
+    validation
+        .staging
+        .verify_git_size_limit(CLONE_STAGING_FILE_LIMIT)
+        .map_err(map_clone_materialization_staging)?;
+    let packs = validation
+        .staging
+        .inspect_pack_sources(
+            validation.remote_head.object_id().len(),
+            CLONE_STAGING_FILE_LIMIT,
+        )
+        .map_err(map_clone_materialization_staging)?;
+    let branch_relative = validation
+        .remote_head
+        .branch_ref()
+        .strip_prefix("refs/heads/")
+        .ok_or(GitCloneMaterializeError::StagingChanged)?;
+    let config = clone_worktree_config(
+        validation.remote_head.object_format(),
+        validation.plan.remote_url(),
+        branch_relative,
+    )?;
+    let head = format!("ref: {}\n", validation.remote_head.branch_ref()).into_bytes();
+    let shallow = format!("{}\n", validation.remote_head.object_id()).into_bytes();
+    let completion_seal = git_clone_completion_seal(
+        validation.operation_id,
+        tree.plan_hash(),
+        validation.plan.destination.root_hash(),
+    );
+    finalize_git_clone_repository(
+        destination,
+        &marker,
+        &completion_seal,
+        &packs,
+        &index,
+        &config,
+        &head,
+        &shallow,
+        branch_relative,
+        validation.remote_head.object_id().as_bytes(),
+        |source| {
+            let opened = if source.name == "index" {
+                validation
+                    .staging
+                    .open_index_source(&index_staging_name, source)
+            } else {
+                validation.staging.open_pack_source(source)
+            };
+            opened.map_err(|error| match map_clone_materialization_staging(error) {
+                GitCloneMaterializeError::ResourceLimit => {
+                    GitCloneMaterializationStorageError::TooLarge
+                }
+                GitCloneMaterializeError::Unsupported => {
+                    GitCloneMaterializationStorageError::Unsupported
+                }
+                GitCloneMaterializeError::Io => GitCloneMaterializationStorageError::Io,
+                _ => GitCloneMaterializationStorageError::SourceChanged,
+            })
+        },
+    )
+    .map_err(map_clone_materialization_storage)?;
+
+    let workspace =
+        open_initialized_workspace(destination).map_err(map_clone_materialization_inspection)?;
+    let status = read_git_status(&workspace).map_err(|_| GitCloneMaterializeError::Io)?;
+    let GitRepositoryStatus::Ready(status) = status.repository() else {
+        return Err(GitCloneMaterializeError::ValidationMismatch);
+    };
+    if status.branch() != Some(branch_relative)
+        || status.detached()
+        || status.upstream() != Some(&format!("origin/{branch_relative}"))
+        || status.remotes() != ["origin"]
+        || !status.clean()
+        || !status.divergence_known()
+        || status.ahead() != 0
+        || status.behind() != 0
+    {
+        return Err(GitCloneMaterializeError::ValidationMismatch);
+    }
+    #[cfg(test)]
+    if CLONE_PRESEAL_PAUSE.get() {
+        thread::sleep(Duration::from_millis(50));
+    }
+    destination
+        .verify_git_clone_portable_content(&marker, &expected_paths)
+        .map_err(map_clone_materialization_inspection)?;
+    seal_git_clone_repository(
+        destination,
+        &marker,
+        &completion_seal,
+        &packs,
+        &index,
+        &config,
+        &head,
+        &shallow,
+        branch_relative,
+        validation.remote_head.object_id().as_bytes(),
+    )
+    .map_err(map_clone_materialization_storage)?;
+    destination
+        .verify_git_clone_portable_content(&marker, &expected_paths)
+        .map_err(map_clone_materialization_inspection)?;
+    Ok(workspace)
+}
+
+fn clone_worktree_config(
+    object_format: GitObjectFormat,
+    remote_url: &str,
+    branch_relative: &str,
+) -> Result<Vec<u8>, GitCloneMaterializeError> {
+    let remote_url = git_config_quote(remote_url)?;
+    let branch = git_config_quote(branch_relative)?;
+    let extension = match object_format {
+        GitObjectFormat::Sha1 => "",
+        GitObjectFormat::Sha256 => "[extensions]\n\tobjectformat = sha256\n",
+    };
+    let config = format!(
+        "[core]\n\trepositoryformatversion = {}\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n{extension}[remote \"origin\"]\n\turl = \"{remote_url}\"\n\tfetch = +refs/heads/{branch_relative}:refs/remotes/origin/{branch_relative}\n[branch \"{branch}\"]\n\tremote = origin\n\tmerge = refs/heads/{branch_relative}\n",
+        u8::from(object_format == GitObjectFormat::Sha256),
+    )
+    .into_bytes();
+    validate_git_config(&config).map_err(|_| GitCloneMaterializeError::Unsafe)?;
+    Ok(config)
+}
+
+fn git_config_quote(value: &str) -> Result<String, GitCloneMaterializeError> {
+    if value.chars().any(char::is_control) {
+        return Err(GitCloneMaterializeError::Unsafe);
+    }
+    Ok(value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn git_clone_completion_seal(
+    operation_id: OperationId,
+    plan_hash: [u8; 32],
+    root_hash: [u8; 32],
+) -> Vec<u8> {
+    format!(
+        "rehow-clone-complete-v1\noperation_id={operation_id}\nplan_hash={}\nroot_hash={}\n",
+        hex_lower(&plan_hash),
+        hex_lower(&root_hash),
+    )
+    .into_bytes()
+}
+
 fn map_clone_materialization_inspection(
     error: crate::storage::WorkspaceInspectError,
 ) -> GitCloneMaterializeError {
@@ -1357,6 +1567,9 @@ fn run_clone_command(
         .join()
         .map_err(|_| GitCloneDiscoveryError::Io)?;
     let status = status?;
+    if exceeded.load(Ordering::Relaxed) {
+        return Err(GitCloneDiscoveryError::OutputLimit);
+    }
     if !status.success() {
         return Err(GitCloneDiscoveryError::RemoteUnavailable);
     }
@@ -1659,6 +1872,88 @@ fn clone_read_command(
     command.process_group(0);
     configure_clone_child(&mut command, staging_git_descriptor, None);
     command
+}
+
+fn prepare_clone_index(
+    staging: &GitCloneStaging,
+    object_id: &str,
+) -> Result<String, GitCloneMaterializeError> {
+    let executable = trusted_executable("/usr/bin/git").ok_or(GitCloneMaterializeError::Io)?;
+    let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitCloneMaterializeError::Io)?;
+    let staging_name = format!("rehow-index-{}", new_operation_id());
+    let sandbox_index = format!("/repo.git/{staging_name}");
+    let mut command = Command::new(sandbox);
+    command
+        .env_clear()
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args([
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-all",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib",
+            "/lib64",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--bind",
+            staging.git_path(),
+            "/repo.git",
+            "--setenv",
+            "GIT_INDEX_FILE",
+        ])
+        .arg(&sandbox_index)
+        .args(["--chdir", "/tmp", "--"])
+        .arg(executable)
+        .args([
+            "--no-pager",
+            "--literal-pathspecs",
+            "--git-dir=/repo.git",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.alternateRefsCommand=",
+            "-c",
+            "protocol.allow=never",
+            "read-tree",
+            object_id,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.process_group(0);
+    configure_clone_child(&mut command, staging.git_descriptor(), None);
+    let output = run_clone_command(
+        command,
+        &AtomicBool::new(false),
+        CLONE_LOCAL_READ_TIMEOUT,
+        128,
+    )
+    .map_err(|_| GitCloneMaterializeError::StagingChanged)?;
+    if output.stdout.is_empty() {
+        Ok(staging_name)
+    } else {
+        Err(GitCloneMaterializeError::StagingChanged)
+    }
 }
 
 fn clone_batch_read_command(
@@ -2699,12 +2994,20 @@ fn run_git(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    run_bounded_git_command(command, PROCESS_TIMEOUT, OUTPUT_LIMIT)
+}
+
+fn run_bounded_git_command(
+    mut command: Command,
+    timeout: Duration,
+    output_limit: usize,
+) -> Result<ProcessOutput, GitReadError> {
     let mut child = command.spawn().map_err(|_| GitReadError::Spawn)?;
     let exceeded = Arc::new(AtomicBool::new(false));
     let stdout = child.stdout.take().ok_or(GitReadError::Spawn)?;
     let stderr = child.stderr.take().ok_or(GitReadError::Spawn)?;
-    let stdout_reader = read_capped(stdout, Arc::clone(&exceeded));
-    let stderr_reader = read_capped(stderr, Arc::clone(&exceeded));
+    let stdout_reader = read_capped_with_limit(stdout, Arc::clone(&exceeded), output_limit);
+    let stderr_reader = read_capped_with_limit(stderr, Arc::clone(&exceeded), output_limit);
     let started = Instant::now();
     let status = loop {
         if exceeded.load(Ordering::Relaxed) {
@@ -2712,7 +3015,7 @@ fn run_git(
             let _ = child.wait();
             break Err(GitReadError::OutputLimit);
         }
-        if started.elapsed() >= PROCESS_TIMEOUT {
+        if started.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
             break Err(GitReadError::Timeout);
@@ -2725,6 +3028,9 @@ fn run_git(
     let stdout = stdout_reader.join().map_err(|_| GitReadError::Spawn)?;
     let _ = stderr_reader.join().map_err(|_| GitReadError::Spawn)?;
     let status = status?;
+    if exceeded.load(Ordering::Relaxed) {
+        return Err(GitReadError::OutputLimit);
+    }
     if !status.success() {
         return if status.code().is_some() {
             Err(GitReadError::ExitStatus)
@@ -2733,13 +3039,6 @@ fn run_git(
         };
     }
     Ok(ProcessOutput { stdout })
-}
-
-fn read_capped<R: Read + Send + 'static>(
-    reader: R,
-    exceeded: Arc<AtomicBool>,
-) -> thread::JoinHandle<Vec<u8>> {
-    read_capped_with_limit(reader, exceeded, OUTPUT_LIMIT)
 }
 
 fn read_capped_with_limit<R: Read + Send + 'static>(
@@ -2939,11 +3238,16 @@ fn safe_git_label(value: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::storage::{
-        GitCloneScaffoldFault, GitConfigFault, GitConfigRace, GitInitFault, WorkspaceFault,
-        WorkspaceInspection, inspect_workspace, set_git_clone_scaffold_fault, set_git_config_fault,
-        set_git_config_race, set_git_init_fault, set_workspace_fault,
+        GitCloneFinalizeFault, GitCloneScaffoldFault, GitConfigFault, GitConfigRace, GitInitFault,
+        WorkspaceFault, WorkspaceInspection, inspect_workspace, set_git_clone_finalize_fault,
+        set_git_clone_scaffold_fault, set_git_config_fault, set_git_config_race,
+        set_git_init_fault, set_workspace_fault,
     };
-    use std::{fs, os::unix::fs::symlink, process::Command};
+    use std::{
+        fs,
+        os::unix::fs::{PermissionsExt, symlink},
+        process::Command,
+    };
 
     struct Temp(PathBuf);
     impl Temp {
@@ -3794,6 +4098,12 @@ mod tests {
                 "protocol.file.allow=always",
                 "-c",
                 "core.hooksPath=/dev/null",
+                "-c",
+                "fetch.unpackLimit=1",
+                "-c",
+                "transfer.unpackLimit=1",
+                "-c",
+                "pack.writeReverseIndex=false",
                 "fetch",
                 "--quiet",
                 "--no-tags",
@@ -3818,10 +4128,20 @@ mod tests {
         let cancelled = AtomicBool::new(false);
         let tree = inspect_fetched_git_clone_tree(&staging, &head, &cancelled).unwrap();
         let validated = validate_fetched_git_clone(&staging, tree, &cancelled).unwrap();
+        let packs = staging
+            .inspect_pack_sources(head.object_id().len(), CLONE_STAGING_FILE_LIMIT)
+            .unwrap();
 
         assert_eq!(validated.workspace().manifest().name(), "Cloned");
         assert_eq!(validated.tree().commit_id(), commit_id);
         assert!(validated.workspace().issues().is_empty());
+        assert_eq!(packs.len(), 2);
+        assert!(packs.iter().any(|source| source.name.ends_with(".pack")));
+        assert!(packs.iter().any(|source| source.name.ends_with(".idx")));
+        for source in &packs {
+            let file = staging.open_pack_source(source).unwrap();
+            assert_eq!(file.metadata().unwrap().len(), source.size);
+        }
         assert!(destination.0.read_dir().unwrap().next().is_none());
     }
 
@@ -4063,6 +4383,198 @@ mod tests {
                     .unwrap();
             assert_eq!(workspace.manifest().name(), "Scaffold resume");
         }
+    }
+
+    #[test]
+    fn clone_finalization_installs_validated_objects_refs_and_config() {
+        let destination = Temp::new();
+        let state = Temp::new();
+        let source = Temp::new();
+        let manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Finalized\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n";
+        let (target, validation) = validated_clone_fixture(&destination, &state, &source, manifest);
+
+        let workspace =
+            apply_git_clone_repository_finalization(&target, &validation, &state.0, None).unwrap();
+        let status = read_git_status(&workspace).unwrap();
+        let GitRepositoryStatus::Ready(status) = status.repository() else {
+            panic!("finalized clone was not a repository")
+        };
+        assert_eq!(status.branch(), Some("main"));
+        assert_eq!(status.upstream(), Some("origin/main"));
+        assert_eq!(status.remotes(), ["origin"]);
+        assert!(status.clean());
+        assert!(destination.0.join(".git/rehow-clone-complete").is_file());
+        assert_eq!(
+            fs::read_to_string(destination.0.join(".git/refs/heads/main")).unwrap(),
+            format!("{}\n", validation.remote_head.object_id())
+        );
+        assert_eq!(
+            fs::read_to_string(destination.0.join(".git/refs/remotes/origin/main")).unwrap(),
+            format!("{}\n", validation.remote_head.object_id())
+        );
+        assert_eq!(
+            fs::read(destination.0.join("rehow.yaml")).unwrap(),
+            manifest
+        );
+
+        let replayed =
+            apply_git_clone_repository_finalization(&target, &validation, &state.0, None).unwrap();
+        let GitRepositoryStatus::Ready(replayed_status) =
+            read_git_status(&replayed).unwrap().repository().clone()
+        else {
+            panic!("replayed clone was not a repository")
+        };
+        assert!(replayed_status.clean());
+    }
+
+    #[test]
+    fn clone_finalization_resumes_every_publication_boundary() {
+        let manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Finalization replay\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n";
+        for fault in [
+            GitCloneFinalizeFault::Pack,
+            GitCloneFinalizeFault::Shallow,
+            GitCloneFinalizeFault::Config,
+            GitCloneFinalizeFault::LocalRef,
+            GitCloneFinalizeFault::RemoteRef,
+            GitCloneFinalizeFault::Head,
+            GitCloneFinalizeFault::Seal,
+        ] {
+            let destination = Temp::new();
+            let state = Temp::new();
+            let source = Temp::new();
+            let (target, validation) =
+                validated_clone_fixture(&destination, &state, &source, manifest);
+            set_git_clone_finalize_fault(fault);
+            assert_eq!(
+                apply_git_clone_repository_finalization(&target, &validation, &state.0, None)
+                    .err()
+                    .unwrap(),
+                GitCloneMaterializeError::Unsupported,
+                "{fault:?}"
+            );
+            let workspace =
+                apply_git_clone_repository_finalization(&target, &validation, &state.0, None)
+                    .unwrap();
+            let GitRepositoryStatus::Ready(status) =
+                read_git_status(&workspace).unwrap().repository().clone()
+            else {
+                panic!("replayed clone was not a repository")
+            };
+            assert!(status.clean(), "{fault:?}");
+        }
+    }
+
+    #[test]
+    fn clone_finalization_refuses_pack_collision_and_supports_nested_branch() {
+        let manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Finalization guard\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n";
+        let destination = Temp::new();
+        let state = Temp::new();
+        let source = Temp::new();
+        let (target, validation) = validated_clone_fixture(&destination, &state, &source, manifest);
+        apply_git_clone_content_materialization(&target, &validation, &state.0, None).unwrap();
+        let packs = validation
+            .staging
+            .inspect_pack_sources(
+                validation.remote_head.object_id().len(),
+                CLONE_STAGING_FILE_LIMIT,
+            )
+            .unwrap();
+        let collision = destination.0.join(".git/objects/pack").join(&packs[0].name);
+        fs::write(&collision, vec![b'x'; packs[0].size as usize]).unwrap();
+        assert_eq!(
+            apply_git_clone_repository_finalization(&target, &validation, &state.0, None)
+                .err()
+                .unwrap(),
+            GitCloneMaterializeError::Unsafe
+        );
+        assert_eq!(
+            fs::read(&collision).unwrap(),
+            vec![b'x'; packs[0].size as usize]
+        );
+        assert!(!destination.0.join(".git/rehow-clone-complete").exists());
+
+        let destination = Temp::new();
+        let state = Temp::new();
+        let source = Temp::new();
+        let (target, mut validation) =
+            validated_clone_fixture(&destination, &state, &source, manifest);
+        validation.remote_head.branch_ref = "refs/heads/team/main".to_owned();
+        let workspace =
+            apply_git_clone_repository_finalization(&target, &validation, &state.0, None).unwrap();
+        let GitRepositoryStatus::Ready(status) =
+            read_git_status(&workspace).unwrap().repository().clone()
+        else {
+            panic!("nested-branch clone was not a repository")
+        };
+        assert_eq!(status.branch(), Some("team/main"));
+        assert_eq!(status.upstream(), Some("origin/team/main"));
+        assert!(status.clean());
+    }
+
+    #[test]
+    fn clone_finalization_refuses_changed_staging_pack_without_sealing() {
+        let destination = Temp::new();
+        let state = Temp::new();
+        let source = Temp::new();
+        let manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Changed staging\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n";
+        let (target, validation) = validated_clone_fixture(&destination, &state, &source, manifest);
+        apply_git_clone_content_materialization(&target, &validation, &state.0, None).unwrap();
+        let pack = validation
+            .staging
+            .inspect_pack_sources(
+                validation.remote_head.object_id().len(),
+                CLONE_STAGING_FILE_LIMIT,
+            )
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.name.ends_with(".pack"))
+            .unwrap();
+        let path = Path::new(validation.staging.git_path())
+            .join("objects/pack")
+            .join(pack.name);
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[0] ^= 0xff;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&path, bytes).unwrap();
+
+        assert_eq!(
+            apply_git_clone_repository_finalization(&target, &validation, &state.0, None)
+                .err()
+                .unwrap(),
+            GitCloneMaterializeError::StagingChanged
+        );
+        assert!(!destination.0.join(".git/rehow-clone-complete").exists());
+    }
+
+    #[test]
+    fn clone_finalization_refuses_ignored_file_added_before_seal() {
+        let destination = Temp::new();
+        let state = Temp::new();
+        let source = Temp::new();
+        fs::write(source.0.join(".gitignore"), b"*.tmp\n").unwrap();
+        let manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Ignored race\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n";
+        let (target, validation) = validated_clone_fixture(&destination, &state, &source, manifest);
+        let root = destination.0.clone();
+        let writer = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !root.join(".git/HEAD").exists() {
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(1));
+            }
+            fs::write(root.join("intruder.tmp"), b"preserve").unwrap();
+        });
+        CLONE_PRESEAL_PAUSE.set(true);
+        let result =
+            apply_git_clone_repository_finalization(&target, &validation, &state.0, None).err();
+        CLONE_PRESEAL_PAUSE.set(false);
+        writer.join().unwrap();
+
+        assert_eq!(result, Some(GitCloneMaterializeError::Conflict));
+        assert_eq!(
+            fs::read(destination.0.join("intruder.tmp")).unwrap(),
+            b"preserve"
+        );
+        assert!(!destination.0.join(".git/rehow-clone-complete").exists());
     }
 
     #[test]
@@ -4687,6 +5199,23 @@ mod tests {
         assert!(repository.untracked() >= 2);
         assert_eq!(repository.remotes(), &["origin"]);
         assert!(!sentinel.exists());
+    }
+
+    #[test]
+    fn git_runner_rechecks_output_limit_after_fast_exit() {
+        let mut command = Command::new("/usr/bin/head");
+        command
+            .args(["-c", "8192", "/dev/zero"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        assert_eq!(
+            run_bounded_git_command(command, Duration::from_secs(2), 1024)
+                .err()
+                .unwrap(),
+            GitReadError::OutputLimit
+        );
     }
 
     #[test]
