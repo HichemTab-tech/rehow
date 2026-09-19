@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 5C2 recoverable core publication is complete at `bdc43a9`. Phase 5C3 native confirmation and the manual-commit UI are next; synchronization and authenticated clone transports remain separate gates.
+Phase 5C3 native-confirmed managed Git commits are complete at `9110010`. Phase 5D safe synchronization is next; authenticated clone transports remain a separate gate.
 
 ## Current task
 
-Implement Phase 5C3's pathless native confirmation/manual-commit workflow over the accepted core plan and recovery primitives, then expose the bounded Reference Desk interaction.
+Define the smallest safe Phase 5D manual-synchronization boundary before adding network mutation authority.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; reconcile external changes; manage Attachment inventory/import/removal; retrieve Guides through the accepted search experience; see confined Git status; initialize a direct private Git repository; connect a strictly validated remote; and clone a canonical anonymous-HTTPS Git Workspace through explicit native validation and completion. The core can now plan and crash-safely publish managed-only Git commits, but native confirmation/UI are not connected yet. Attachment viewing/export/reveal, authenticated clone transports, Git synchronization, and MCP mutation remain unimplemented; MCP remains read-only.
+In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; reconcile external changes; manage Attachment inventory/import/removal; retrieve Guides through the accepted search experience; see confined Git status; initialize a direct private Git repository; connect a strictly validated remote; clone a canonical anonymous-HTTPS Git Workspace; and create a native-confirmed, managed-only local commit. Attachment viewing/export/reveal, authenticated clone transports, Git synchronization, and MCP mutation remain unimplemented; MCP remains read-only.
 
 ## Completed work
 
@@ -107,18 +107,17 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Completed Phase 5C2A at signed checkpoint `0057e06`: exact private loose candidates are packed with fixed plumbing; pack/index checksums, object closure, and recomputed SHA-1/SHA-256 identities are independently verified through a pack-only sandbox; a fresh preflight and staging snapshot are required under the cooperating writer lock; and the retained active object store accepts only durable no-replace `.pack`/`.idx` installation or byte-identical existing files. Branch, index, refs, reflogs, configuration, and Workspace bytes remain unchanged.
 - Added the Phase 5C2B private-index prerequisite at signed checkpoint `8439b78`: config-free `read-tree` generates the candidate index, `write-tree` must reproduce the candidate tree before and after cache-tree stripping, the v2/v3 stage-zero index is bounded and independently parsed, and the active index remains byte-identical.
 - Completed Phase 5C2 at signed checkpoint `bdc43a9`: a canonical operation-bound intent makes index-first/direct-ref-last publication replayable; exact before/candidate metadata, branch representation, Git/root identities, candidate objects, plan hash, generation, and staging identity are bound. Six active-metadata interruption boundaries, four quarantine durability boundaries, ref races, foreign metadata, unborn/packed branches, SHA-256, and post-publication Workspace edits are covered. Successful staging is identity-bound and durably quarantined before completion. The reused Security Reviewer final verdict is PASS.
+- Completed Phase 5C3 at signed checkpoint `9110010`: pathless native plan/apply/cancel/recovery commands retain all authority in Rust, require parented native confirmation, and expose a compact Reference Desk manual-commit workflow. Terminal conflicts quarantine exact staging and no longer create a Resume loop; focus moves into the rendered review state. Wide/narrow screenshots were inspected, the single reused Security Reviewer returned PASS, and the full desktop/native gate passed.
 
 ## Work in progress
 
-- Phase 5C2 is complete. Phase 5C3 native confirmation/UI authority has not yet been implemented.
+- Phase 5C3 is complete. No Phase 5D synchronization implementation has started.
 
 ## Remaining work
 
-- Phase 1D-C: finish deterministic emission and private mutation candidate authority; Phase 1E proves confinement/revisions and atomic recovery.
-- Phase 2: native shell and safe Workspace onboarding/import/migration.
-- Phase 3: Category/Guide/Attachment lifecycle and edit conflicts.
+- Workspace adoption/import/migration and Attachment viewing/export/reveal remain incomplete.
 - Phase 4: complete at `e17b7d1`.
-- Phase 5: read-only status, safe local initialization, metadata-only remote connection, anonymous-HTTPS clone including UI, and recoverable managed-only core commit publication are complete; native commit confirmation/UI, authenticated clone, and synchronization remain.
+- Phase 5: read-only status, safe local initialization, metadata-only remote connection, anonymous-HTTPS clone including UI, and native-confirmed recoverable managed-only commits are complete; authenticated clone and synchronization remain.
 - Phase 6: standalone full MCP contract.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
@@ -217,16 +216,17 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5C2 used one reused Security Reviewer/xhigh and its final verdict is PASS.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5C3 used one reused Security Reviewer/xhigh only at the final gate and its correction recheck is PASS.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`bdc43a9` — signed Phase 5C2 recoverable Git commit-publication checkpoint. This progress-only ledger update follows that implementation commit.
+`9110010` — signed Phase 5C3 native managed Git commit workflow; its configured GPG signature verifies. This progress-only ledger update follows that implementation commit.
 
 ## Tests last run and results
 
+- 2026-09-19: Phase 5C3 checkpoint `9110010`: `pnpm check`, 37 Vitest tests, 395 core tests with 2 intentional ignores, all 43 contract/API tests, 22 desktop Rust tests, the MCP smoke test, locked all-target/all-feature Clippy with warnings denied, production web build, optimized Tauri build, bootstrap validation, contract drift, formatting, and whitespace checks pass. Focused terminal-conflict recovery and deferred review-focus regressions pass. Wide/narrow screenshots were inspected; the single reused Security Reviewer correction recheck is PASS; the signed commit verifies.
 - 2026-09-19: Phase 5C2 checkpoint `bdc43a9`: full locked all-feature core gate passes 394 unit tests with 2 intentional ignores plus 18 error-contract, 13 protocol, 1 public-API/trybuild, and 11 unknown-YAML tests. Formatting, locked all-target/all-feature core Clippy with warnings denied, bootstrap, and whitespace checks pass. Focused coverage includes six active metadata interruption boundaries and four quarantine rename/sync boundaries. The reused Security Reviewer final verdict is PASS and the signed commit verifies.
 - 2026-09-19: Phase 5C2B candidate-index checkpoint `8439b78`: full locked all-feature core gate passes 386 unit tests with 2 intentional ignores plus all 43 error-contract/protocol/public-API/unknown-YAML tests. Formatting, locked all-target/all-feature core Clippy with warnings denied, bootstrap, and whitespace checks pass.
 - 2026-09-19: Phase 5C2A checkpoint `0057e06`: full locked all-feature core gate passes 385 unit tests with 2 intentional ignores plus 18 error-contract, 13 protocol, 1 public-API/trybuild, and 11 unknown-YAML tests. Locked all-target/all-feature core Clippy denies warnings; Cargo formatting, bootstrap validation, and whitespace checks pass. Focused tests cover exact pack verification, idempotent append-only install, unchanged branch/index, stale refusal, and collision preservation.
@@ -431,20 +431,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `crates/rehow-core/src/git.rs`, `storage.rs`, `storage/recovery.rs`, `storage/recovery/store.rs`, and `docs/evidence/phase-5c-git-commit-decision.md` implement exact private candidate packing and append-only active object installation at `0057e06`.
 - `crates/rehow-core/src/git.rs`, `storage/recovery.rs`, `storage/recovery/store.rs`, and the Phase 5C evidence prepare and verify the stripped private candidate index at `8439b78`.
 - `crates/rehow-core/src/git.rs`, `storage.rs`, `storage/recovery.rs`, `storage/recovery/store.rs`, and the Phase 5C evidence implement and verify recoverable index-first/direct-ref-last commit publication at `bdc43a9`.
+- `docs/task-packets/phase-5c3-native-git-commit.md`, the core public apply/recovery boundary, native lifecycle, Reference Desk commit panel, interaction tests, evidence, and screenshots complete the manual-commit workflow at `9110010`.
 
 ## Next recommended action
 
-Write the bounded Phase 5C3 task packet, then implement pathless native plan/confirmation/publication/recovery commands and the compact Reference Desk manual-commit interaction. Keep synchronization, authenticated clone, and MCP mutation out of this checkpoint.
+Write the bounded Phase 5D safe-synchronization decision and first implementation packet. Start with explicit manual sync preflight and conflict/authentication reporting; keep scheduled sync, authenticated clone, and MCP mutation out of the first checkpoint.
 
 ## Recommended agent role and reasoning effort
 
-Planner/Integrator locally with `gpt-5.6-sol`, medium-equivalent judgment for the bounded Phase 5C3 adapter/UI packet and implementation. Run zero extra agents during routine implementation; use at most one reused reviewer at the completed native/UI gate.
+Architect/Planner locally with `gpt-5.6-sol`, xhigh-equivalent judgment for the Phase 5D network/Git safety boundary, then medium-equivalent packet work. Run zero extra agents during routine work; use at most one reused Security Reviewer at the first authority-bearing gate.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read the Git sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `bdc43a9`, `8439b78`, and `3a13689`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoints `9110010`, `bdc43a9`, and `a9acf15`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 5C1 and Phase 5C2 as complete. Write the Phase 5C3 packet and implement only native confirmation/manual-commit UI next; synchronization, authenticated clone, and MCP mutation remain later.
+6. Treat Phase 5C as complete. Define Phase 5D's safe manual-sync boundary next; scheduled sync, authenticated clone, and MCP mutation remain later.
