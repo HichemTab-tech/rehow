@@ -907,6 +907,116 @@ pub(crate) fn discover_git_clone_remote_head(
     parse_git_remote_head(&output.stdout)
 }
 
+fn discover_git_sync_remote_head(
+    plan: &GitSyncPlan,
+    cancelled: &AtomicBool,
+) -> Result<GitRemoteHead, GitSyncError> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(GitSyncError::Cancelled);
+    }
+    if plan.transport != GitRemoteTransport::Https {
+        return Err(GitSyncError::UnsupportedTransport);
+    }
+    let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
+    let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
+    let output = run_clone_command(
+        sync_discovery_command(&executable, &sandbox, &plan.remote_url, &plan.remote_ref),
+        cancelled,
+        CLONE_DISCOVERY_TIMEOUT,
+        CLONE_DISCOVERY_OUTPUT_LIMIT,
+    )
+    .map_err(map_clone_discovery_to_sync)?;
+    parse_git_sync_remote_ref(&output.stdout, &plan.remote_ref)
+}
+
+fn prepare_git_sync_staging(
+    plan: &GitSyncPlan,
+    remote_head: &GitRemoteHead,
+    state_home: &Path,
+) -> Result<GitCloneStaging, GitSyncError> {
+    let stage_name = hex_lower(&plan.staging_id);
+    let mut url_hasher = blake3::Hasher::new();
+    url_hasher.update(b"rehow:sync-url:v1\0");
+    hash_clone_field(&mut url_hasher, plan.remote_url.as_bytes());
+    let object_format = match remote_head.object_format {
+        GitObjectFormat::Sha1 => "sha1",
+        GitObjectFormat::Sha256 => "sha256",
+    };
+    let local_head = plan
+        .preflight
+        .branch
+        .expected_object_id
+        .as_deref()
+        .ok_or(GitSyncError::Unsupported)?;
+    let provenance = format!(
+        "rehow-sync-stage-v1\nworkspace_id={}\nroot_capability={}\ngit_device={}\ngit_inode={}\nurl_hash={}\nobject_format={object_format}\nremote_ref={}\nremote_object={}\nlocal_object={}\nstage=validated-fetch\n",
+        plan.preflight.workspace_id,
+        hex_lower(&plan.preflight.root_capability_hash),
+        plan.preflight.git_identity.0,
+        plan.preflight.git_identity.1,
+        hex_lower(url_hasher.finalize().as_bytes()),
+        plan.remote_ref,
+        remote_head.object_id,
+        local_head,
+    );
+    let config: &[u8] = match remote_head.object_format {
+        GitObjectFormat::Sha1 => {
+            b"[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n"
+        }
+        GitObjectFormat::Sha256 => {
+            b"[core]\n\trepositoryformatversion = 1\n\tfilemode = true\n\tbare = true\n[extensions]\n\tobjectformat = sha256\n"
+        }
+    };
+    create_git_clone_staging(state_home, &stage_name, provenance.as_bytes(), config).map_err(
+        |error| match error {
+            GitCloneStagingError::Conflict => GitSyncError::StagingConflict,
+            GitCloneStagingError::Unsafe => GitSyncError::Unsafe,
+            GitCloneStagingError::Unsupported => GitSyncError::Unsupported,
+            GitCloneStagingError::TooLarge => GitSyncError::ResourceLimit,
+            GitCloneStagingError::Io => GitSyncError::Io,
+        },
+    )
+}
+
+fn fetch_git_sync_remote(
+    plan: &GitSyncPlan,
+    remote_head: &GitRemoteHead,
+    staging: &GitCloneStaging,
+    cancelled: &AtomicBool,
+) -> Result<(), GitSyncError> {
+    if plan.transport != GitRemoteTransport::Https {
+        return Err(GitSyncError::UnsupportedTransport);
+    }
+    let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
+    let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
+    let output = run_clone_command(
+        clone_fetch_command(
+            &executable,
+            &sandbox,
+            staging.git_path(),
+            staging.git_descriptor(),
+            &plan.remote_url,
+            remote_head.object_id(),
+        ),
+        cancelled,
+        CLONE_FETCH_TIMEOUT,
+        CLONE_DISCOVERY_OUTPUT_LIMIT,
+    )
+    .map_err(map_clone_discovery_to_sync)?;
+    if !output.stdout.is_empty() {
+        return Err(GitSyncError::InvalidRepository);
+    }
+    staging
+        .verify_git_size_limit(CLONE_STAGING_FILE_LIMIT)
+        .map_err(|error| match error {
+            GitCloneStagingError::TooLarge => GitSyncError::ResourceLimit,
+            GitCloneStagingError::Conflict => GitSyncError::StagingConflict,
+            GitCloneStagingError::Unsafe => GitSyncError::Unsafe,
+            GitCloneStagingError::Unsupported => GitSyncError::Unsupported,
+            GitCloneStagingError::Io => GitSyncError::Io,
+        })
+}
+
 #[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
 pub(crate) fn fetch_git_clone_remote(
     plan: &GitClonePlan,
@@ -1125,6 +1235,160 @@ pub enum GitCloneMaterializeError {
     Io,
 }
 
+/// Opaque, single-use input to an isolated remote synchronization inspection.
+/// URLs, object IDs, filesystem authority, and repository snapshots remain
+/// core-private.
+pub struct GitSyncPlan {
+    token: PlanToken,
+    remote_name: String,
+    remote_url: String,
+    transport: GitRemoteTransport,
+    host: String,
+    remote_branch: String,
+    remote_ref: String,
+    staging_id: [u8; 32],
+    preflight: GitSyncRepositoryPreflight,
+}
+
+impl fmt::Debug for GitSyncPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitSyncPlan")
+            .field("token", &"<redacted>")
+            .field("remote_name", &self.remote_name)
+            .field("remote_url", &"<redacted>")
+            .field("transport", &self.transport)
+            .field("host", &self.host)
+            .field("remote_branch", &self.remote_branch)
+            .field("remote_ref", &"<redacted>")
+            .field("staging_id", &"<redacted>")
+            .field("preflight", &"<redacted>")
+            .finish()
+    }
+}
+
+impl GitSyncPlan {
+    pub fn token(&self) -> &PlanToken {
+        &self.token
+    }
+
+    pub fn remote_name(&self) -> &str {
+        &self.remote_name
+    }
+
+    pub fn transport(&self) -> GitRemoteTransport {
+        self.transport
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn remote_branch(&self) -> &str {
+        &self.remote_branch
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitSyncInspectionState {
+    UpToDate,
+    RemoteChanged,
+}
+
+/// Validated, native-held incoming state for the later materialization/ref-CAS
+/// gate. Debug and public accessors deliberately expose no content or Git IDs.
+pub struct GitSyncInspection {
+    #[allow(dead_code, reason = "consumed by the Phase 5D2 integration gate")]
+    plan: GitSyncPlan,
+    #[allow(dead_code, reason = "consumed by the Phase 5D2 integration gate")]
+    staging: GitCloneStaging,
+    #[allow(dead_code, reason = "consumed by the Phase 5D2 integration gate")]
+    remote_head: GitRemoteHead,
+    #[allow(dead_code, reason = "consumed by the Phase 5D2 integration gate")]
+    validated: ValidatedGitClone,
+    state: GitSyncInspectionState,
+    local_changes: bool,
+    workspace_matches_remote: bool,
+}
+
+impl fmt::Debug for GitSyncInspection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitSyncInspection")
+            .field("state", &self.state)
+            .field("local_changes", &self.local_changes)
+            .field("workspace_matches_remote", &self.workspace_matches_remote)
+            .field("authority", &"<redacted>")
+            .finish()
+    }
+}
+
+impl GitSyncInspection {
+    pub fn state(&self) -> GitSyncInspectionState {
+        self.state
+    }
+
+    pub fn local_changes(&self) -> bool {
+        self.local_changes
+    }
+
+    pub fn workspace_matches_remote(&self) -> bool {
+        self.workspace_matches_remote
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitSyncError {
+    NotRepository,
+    NoUpstream,
+    InvalidConfiguration,
+    UnsupportedTransport,
+    RecoveryRequired,
+    ReadOnly,
+    WorkspaceIssues,
+    PlanStale,
+    Cancelled,
+    Timeout,
+    ResourceLimit,
+    GitUnavailable,
+    SandboxUnavailable,
+    RemoteUnavailable,
+    InvalidRepository,
+    InvalidWorkspace,
+    StagingConflict,
+    Unsafe,
+    Unsupported,
+    Io,
+}
+
+struct GitSyncRepositoryPreflight {
+    workspace_id: String,
+    workspace_fingerprint: [u8; 32],
+    manifest_revision: Revision,
+    root_capability_hash: [u8; 32],
+    git_identity: (u64, u64),
+    repository: GitCommitRepositorySnapshot,
+    branch_storage: crate::storage::GitCommitBranchSnapshot,
+    branch: GitCommitBranch,
+    object_format: GitObjectFormat,
+    managed: GitCommitManagedInventory,
+    working_tree_clean: bool,
+}
+
+impl fmt::Debug for GitSyncRepositoryPreflight {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitSyncRepositoryPreflight")
+            .field("workspace", &"<redacted>")
+            .field("repository", &"<redacted>")
+            .field("branch", &self.branch.reference)
+            .field("object_format", &self.object_format)
+            .field("managed_files", &self.managed.files.len())
+            .field("working_tree_clean", &self.working_tree_clean)
+            .finish()
+    }
+}
+
 /// Runs the complete pre-materialization clone pipeline. The destination is
 /// revalidated before and after the operation and is never bound into a child
 /// process or written by this function.
@@ -1170,6 +1434,246 @@ pub fn apply_git_clone_validation(
             Err(error)
         }
     }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct GitSyncTarget {
+    remote_name: String,
+    remote_url: String,
+    transport: GitRemoteTransport,
+    host: String,
+    remote_branch: String,
+    remote_ref: String,
+}
+
+pub fn plan_git_sync(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+) -> Result<GitSyncPlan, GitSyncError> {
+    if git_commit_recovery_required(workspace, state_home, None).map_err(map_commit_plan_to_sync)? {
+        return Err(GitSyncError::RecoveryRequired);
+    }
+    let (preflight, target) = inspect_git_sync_repository(workspace)?;
+    let mut random = [0_u8; 32];
+    fill_random(&mut random).map_err(|_| GitSyncError::Io)?;
+    let mut staging_id = [0_u8; 32];
+    fill_random(&mut staging_id).map_err(|_| GitSyncError::Io)?;
+    Ok(GitSyncPlan {
+        token: PlanToken::from_random_bytes(random),
+        remote_name: target.remote_name,
+        remote_url: target.remote_url,
+        transport: target.transport,
+        host: target.host,
+        remote_branch: target.remote_branch,
+        remote_ref: target.remote_ref,
+        staging_id,
+        preflight,
+    })
+}
+
+/// Fetches the configured upstream into private XDG staging and validates its
+/// entire portable Workspace snapshot. It never binds the active Workspace to
+/// the Git child and never changes active objects, refs, index, or content.
+pub fn apply_git_sync_inspection(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    plan: GitSyncPlan,
+    cancelled: &AtomicBool,
+) -> Result<GitSyncInspection, GitSyncError> {
+    if plan.transport != GitRemoteTransport::Https {
+        return Err(GitSyncError::UnsupportedTransport);
+    }
+    revalidate_git_sync_plan(workspace, &plan)?;
+    let remote_head = discover_git_sync_remote_head(&plan, cancelled)?;
+    if remote_head.object_format != plan.preflight.object_format {
+        return Err(GitSyncError::InvalidRepository);
+    }
+    let staging = prepare_git_sync_staging(&plan, &remote_head, state_home)?;
+    fetch_git_sync_remote(&plan, &remote_head, &staging, cancelled)?;
+    finish_git_sync_inspection(workspace, plan, staging, remote_head, cancelled)
+}
+
+fn finish_git_sync_inspection(
+    workspace: &WorkspaceView,
+    plan: GitSyncPlan,
+    staging: GitCloneStaging,
+    remote_head: GitRemoteHead,
+    cancelled: &AtomicBool,
+) -> Result<GitSyncInspection, GitSyncError> {
+    let tree = inspect_fetched_git_clone_tree(&staging, &remote_head, cancelled)
+        .map_err(map_clone_inspection_to_sync)?;
+    let validated =
+        validate_fetched_git_clone(&staging, tree, cancelled).map_err(map_clone_content_to_sync)?;
+    revalidate_git_sync_plan(workspace, &plan)?;
+    if validated.workspace().manifest().workspace_id().to_string() != plan.preflight.workspace_id {
+        return Err(GitSyncError::InvalidWorkspace);
+    }
+    let remote_matches_current = workspace_validation_fingerprint(validated.workspace())
+        == plan.preflight.workspace_fingerprint;
+    let local_head = plan
+        .preflight
+        .branch
+        .expected_object_id
+        .as_deref()
+        .ok_or(GitSyncError::Unsupported)?;
+    let state = if remote_head.object_id() == local_head {
+        GitSyncInspectionState::UpToDate
+    } else {
+        GitSyncInspectionState::RemoteChanged
+    };
+    let local_changes = !plan.preflight.working_tree_clean;
+    Ok(GitSyncInspection {
+        plan,
+        staging,
+        remote_head,
+        validated,
+        state,
+        local_changes,
+        workspace_matches_remote: remote_matches_current,
+    })
+}
+
+fn revalidate_git_sync_plan(
+    workspace: &WorkspaceView,
+    plan: &GitSyncPlan,
+) -> Result<(), GitSyncError> {
+    let (current, target) = inspect_git_sync_repository(workspace)?;
+    if !same_git_sync_preflight(&plan.preflight, &current)
+        || target.remote_name != plan.remote_name
+        || target.remote_url != plan.remote_url
+        || target.transport != plan.transport
+        || target.host != plan.host
+        || target.remote_branch != plan.remote_branch
+        || target.remote_ref != plan.remote_ref
+    {
+        return Err(GitSyncError::PlanStale);
+    }
+    Ok(())
+}
+
+fn same_git_sync_preflight(
+    planned: &GitSyncRepositoryPreflight,
+    current: &GitSyncRepositoryPreflight,
+) -> bool {
+    planned.workspace_id == current.workspace_id
+        && planned.workspace_fingerprint == current.workspace_fingerprint
+        && planned.manifest_revision == current.manifest_revision
+        && planned.root_capability_hash == current.root_capability_hash
+        && planned.git_identity == current.git_identity
+        && planned.repository == current.repository
+        && planned.branch_storage == current.branch_storage
+        && planned.branch == current.branch
+        && planned.object_format == current.object_format
+        && planned.managed == current.managed
+        && planned.working_tree_clean == current.working_tree_clean
+}
+
+fn inspect_git_sync_repository(
+    workspace: &WorkspaceView,
+) -> Result<(GitSyncRepositoryPreflight, GitSyncTarget), GitSyncError> {
+    if !workspace.issues().is_empty() {
+        return Err(GitSyncError::WorkspaceIssues);
+    }
+    let facts = workspace
+        .git_initialization_facts()
+        .map_err(map_git_initialization_to_sync)?;
+    if !facts.writable() {
+        return Err(GitSyncError::ReadOnly);
+    }
+    if !facts.git_probe_complete() || facts.unsafe_git_marker() || facts.nested_git_repository() {
+        return Err(GitSyncError::Unsafe);
+    }
+    let capability = workspace
+        .git_repository_capability()
+        .map_err(map_git_capability_to_sync)?;
+    let repository = capability
+        .read_commit_repository_snapshot()
+        .map_err(map_git_snapshot_to_sync)?;
+    let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
+    let config_output = run_git(
+        &executable,
+        None,
+        &[
+            "config",
+            "--file",
+            capability.config_path(),
+            "--no-includes",
+            "-z",
+            "--list",
+        ],
+    )
+    .map_err(map_git_read_to_sync)?;
+    let descriptor_config = fs::read(capability.config_path()).map_err(|_| GitSyncError::Io)?;
+    if descriptor_config != repository.config.bytes {
+        return Err(GitSyncError::PlanStale);
+    }
+    let object_format = parse_git_object_format(&config_output.stdout)
+        .map_err(|_| GitSyncError::InvalidConfiguration)?;
+    let reference = parse_git_head_reference(&repository.head.bytes)
+        .map_err(|_| GitSyncError::InvalidConfiguration)?;
+    let branch_relative = reference
+        .strip_prefix("refs/heads/")
+        .ok_or(GitSyncError::InvalidConfiguration)?;
+    let branch_storage = capability
+        .read_commit_branch_snapshot(branch_relative)
+        .map_err(map_git_snapshot_to_sync)?;
+    let branch = parse_git_commit_branch(
+        &repository.head.bytes,
+        branch_storage
+            .target
+            .as_ref()
+            .map(|target| target.bytes.as_slice()),
+        repository
+            .packed_refs
+            .as_ref()
+            .map(|packed| packed.bytes.as_slice()),
+        object_format,
+    )
+    .map_err(|_| GitSyncError::InvalidRepository)?;
+    if branch.expected_object_id.is_none() {
+        return Err(GitSyncError::Unsupported);
+    }
+    let target = parse_git_sync_target(&config_output.stdout, branch_relative)?;
+    let git_identity = capability
+        .git_directory_identity()
+        .map_err(map_git_snapshot_to_sync)?;
+    let managed = inspect_git_commit_managed_inventory(workspace, object_format)
+        .map_err(map_commit_plan_to_sync)?;
+    let working_tree_clean = match read_git_status(workspace)
+        .map_err(map_git_read_to_sync)?
+        .repository
+    {
+        GitRepositoryStatus::Ready(status) => status.clean(),
+        GitRepositoryStatus::NotRepository => return Err(GitSyncError::NotRepository),
+        GitRepositoryStatus::Unsafe => return Err(GitSyncError::Unsafe),
+    };
+    let (workspace_id, manifest_revision, root_capability_hash) =
+        workspace.git_initialization_binding();
+    let final_repository = capability
+        .read_commit_repository_snapshot()
+        .map_err(map_git_snapshot_to_sync)?;
+    let final_branch = capability
+        .read_commit_branch_snapshot(branch_relative)
+        .map_err(map_git_snapshot_to_sync)?;
+    if final_repository != repository || final_branch != branch_storage {
+        return Err(GitSyncError::PlanStale);
+    }
+    Ok((
+        GitSyncRepositoryPreflight {
+            workspace_id,
+            workspace_fingerprint: workspace_validation_fingerprint(workspace),
+            manifest_revision,
+            root_capability_hash,
+            git_identity,
+            repository,
+            branch_storage,
+            branch,
+            object_format,
+            managed,
+            working_tree_clean,
+        },
+        target,
+    ))
 }
 
 /// Publishes only the already validated portable Workspace content through the
@@ -1948,6 +2452,25 @@ fn run_clone_command(
 
 #[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
 fn clone_discovery_command(executable: &Path, sandbox: &Path, remote_url: &str) -> Command {
+    remote_discovery_command(executable, sandbox, remote_url, "HEAD", true)
+}
+
+fn sync_discovery_command(
+    executable: &Path,
+    sandbox: &Path,
+    remote_url: &str,
+    remote_ref: &str,
+) -> Command {
+    remote_discovery_command(executable, sandbox, remote_url, remote_ref, false)
+}
+
+fn remote_discovery_command(
+    executable: &Path,
+    sandbox: &Path,
+    remote_url: &str,
+    remote_ref: &str,
+    symref: bool,
+) -> Command {
     let mut command = Command::new(sandbox);
     command
         .env_clear()
@@ -2025,11 +2548,11 @@ fn clone_discovery_command(executable: &Path, sandbox: &Path, remote_url: &str) 
             "-c",
             "protocol.ssh.allow=never",
             "ls-remote",
-            "--symref",
-            "--exit-code",
         ])
+        .args(symref.then_some("--symref"))
+        .arg("--exit-code")
         .arg(remote_url)
-        .arg("HEAD")
+        .arg(remote_ref)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -2397,6 +2920,36 @@ fn parse_git_remote_head(bytes: &[u8]) -> Result<GitRemoteHead, GitCloneDiscover
         validate_object_id(object_id).ok_or(GitCloneDiscoveryError::InvalidAdvertisement)?;
     Ok(GitRemoteHead {
         branch_ref: branch_ref.to_owned(),
+        object_id: object_id.to_owned(),
+        object_format,
+    })
+}
+
+fn parse_git_sync_remote_ref(
+    bytes: &[u8],
+    remote_ref: &str,
+) -> Result<GitRemoteHead, GitSyncError> {
+    if bytes.is_empty()
+        || bytes.len() > CLONE_DISCOVERY_OUTPUT_LIMIT
+        || !bytes.ends_with(b"\n")
+        || !valid_ref_name(remote_ref)
+    {
+        return Err(GitSyncError::InvalidRepository);
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| GitSyncError::InvalidRepository)?;
+    let line = text
+        .strip_suffix('\n')
+        .filter(|line| !line.contains('\n'))
+        .ok_or(GitSyncError::InvalidRepository)?;
+    let (object_id, advertised_ref) = line
+        .split_once('\t')
+        .ok_or(GitSyncError::InvalidRepository)?;
+    if advertised_ref != remote_ref {
+        return Err(GitSyncError::InvalidRepository);
+    }
+    let object_format = validate_object_id(object_id).ok_or(GitSyncError::InvalidRepository)?;
+    Ok(GitRemoteHead {
+        branch_ref: remote_ref.to_owned(),
         object_id: object_id.to_owned(),
         object_format,
     })
@@ -4370,6 +4923,85 @@ fn valid_ref_name(value: &str) -> bool {
         && value
             .split('/')
             .all(|part| valid_ref_component(part) && !part.ends_with(".lock"))
+}
+
+fn parse_git_sync_target(
+    config_records: &[u8],
+    branch_relative: &str,
+) -> Result<GitSyncTarget, GitSyncError> {
+    if config_records.len() > MAX_GIT_CONFIG_BYTES
+        || (!config_records.is_empty() && !config_records.ends_with(b"\0"))
+    {
+        return Err(GitSyncError::InvalidConfiguration);
+    }
+    let remote_key = format!("branch.{branch_relative}.remote");
+    let merge_key = format!("branch.{branch_relative}.merge");
+    let mut remote_name = None;
+    let mut remote_ref = None;
+    for record in config_records
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+    {
+        let separator = record
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .ok_or(GitSyncError::InvalidConfiguration)?;
+        let key = std::str::from_utf8(&record[..separator])
+            .map_err(|_| GitSyncError::InvalidConfiguration)?;
+        let value = std::str::from_utf8(&record[separator + 1..])
+            .map_err(|_| GitSyncError::InvalidConfiguration)?;
+        if key == remote_key {
+            if remote_name.replace(value.to_owned()).is_some() {
+                return Err(GitSyncError::InvalidConfiguration);
+            }
+        } else if key == merge_key && remote_ref.replace(value.to_owned()).is_some() {
+            return Err(GitSyncError::InvalidConfiguration);
+        }
+    }
+    let remote_name = remote_name.ok_or(GitSyncError::NoUpstream)?;
+    let remote_ref = remote_ref.ok_or(GitSyncError::NoUpstream)?;
+    if !valid_remote_name(&remote_name)
+        || remote_name == "."
+        || !remote_ref.starts_with("refs/heads/")
+        || !valid_ref_name(&remote_ref)
+    {
+        return Err(GitSyncError::InvalidConfiguration);
+    }
+    let url_key = format!("remote.{remote_name}.url");
+    let mut remote_url = None;
+    for record in config_records
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+    {
+        let separator = record
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .ok_or(GitSyncError::InvalidConfiguration)?;
+        let key = std::str::from_utf8(&record[..separator])
+            .map_err(|_| GitSyncError::InvalidConfiguration)?;
+        if key == url_key {
+            let value = std::str::from_utf8(&record[separator + 1..])
+                .map_err(|_| GitSyncError::InvalidConfiguration)?;
+            if remote_url.replace(value.to_owned()).is_some() {
+                return Err(GitSyncError::InvalidConfiguration);
+            }
+        }
+    }
+    let remote_url = remote_url.ok_or(GitSyncError::NoUpstream)?;
+    let validated =
+        validate_remote_url(&remote_url).map_err(|_| GitSyncError::InvalidConfiguration)?;
+    let remote_branch = remote_ref
+        .strip_prefix("refs/heads/")
+        .and_then(safe_git_label)
+        .ok_or(GitSyncError::InvalidConfiguration)?;
+    Ok(GitSyncTarget {
+        remote_name,
+        remote_url: validated.canonical,
+        transport: validated.transport,
+        host: validated.host,
+        remote_branch,
+        remote_ref,
+    })
 }
 
 #[allow(dead_code, reason = "consumed by Phase 5C1 candidate construction")]
@@ -8398,6 +9030,150 @@ fn map_git_commit_read_error(error: GitReadError) -> GitCommitPlanError {
     }
 }
 
+fn map_git_initialization_to_sync(error: GitInitializeStorageError) -> GitSyncError {
+    match error {
+        GitInitializeStorageError::Conflict => GitSyncError::PlanStale,
+        GitInitializeStorageError::Unsafe => GitSyncError::Unsafe,
+        GitInitializeStorageError::Unsupported => GitSyncError::Unsupported,
+        GitInitializeStorageError::Io => GitSyncError::Io,
+    }
+}
+
+fn map_git_capability_to_sync(error: GitRepositoryCapabilityError) -> GitSyncError {
+    match error {
+        GitRepositoryCapabilityError::NotRepository => GitSyncError::NotRepository,
+        GitRepositoryCapabilityError::Unsafe => GitSyncError::Unsafe,
+        GitRepositoryCapabilityError::Io => GitSyncError::Io,
+    }
+}
+
+fn map_git_snapshot_to_sync(error: GitCommitSnapshotError) -> GitSyncError {
+    match error {
+        GitCommitSnapshotError::OperationInProgress => GitSyncError::RecoveryRequired,
+        GitCommitSnapshotError::Conflict => GitSyncError::PlanStale,
+        GitCommitSnapshotError::Unsafe => GitSyncError::Unsafe,
+        GitCommitSnapshotError::TooLarge => GitSyncError::ResourceLimit,
+        GitCommitSnapshotError::Io => GitSyncError::Io,
+    }
+}
+
+fn map_git_read_to_sync(error: GitReadError) -> GitSyncError {
+    match error {
+        GitReadError::Spawn | GitReadError::Signal => GitSyncError::Io,
+        GitReadError::Timeout => GitSyncError::Timeout,
+        GitReadError::OutputLimit => GitSyncError::ResourceLimit,
+        GitReadError::ExitStatus | GitReadError::InvalidOutput => {
+            GitSyncError::InvalidConfiguration
+        }
+    }
+}
+
+fn map_commit_plan_to_sync(error: GitCommitPlanError) -> GitSyncError {
+    match error {
+        GitCommitPlanError::WorkspaceIssues => GitSyncError::WorkspaceIssues,
+        GitCommitPlanError::ReadOnly => GitSyncError::ReadOnly,
+        GitCommitPlanError::NotRepository => GitSyncError::NotRepository,
+        GitCommitPlanError::OperationInProgress => GitSyncError::RecoveryRequired,
+        GitCommitPlanError::ResourceLimit => GitSyncError::ResourceLimit,
+        GitCommitPlanError::PlanStale => GitSyncError::PlanStale,
+        GitCommitPlanError::Io => GitSyncError::Io,
+        GitCommitPlanError::UnsafeRepository => GitSyncError::Unsafe,
+        GitCommitPlanError::UnsupportedRepository
+        | GitCommitPlanError::UnsupportedIndex
+        | GitCommitPlanError::AmbiguousManagedHistory
+        | GitCommitPlanError::PathCollision => GitSyncError::Unsupported,
+        GitCommitPlanError::InvalidMessage
+        | GitCommitPlanError::InvalidIdentity
+        | GitCommitPlanError::NothingToCommit
+        | GitCommitPlanError::RecoveryNotRequired => GitSyncError::InvalidConfiguration,
+    }
+}
+
+fn map_clone_discovery_to_sync(error: GitCloneDiscoveryError) -> GitSyncError {
+    match error {
+        GitCloneDiscoveryError::UnsupportedTransport => GitSyncError::UnsupportedTransport,
+        GitCloneDiscoveryError::GitUnavailable => GitSyncError::GitUnavailable,
+        GitCloneDiscoveryError::SandboxUnavailable => GitSyncError::SandboxUnavailable,
+        GitCloneDiscoveryError::Cancelled => GitSyncError::Cancelled,
+        GitCloneDiscoveryError::Timeout => GitSyncError::Timeout,
+        GitCloneDiscoveryError::OutputLimit => GitSyncError::ResourceLimit,
+        GitCloneDiscoveryError::RemoteUnavailable => GitSyncError::RemoteUnavailable,
+        GitCloneDiscoveryError::InvalidAdvertisement => GitSyncError::InvalidRepository,
+        GitCloneDiscoveryError::Io => GitSyncError::Io,
+    }
+}
+
+fn map_clone_inspection_to_sync(error: GitCloneInspectError) -> GitSyncError {
+    match error {
+        GitCloneInspectError::Cancelled => GitSyncError::Cancelled,
+        GitCloneInspectError::Timeout => GitSyncError::Timeout,
+        GitCloneInspectError::OutputLimit => GitSyncError::ResourceLimit,
+        GitCloneInspectError::GitUnavailable => GitSyncError::GitUnavailable,
+        GitCloneInspectError::SandboxUnavailable => GitSyncError::SandboxUnavailable,
+        GitCloneInspectError::InvalidRepository
+        | GitCloneInspectError::RefMismatch
+        | GitCloneInspectError::Tree(_) => GitSyncError::InvalidRepository,
+        GitCloneInspectError::Io => GitSyncError::Io,
+    }
+}
+
+fn map_clone_content_to_sync(error: GitCloneContentError) -> GitSyncError {
+    match error {
+        GitCloneContentError::Cancelled => GitSyncError::Cancelled,
+        GitCloneContentError::Timeout => GitSyncError::Timeout,
+        GitCloneContentError::OutputLimit | GitCloneContentError::ResourceLimit => {
+            GitSyncError::ResourceLimit
+        }
+        GitCloneContentError::GitUnavailable => GitSyncError::GitUnavailable,
+        GitCloneContentError::SandboxUnavailable => GitSyncError::SandboxUnavailable,
+        GitCloneContentError::InvalidRepository | GitCloneContentError::BlobMismatch => {
+            GitSyncError::InvalidRepository
+        }
+        GitCloneContentError::InvalidWorkspace | GitCloneContentError::WorkspaceIssues => {
+            GitSyncError::InvalidWorkspace
+        }
+        GitCloneContentError::Conflict => GitSyncError::StagingConflict,
+        GitCloneContentError::Unsafe => GitSyncError::Unsafe,
+        GitCloneContentError::Unsupported => GitSyncError::Unsupported,
+        GitCloneContentError::Io => GitSyncError::Io,
+    }
+}
+
+fn parse_git_object_format(records: &[u8]) -> Result<GitObjectFormat, GitCommitPlanError> {
+    if !records.is_empty() && !records.ends_with(b"\0") {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    let mut repository_version = None;
+    let mut object_format = None;
+    for record in records
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+    {
+        let separator = record
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .ok_or(GitCommitPlanError::UnsafeRepository)?;
+        let key = std::str::from_utf8(&record[..separator])
+            .map_err(|_| GitCommitPlanError::UnsafeRepository)?;
+        let value = &record[separator + 1..];
+        match key {
+            "core.repositoryformatversion" => {
+                set_single_config_value(&mut repository_version, value)?;
+            }
+            "extensions.objectformat" => set_single_config_value(&mut object_format, value)?,
+            key if key.starts_with("extensions.") => {
+                return Err(GitCommitPlanError::UnsupportedRepository);
+            }
+            _ => {}
+        }
+    }
+    match (repository_version.as_deref(), object_format.as_deref()) {
+        (Some(b"0"), None) => Ok(GitObjectFormat::Sha1),
+        (Some(b"1"), Some(b"sha256")) => Ok(GitObjectFormat::Sha256),
+        _ => Err(GitCommitPlanError::UnsupportedRepository),
+    }
+}
+
 fn parse_git_commit_config(
     records: &[u8],
 ) -> Result<(GitObjectFormat, GitCommitIdentity), GitCommitPlanError> {
@@ -8641,6 +9417,25 @@ mod tests {
             temp,
             &["config", "--local", "user.email", "rehow@example.invalid"],
         );
+    }
+
+    fn configured_sync_workspace(temp: &Temp) -> Box<WorkspaceView> {
+        drop(initialized_workspace(temp));
+        configure_fixture_identity(temp);
+        fixture_git(temp, &["add", "--", "rehow.yaml"]);
+        fixture_git(temp, &["commit", "-qm", "base"]);
+        fixture_git(
+            temp,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://example.invalid/team/rehow.git",
+            ],
+        );
+        fixture_git(temp, &["config", "branch.main.remote", "origin"]);
+        fixture_git(temp, &["config", "branch.main.merge", "refs/heads/main"]);
+        open_workspace(temp)
     }
 
     fn write_fixture_guide(temp: &Temp) {
@@ -11037,6 +11832,34 @@ mod tests {
         assert_eq!(environment["GIT_TERMINAL_PROMPT"].as_deref(), Some("0"));
         assert_eq!(environment["HOME"].as_deref(), Some("/home/rehow"));
 
+        let sync = sync_discovery_command(
+            Path::new("/usr/bin/git"),
+            Path::new("/usr/bin/bwrap"),
+            url,
+            "refs/heads/team/main",
+        );
+        let sync_arguments = sync
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        for required in [
+            "credential.helper=",
+            "credential.interactive=false",
+            "protocol.allow=never",
+            "protocol.https.allow=always",
+            "protocol.ssh.allow=never",
+            "ls-remote",
+            "--exit-code",
+            url,
+            "refs/heads/team/main",
+        ] {
+            assert!(
+                sync_arguments.iter().any(|argument| argument == required),
+                "{required}"
+            );
+        }
+        assert!(!sync_arguments.iter().any(|argument| argument == "--symref"));
+
         let fetch = clone_fetch_command(
             Path::new("/usr/bin/git"),
             Path::new("/usr/bin/bwrap"),
@@ -11852,6 +12675,139 @@ mod tests {
             );
             assert!(destination.0.read_dir().unwrap().next().is_none());
         }
+    }
+
+    #[test]
+    fn sync_target_and_remote_ref_parsers_are_exact() {
+        let records = b"core.repositoryformatversion\n0\0branch.main.remote\norigin\0branch.main.merge\nrefs/heads/team/main\0remote.origin.url\nhttps://example.invalid/team/rehow.git\0";
+        let target = parse_git_sync_target(records, "main").unwrap();
+        assert_eq!(target.remote_name, "origin");
+        assert_eq!(target.remote_branch, "team/main");
+        assert_eq!(target.transport, GitRemoteTransport::Https);
+        let object_id = "0123456789abcdef0123456789abcdef01234567";
+        let head = parse_git_sync_remote_ref(
+            format!("{object_id}\trefs/heads/team/main\n").as_bytes(),
+            "refs/heads/team/main",
+        )
+        .unwrap();
+        assert_eq!(head.object_id(), object_id);
+        assert_eq!(head.branch_ref(), "refs/heads/team/main");
+
+        for malformed in [
+            b"branch.main.remote\norigin\0branch.main.merge\nrefs/heads/main\0"
+                .as_slice(),
+            b"branch.main.remote\norigin\0branch.main.remote\nbackup\0branch.main.merge\nrefs/heads/main\0remote.origin.url\nhttps://example.invalid/a.git\0"
+                .as_slice(),
+            b"branch.main.remote\norigin\0branch.main.merge\nrefs/heads/main\0remote.origin.url\nhttps://user@example.invalid/a.git\0"
+                .as_slice(),
+        ] {
+            assert!(parse_git_sync_target(malformed, "main").is_err());
+        }
+        assert!(
+            parse_git_sync_remote_ref(
+                format!("{object_id}\trefs/heads/other\n").as_bytes(),
+                "refs/heads/main"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn sync_plan_is_bound_and_redacts_remote_authority() {
+        let temp = Temp::new();
+        let state = Temp::new();
+        let workspace = configured_sync_workspace(&temp);
+        let plan = plan_git_sync(&workspace, &state.0).unwrap();
+        let debug = format!("{plan:?}");
+
+        assert_eq!(plan.remote_name(), "origin");
+        assert_eq!(plan.host(), "example.invalid");
+        assert_eq!(plan.remote_branch(), "main");
+        assert_eq!(plan.transport(), GitRemoteTransport::Https);
+        assert!(!debug.contains("https://"));
+        let token = serde_json::to_string(plan.token()).unwrap();
+        assert!(!debug.contains(token.trim_matches('"')));
+        assert!(!debug.contains(plan.preflight.branch.expected_object_id.as_ref().unwrap()));
+
+        fixture_git(&temp, &["config", "branch.main.merge", "refs/heads/other"]);
+        assert_eq!(
+            revalidate_git_sync_plan(&open_workspace(&temp), &plan),
+            Err(GitSyncError::PlanStale)
+        );
+    }
+
+    #[test]
+    fn sync_validates_remote_snapshot_without_touching_active_workspace() {
+        let temp = Temp::new();
+        let state = Temp::new();
+        let workspace = configured_sync_workspace(&temp);
+        let before_manifest = fs::read(temp.0.join("rehow.yaml")).unwrap();
+        let before_head = fixture_git_stdout(&temp, &["rev-parse", "HEAD"]);
+        let plan = plan_git_sync(&workspace, &state.0).unwrap();
+
+        let source = Temp::new();
+        let remote_manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Remote\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T01:00:00Z\"\n";
+        let commit_id = commit_clone_fixture(&source, remote_manifest);
+        let remote_head = GitRemoteHead {
+            branch_ref: "refs/heads/main".to_owned(),
+            object_id: commit_id.clone(),
+            object_format: GitObjectFormat::Sha1,
+        };
+        let staging = prepare_git_sync_staging(&plan, &remote_head, &state.0).unwrap();
+        let mut fetch = Command::new("/usr/bin/git");
+        fetch
+            .env_clear()
+            .env("LANG", "C")
+            .env("LC_ALL", "C")
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args([
+                "--no-pager",
+                "--literal-pathspecs",
+                &format!("--git-dir={}", staging.git_path()),
+                "-c",
+                "protocol.file.allow=always",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "fetch.unpackLimit=1",
+                "-c",
+                "transfer.unpackLimit=1",
+                "-c",
+                "pack.writeReverseIndex=false",
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--no-write-fetch-head",
+            ])
+            .arg(source.0.to_str().unwrap())
+            .arg(format!("{commit_id}:refs/rehow/clone/head"));
+        configure_clone_child(&mut fetch, staging.git_descriptor(), None);
+        assert!(fetch.status().unwrap().success());
+
+        let inspection = finish_git_sync_inspection(
+            &workspace,
+            plan,
+            staging,
+            remote_head,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(inspection.state(), GitSyncInspectionState::RemoteChanged);
+        assert!(!inspection.local_changes());
+        assert!(!inspection.workspace_matches_remote());
+        assert_eq!(inspection.validated.workspace().manifest().name(), "Remote");
+        assert_eq!(
+            fs::read(temp.0.join("rehow.yaml")).unwrap(),
+            before_manifest
+        );
+        assert_eq!(
+            fixture_git_stdout(&temp, &["rev-parse", "HEAD"]),
+            before_head
+        );
+        assert!(!format!("{inspection:?}").contains(&commit_id));
     }
 
     #[test]

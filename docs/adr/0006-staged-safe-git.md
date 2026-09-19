@@ -1,6 +1,6 @@
 # ADR 0006: Staged Safe Git Integration
 
-- Status: Partially Accepted — discovery/status, ADR 0022 init/connect, ADR 0023 anonymous clone, and ADR 0024 manual commit implemented; sync remains proposed
+- Status: Partially Accepted — discovery/status, init/connect, anonymous clone, manual commit, and ADR 0025 isolated sync inspection implemented; sync integration/push remain proposed
 - Date: 2026-09-05
 
 ## Context

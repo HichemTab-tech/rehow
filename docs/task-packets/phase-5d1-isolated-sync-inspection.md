@@ -1,0 +1,17 @@
+# Task Packet: Isolated synchronization inspection
+
+- **Objective:** Fetch and fully validate the configured upstream snapshot in private staging without changing the active Workspace or repository.
+- **Required reasoning level:** xhigh for the network/Git authority boundary; medium for bounded implementation.
+- **Prerequisites:** Accepted ADRs 0006, 0021, 0023, 0024, and 0025; signed Phase 5C checkpoint `9110010`; accepted clone discovery/fetch/tree/content validator.
+- **Allowed files or subsystem:** `crates/rehow-core/src/git.rs`; ADR 0025; focused Git architecture/threat/testing/plan/evidence docs; `PROGRESS.md`. No native, renderer, MCP, dependency, Workspace-format, active-repository mutation, credential, or packaging changes.
+- **Relevant specifications and ADRs:** Git sections of product spec, architecture, threat model, testing strategy, and implementation plan; ADRs 0006, 0023, 0024, and 0025.
+- **Exact required behavior:** Parse one exact configured upstream for the current direct branch; return a redacted single-use plan; on apply, revalidate local state, anonymously discover/fetch only that HTTPS branch into private XDG staging, fully validate the incoming canonical Workspace, require the same Workspace ID, revalidate local state again, and return only bounded inspection facts plus opaque retained authority.
+- **Important states and edge cases:** No repository/upstream; unborn/detached/indirect branch; duplicate or malformed config; SSH/auth-required transport; pending commit recovery; dirty worktree; stale plan; cancellation; timeout/output/storage limits; wrong object format/ref/OID; malicious tree/blob/schema/Attachment; changed local state; different Workspace ID; up-to-date and changed remote.
+- **Security constraints:** Explicit argv only; no shell; no repository-selected config/helper/hook/proxy; no prompts; no active Workspace/repository bind in the network child; no path/URL/ref/OID/content/Git-output/credential disclosure; no active object/index/ref/config/reflog/Workspace mutation.
+- **Tests to add or update:** Exact upstream/ref parsers and hostile duplicates; redacted/stale plan; staged remote validation with same Workspace ID; unchanged active manifest and HEAD; focused command/config audit; existing clone adversarial suite remains authoritative for tree/content validation.
+- **Commands to run:** Focused `sync_` tests; Cargo format; strict core Clippy; locked all-feature core tests; bootstrap and whitespace checks.
+- **Required reviews and artifacts:** One reused Security Reviewer only after the combined core gate is green. No UI screenshot is required because no renderer surface is added.
+- **Explicit non-goals:** Active content/ref/index mutation; ancestry classification; merge/conflict resolution; push; credentials/SSH; native/UI/MCP exposure; scheduling; cleanup/pruning.
+- **Definition of done:** A configured anonymous-HTTPS upstream can be inspected and fully validated without active mutation; malformed/stale/hostile states fail closed; public accessors and Debug stay redacted; required tests/review pass; signed checkpoint and recovery ledger exist.
+- **Expected commit boundary:** One core/docs implementation checkpoint plus one progress ledger checkpoint, owned by the root Orchestrator.
+- **Conditions requiring escalation:** Any need for active repository/worktree mutation, credentials, renderer-selected authority, arbitrary refspec, shell execution, dependency change, or weaker validation.
