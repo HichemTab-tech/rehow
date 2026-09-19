@@ -127,6 +127,86 @@ pub(crate) enum GitCommitPackInstallError {
     Io,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitCommitMetadataStorageError {
+    Conflict,
+    Unsafe,
+    Unsupported,
+    TooLarge,
+    Io,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitCommitMetadataStage {
+    IndexPublished,
+    RefPublished,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitCommitMetadataFault {
+    IndexLockPublished,
+    IndexExchanged,
+    IndexPublished,
+    RefLockPublished,
+    RefExchanged,
+    RefPublished,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitCommitMetadataRace {
+    ReplaceRefBeforePublication,
+    ReplaceRefAfterValidation,
+}
+
+#[cfg(test)]
+thread_local! {
+    static GIT_COMMIT_METADATA_FAULT: std::cell::Cell<Option<GitCommitMetadataFault>> = const { std::cell::Cell::new(None) };
+    static GIT_COMMIT_METADATA_RACE: std::cell::Cell<Option<GitCommitMetadataRace>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_git_commit_metadata_fault(fault: GitCommitMetadataFault) {
+    GIT_COMMIT_METADATA_FAULT.set(Some(fault));
+}
+
+#[cfg(test)]
+pub(crate) fn set_git_commit_metadata_race(race: GitCommitMetadataRace) {
+    GIT_COMMIT_METADATA_RACE.set(Some(race));
+}
+
+#[cfg(test)]
+fn git_commit_metadata_fail(
+    point: GitCommitMetadataFault,
+) -> Result<(), GitCommitMetadataStorageError> {
+    if GIT_COMMIT_METADATA_FAULT.get() == Some(point) {
+        GIT_COMMIT_METADATA_FAULT.set(None);
+        Err(GitCommitMetadataStorageError::Unsupported)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+fn git_commit_metadata_race(
+    point: GitCommitMetadataRace,
+    directory: &OwnedFd,
+    name: &str,
+) -> Result<(), GitCommitMetadataStorageError> {
+    if GIT_COMMIT_METADATA_RACE.get() != Some(point) {
+        return Ok(());
+    }
+    GIT_COMMIT_METADATA_RACE.set(None);
+    let root = std::path::PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
+    let race = root.join("rehow-race-ref");
+    std::fs::write(&race, b"1111111111111111111111111111111111111111\n")
+        .map_err(|_| GitCommitMetadataStorageError::Io)?;
+    std::fs::set_permissions(&race, std::fs::Permissions::from_mode(0o600))
+        .map_err(|_| GitCommitMetadataStorageError::Io)?;
+    std::fs::rename(race, root.join(name)).map_err(|_| GitCommitMetadataStorageError::Io)
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct GitConfigFiles {
     pub(crate) config: Vec<u8>,
@@ -289,6 +369,23 @@ impl GitRepositoryCapability {
         self.shallow_path.as_deref()
     }
 
+    pub(crate) fn git_directory_identity(&self) -> Result<(u64, u64), GitCommitSnapshotError> {
+        let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: retained descriptor and output storage are valid.
+        if unsafe { libc::fstat(self._git_dir.as_raw_fd(), status.as_mut_ptr()) } != 0 {
+            return Err(GitCommitSnapshotError::Io);
+        }
+        // SAFETY: successful fstat initialized the structure.
+        let status = unsafe { status.assume_init() };
+        if status.st_uid != unsafe { libc::geteuid() }
+            || status.st_mode & libc::S_IFMT != libc::S_IFDIR
+            || status.st_mode & 0o022 != 0
+        {
+            return Err(GitCommitSnapshotError::Unsafe);
+        }
+        Ok((status.st_dev, status.st_ino))
+    }
+
     pub(crate) fn install_commit_pack_sources(
         &self,
         sources: &[GitClonePackSource],
@@ -337,6 +434,260 @@ impl GitRepositoryCapability {
             return Err(GitCommitPackInstallError::Unsupported);
         }
         Ok(())
+    }
+
+    pub(crate) fn publish_commit_metadata<F>(
+        &self,
+        expected_repository: &GitCommitRepositorySnapshot,
+        expected_branch: &GitCommitBranchSnapshot,
+        branch_relative: &str,
+        candidate_index: &[u8],
+        candidate_ref: &[u8],
+        mut persist_stage: F,
+    ) -> Result<(), GitCommitMetadataStorageError>
+    where
+        F: FnMut(GitCommitMetadataStage) -> Result<(), GitCommitMetadataStorageError>,
+    {
+        if candidate_index.is_empty()
+            || candidate_index.len() > GIT_COMMIT_INDEX_LIMIT
+            || candidate_ref.is_empty()
+            || candidate_ref.len() > GIT_COMMIT_REF_LIMIT
+        {
+            return Err(GitCommitMetadataStorageError::TooLarge);
+        }
+        let current_repository = self
+            .read_commit_repository_snapshot()
+            .map_err(map_git_commit_metadata_snapshot)?;
+        let current_branch = self
+            .read_commit_branch_snapshot(branch_relative)
+            .map_err(map_git_commit_metadata_snapshot)?;
+        if &current_repository != expected_repository || &current_branch != expected_branch {
+            return Err(GitCommitMetadataStorageError::Conflict);
+        }
+        let index_mode = expected_repository
+            .index
+            .as_ref()
+            .map_or(0o600, GitCommitFileSnapshot::mode);
+        publish_git_commit_file(
+            &self._git_dir,
+            &self._git_dir,
+            "index",
+            expected_repository.index.as_ref(),
+            candidate_index,
+            index_mode,
+            GIT_COMMIT_INDEX_LIMIT,
+            "index",
+        )?;
+
+        let after_index = self
+            .read_commit_repository_snapshot()
+            .map_err(map_git_commit_metadata_snapshot)?;
+        let after_index_branch = self
+            .read_commit_branch_snapshot(branch_relative)
+            .map_err(map_git_commit_metadata_snapshot)?;
+        let candidate_index_snapshot = after_index
+            .index
+            .as_ref()
+            .filter(|snapshot| snapshot.bytes == candidate_index && snapshot.mode() == index_mode)
+            .cloned()
+            .ok_or(GitCommitMetadataStorageError::Conflict)?;
+        if after_index.head != expected_repository.head
+            || after_index.config != expected_repository.config
+            || after_index.packed_refs != expected_repository.packed_refs
+            || &after_index_branch != expected_branch
+        {
+            restore_git_commit_index(
+                &self._git_dir,
+                &candidate_index_snapshot,
+                expected_repository.index.as_ref(),
+            )?;
+            return Err(GitCommitMetadataStorageError::Conflict);
+        }
+        if let Err(error) = persist_stage(GitCommitMetadataStage::IndexPublished) {
+            restore_git_commit_index(
+                &self._git_dir,
+                &candidate_index_snapshot,
+                expected_repository.index.as_ref(),
+            )?;
+            return Err(error);
+        }
+        #[cfg(test)]
+        git_commit_metadata_fail(GitCommitMetadataFault::IndexPublished)?;
+
+        let branch_directory = open_git_branch_parent(&self._refs, branch_relative)
+            .map_err(map_git_commit_metadata_snapshot)?;
+        let branch_name = branch_relative
+            .rsplit('/')
+            .next()
+            .ok_or(GitCommitMetadataStorageError::Unsafe)?;
+        let ref_mode = expected_branch
+            .target
+            .as_ref()
+            .map_or(0o600, GitCommitFileSnapshot::mode);
+        #[cfg(test)]
+        git_commit_metadata_race(
+            GitCommitMetadataRace::ReplaceRefBeforePublication,
+            &branch_directory,
+            branch_name,
+        )?;
+        if let Err(error) = publish_git_commit_file(
+            &branch_directory,
+            &self._git_dir,
+            branch_name,
+            expected_branch.target.as_ref(),
+            candidate_ref,
+            ref_mode,
+            GIT_COMMIT_REF_LIMIT,
+            "ref",
+        ) {
+            if error == GitCommitMetadataStorageError::Conflict {
+                let published_ref =
+                    read_git_entry(&branch_directory, branch_name, GIT_COMMIT_REF_LIMIT)
+                        .map_err(map_git_commit_metadata_snapshot)?
+                        .is_some_and(|(bytes, metadata)| {
+                            bytes == candidate_ref && metadata.mode == ref_mode
+                        });
+                if !published_ref {
+                    restore_git_commit_index(
+                        &self._git_dir,
+                        &candidate_index_snapshot,
+                        expected_repository.index.as_ref(),
+                    )?;
+                }
+            }
+            return Err(error);
+        }
+        persist_stage(GitCommitMetadataStage::RefPublished)?;
+        #[cfg(test)]
+        git_commit_metadata_fail(GitCommitMetadataFault::RefPublished)?;
+
+        let final_repository = self
+            .read_commit_repository_snapshot()
+            .map_err(map_git_commit_metadata_snapshot)?;
+        let final_branch = self
+            .read_commit_branch_snapshot(branch_relative)
+            .map_err(map_git_commit_metadata_snapshot)?;
+        if final_repository.head != expected_repository.head
+            || final_repository.config != expected_repository.config
+            || final_repository.packed_refs != expected_repository.packed_refs
+            || final_repository.index.as_ref().is_none_or(|snapshot| {
+                snapshot.bytes != candidate_index || snapshot.mode() != index_mode
+            })
+            || final_branch.target.as_ref().is_none_or(|snapshot| {
+                snapshot.bytes != candidate_ref || snapshot.mode() != ref_mode
+            })
+        {
+            return Err(GitCommitMetadataStorageError::Conflict);
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn publish_commit_ref_after_index<F>(
+        &self,
+        expected_repository: &GitCommitRepositorySnapshot,
+        expected_branch: &GitCommitBranchSnapshot,
+        branch_relative: &str,
+        candidate_index: &[u8],
+        candidate_ref: &[u8],
+        mut persist_stage: F,
+    ) -> Result<(), GitCommitMetadataStorageError>
+    where
+        F: FnMut(GitCommitMetadataStage) -> Result<(), GitCommitMetadataStorageError>,
+    {
+        let current_repository = self
+            .read_commit_repository_snapshot()
+            .map_err(map_git_commit_metadata_snapshot)?;
+        let current_branch = self
+            .read_commit_branch_snapshot(branch_relative)
+            .map_err(map_git_commit_metadata_snapshot)?;
+        if &current_repository != expected_repository
+            || &current_branch != expected_branch
+            || current_repository
+                .index
+                .as_ref()
+                .is_none_or(|snapshot| snapshot.bytes != candidate_index)
+        {
+            return Err(GitCommitMetadataStorageError::Conflict);
+        }
+        let branch_directory = open_git_branch_parent(&self._refs, branch_relative)
+            .map_err(map_git_commit_metadata_snapshot)?;
+        let branch_name = branch_relative
+            .rsplit('/')
+            .next()
+            .ok_or(GitCommitMetadataStorageError::Unsafe)?;
+        let ref_mode = expected_branch
+            .target
+            .as_ref()
+            .map_or(0o600, GitCommitFileSnapshot::mode);
+        #[cfg(test)]
+        git_commit_metadata_race(
+            GitCommitMetadataRace::ReplaceRefBeforePublication,
+            &branch_directory,
+            branch_name,
+        )?;
+        publish_git_commit_file(
+            &branch_directory,
+            &self._git_dir,
+            branch_name,
+            expected_branch.target.as_ref(),
+            candidate_ref,
+            ref_mode,
+            GIT_COMMIT_REF_LIMIT,
+            "ref",
+        )?;
+        persist_stage(GitCommitMetadataStage::RefPublished)?;
+        #[cfg(test)]
+        git_commit_metadata_fail(GitCommitMetadataFault::RefPublished)?;
+        let final_repository = self
+            .read_commit_repository_snapshot()
+            .map_err(map_git_commit_metadata_snapshot)?;
+        let final_branch = self
+            .read_commit_branch_snapshot(branch_relative)
+            .map_err(map_git_commit_metadata_snapshot)?;
+        if final_repository != current_repository
+            || final_branch.target.as_ref().is_none_or(|snapshot| {
+                snapshot.bytes != candidate_ref || snapshot.mode() != ref_mode
+            })
+        {
+            return Err(GitCommitMetadataStorageError::Conflict);
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn recover_commit_lock_residue(
+        &self,
+        branch_relative: &str,
+        before_index: Option<(&[u8], u32)>,
+        candidate_index: (&[u8], u32),
+        before_ref: Option<(&[u8], u32)>,
+        candidate_ref: (&[u8], u32),
+    ) -> Result<(), GitCommitMetadataStorageError> {
+        reconcile_git_commit_lock(
+            &self._git_dir,
+            &self._git_dir,
+            "index",
+            before_index,
+            candidate_index,
+            GIT_COMMIT_INDEX_LIMIT,
+            "index-lock",
+        )?;
+        let branch_directory = open_git_branch_parent(&self._refs, branch_relative)
+            .map_err(map_git_commit_metadata_snapshot)?;
+        let branch_name = branch_relative
+            .rsplit('/')
+            .next()
+            .ok_or(GitCommitMetadataStorageError::Unsafe)?;
+        reconcile_git_commit_lock(
+            &branch_directory,
+            &self._git_dir,
+            branch_name,
+            before_ref,
+            candidate_ref,
+            GIT_COMMIT_REF_LIMIT,
+            "ref-lock",
+        )
     }
 
     pub(crate) fn read_commit_repository_snapshot(
@@ -520,6 +871,12 @@ impl GitRepositoryCapability {
         }
 
         Err(GitConfigStorageError::Conflict)
+    }
+}
+
+impl GitCommitFileSnapshot {
+    pub(crate) fn mode(&self) -> u32 {
+        self.metadata.mode
     }
 }
 
@@ -869,6 +1226,486 @@ fn same_git_pack_metadata(left: &std::fs::Metadata, right: &std::fs::Metadata) -
         && left.ctime_nsec() == right.ctime_nsec()
         && left.permissions().mode() == right.permissions().mode()
         && left.nlink() == right.nlink()
+}
+
+fn map_git_commit_metadata_snapshot(
+    error: GitCommitSnapshotError,
+) -> GitCommitMetadataStorageError {
+    match error {
+        GitCommitSnapshotError::OperationInProgress | GitCommitSnapshotError::Conflict => {
+            GitCommitMetadataStorageError::Conflict
+        }
+        GitCommitSnapshotError::Unsafe => GitCommitMetadataStorageError::Unsafe,
+        GitCommitSnapshotError::TooLarge => GitCommitMetadataStorageError::TooLarge,
+        GitCommitSnapshotError::Io => GitCommitMetadataStorageError::Io,
+    }
+}
+
+fn open_git_branch_parent(
+    refs: &OwnedFd,
+    branch_relative: &str,
+) -> Result<OwnedFd, GitCommitSnapshotError> {
+    let mut components = branch_relative.split('/').peekable();
+    if components.peek().is_none() || components.clone().any(|part| !valid_git_ref_part(part)) {
+        return Err(GitCommitSnapshotError::Unsafe);
+    }
+    let mut directory = open_git_directory(refs, "heads")?;
+    while let Some(component) = components.next() {
+        if components.peek().is_none() {
+            return Ok(directory);
+        }
+        directory = open_git_directory(&directory, component)?;
+    }
+    Err(GitCommitSnapshotError::Unsafe)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_git_commit_file(
+    directory: &OwnedFd,
+    backup_directory: &OwnedFd,
+    name: &str,
+    expected: Option<&GitCommitFileSnapshot>,
+    candidate: &[u8],
+    mode: u32,
+    limit: usize,
+    backup_kind: &str,
+) -> Result<(), GitCommitMetadataStorageError> {
+    if candidate.is_empty()
+        || candidate.len() > limit
+        || !matches!(mode, 0o600 | 0o644)
+        || !valid_git_ref_part(name)
+    {
+        return Err(GitCommitMetadataStorageError::Unsafe);
+    }
+    let lock_name = format!("{name}.lock");
+    if read_git_entry(directory, &lock_name, limit)
+        .map_err(map_git_commit_metadata_snapshot)?
+        .is_some()
+    {
+        return Err(GitCommitMetadataStorageError::Conflict);
+    }
+    let current =
+        read_git_entry(directory, name, limit).map_err(map_git_commit_metadata_snapshot)?;
+    if !git_commit_file_matches(current.as_ref(), expected) {
+        return Err(GitCommitMetadataStorageError::Conflict);
+    }
+    publish_git_commit_lock(directory, &lock_name, candidate, mode)?;
+    let locked = read_git_entry(directory, &lock_name, limit)
+        .map_err(map_git_commit_metadata_snapshot)?
+        .ok_or(GitCommitMetadataStorageError::Conflict)?;
+    if locked.0 != candidate || locked.1.mode != mode {
+        return Err(GitCommitMetadataStorageError::Conflict);
+    }
+    #[cfg(test)]
+    match backup_kind {
+        "index" => git_commit_metadata_fail(GitCommitMetadataFault::IndexLockPublished)?,
+        "ref" => git_commit_metadata_fail(GitCommitMetadataFault::RefLockPublished)?,
+        _ => {}
+    }
+    let current =
+        read_git_entry(directory, name, limit).map_err(map_git_commit_metadata_snapshot)?;
+    if !git_commit_file_matches(current.as_ref(), expected) {
+        quarantine_git_commit_entry(directory, &lock_name, backup_directory, "foreign-lock")?;
+        return Err(GitCommitMetadataStorageError::Conflict);
+    }
+    #[cfg(test)]
+    if backup_kind == "ref" {
+        git_commit_metadata_race(
+            GitCommitMetadataRace::ReplaceRefAfterValidation,
+            directory,
+            name,
+        )?;
+    }
+
+    if expected.is_some() {
+        exchange_git_commit_entries(directory, name, &lock_name)?;
+    } else {
+        rename_git_commit_no_replace(directory, &lock_name, directory, name)?;
+    }
+    sync_git_commit_directory(directory)?;
+    #[cfg(test)]
+    match backup_kind {
+        "index" => git_commit_metadata_fail(GitCommitMetadataFault::IndexExchanged)?,
+        "ref" => git_commit_metadata_fail(GitCommitMetadataFault::RefExchanged)?,
+        _ => {}
+    }
+    let installed = read_git_entry(directory, name, limit)
+        .map_err(map_git_commit_metadata_snapshot)?
+        .ok_or(GitCommitMetadataStorageError::Conflict)?;
+    if !git_commit_entry_matches(&installed, &locked) {
+        return Err(GitCommitMetadataStorageError::Conflict);
+    }
+    if let Some(expected) = expected {
+        let displaced = read_git_entry(directory, &lock_name, limit)
+            .map_err(map_git_commit_metadata_snapshot)?
+            .ok_or(GitCommitMetadataStorageError::Conflict)?;
+        if !git_commit_displaced_matches(&displaced, expected) {
+            restore_git_commit_exchange_after_race(
+                directory,
+                name,
+                &lock_name,
+                &installed,
+                &displaced,
+                backup_directory,
+                limit,
+            )?;
+            return Err(GitCommitMetadataStorageError::Conflict);
+        }
+        let backup =
+            quarantine_git_commit_entry(directory, &lock_name, backup_directory, backup_kind)?;
+        let preserved = read_git_entry(backup_directory, &backup, limit)
+            .map_err(map_git_commit_metadata_snapshot)?
+            .ok_or(GitCommitMetadataStorageError::Conflict)?;
+        if !git_commit_displaced_matches(&preserved, expected) {
+            return Err(GitCommitMetadataStorageError::Conflict);
+        }
+    }
+    sync_git_commit_directory(backup_directory)?;
+    Ok(())
+}
+
+fn restore_git_commit_index(
+    git_directory: &OwnedFd,
+    candidate: &GitCommitFileSnapshot,
+    before: Option<&GitCommitFileSnapshot>,
+) -> Result<(), GitCommitMetadataStorageError> {
+    match before {
+        Some(before) => publish_git_commit_file(
+            git_directory,
+            git_directory,
+            "index",
+            Some(candidate),
+            &before.bytes,
+            before.mode(),
+            GIT_COMMIT_INDEX_LIMIT,
+            "index-candidate",
+        ),
+        None => {
+            let current = read_git_entry(git_directory, "index", GIT_COMMIT_INDEX_LIMIT)
+                .map_err(map_git_commit_metadata_snapshot)?;
+            if !git_commit_file_matches(current.as_ref(), Some(candidate)) {
+                return Err(GitCommitMetadataStorageError::Conflict);
+            }
+            quarantine_git_commit_entry(git_directory, "index", git_directory, "index-candidate")?;
+            sync_git_commit_directory(git_directory)?;
+            if read_git_entry(git_directory, "index", GIT_COMMIT_INDEX_LIMIT)
+                .map_err(map_git_commit_metadata_snapshot)?
+                .is_some()
+            {
+                return Err(GitCommitMetadataStorageError::Conflict);
+            }
+            Ok(())
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reconcile_git_commit_lock(
+    directory: &OwnedFd,
+    backup_directory: &OwnedFd,
+    name: &str,
+    before: Option<(&[u8], u32)>,
+    candidate: (&[u8], u32),
+    limit: usize,
+    backup_kind: &str,
+) -> Result<(), GitCommitMetadataStorageError> {
+    let lock_name = format!("{name}.lock");
+    let Some(lock) =
+        read_git_entry(directory, &lock_name, limit).map_err(map_git_commit_metadata_snapshot)?
+    else {
+        return Ok(());
+    };
+    let target =
+        read_git_entry(directory, name, limit).map_err(map_git_commit_metadata_snapshot)?;
+    let target_is_before = git_commit_bytes_mode_match(target.as_ref(), before);
+    let target_is_candidate = git_commit_bytes_mode_match(target.as_ref(), Some(candidate));
+    let lock_is_before = git_commit_bytes_mode_match(Some(&lock), before);
+    let lock_is_candidate = git_commit_bytes_mode_match(Some(&lock), Some(candidate));
+    if (target_is_before && lock_is_candidate) || (target_is_candidate && lock_is_before) {
+        quarantine_git_commit_entry(directory, &lock_name, backup_directory, backup_kind)?;
+        sync_git_commit_directory(directory)?;
+        sync_git_commit_directory(backup_directory)?;
+        Ok(())
+    } else {
+        Err(GitCommitMetadataStorageError::Conflict)
+    }
+}
+
+fn git_commit_bytes_mode_match(
+    actual: Option<&(Vec<u8>, GitConfigMetadata)>,
+    expected: Option<(&[u8], u32)>,
+) -> bool {
+    match (actual, expected) {
+        (None, None) => true,
+        (Some((bytes, metadata)), Some((expected_bytes, expected_mode))) => {
+            bytes == expected_bytes && metadata.mode == expected_mode
+        }
+        _ => false,
+    }
+}
+
+fn git_commit_file_matches(
+    actual: Option<&(Vec<u8>, GitConfigMetadata)>,
+    expected: Option<&GitCommitFileSnapshot>,
+) -> bool {
+    match (actual, expected) {
+        (None, None) => true,
+        (Some((bytes, metadata)), Some(expected)) => {
+            bytes == &expected.bytes && metadata == &expected.metadata
+        }
+        _ => false,
+    }
+}
+
+fn git_commit_displaced_matches(
+    actual: &(Vec<u8>, GitConfigMetadata),
+    expected: &GitCommitFileSnapshot,
+) -> bool {
+    actual.0 == expected.bytes
+        && actual.1.device == expected.metadata.device
+        && actual.1.inode == expected.metadata.inode
+        && actual.1.size == expected.metadata.size
+        && actual.1.mode == expected.metadata.mode
+}
+
+fn git_commit_entry_matches(
+    actual: &(Vec<u8>, GitConfigMetadata),
+    expected: &(Vec<u8>, GitConfigMetadata),
+) -> bool {
+    actual.0 == expected.0
+        && actual.1.device == expected.1.device
+        && actual.1.inode == expected.1.inode
+        && actual.1.size == expected.1.size
+        && actual.1.mode == expected.1.mode
+}
+
+#[allow(clippy::too_many_arguments)]
+fn restore_git_commit_exchange_after_race(
+    directory: &OwnedFd,
+    name: &str,
+    lock_name: &str,
+    candidate: &(Vec<u8>, GitConfigMetadata),
+    displaced: &(Vec<u8>, GitConfigMetadata),
+    backup_directory: &OwnedFd,
+    limit: usize,
+) -> Result<(), GitCommitMetadataStorageError> {
+    let current = read_git_entry(directory, name, limit)
+        .map_err(map_git_commit_metadata_snapshot)?
+        .ok_or(GitCommitMetadataStorageError::Conflict)?;
+    let current_lock = read_git_entry(directory, lock_name, limit)
+        .map_err(map_git_commit_metadata_snapshot)?
+        .ok_or(GitCommitMetadataStorageError::Conflict)?;
+    if !git_commit_entry_matches(&current, candidate)
+        || !git_commit_entry_matches(&current_lock, displaced)
+    {
+        return Err(GitCommitMetadataStorageError::Conflict);
+    }
+    exchange_git_commit_entries(directory, name, lock_name)?;
+    sync_git_commit_directory(directory)?;
+    let restored = read_git_entry(directory, name, limit)
+        .map_err(map_git_commit_metadata_snapshot)?
+        .ok_or(GitCommitMetadataStorageError::Conflict)?;
+    let candidate_lock = read_git_entry(directory, lock_name, limit)
+        .map_err(map_git_commit_metadata_snapshot)?
+        .ok_or(GitCommitMetadataStorageError::Conflict)?;
+    if !git_commit_entry_matches(&restored, displaced)
+        || !git_commit_entry_matches(&candidate_lock, candidate)
+    {
+        return Err(GitCommitMetadataStorageError::Conflict);
+    }
+    let backup =
+        quarantine_git_commit_entry(directory, lock_name, backup_directory, "candidate-race")?;
+    let preserved = read_git_entry(backup_directory, &backup, limit)
+        .map_err(map_git_commit_metadata_snapshot)?
+        .ok_or(GitCommitMetadataStorageError::Conflict)?;
+    if !git_commit_entry_matches(&preserved, candidate) {
+        return Err(GitCommitMetadataStorageError::Conflict);
+    }
+    sync_git_commit_directory(directory)?;
+    sync_git_commit_directory(backup_directory)
+}
+
+fn publish_git_commit_lock(
+    directory: &OwnedFd,
+    name: &str,
+    bytes: &[u8],
+    mode: u32,
+) -> Result<(), GitCommitMetadataStorageError> {
+    let name = std::ffi::CString::new(name).map_err(|_| GitCommitMetadataStorageError::Unsafe)?;
+    // SAFETY: retained directory and static dot component are valid.
+    let raw = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            c".".as_ptr(),
+            libc::O_WRONLY | libc::O_TMPFILE | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            mode,
+        )
+    };
+    if raw < 0 {
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EOPNOTSUPP | libc::EINVAL | libc::EISDIR) => {
+                Err(GitCommitMetadataStorageError::Unsupported)
+            }
+            _ => Err(GitCommitMetadataStorageError::Io),
+        };
+    }
+    // SAFETY: successful openat returned an owned descriptor.
+    let mut file = unsafe { File::from_raw_fd(raw) };
+    // SAFETY: the owned descriptor is valid.
+    if unsafe { libc::fchmod(file.as_raw_fd(), mode) } != 0 {
+        return Err(GitCommitMetadataStorageError::Io);
+    }
+    file.write_all(bytes)
+        .map_err(|_| GitCommitMetadataStorageError::Io)?;
+    file.sync_all()
+        .map_err(|_| GitCommitMetadataStorageError::Unsupported)?;
+    // SAFETY: file is an unnamed inode and target is a confined validated component.
+    let mut result = unsafe {
+        libc::linkat(
+            file.as_raw_fd(),
+            c"".as_ptr(),
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::AT_EMPTY_PATH,
+        )
+    };
+    if result != 0
+        && matches!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EPERM | libc::EINVAL | libc::ENOENT)
+        )
+    {
+        let source = std::ffi::CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
+            .map_err(|_| GitCommitMetadataStorageError::Io)?;
+        // SAFETY: source names the open inode and target is confined.
+        result = unsafe {
+            libc::linkat(
+                libc::AT_FDCWD,
+                source.as_ptr(),
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::AT_SYMLINK_FOLLOW,
+            )
+        };
+    }
+    if result != 0 {
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EEXIST) => Err(GitCommitMetadataStorageError::Conflict),
+            Some(libc::EOPNOTSUPP | libc::EINVAL | libc::EPERM) => {
+                Err(GitCommitMetadataStorageError::Unsupported)
+            }
+            _ => Err(GitCommitMetadataStorageError::Io),
+        };
+    }
+    sync_git_commit_directory(directory)
+}
+
+fn exchange_git_commit_entries(
+    directory: &OwnedFd,
+    left: &str,
+    right: &str,
+) -> Result<(), GitCommitMetadataStorageError> {
+    let left = std::ffi::CString::new(left).map_err(|_| GitCommitMetadataStorageError::Unsafe)?;
+    let right = std::ffi::CString::new(right).map_err(|_| GitCommitMetadataStorageError::Unsafe)?;
+    // SAFETY: names and retained directory are valid.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            directory.as_raw_fd(),
+            left.as_ptr(),
+            directory.as_raw_fd(),
+            right.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP) => {
+                Err(GitCommitMetadataStorageError::Unsupported)
+            }
+            Some(libc::ENOENT) => Err(GitCommitMetadataStorageError::Conflict),
+            _ => Err(GitCommitMetadataStorageError::Io),
+        }
+    }
+}
+
+fn rename_git_commit_no_replace(
+    source_directory: &OwnedFd,
+    source: &str,
+    destination_directory: &OwnedFd,
+    destination: &str,
+) -> Result<(), GitCommitMetadataStorageError> {
+    let source =
+        std::ffi::CString::new(source).map_err(|_| GitCommitMetadataStorageError::Unsafe)?;
+    let destination =
+        std::ffi::CString::new(destination).map_err(|_| GitCommitMetadataStorageError::Unsafe)?;
+    // SAFETY: names and retained directories are valid.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            source_directory.as_raw_fd(),
+            source.as_ptr(),
+            destination_directory.as_raw_fd(),
+            destination.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EEXIST | libc::ENOENT) => Err(GitCommitMetadataStorageError::Conflict),
+            Some(libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP) => {
+                Err(GitCommitMetadataStorageError::Unsupported)
+            }
+            _ => Err(GitCommitMetadataStorageError::Io),
+        }
+    }
+}
+
+fn quarantine_git_commit_entry(
+    source_directory: &OwnedFd,
+    source: &str,
+    backup_directory: &OwnedFd,
+    kind: &str,
+) -> Result<String, GitCommitMetadataStorageError> {
+    for _ in 0..8 {
+        let mut random = [0_u8; 16];
+        fill_storage_random(&mut random).map_err(map_git_commit_metadata_config)?;
+        let mut suffix = String::with_capacity(32);
+        for byte in random {
+            use std::fmt::Write as _;
+            write!(&mut suffix, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        let backup = format!("rehow-{kind}-before-v1-{suffix}");
+        match rename_git_commit_no_replace(source_directory, source, backup_directory, &backup) {
+            Ok(()) => return Ok(backup),
+            Err(GitCommitMetadataStorageError::Conflict) => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(GitCommitMetadataStorageError::Conflict)
+}
+
+fn map_git_commit_metadata_config(error: GitConfigStorageError) -> GitCommitMetadataStorageError {
+    match error {
+        GitConfigStorageError::Conflict => GitCommitMetadataStorageError::Conflict,
+        GitConfigStorageError::Unsafe => GitCommitMetadataStorageError::Unsafe,
+        GitConfigStorageError::Unsupported => GitCommitMetadataStorageError::Unsupported,
+        GitConfigStorageError::TooLarge => GitCommitMetadataStorageError::TooLarge,
+        GitConfigStorageError::Io => GitCommitMetadataStorageError::Io,
+    }
+}
+
+fn sync_git_commit_directory(directory: &OwnedFd) -> Result<(), GitCommitMetadataStorageError> {
+    // SAFETY: retained directory descriptor is valid.
+    if unsafe { libc::fsync(directory.as_raw_fd()) } == 0 {
+        Ok(())
+    } else {
+        Err(GitCommitMetadataStorageError::Unsupported)
+    }
 }
 
 fn valid_git_ref_part(value: &str) -> bool {
@@ -1373,6 +2210,14 @@ impl WorkspaceView {
         &self.search_index
     }
 
+    pub(crate) fn fresh_snapshot(&self) -> Result<Box<WorkspaceView>, WorkspaceInspectError> {
+        let root = self._root.duplicate().map_err(map_io)?;
+        let WorkspaceInspection::Compatible(snapshot) = inspect_open_root(root)? else {
+            return Err(WorkspaceInspectError::ChangedDuringRead);
+        };
+        Ok(snapshot)
+    }
+
     pub(crate) fn git_repository_capability(
         &self,
     ) -> Result<GitRepositoryCapability, GitRepositoryCapabilityError> {
@@ -1394,6 +2239,19 @@ impl WorkspaceView {
             runtime_directory,
             *self.manifest.workspace_id(),
             action,
+        )
+    }
+
+    pub(crate) fn open_git_commit_recovery_session(
+        &self,
+        state_home: &Path,
+        runtime_directory: Option<&Path>,
+    ) -> Result<recovery::GitCommitRecoverySession, recovery::GitCommitIntentError> {
+        recovery::open_git_commit_recovery_session(
+            &self._root,
+            state_home,
+            runtime_directory,
+            *self.manifest.workspace_id(),
         )
     }
 

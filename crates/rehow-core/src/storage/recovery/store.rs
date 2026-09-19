@@ -1,4 +1,7 @@
-use super::{ContentHash, GitClonePackSource, Journal, JournalCodecError, MAX_JOURNAL_BYTES};
+use super::{
+    ContentHash, GitClonePackSource, GitCommitIntent, Journal, JournalCodecError,
+    MAX_GIT_COMMIT_INTENT_BYTES, MAX_JOURNAL_BYTES,
+};
 use crate::protocol::{OperationId, WorkspaceId};
 use std::{
     ffi::{CStr, CString, OsStr},
@@ -90,6 +93,14 @@ pub(super) struct CommitStagingSnapshot {
 }
 
 impl CommitStaging {
+    pub(super) fn stage_name(&self) -> &str {
+        &self.stage_name
+    }
+
+    pub(super) fn stage_identity(&self) -> Result<(u64, u64), StoreError> {
+        identity(&self._stage)
+    }
+
     pub(super) fn create(
         state_home: &Path,
         stage_name: &str,
@@ -815,9 +826,57 @@ pub(super) enum FaultPoint {
     JournalAfterFileSync,
     JournalAfterRename,
     JournalAfterDirectorySync,
+    QuarantineAfterRename,
+    QuarantineAfterStagingSync,
+    QuarantineAfterQuarantineSync,
+    QuarantineAfterStateSync,
 }
 
 impl RecoveryStore {
+    pub(super) fn quarantine_git_commit_staging(
+        &self,
+        lock: &WriterLock,
+        stage_name: &str,
+        expected_identity: (u64, u64),
+    ) -> Result<(), StoreError> {
+        self.require_lock(lock)?;
+        if !valid_stage_name(stage_name) {
+            return Err(StoreError::Unsafe);
+        }
+        let staging = self.state_rehow.open_directory("commit-staging")?;
+        let quarantine = self.state_rehow.open_directory("commit-quarantine")?;
+        let source = staging.optional_directory(stage_name)?;
+        let retained = quarantine.optional_directory(stage_name)?;
+        match (source, retained) {
+            (Some(source), None) => {
+                if identity(&source.descriptor)? != expected_identity {
+                    return Err(StoreError::Conflict);
+                }
+                rename_no_replace_between(&staging, stage_name, &quarantine, stage_name)?;
+                self.fail(FaultPoint::QuarantineAfterRename)?;
+            }
+            (None, Some(retained)) => {
+                if identity(&retained.descriptor)? != expected_identity {
+                    return Err(StoreError::Conflict);
+                }
+            }
+            _ => return Err(StoreError::Conflict),
+        }
+        let retained = quarantine.open_directory(stage_name)?;
+        if identity(&retained.descriptor)? != expected_identity {
+            return Err(StoreError::Conflict);
+        }
+        // Repeat the complete durability sequence when the retained entry already exists. A
+        // prior attempt may have completed the rename but failed at any following sync.
+        staging.sync()?;
+        self.fail(FaultPoint::QuarantineAfterStagingSync)?;
+        quarantine.sync()?;
+        self.fail(FaultPoint::QuarantineAfterQuarantineSync)?;
+        self.state_rehow.sync()?;
+        self.fail(FaultPoint::QuarantineAfterStateSync)?;
+        Ok(())
+    }
+
     pub(super) fn open(
         state_home: &Path,
         workspace_id: WorkspaceId,
@@ -1154,6 +1213,73 @@ impl RecoveryStore {
         self.journals.missing(&format!("{operation_id}.cbor"))
     }
 
+    pub(super) fn install_git_commit_intent(
+        &self,
+        lock: &WriterLock,
+        intent: &GitCommitIntent,
+    ) -> Result<(), StoreError> {
+        self.require_lock(lock)?;
+        if intent.workspace_id != self.workspace_id || intent.root_hash != self.root_hash {
+            return Err(StoreError::Conflict);
+        }
+        let bytes = intent.encode().map_err(map_codec)?;
+        let name = format!("{}.gitcommit", intent.operation_id);
+        if intent.generation == 1 {
+            if !self.journals.missing(&name)? {
+                return Err(StoreError::Conflict);
+            }
+        } else {
+            let previous = self.read_git_commit_intent_by_name(&name, intent.operation_id)?;
+            if !previous.is_next_generation_of(intent) {
+                return Err(StoreError::Conflict);
+            }
+        }
+        let temp_name = temp_name("git-commit-intent");
+        let mut temp = TempEntry::create(&self.journals, &temp_name)?;
+        temp.file.write_all(&bytes).map_err(|_| StoreError::Io)?;
+        temp.file.sync_all().map_err(|_| StoreError::Unsupported)?;
+        validate_file_descriptor(&temp.file, 0o600, Some(bytes.len() as u64))?;
+        if intent.generation == 1 {
+            rename_no_replace(&self.journals, &temp_name, &name)?;
+        } else {
+            rename_replace(&self.journals, &temp_name, &name)?;
+        }
+        temp.installed = true;
+        self.journals.sync()?;
+        if self.read_git_commit_intent_by_name(&name, intent.operation_id)? == *intent {
+            Ok(())
+        } else {
+            Err(StoreError::Corrupt)
+        }
+    }
+
+    pub(super) fn read_git_commit_intent(
+        &self,
+        lock: &WriterLock,
+        operation_id: OperationId,
+    ) -> Result<GitCommitIntent, StoreError> {
+        self.require_lock(lock)?;
+        self.read_git_commit_intent_by_name(&format!("{operation_id}.gitcommit"), operation_id)
+    }
+
+    pub(super) fn list_git_commit_intents(
+        &self,
+        lock: &WriterLock,
+    ) -> Result<Vec<GitCommitIntent>, StoreError> {
+        self.require_lock(lock)?;
+        let entries = self.journals.entries(1_024)?;
+        let mut intents = Vec::new();
+        for name in entries {
+            let Some(operation) = name.strip_suffix(".gitcommit") else {
+                continue;
+            };
+            let operation_id = operation.parse().map_err(|_| StoreError::Corrupt)?;
+            intents.push(self.read_git_commit_intent_by_name(&name, operation_id)?);
+        }
+        intents.sort_by_key(|intent| intent.operation_id.to_string());
+        Ok(intents)
+    }
+
     fn read_object_by_name(&self, name: &str) -> Result<Vec<u8>, StoreError> {
         let bytes = self.objects.read_regular(name, MAX_OBJECT_BYTES)?;
         if hex(blake3::hash(&bytes).as_bytes()) != name {
@@ -1174,6 +1300,25 @@ impl RecoveryStore {
             && journal.root_hash == self.root_hash
         {
             Ok(journal)
+        } else {
+            Err(StoreError::Corrupt)
+        }
+    }
+
+    fn read_git_commit_intent_by_name(
+        &self,
+        name: &str,
+        operation_id: OperationId,
+    ) -> Result<GitCommitIntent, StoreError> {
+        let bytes = self
+            .journals
+            .read_regular(name, MAX_GIT_COMMIT_INTENT_BYTES)?;
+        let intent = GitCommitIntent::decode(&bytes).map_err(map_codec)?;
+        if intent.operation_id == operation_id
+            && intent.workspace_id == self.workspace_id
+            && intent.root_hash == self.root_hash
+        {
+            Ok(intent)
         } else {
             Err(StoreError::Corrupt)
         }
@@ -1579,6 +1724,33 @@ impl Directory {
         let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
         validate_directory(&descriptor, true)?;
         Ok(Self { descriptor })
+    }
+
+    fn optional_directory(&self, name: &str) -> Result<Option<Self>, StoreError> {
+        match self.open_directory(name) {
+            Ok(directory) => Ok(Some(directory)),
+            Err(StoreError::Io) => {
+                let name = component(name)?;
+                let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+                // SAFETY: descriptor/component/status are valid; no target is followed.
+                let result = unsafe {
+                    libc::fstatat(
+                        self.descriptor.as_raw_fd(),
+                        name.as_ptr(),
+                        status.as_mut_ptr(),
+                        libc::AT_SYMLINK_NOFOLLOW,
+                    )
+                };
+                if result == 0 {
+                    Err(StoreError::Unsafe)
+                } else if io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
+                    Ok(None)
+                } else {
+                    Err(StoreError::Io)
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn open_directory_relaxed(&self, name: &str) -> Result<Self, StoreError> {
@@ -2241,6 +2413,41 @@ mod tests {
         .unwrap();
         assert!(matches!(staging.quarantine(), Err(StoreError::Conflict)));
         assert!(state.0.join("rehow/commit-staging").join(other).is_dir());
+    }
+
+    #[test]
+    fn commit_staging_quarantine_retry_repeats_every_parent_sync() {
+        for (index, fault) in [
+            FaultPoint::QuarantineAfterRename,
+            FaultPoint::QuarantineAfterStagingSync,
+            FaultPoint::QuarantineAfterQuarantineSync,
+            FaultPoint::QuarantineAfterStateSync,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let state = TestDirectory::new("commit-staging-quarantine-fault");
+            let name = format!("{index:064x}");
+            let staging = CommitStaging::create(&state.0, &name, b"p", b"[core]\n", None).unwrap();
+            let expected_identity = staging.stage_identity().unwrap();
+            let store = store(&state);
+            let lock = store.acquire_lock(None).unwrap();
+
+            store.set_fault(fault);
+            assert_eq!(
+                store.quarantine_git_commit_staging(&lock, &name, expected_identity),
+                Err(StoreError::Injected)
+            );
+            assert!(!state.0.join("rehow/commit-staging").join(&name).exists());
+            assert!(state.0.join("rehow/commit-quarantine").join(&name).is_dir());
+
+            store
+                .quarantine_git_commit_staging(&lock, &name, expected_identity)
+                .unwrap();
+            store
+                .quarantine_git_commit_staging(&lock, &name, expected_identity)
+                .unwrap();
+        }
     }
 
     #[test]

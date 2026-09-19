@@ -49,8 +49,22 @@ Verified checks:
 
 Focused coverage proves exact candidate closure, append-only installation, idempotent identical installation, unchanged branch/index, candidate readability without publication, stale-plan refusal before active mutation, and preservation of a mismatched active pack collision. Phase 5C2B remains responsible for the recoverable index/direct-ref-last transaction and final confirmation surface.
 
-## Phase 5C2B candidate-index preparation
+## Phase 5C2B recoverable metadata publication
 
 The private staging repository now generates the candidate index with fixed config-free `read-tree`, requires `write-tree` to reproduce the already verified candidate tree, parses the resulting bounded stage-zero v2/v3 index, removes any cache-tree extension, recomputes the object-format checksum, atomically replaces only the private staging index, and proves the stripped index still writes the candidate tree. The source is descriptor-opened and content-hashed for the later recovery transaction; the active index remains byte-identical.
 
-The locked all-feature core gate passes 386 unit tests with 2 intentional ignores plus all 43 contract/API tests. Formatting and strict all-target/all-feature Clippy pass. This is a recovery prerequisite only: active index/ref publication and the durable intent remain unimplemented.
+Publication now installs the already verified candidate pack append-only, then records an operation-bound canonical recovery intent before changing active metadata. The intent binds the Workspace/root and Git identities, exact branch representation, before/candidate `HEAD`, config, packed-ref, index, and ref objects, candidate commit, plan hash, staging identity, monotonic generation, and recovery stage. A pending non-complete intent blocks new commit planning.
+
+The active transaction publishes the exact index first and the direct loose branch ref last, without reflogs. Same-user races are detected through exact snapshots: before ref publication they restore the exact prior index and preserve the foreign ref; after candidate ref publication recovery only moves forward. Unborn, loose, packed-parent, SHA-1, and SHA-256 repositories are covered. Final verification rehashes the commit, validates its tree/object closure, proves candidate-index leaves equal tree leaves, and freshly reinspects current managed Workspace effects so a valid post-publication user edit remains untouched and visible as uncommitted work.
+
+Every durable boundary is replayable. Exact staging is identity-bound and moved to inert quarantine before the intent becomes complete. Quarantine replay repeats both parent-directory syncs and the state-root sync even when the rename already happened; injected interruption tests cover the rename and every following sync boundary. Foreign or ambiguous metadata is preserved and reported as conflict rather than guessed, deleted, or overwritten.
+
+Verified checks:
+
+- `cargo fmt --all --check`
+- `cargo clippy -p rehow-core --all-targets --all-features --locked -- -D warnings`
+- `cargo test -p rehow-core --all-features --locked`
+- `python3 scripts/check_bootstrap.py`
+- `git diff --check`
+
+Focused coverage includes all six index/ref interruption boundaries, every quarantine durability boundary, exact intent codec/transition validation, plan refusal during recovery, valid post-ref Workspace edits, before/after-publication ref races, foreign index/ref preservation, unborn and packed branches, and SHA-256 repositories. The reused Security Reviewer found two initial gaps—successful staging retention and missing fresh Workspace-effect verification—and one retry-sync durability gap. All three were corrected; final verdict: **PASS**.

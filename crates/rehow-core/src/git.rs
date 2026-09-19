@@ -1,7 +1,9 @@
 //! Confined Git discovery/status and separately gated repository operations.
 
 use crate::storage::recovery::{
-    GitCommitStaging, GitCommitStagingError, GitCommitStagingSnapshot, create_git_commit_staging,
+    GitCommitIntent, GitCommitIntentBranchRepresentation, GitCommitIntentError,
+    GitCommitIntentStage, GitCommitStaging, GitCommitStagingError, GitCommitStagingSnapshot,
+    create_git_commit_staging,
 };
 use crate::{
     protocol::{OperationId, PlanToken, Revision, Timestamp, current_timestamp, new_operation_id},
@@ -9,12 +11,13 @@ use crate::{
         ATTACHMENT_BYTES_LIMIT, ATTACHMENT_COUNT_LIMIT, CATEGORY_LIMIT, CloneDestinationSnapshot,
         EmptyWorkspaceTarget, GUIDE_COUNT_LIMIT, GitCloneMaterializationSource,
         GitCloneMaterializationStorageError, GitClonePackSource, GitCloneStaging,
-        GitCloneStagingError, GitCommitPackInstallError, GitCommitRepositorySnapshot,
-        GitCommitSnapshotError, GitConfigStorageError, GitInitializeStorageError,
-        GitMaterializationPathKind, GitRepositoryCapabilityError, MANAGED_BYTES_LIMIT,
-        WorkspaceInspection, WorkspaceView, classify_git_materialization_path,
-        create_git_clone_staging, execute_git_clone_materialization, finalize_git_clone_repository,
-        inspect_workspace, open_initialized_workspace, seal_git_clone_repository,
+        GitCloneStagingError, GitCommitMetadataStage, GitCommitMetadataStorageError,
+        GitCommitPackInstallError, GitCommitRepositorySnapshot, GitCommitSnapshotError,
+        GitConfigStorageError, GitInitializeStorageError, GitMaterializationPathKind,
+        GitRepositoryCapabilityError, MANAGED_BYTES_LIMIT, WorkspaceInspection, WorkspaceView,
+        classify_git_materialization_path, create_git_clone_staging,
+        execute_git_clone_materialization, finalize_git_clone_repository, inspect_workspace,
+        open_initialized_workspace, seal_git_clone_repository,
     },
 };
 use std::{
@@ -303,6 +306,25 @@ struct GitCommitIndexCandidate {
     source: GitClonePackSource,
     bytes: Vec<u8>,
     staging_snapshot: GitCommitStagingSnapshot,
+}
+
+#[allow(
+    dead_code,
+    reason = "Phase 5C3 returns this pathless result to the native commit workflow"
+)]
+struct GitCommitPublicationOutcome {
+    operation_id: OperationId,
+    workspace_changed: bool,
+}
+
+impl fmt::Debug for GitCommitPublicationOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitCommitPublicationOutcome")
+            .field("operation_id", &"<redacted>")
+            .field("workspace_changed", &self.workspace_changed)
+            .finish()
+    }
 }
 
 impl fmt::Debug for GitCommitIndexCandidate {
@@ -4672,6 +4694,7 @@ pub fn plan_git_commit(
     let _deadline = GitCommitDeadlineGuard::enter();
     let started = Instant::now();
     let message = normalize_git_commit_message(message)?;
+    ensure_no_incomplete_git_commit_intent(workspace, state_home)?;
     let preflight = inspect_git_commit_repository(workspace)?;
     ensure_git_commit_plan_time(started)?;
     let prepared = prepare_git_commit_staging(&preflight, state_home)?;
@@ -4686,6 +4709,7 @@ pub fn plan_git_commit(
         &executable,
         &sandbox,
         &preflight.capability,
+        preflight.object_format,
         &candidate.prepared.prior_managed,
         &preflight.managed,
     )?;
@@ -4729,6 +4753,36 @@ pub fn plan_git_commit(
         preflight,
         candidate,
     })
+}
+
+fn ensure_no_incomplete_git_commit_intent(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+) -> Result<(), GitCommitPlanError> {
+    if pending_git_commit_recovery(workspace, state_home)?.is_some() {
+        Err(GitCommitPlanError::OperationInProgress)
+    } else {
+        Ok(())
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "Phase 5C3 maps this pathless recovery fact into native Git status"
+)]
+pub fn pending_git_commit_recovery(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+) -> Result<Option<OperationId>, GitCommitPlanError> {
+    let session = workspace
+        .open_git_commit_recovery_session(state_home, None)
+        .map_err(map_git_commit_intent_error)?;
+    Ok(session
+        .list_intents()
+        .map_err(map_git_commit_intent_error)?
+        .into_iter()
+        .find(|intent| intent.stage != GitCommitIntentStage::Complete)
+        .map(|intent| intent.operation_id))
 }
 
 pub fn cancel_git_commit_plan(plan: GitCommitPlan) -> Result<(), GitCommitPlanError> {
@@ -4981,6 +5035,749 @@ fn install_git_commit_candidate_pack(
     Ok(packed)
 }
 
+#[allow(
+    dead_code,
+    reason = "Phase 5C2B wraps this exact metadata transaction in a durable intent"
+)]
+fn publish_git_commit_metadata_without_intent(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    plan: &mut GitCommitPlan,
+) -> Result<(), GitCommitPlanError> {
+    install_git_commit_candidate_pack(workspace, state_home, runtime_directory, plan)?;
+    let candidate_index = prepare_git_commit_candidate_index(plan)?;
+    let mut candidate_ref = Vec::new();
+    candidate_ref
+        .try_reserve_exact(plan.candidate.commit_object_id.len().saturating_add(1))
+        .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    candidate_ref.extend_from_slice(plan.candidate.commit_object_id.as_bytes());
+    candidate_ref.push(b'\n');
+    workspace
+        .with_git_commit_writer_lock(state_home, runtime_directory, || {
+            let current = inspect_git_commit_repository(workspace)?;
+            if !same_git_commit_preflight(&plan.preflight, &current)
+                || !plan
+                    .candidate
+                    .prepared
+                    .staging
+                    .verify_snapshot(candidate_index.staging_snapshot, MAX_COMMIT_STAGING_BYTES)
+                    .map_err(map_git_commit_staging_error)?
+            {
+                return Err(GitCommitPlanError::PlanStale);
+            }
+            let branch_relative = plan
+                .preflight
+                .branch
+                .reference
+                .strip_prefix("refs/heads/")
+                .ok_or(GitCommitPlanError::UnsafeRepository)?;
+            current
+                .capability
+                .publish_commit_metadata(
+                    &plan.preflight.repository,
+                    &plan.preflight.branch_storage,
+                    branch_relative,
+                    &candidate_index.bytes,
+                    &candidate_ref,
+                    |_| Ok(()),
+                )
+                .map_err(map_git_commit_metadata_storage_error)
+        })
+        .map_err(map_git_commit_staging_error)??;
+    Ok(())
+}
+
+#[allow(
+    dead_code,
+    reason = "Phase 5C3 exposes this only through native-confirmed plan consumption"
+)]
+fn publish_git_commit_with_intent(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    plan: &mut GitCommitPlan,
+) -> Result<GitCommitPublicationOutcome, GitCommitPlanError> {
+    install_git_commit_candidate_pack(workspace, state_home, runtime_directory, plan)?;
+    let candidate_index = prepare_git_commit_candidate_index(plan)?;
+    let mut candidate_ref = Vec::new();
+    candidate_ref
+        .try_reserve_exact(plan.candidate.commit_object_id.len().saturating_add(1))
+        .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    candidate_ref.extend_from_slice(plan.candidate.commit_object_id.as_bytes());
+    candidate_ref.push(b'\n');
+
+    let session = workspace
+        .open_git_commit_recovery_session(state_home, runtime_directory)
+        .map_err(map_git_commit_intent_error)?;
+    let current = inspect_git_commit_repository(workspace)?;
+    if !same_git_commit_preflight(&plan.preflight, &current)
+        || !plan
+            .candidate
+            .prepared
+            .staging
+            .verify_snapshot(candidate_index.staging_snapshot, MAX_COMMIT_STAGING_BYTES)
+            .map_err(map_git_commit_staging_error)?
+    {
+        return Err(GitCommitPlanError::PlanStale);
+    }
+    let branch_relative = plan
+        .preflight
+        .branch
+        .reference
+        .strip_prefix("refs/heads/")
+        .ok_or(GitCommitPlanError::UnsafeRepository)?;
+    let (git_device, git_inode) = current
+        .capability
+        .git_directory_identity()
+        .map_err(map_git_commit_snapshot_error)?;
+    let head_hash = session
+        .store_bytes(&plan.preflight.repository.head.bytes)
+        .map_err(map_git_commit_intent_error)?;
+    let config_hash = session
+        .store_bytes(&plan.preflight.repository.config.bytes)
+        .map_err(map_git_commit_intent_error)?;
+    let before_index_hash = plan
+        .preflight
+        .repository
+        .index
+        .as_ref()
+        .map(|snapshot| session.store_bytes(&snapshot.bytes))
+        .transpose()
+        .map_err(map_git_commit_intent_error)?;
+    let candidate_index_hash = session
+        .store_bytes(&candidate_index.bytes)
+        .map_err(map_git_commit_intent_error)?;
+    let packed_refs_hash = plan
+        .preflight
+        .repository
+        .packed_refs
+        .as_ref()
+        .map(|snapshot| session.store_bytes(&snapshot.bytes))
+        .transpose()
+        .map_err(map_git_commit_intent_error)?;
+    let before_ref_hash = plan
+        .preflight
+        .branch_storage
+        .target
+        .as_ref()
+        .map(|snapshot| session.store_bytes(&snapshot.bytes))
+        .transpose()
+        .map_err(map_git_commit_intent_error)?;
+    let candidate_ref_hash = session
+        .store_bytes(&candidate_ref)
+        .map_err(map_git_commit_intent_error)?;
+    let representation = match plan.preflight.branch.representation {
+        GitBranchRepresentation::Unborn => GitCommitIntentBranchRepresentation::Unborn,
+        GitBranchRepresentation::Loose => GitCommitIntentBranchRepresentation::Loose,
+        GitBranchRepresentation::Packed => GitCommitIntentBranchRepresentation::Packed,
+    };
+    let before_index_mode = plan
+        .preflight
+        .repository
+        .index
+        .as_ref()
+        .map_or(0o600, |snapshot| snapshot.mode());
+    let before_ref_mode = plan
+        .preflight
+        .branch_storage
+        .target
+        .as_ref()
+        .map_or(0o600, |snapshot| snapshot.mode());
+    let operation_id = new_operation_id();
+    let (root_device, root_inode) = session.root_identity();
+    let staging_name = plan.candidate.prepared.staging.stage_name().to_owned();
+    let (staging_device, staging_inode) = plan
+        .candidate
+        .prepared
+        .staging
+        .stage_identity()
+        .map_err(map_git_commit_staging_error)?;
+    let mut intent = GitCommitIntent {
+        generation: 1,
+        operation_id,
+        workspace_id: session.workspace_id(),
+        root_hash: session.root_hash(),
+        root_device,
+        root_inode,
+        git_device,
+        git_inode,
+        branch_relative: branch_relative.to_owned(),
+        representation,
+        head_hash,
+        config_hash,
+        before_index_hash,
+        before_index_mode,
+        candidate_index_hash,
+        candidate_index_mode: before_index_mode,
+        packed_refs_hash,
+        before_ref_hash,
+        before_ref_mode,
+        candidate_ref_hash,
+        candidate_ref_mode: before_ref_mode,
+        plan_hash: [0; 32],
+        stage: GitCommitIntentStage::Prepared,
+        staging_name,
+        staging_device,
+        staging_inode,
+    };
+    intent.plan_hash = git_commit_intent_plan_hash(&intent, &plan.candidate.commit_object_id);
+    session
+        .install_intent(&intent)
+        .map_err(map_git_commit_intent_error)?;
+
+    let publication = current.capability.publish_commit_metadata(
+        &plan.preflight.repository,
+        &plan.preflight.branch_storage,
+        branch_relative,
+        &candidate_index.bytes,
+        &candidate_ref,
+        |stage| {
+            let durable_stage = match stage {
+                GitCommitMetadataStage::IndexPublished => GitCommitIntentStage::IndexPublished,
+                GitCommitMetadataStage::RefPublished => GitCommitIntentStage::RefPublished,
+            };
+            let next = intent
+                .next_stage(durable_stage)
+                .map_err(|_| GitCommitMetadataStorageError::Unsafe)?;
+            session
+                .install_intent(&next)
+                .map_err(map_git_commit_intent_to_metadata_error)?;
+            intent = next;
+            Ok(())
+        },
+    );
+    if let Err(error) = publication {
+        return Err(map_git_commit_metadata_storage_error(error));
+    }
+    let workspace_changed = verify_completed_git_commit_publication(
+        workspace,
+        &current.capability,
+        &intent,
+        &plan.preflight.repository.head.bytes,
+        &plan.preflight.repository.config.bytes,
+        plan.preflight
+            .repository
+            .packed_refs
+            .as_ref()
+            .map(|value| value.bytes.as_slice()),
+        &candidate_index.bytes,
+        &candidate_ref,
+    )?;
+    session
+        .quarantine_staging(
+            &intent.staging_name,
+            (intent.staging_device, intent.staging_inode),
+        )
+        .map_err(map_git_commit_intent_error)?;
+    intent = intent
+        .next_stage(GitCommitIntentStage::Complete)
+        .map_err(|_| GitCommitPlanError::UnsafeRepository)?;
+    session
+        .install_intent(&intent)
+        .map_err(map_git_commit_intent_error)?;
+    Ok(GitCommitPublicationOutcome {
+        operation_id,
+        workspace_changed,
+    })
+}
+
+#[allow(
+    dead_code,
+    reason = "Phase 5C3 and Git status call this for discovered incomplete intents"
+)]
+fn resume_git_commit_publication(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    operation_id: OperationId,
+) -> Result<bool, GitCommitPlanError> {
+    let session = workspace
+        .open_git_commit_recovery_session(state_home, runtime_directory)
+        .map_err(map_git_commit_intent_error)?;
+    let mut intent = session
+        .read_intent(operation_id)
+        .map_err(map_git_commit_intent_error)?;
+    if intent.stage == GitCommitIntentStage::Conflict {
+        return Err(GitCommitPlanError::PlanStale);
+    }
+    let capability = workspace
+        .git_repository_capability()
+        .map_err(|error| match error {
+            GitRepositoryCapabilityError::NotRepository => GitCommitPlanError::NotRepository,
+            GitRepositoryCapabilityError::Unsafe => GitCommitPlanError::UnsafeRepository,
+            GitRepositoryCapabilityError::Io => GitCommitPlanError::Io,
+        })?;
+    let (git_device, git_inode) = capability
+        .git_directory_identity()
+        .map_err(map_git_commit_snapshot_error)?;
+    if session.root_identity() != (intent.root_device, intent.root_inode)
+        || (git_device, git_inode) != (intent.git_device, intent.git_inode)
+    {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    let head = session
+        .read_bytes(&intent.head_hash)
+        .map_err(map_git_commit_intent_error)?;
+    let config = session
+        .read_bytes(&intent.config_hash)
+        .map_err(map_git_commit_intent_error)?;
+    let before_index = intent
+        .before_index_hash
+        .as_ref()
+        .map(|hash| session.read_bytes(hash))
+        .transpose()
+        .map_err(map_git_commit_intent_error)?;
+    let candidate_index = session
+        .read_bytes(&intent.candidate_index_hash)
+        .map_err(map_git_commit_intent_error)?;
+    let packed_refs = intent
+        .packed_refs_hash
+        .as_ref()
+        .map(|hash| session.read_bytes(hash))
+        .transpose()
+        .map_err(map_git_commit_intent_error)?;
+    let before_ref = intent
+        .before_ref_hash
+        .as_ref()
+        .map(|hash| session.read_bytes(hash))
+        .transpose()
+        .map_err(map_git_commit_intent_error)?;
+    let candidate_ref = session
+        .read_bytes(&intent.candidate_ref_hash)
+        .map_err(map_git_commit_intent_error)?;
+    verify_git_commit_intent_plan_hash(&intent, &candidate_ref)?;
+    capability
+        .recover_commit_lock_residue(
+            &intent.branch_relative,
+            before_index
+                .as_deref()
+                .map(|bytes| (bytes, intent.before_index_mode)),
+            (&candidate_index, intent.candidate_index_mode),
+            before_ref
+                .as_deref()
+                .map(|bytes| (bytes, intent.before_ref_mode)),
+            (&candidate_ref, intent.candidate_ref_mode),
+        )
+        .map_err(map_git_commit_metadata_storage_error)?;
+    let repository = capability
+        .read_commit_repository_snapshot()
+        .map_err(map_git_commit_snapshot_error)?;
+    let branch = capability
+        .read_commit_branch_snapshot(&intent.branch_relative)
+        .map_err(map_git_commit_snapshot_error)?;
+    if repository.head.bytes != head
+        || repository.config.bytes != config
+        || repository.packed_refs.as_ref().map(|value| &value.bytes) != packed_refs.as_ref()
+    {
+        return mark_git_commit_intent_conflict(&session, &mut intent);
+    }
+    let index_is_before = git_commit_snapshot_matches(
+        repository.index.as_ref(),
+        before_index.as_deref(),
+        intent.before_index_mode,
+    );
+    let index_is_candidate = git_commit_snapshot_matches(
+        repository.index.as_ref(),
+        Some(&candidate_index),
+        intent.candidate_index_mode,
+    );
+    let ref_is_before = git_commit_snapshot_matches(
+        branch.target.as_ref(),
+        before_ref.as_deref(),
+        intent.before_ref_mode,
+    );
+    let ref_is_candidate = git_commit_snapshot_matches(
+        branch.target.as_ref(),
+        Some(&candidate_ref),
+        intent.candidate_ref_mode,
+    );
+    let branch_relative = intent.branch_relative.clone();
+
+    match (
+        index_is_before,
+        index_is_candidate,
+        ref_is_before,
+        ref_is_candidate,
+    ) {
+        (true, false, true, false) if intent.stage == GitCommitIntentStage::Prepared => {
+            capability
+                .publish_commit_metadata(
+                    &repository,
+                    &branch,
+                    &branch_relative,
+                    &candidate_index,
+                    &candidate_ref,
+                    |stage| persist_recovered_git_commit_stage(&session, &mut intent, stage),
+                )
+                .map_err(map_git_commit_metadata_storage_error)?;
+        }
+        (true, false, true, false) => {
+            return mark_git_commit_intent_conflict(&session, &mut intent);
+        }
+        (false, true, true, false) => {
+            if intent.stage == GitCommitIntentStage::Prepared {
+                advance_git_commit_intent(
+                    &session,
+                    &mut intent,
+                    GitCommitIntentStage::IndexPublished,
+                )?;
+            }
+            if intent.stage != GitCommitIntentStage::IndexPublished {
+                return mark_git_commit_intent_conflict(&session, &mut intent);
+            }
+            capability
+                .publish_commit_ref_after_index(
+                    &repository,
+                    &branch,
+                    &branch_relative,
+                    &candidate_index,
+                    &candidate_ref,
+                    |stage| persist_recovered_git_commit_stage(&session, &mut intent, stage),
+                )
+                .map_err(map_git_commit_metadata_storage_error)?;
+        }
+        (false, true, false, true) => {
+            if intent.stage == GitCommitIntentStage::Prepared {
+                advance_git_commit_intent(
+                    &session,
+                    &mut intent,
+                    GitCommitIntentStage::IndexPublished,
+                )?;
+            }
+            if intent.stage == GitCommitIntentStage::IndexPublished {
+                advance_git_commit_intent(
+                    &session,
+                    &mut intent,
+                    GitCommitIntentStage::RefPublished,
+                )?;
+            }
+            if !matches!(
+                intent.stage,
+                GitCommitIntentStage::RefPublished | GitCommitIntentStage::Complete
+            ) {
+                return Err(GitCommitPlanError::UnsafeRepository);
+            }
+        }
+        _ => return mark_git_commit_intent_conflict(&session, &mut intent),
+    }
+    if !matches!(
+        intent.stage,
+        GitCommitIntentStage::RefPublished | GitCommitIntentStage::Complete
+    ) {
+        return Err(GitCommitPlanError::OperationInProgress);
+    }
+    let workspace_changed = verify_completed_git_commit_publication(
+        workspace,
+        &capability,
+        &intent,
+        &head,
+        &config,
+        packed_refs.as_deref(),
+        &candidate_index,
+        &candidate_ref,
+    )?;
+    session
+        .quarantine_staging(
+            &intent.staging_name,
+            (intent.staging_device, intent.staging_inode),
+        )
+        .map_err(map_git_commit_intent_error)?;
+    if intent.stage == GitCommitIntentStage::RefPublished {
+        advance_git_commit_intent(&session, &mut intent, GitCommitIntentStage::Complete)?;
+    }
+    Ok(workspace_changed)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_completed_git_commit_publication(
+    workspace: &WorkspaceView,
+    capability: &crate::storage::GitRepositoryCapability,
+    intent: &GitCommitIntent,
+    expected_head: &[u8],
+    expected_config: &[u8],
+    expected_packed_refs: Option<&[u8]>,
+    candidate_index: &[u8],
+    candidate_ref: &[u8],
+) -> Result<bool, GitCommitPlanError> {
+    let repository = capability
+        .read_commit_repository_snapshot()
+        .map_err(map_git_commit_snapshot_error)?;
+    let branch = capability
+        .read_commit_branch_snapshot(&intent.branch_relative)
+        .map_err(map_git_commit_snapshot_error)?;
+    if repository.head.bytes != expected_head
+        || repository.config.bytes != expected_config
+        || repository
+            .packed_refs
+            .as_ref()
+            .map(|value| value.bytes.as_slice())
+            != expected_packed_refs
+        || !git_commit_snapshot_matches(
+            repository.index.as_ref(),
+            Some(candidate_index),
+            intent.candidate_index_mode,
+        )
+        || !git_commit_snapshot_matches(
+            branch.target.as_ref(),
+            Some(candidate_ref),
+            intent.candidate_ref_mode,
+        )
+    {
+        return Err(GitCommitPlanError::PlanStale);
+    }
+    let expected_commit = std::str::from_utf8(candidate_ref)
+        .ok()
+        .and_then(|value| value.strip_suffix('\n'))
+        .ok_or(GitCommitPlanError::UnsafeRepository)?;
+    let object_format =
+        validate_object_id(expected_commit).ok_or(GitCommitPlanError::UnsafeRepository)?;
+    let executable =
+        trusted_executable("/usr/bin/git").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+    let sandbox =
+        trusted_executable("/usr/bin/bwrap").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+    let commit = run_git_commit_read(
+        &executable,
+        &sandbox,
+        capability,
+        object_format,
+        &["cat-file", "commit", expected_commit],
+        OUTPUT_LIMIT,
+    )
+    .map_err(map_git_commit_read_error)?;
+    if git_object_id(object_format, "commit", &commit.stdout) != expected_commit {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    let mut cursor = 0usize;
+    let tree_line = take_git_commit_line(&commit.stdout, &mut cursor)?;
+    let root_tree = tree_line
+        .strip_prefix(b"tree ")
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .filter(|value| validate_object_id(value) == Some(object_format))
+        .ok_or(GitCommitPlanError::UnsafeRepository)?;
+    let tree_output = run_git_commit_read(
+        &executable,
+        &sandbox,
+        capability,
+        object_format,
+        &[
+            "ls-tree",
+            "-r",
+            "-t",
+            "-l",
+            "--full-tree",
+            "-z",
+            expected_commit,
+        ],
+        MAX_COMMIT_TREE_BYTES,
+    )
+    .map_err(map_git_commit_read_error)?;
+    let tree = parse_git_commit_tree(&tree_output.stdout, object_format)?;
+    verify_git_commit_index_matches_tree(candidate_index, object_format, &tree)?;
+    verify_git_commit_tree_objects(
+        &executable,
+        &sandbox,
+        capability,
+        object_format,
+        expected_commit,
+        root_tree,
+        &tree,
+    )?;
+    let fresh = workspace.fresh_snapshot().map_err(|error| match error {
+        crate::storage::WorkspaceInspectError::ResourceLimit => GitCommitPlanError::ResourceLimit,
+        crate::storage::WorkspaceInspectError::Io => GitCommitPlanError::Io,
+        _ => GitCommitPlanError::PlanStale,
+    })?;
+    let fresh_managed = match inspect_git_commit_managed_inventory(&fresh, object_format) {
+        Ok(managed) => managed,
+        Err(GitCommitPlanError::WorkspaceIssues)
+        | Err(GitCommitPlanError::AmbiguousManagedHistory)
+        | Err(GitCommitPlanError::PlanStale) => return Ok(true),
+        Err(error) => return Err(error),
+    };
+    git_commit_managed_effects_changed(&fresh_managed, &tree)
+}
+
+fn git_commit_managed_effects_changed(
+    current: &GitCommitManagedInventory,
+    candidate_tree: &GitCommitTree,
+) -> Result<bool, GitCommitPlanError> {
+    let candidate_paths = prior_managed_candidate_paths(candidate_tree)?;
+    if candidate_paths.len() != current.files.len() {
+        return Ok(true);
+    }
+    for (path, file) in candidate_paths.iter().zip(&current.files) {
+        if path.as_slice() != file.path.as_bytes() {
+            return Ok(true);
+        }
+        let Ok(index) = candidate_tree
+            .entries
+            .binary_search_by(|entry| entry.path.as_slice().cmp(path))
+        else {
+            return Ok(true);
+        };
+        if candidate_tree.entries[index].object_id != file.blob_object_id {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn verify_git_commit_index_matches_tree(
+    index_bytes: &[u8],
+    object_format: GitObjectFormat,
+    tree: &GitCommitTree,
+) -> Result<(), GitCommitPlanError> {
+    let index = parse_git_index(index_bytes, object_format)?;
+    if index.has_cache_tree {
+        return Err(GitCommitPlanError::UnsupportedIndex);
+    }
+    let mut entries = index.entries.iter();
+    for tree_entry in tree
+        .entries
+        .iter()
+        .filter(|entry| entry.kind != GitCommitTreeEntryKind::Tree)
+    {
+        let index_entry = entries.next().ok_or(GitCommitPlanError::UnsafeRepository)?;
+        if index_entry.mode != tree_entry.mode
+            || index_entry.path != tree_entry.path
+            || index_entry.object_id != decode_git_object_id(&tree_entry.object_id, object_format)?
+        {
+            return Err(GitCommitPlanError::UnsafeRepository);
+        }
+    }
+    if entries.next().is_some() {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    Ok(())
+}
+
+fn git_commit_snapshot_matches(
+    actual: Option<&crate::storage::GitCommitFileSnapshot>,
+    expected: Option<&[u8]>,
+    mode: u32,
+) -> bool {
+    match (actual, expected) {
+        (None, None) => true,
+        (Some(actual), Some(expected)) => actual.bytes == expected && actual.mode() == mode,
+        _ => false,
+    }
+}
+
+fn persist_recovered_git_commit_stage(
+    session: &crate::storage::recovery::GitCommitRecoverySession,
+    intent: &mut GitCommitIntent,
+    stage: GitCommitMetadataStage,
+) -> Result<(), GitCommitMetadataStorageError> {
+    let stage = match stage {
+        GitCommitMetadataStage::IndexPublished => GitCommitIntentStage::IndexPublished,
+        GitCommitMetadataStage::RefPublished => GitCommitIntentStage::RefPublished,
+    };
+    advance_git_commit_intent(session, intent, stage).map_err(|error| match error {
+        GitCommitPlanError::OperationInProgress | GitCommitPlanError::PlanStale => {
+            GitCommitMetadataStorageError::Conflict
+        }
+        GitCommitPlanError::UnsafeRepository => GitCommitMetadataStorageError::Unsafe,
+        GitCommitPlanError::UnsupportedRepository => GitCommitMetadataStorageError::Unsupported,
+        GitCommitPlanError::ResourceLimit => GitCommitMetadataStorageError::TooLarge,
+        _ => GitCommitMetadataStorageError::Io,
+    })
+}
+
+fn advance_git_commit_intent(
+    session: &crate::storage::recovery::GitCommitRecoverySession,
+    intent: &mut GitCommitIntent,
+    stage: GitCommitIntentStage,
+) -> Result<(), GitCommitPlanError> {
+    let next = intent
+        .next_stage(stage)
+        .map_err(|_| GitCommitPlanError::UnsafeRepository)?;
+    session
+        .install_intent(&next)
+        .map_err(map_git_commit_intent_error)?;
+    *intent = next;
+    Ok(())
+}
+
+fn mark_git_commit_intent_conflict<T>(
+    session: &crate::storage::recovery::GitCommitRecoverySession,
+    intent: &mut GitCommitIntent,
+) -> Result<T, GitCommitPlanError> {
+    if matches!(
+        intent.stage,
+        GitCommitIntentStage::Prepared | GitCommitIntentStage::IndexPublished
+    ) {
+        advance_git_commit_intent(session, intent, GitCommitIntentStage::Conflict)?;
+    }
+    Err(GitCommitPlanError::PlanStale)
+}
+
+fn hash_git_commit_intent_field(hasher: &mut blake3::Hasher, value: &[u8]) {
+    hasher.update(&(value.len() as u64).to_be_bytes());
+    hasher.update(value);
+}
+
+fn verify_git_commit_intent_plan_hash(
+    intent: &GitCommitIntent,
+    candidate_ref: &[u8],
+) -> Result<(), GitCommitPlanError> {
+    let commit_id = std::str::from_utf8(candidate_ref)
+        .ok()
+        .and_then(|value| value.strip_suffix('\n'))
+        .filter(|value| validate_object_id(value).is_some())
+        .ok_or(GitCommitPlanError::UnsafeRepository)?;
+    if git_commit_intent_plan_hash(intent, commit_id) != intent.plan_hash {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    Ok(())
+}
+
+fn git_commit_intent_plan_hash(intent: &GitCommitIntent, commit_id: &str) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"rehow:git-commit-publication-intent:v2\0");
+    hash_git_commit_intent_field(&mut hasher, intent.operation_id.to_string().as_bytes());
+    hash_git_commit_intent_field(&mut hasher, intent.workspace_id.to_string().as_bytes());
+    hasher.update(&intent.root_hash);
+    hasher.update(&intent.root_device.to_be_bytes());
+    hasher.update(&intent.root_inode.to_be_bytes());
+    hasher.update(&intent.git_device.to_be_bytes());
+    hasher.update(&intent.git_inode.to_be_bytes());
+    hash_git_commit_intent_field(&mut hasher, intent.branch_relative.as_bytes());
+    hasher.update(&[match intent.representation {
+        GitCommitIntentBranchRepresentation::Unborn => 0,
+        GitCommitIntentBranchRepresentation::Loose => 1,
+        GitCommitIntentBranchRepresentation::Packed => 2,
+    }]);
+    hasher.update(&intent.head_hash);
+    hasher.update(&intent.config_hash);
+    hash_git_commit_intent_optional_hash(&mut hasher, intent.before_index_hash.as_ref());
+    hasher.update(&intent.before_index_mode.to_be_bytes());
+    hasher.update(&intent.candidate_index_hash);
+    hasher.update(&intent.candidate_index_mode.to_be_bytes());
+    hash_git_commit_intent_optional_hash(&mut hasher, intent.packed_refs_hash.as_ref());
+    hash_git_commit_intent_optional_hash(&mut hasher, intent.before_ref_hash.as_ref());
+    hasher.update(&intent.before_ref_mode.to_be_bytes());
+    hasher.update(&intent.candidate_ref_hash);
+    hasher.update(&intent.candidate_ref_mode.to_be_bytes());
+    hash_git_commit_intent_field(&mut hasher, intent.staging_name.as_bytes());
+    hasher.update(&intent.staging_device.to_be_bytes());
+    hasher.update(&intent.staging_inode.to_be_bytes());
+    hash_git_commit_intent_field(&mut hasher, commit_id.as_bytes());
+    *hasher.finalize().as_bytes()
+}
+
+fn hash_git_commit_intent_optional_hash(hasher: &mut blake3::Hasher, value: Option<&[u8; 32]>) {
+    match value {
+        Some(value) => {
+            hasher.update(&[1]);
+            hasher.update(value);
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
+}
+
 fn map_git_commit_pack_install_error(error: GitCommitPackInstallError) -> GitCommitPlanError {
     match error {
         GitCommitPackInstallError::Conflict => GitCommitPlanError::PlanStale,
@@ -4988,6 +5785,40 @@ fn map_git_commit_pack_install_error(error: GitCommitPackInstallError) -> GitCom
         GitCommitPackInstallError::Unsupported => GitCommitPlanError::UnsupportedRepository,
         GitCommitPackInstallError::TooLarge => GitCommitPlanError::ResourceLimit,
         GitCommitPackInstallError::Io => GitCommitPlanError::Io,
+    }
+}
+
+fn map_git_commit_metadata_storage_error(
+    error: GitCommitMetadataStorageError,
+) -> GitCommitPlanError {
+    match error {
+        GitCommitMetadataStorageError::Conflict => GitCommitPlanError::PlanStale,
+        GitCommitMetadataStorageError::Unsafe => GitCommitPlanError::UnsafeRepository,
+        GitCommitMetadataStorageError::Unsupported => GitCommitPlanError::UnsupportedRepository,
+        GitCommitMetadataStorageError::TooLarge => GitCommitPlanError::ResourceLimit,
+        GitCommitMetadataStorageError::Io => GitCommitPlanError::Io,
+    }
+}
+
+fn map_git_commit_intent_error(error: GitCommitIntentError) -> GitCommitPlanError {
+    match error {
+        GitCommitIntentError::Conflict => GitCommitPlanError::OperationInProgress,
+        GitCommitIntentError::Unsafe => GitCommitPlanError::UnsafeRepository,
+        GitCommitIntentError::Unsupported => GitCommitPlanError::UnsupportedRepository,
+        GitCommitIntentError::TooLarge => GitCommitPlanError::ResourceLimit,
+        GitCommitIntentError::Io => GitCommitPlanError::Io,
+    }
+}
+
+fn map_git_commit_intent_to_metadata_error(
+    error: GitCommitIntentError,
+) -> GitCommitMetadataStorageError {
+    match error {
+        GitCommitIntentError::Conflict => GitCommitMetadataStorageError::Conflict,
+        GitCommitIntentError::Unsafe => GitCommitMetadataStorageError::Unsafe,
+        GitCommitIntentError::Unsupported => GitCommitMetadataStorageError::Unsupported,
+        GitCommitIntentError::TooLarge => GitCommitMetadataStorageError::TooLarge,
+        GitCommitIntentError::Io => GitCommitMetadataStorageError::Io,
     }
 }
 
@@ -5112,9 +5943,14 @@ fn count_unrelated_git_commit_changes(
     executable: &Path,
     sandbox: &Path,
     repository: &crate::storage::GitRepositoryCapability,
+    object_format: GitObjectFormat,
     prior: &GitCommitManagedInventory,
     current: &GitCommitManagedInventory,
 ) -> Result<u32, GitCommitPlanError> {
+    let mut synthetic_config =
+        create_git_format_config(object_format).map_err(map_git_commit_read_error)?;
+    let config_descriptor = synthetic_config.as_raw_fd();
+    let config_descriptor_text = config_descriptor.to_string();
     let mut command = Command::new(sandbox);
     command
         .env_clear()
@@ -5162,6 +5998,9 @@ fn count_unrelated_git_commit_changes(
             "--ro-bind",
             repository.head_path(),
             "/repo.git/HEAD",
+            "--file",
+            &config_descriptor_text,
+            "/repo.git/config",
             "--tmpfs",
             "/repo.git/objects/info",
             "--tmpfs",
@@ -5219,8 +6058,23 @@ fn count_unrelated_git_commit_changes(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.process_group(0);
-    let output = run_bounded_git_command(command, COMMIT_PROCESS_TIMEOUT, MAX_COMMIT_TREE_BYTES)
-        .map_err(map_git_commit_read_error)?;
+    // SAFETY: the closure only clears CLOEXEC on the owned, sealed
+    // synthetic-config descriptor so Bubblewrap can copy it into the
+    // otherwise read-only repository view.
+    unsafe {
+        command.pre_exec(move || {
+            let flags = libc::fcntl(config_descriptor, libc::F_GETFD);
+            if flags < 0
+                || libc::fcntl(config_descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let output = run_bounded_git_command(command, COMMIT_PROCESS_TIMEOUT, MAX_COMMIT_TREE_BYTES);
+    let _ = synthetic_config.seek(SeekFrom::Start(0));
+    let output = output.map_err(map_git_commit_read_error)?;
     parse_unrelated_git_commit_changes(&output.stdout, prior, current)
 }
 
@@ -7546,10 +8400,11 @@ fn safe_git_label(value: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::storage::{
-        GitCloneFinalizeFault, GitCloneScaffoldFault, GitConfigFault, GitConfigRace, GitInitFault,
-        WorkspaceFault, WorkspaceInspection, inspect_workspace, set_git_clone_finalize_fault,
-        set_git_clone_scaffold_fault, set_git_config_fault, set_git_config_race,
-        set_git_init_fault, set_workspace_fault,
+        GitCloneFinalizeFault, GitCloneScaffoldFault, GitCommitMetadataFault,
+        GitCommitMetadataRace, GitConfigFault, GitConfigRace, GitInitFault, WorkspaceFault,
+        WorkspaceInspection, inspect_workspace, set_git_clone_finalize_fault,
+        set_git_clone_scaffold_fault, set_git_commit_metadata_fault, set_git_commit_metadata_race,
+        set_git_config_fault, set_git_config_race, set_git_init_fault, set_workspace_fault,
     };
     use std::{
         fs,
@@ -8104,8 +8959,8 @@ mod tests {
         let unborn = Temp::new();
         drop(initialized_workspace(&unborn));
         configure_fixture_identity(&unborn);
-        let workspace = open_workspace(&unborn);
-        let preflight = inspect_git_commit_repository(&workspace).unwrap();
+        let unborn_workspace = open_workspace(&unborn);
+        let preflight = inspect_git_commit_repository(&unborn_workspace).unwrap();
         assert_eq!(preflight.object_format, GitObjectFormat::Sha1);
         assert_eq!(preflight.branch.display, "main");
         assert_eq!(
@@ -8309,15 +9164,15 @@ mod tests {
         let unborn = Temp::new();
         drop(initialized_workspace(&unborn));
         configure_fixture_identity(&unborn);
-        let workspace = open_workspace(&unborn);
-        let preflight = inspect_git_commit_repository(&workspace).unwrap();
+        let unborn_workspace = open_workspace(&unborn);
+        let preflight = inspect_git_commit_repository(&unborn_workspace).unwrap();
         assert!(preflight.head_tree_object_id.is_none());
         let unborn_state = Temp::new();
         let staging = prepare_git_commit_staging(&preflight, &unborn_state.0).unwrap();
         assert!(!Path::new(staging.staging.git_path()).join("index").exists());
         assert!(staging.prior_managed.files.is_empty());
         let candidate = construct_git_commit_candidate(
-            &workspace,
+            &unborn_workspace,
             &preflight,
             staging,
             "Initial Rehow Workspace",
@@ -8417,6 +9272,7 @@ mod tests {
                 &executable,
                 &sandbox,
                 &preflight.capability,
+                preflight.object_format,
                 &candidate.prepared.prior_managed,
                 &preflight.managed,
             )
@@ -8598,6 +9454,408 @@ mod tests {
         assert!(debug.contains("<redacted:"));
         assert!(!debug.contains(&plan.candidate.tree_object_id));
         cancel_git_commit_plan(plan).unwrap();
+    }
+
+    #[test]
+    fn commit_metadata_publishes_index_then_ref_without_touching_reflogs_or_unrelated_files() {
+        let temp = Temp::new();
+        drop(initialized_workspace(&temp));
+        configure_fixture_identity(&temp);
+        fs::write(temp.0.join("unrelated.txt"), b"tracked before\n").unwrap();
+        fixture_git(&temp, &["add", "--", "rehow.yaml", "unrelated.txt"]);
+        fixture_git(&temp, &["commit", "-qm", "base"]);
+        fs::write(temp.0.join("unrelated.txt"), b"tracked after\n").unwrap();
+        fs::write(temp.0.join("untracked.tmp"), b"untracked\n").unwrap();
+        let changed = fs::read_to_string(temp.0.join("rehow.yaml"))
+            .unwrap()
+            .replace("name: Git", "name: Published metadata");
+        fs::write(temp.0.join("rehow.yaml"), changed).unwrap();
+        let head_log_path = temp.0.join(".git/logs/HEAD");
+        let branch_log_path = temp.0.join(".git/logs/refs/heads/main");
+        let head_log_before = fs::read(&head_log_path).unwrap();
+        let branch_log_before = fs::read(&branch_log_path).unwrap();
+        let workspace = open_workspace(&temp);
+        let state = Temp::new();
+        let mut plan = plan_git_commit(&workspace, &state.0, "Publish managed metadata").unwrap();
+        let commit_id = plan.candidate.commit_object_id.clone();
+        let tree_id = plan.candidate.tree_object_id.clone();
+        let staging_name = plan.candidate.prepared.staging.stage_name().to_owned();
+
+        let outcome =
+            publish_git_commit_with_intent(&workspace, &state.0, None, &mut plan).unwrap();
+        assert!(!outcome.workspace_changed);
+        let operation_id = outcome.operation_id;
+
+        assert_eq!(fixture_git_stdout(&temp, &["rev-parse", "HEAD"]), commit_id);
+        assert_eq!(fixture_git_stdout(&temp, &["write-tree"]), tree_id);
+        assert_eq!(
+            fs::read_to_string(temp.0.join("unrelated.txt")).unwrap(),
+            "tracked after\n"
+        );
+        assert_eq!(
+            fs::read_to_string(temp.0.join("untracked.tmp")).unwrap(),
+            "untracked\n"
+        );
+        assert_eq!(fs::read(head_log_path).unwrap(), head_log_before);
+        assert_eq!(fs::read(branch_log_path).unwrap(), branch_log_before);
+        assert!(!temp.0.join(".git/index.lock").exists());
+        assert!(!temp.0.join(".git/refs/heads/main.lock").exists());
+        assert!(
+            !state
+                .0
+                .join("rehow/commit-staging")
+                .join(&staging_name)
+                .exists()
+        );
+        assert!(
+            state
+                .0
+                .join("rehow/commit-quarantine")
+                .join(&staging_name)
+                .is_dir()
+        );
+        let session = workspace
+            .open_git_commit_recovery_session(&state.0, None)
+            .unwrap();
+        let intent = session.read_intent(operation_id).unwrap();
+        assert_eq!(intent.stage, GitCommitIntentStage::Complete);
+        assert_eq!(intent.generation, 4);
+        assert_eq!(
+            session.read_bytes(&intent.candidate_ref_hash).unwrap(),
+            format!("{commit_id}\n").as_bytes()
+        );
+    }
+
+    #[test]
+    fn commit_publication_resumes_after_durable_index_and_ref_boundaries() {
+        for fault in [
+            GitCommitMetadataFault::IndexLockPublished,
+            GitCommitMetadataFault::IndexExchanged,
+            GitCommitMetadataFault::IndexPublished,
+            GitCommitMetadataFault::RefLockPublished,
+            GitCommitMetadataFault::RefExchanged,
+            GitCommitMetadataFault::RefPublished,
+        ] {
+            let temp = Temp::new();
+            drop(initialized_workspace(&temp));
+            configure_fixture_identity(&temp);
+            fixture_git(&temp, &["add", "--", "rehow.yaml"]);
+            fixture_git(&temp, &["commit", "-qm", "base"]);
+            let changed = fs::read_to_string(temp.0.join("rehow.yaml"))
+                .unwrap()
+                .replace("name: Git", "name: Interrupted publication");
+            fs::write(temp.0.join("rehow.yaml"), changed).unwrap();
+            let workspace = open_workspace(&temp);
+            let state = Temp::new();
+            let mut plan =
+                plan_git_commit(&workspace, &state.0, "Resume managed publication").unwrap();
+            let commit_id = plan.candidate.commit_object_id.clone();
+            set_git_commit_metadata_fault(fault);
+            assert_eq!(
+                publish_git_commit_with_intent(&workspace, &state.0, None, &mut plan).unwrap_err(),
+                GitCommitPlanError::UnsupportedRepository
+            );
+            let session = workspace
+                .open_git_commit_recovery_session(&state.0, None)
+                .unwrap();
+            let intents = session.list_intents().unwrap();
+            assert_eq!(intents.len(), 1);
+            let operation_id = intents[0].operation_id;
+            assert_eq!(
+                git_commit_intent_plan_hash(&intents[0], &commit_id),
+                intents[0].plan_hash
+            );
+            assert_eq!(
+                intents[0].stage,
+                match fault {
+                    GitCommitMetadataFault::IndexLockPublished
+                    | GitCommitMetadataFault::IndexExchanged => GitCommitIntentStage::Prepared,
+                    GitCommitMetadataFault::IndexPublished
+                    | GitCommitMetadataFault::RefLockPublished
+                    | GitCommitMetadataFault::RefExchanged => {
+                        GitCommitIntentStage::IndexPublished
+                    }
+                    GitCommitMetadataFault::RefPublished => GitCommitIntentStage::RefPublished,
+                }
+            );
+            drop(session);
+            assert_eq!(
+                pending_git_commit_recovery(&workspace, &state.0).unwrap(),
+                Some(operation_id)
+            );
+            assert_eq!(
+                plan_git_commit(&workspace, &state.0, "Blocked by recovery").unwrap_err(),
+                GitCommitPlanError::OperationInProgress
+            );
+            let workspace_changed = fault == GitCommitMetadataFault::RefPublished;
+            if workspace_changed {
+                let raced = fs::read_to_string(temp.0.join("rehow.yaml"))
+                    .unwrap()
+                    .replace(
+                        "name: Interrupted publication",
+                        "name: Changed after publication",
+                    );
+                fs::write(temp.0.join("rehow.yaml"), raced).unwrap();
+            }
+
+            assert_eq!(
+                resume_git_commit_publication(&workspace, &state.0, None, operation_id).unwrap(),
+                workspace_changed
+            );
+            assert_eq!(fixture_git_stdout(&temp, &["rev-parse", "HEAD"]), commit_id);
+            if workspace_changed {
+                assert!(
+                    fs::read_to_string(temp.0.join("rehow.yaml"))
+                        .unwrap()
+                        .contains("Changed after publication")
+                );
+                let status = read_git_status(&workspace).unwrap();
+                let GitRepositoryStatus::Ready(repository) = status.repository() else {
+                    panic!("expected ready Git status");
+                };
+                assert!(repository.changed() > 0);
+                let refreshed = open_workspace(&temp);
+                let next = plan_git_commit(&refreshed, &state.0, "Commit raced edit").unwrap();
+                cancel_git_commit_plan(next).unwrap();
+            } else {
+                assert_eq!(
+                    plan_git_commit(&workspace, &state.0, "Already committed").unwrap_err(),
+                    GitCommitPlanError::NothingToCommit
+                );
+            }
+            assert_eq!(
+                pending_git_commit_recovery(&workspace, &state.0).unwrap(),
+                None
+            );
+            let session = workspace
+                .open_git_commit_recovery_session(&state.0, None)
+                .unwrap();
+            assert_eq!(
+                session.read_intent(operation_id).unwrap().stage,
+                GitCommitIntentStage::Complete
+            );
+            drop(session);
+        }
+    }
+
+    #[test]
+    fn commit_ref_races_restore_exact_index_and_preserve_foreign_ref() {
+        for race in [
+            GitCommitMetadataRace::ReplaceRefBeforePublication,
+            GitCommitMetadataRace::ReplaceRefAfterValidation,
+        ] {
+            let temp = Temp::new();
+            drop(initialized_workspace(&temp));
+            configure_fixture_identity(&temp);
+            fixture_git(&temp, &["add", "--", "rehow.yaml"]);
+            fixture_git(&temp, &["commit", "-qm", "base"]);
+            let index_before = fs::read(temp.0.join(".git/index")).unwrap();
+            let changed = fs::read_to_string(temp.0.join("rehow.yaml"))
+                .unwrap()
+                .replace("name: Git", "name: Ref race");
+            fs::write(temp.0.join("rehow.yaml"), changed).unwrap();
+            let workspace = open_workspace(&temp);
+            let state = Temp::new();
+            let mut plan = plan_git_commit(&workspace, &state.0, "Lose ref race").unwrap();
+            set_git_commit_metadata_race(race);
+
+            assert_eq!(
+                publish_git_commit_with_intent(&workspace, &state.0, None, &mut plan).unwrap_err(),
+                GitCommitPlanError::PlanStale
+            );
+            assert_eq!(fs::read(temp.0.join(".git/index")).unwrap(), index_before);
+            let foreign = b"1111111111111111111111111111111111111111\n";
+            assert_eq!(
+                fs::read(temp.0.join(".git/refs/heads/main")).unwrap(),
+                foreign
+            );
+            let session = workspace
+                .open_git_commit_recovery_session(&state.0, None)
+                .unwrap();
+            let intents = session.list_intents().unwrap();
+            assert_eq!(intents.len(), 1);
+            assert_eq!(intents[0].stage, GitCommitIntentStage::IndexPublished);
+            let operation_id = intents[0].operation_id;
+            drop(session);
+            assert_eq!(
+                resume_git_commit_publication(&workspace, &state.0, None, operation_id)
+                    .unwrap_err(),
+                GitCommitPlanError::PlanStale
+            );
+            assert_eq!(fs::read(temp.0.join(".git/index")).unwrap(), index_before);
+            assert_eq!(
+                fs::read(temp.0.join(".git/refs/heads/main")).unwrap(),
+                foreign
+            );
+            let session = workspace
+                .open_git_commit_recovery_session(&state.0, None)
+                .unwrap();
+            assert_eq!(
+                session.read_intent(operation_id).unwrap().stage,
+                GitCommitIntentStage::Conflict
+            );
+            drop(session);
+            cancel_git_commit_plan(plan).unwrap();
+        }
+    }
+
+    #[test]
+    fn commit_recovery_preserves_foreign_index_and_post_ref_state() {
+        for (fault, replace_index) in [
+            (GitCommitMetadataFault::IndexPublished, true),
+            (GitCommitMetadataFault::RefPublished, false),
+        ] {
+            let temp = Temp::new();
+            drop(initialized_workspace(&temp));
+            configure_fixture_identity(&temp);
+            fixture_git(&temp, &["add", "--", "rehow.yaml"]);
+            fixture_git(&temp, &["commit", "-qm", "base"]);
+            let changed = fs::read_to_string(temp.0.join("rehow.yaml"))
+                .unwrap()
+                .replace("name: Git", "name: Foreign recovery state");
+            fs::write(temp.0.join("rehow.yaml"), changed).unwrap();
+            let workspace = open_workspace(&temp);
+            let state = Temp::new();
+            let mut plan = plan_git_commit(&workspace, &state.0, "Interrupted commit").unwrap();
+            set_git_commit_metadata_fault(fault);
+            assert_eq!(
+                publish_git_commit_with_intent(&workspace, &state.0, None, &mut plan).unwrap_err(),
+                GitCommitPlanError::UnsupportedRepository
+            );
+            let session = workspace
+                .open_git_commit_recovery_session(&state.0, None)
+                .unwrap();
+            let intent = session.list_intents().unwrap().remove(0);
+            drop(session);
+
+            let foreign = if replace_index {
+                b"foreign index bytes".as_slice()
+            } else {
+                b"1111111111111111111111111111111111111111\n".as_slice()
+            };
+            let target = if replace_index {
+                temp.0.join(".git/index")
+            } else {
+                temp.0.join(".git/refs/heads/main")
+            };
+            fs::write(&target, foreign).unwrap();
+            assert_eq!(
+                resume_git_commit_publication(&workspace, &state.0, None, intent.operation_id)
+                    .unwrap_err(),
+                GitCommitPlanError::PlanStale
+            );
+            assert_eq!(fs::read(target).unwrap(), foreign);
+            let session = workspace
+                .open_git_commit_recovery_session(&state.0, None)
+                .unwrap();
+            assert_eq!(
+                session.read_intent(intent.operation_id).unwrap().stage,
+                if replace_index {
+                    GitCommitIntentStage::Conflict
+                } else {
+                    GitCommitIntentStage::RefPublished
+                }
+            );
+            drop(session);
+            cancel_git_commit_plan(plan).unwrap();
+        }
+    }
+
+    #[test]
+    fn commit_publication_supports_unborn_packed_and_sha256_branches() {
+        let unborn = Temp::new();
+        drop(initialized_workspace(&unborn));
+        configure_fixture_identity(&unborn);
+        let unborn_workspace = open_workspace(&unborn);
+        let state = Temp::new();
+        let mut plan =
+            plan_git_commit(&unborn_workspace, &state.0, "Initial managed commit").unwrap();
+        let unborn_commit = plan.candidate.commit_object_id.clone();
+        assert!(
+            !publish_git_commit_with_intent(&unborn_workspace, &state.0, None, &mut plan)
+                .unwrap()
+                .workspace_changed
+        );
+        assert_eq!(
+            fixture_git_stdout(&unborn, &["rev-parse", "HEAD"]),
+            unborn_commit
+        );
+        assert!(!unborn.0.join(".git/logs").exists());
+
+        let packed = Temp::new();
+        drop(initialized_workspace(&packed));
+        configure_fixture_identity(&packed);
+        fixture_git(&packed, &["add", "--", "rehow.yaml"]);
+        fixture_git(&packed, &["commit", "-qm", "base"]);
+        fixture_git(&packed, &["pack-refs", "--all", "--prune"]);
+        assert!(!packed.0.join(".git/refs/heads/main").exists());
+        let packed_refs_before = fs::read(packed.0.join(".git/packed-refs")).unwrap();
+        let changed = fs::read_to_string(packed.0.join("rehow.yaml"))
+            .unwrap()
+            .replace("name: Git", "name: Packed branch");
+        fs::write(packed.0.join("rehow.yaml"), changed).unwrap();
+        let packed_workspace = open_workspace(&packed);
+        let state = Temp::new();
+        let mut plan =
+            plan_git_commit(&packed_workspace, &state.0, "Shadow packed branch").unwrap();
+        let packed_commit = plan.candidate.commit_object_id.clone();
+        set_git_commit_metadata_fault(GitCommitMetadataFault::IndexPublished);
+        assert_eq!(
+            publish_git_commit_with_intent(&packed_workspace, &state.0, None, &mut plan)
+                .unwrap_err(),
+            GitCommitPlanError::UnsupportedRepository
+        );
+        let session = packed_workspace
+            .open_git_commit_recovery_session(&state.0, None)
+            .unwrap();
+        let operation_id = session.list_intents().unwrap()[0].operation_id;
+        drop(session);
+        assert!(
+            !resume_git_commit_publication(&packed_workspace, &state.0, None, operation_id)
+                .unwrap()
+        );
+        assert_eq!(
+            fixture_git_stdout(&packed, &["rev-parse", "HEAD"]),
+            packed_commit
+        );
+        assert_eq!(
+            fs::read(packed.0.join(".git/packed-refs")).unwrap(),
+            packed_refs_before
+        );
+
+        let sha256 = Temp::new();
+        drop(workspace(&sha256));
+        fixture_git(
+            &sha256,
+            &[
+                "init",
+                "-q",
+                "--object-format=sha256",
+                "--initial-branch=main",
+            ],
+        );
+        configure_fixture_identity(&sha256);
+        fixture_git(&sha256, &["add", "--", "rehow.yaml"]);
+        fixture_git(&sha256, &["commit", "-qm", "base"]);
+        let changed = fs::read_to_string(sha256.0.join("rehow.yaml"))
+            .unwrap()
+            .replace("name: Git", "name: SHA-256 publication");
+        fs::write(sha256.0.join("rehow.yaml"), changed).unwrap();
+        let sha256_workspace = open_workspace(&sha256);
+        let state = Temp::new();
+        let mut plan =
+            plan_git_commit(&sha256_workspace, &state.0, "Publish SHA-256 commit").unwrap();
+        let sha256_commit = plan.candidate.commit_object_id.clone();
+        assert!(
+            !publish_git_commit_with_intent(&sha256_workspace, &state.0, None, &mut plan)
+                .unwrap()
+                .workspace_changed
+        );
+        assert_eq!(sha256_commit.len(), 64);
+        assert_eq!(
+            fixture_git_stdout(&sha256, &["rev-parse", "HEAD"]),
+            sha256_commit
+        );
     }
 
     #[test]

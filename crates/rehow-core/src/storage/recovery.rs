@@ -6,6 +6,7 @@
 use crate::protocol::{GuideId, OperationId, Revision, Timestamp, WorkspaceId};
 use std::{
     collections::HashSet,
+    fmt,
     fs::{File, Metadata},
     os::unix::fs::MetadataExt,
     path::Path,
@@ -33,6 +34,16 @@ pub(crate) struct GitCommitStagingSnapshot {
 }
 
 impl GitCommitStaging {
+    pub(crate) fn stage_name(&self) -> &str {
+        self.inner.stage_name()
+    }
+
+    pub(crate) fn stage_identity(&self) -> Result<(u64, u64), GitCommitStagingError> {
+        self.inner
+            .stage_identity()
+            .map_err(map_commit_staging_error)
+    }
+
     pub(crate) fn git_path(&self) -> &str {
         self.inner.git_path()
     }
@@ -182,6 +193,85 @@ pub(crate) enum GitCommitStagingError {
     Unsupported,
     TooLarge,
     Io,
+}
+
+pub(crate) struct GitCommitRecoverySession {
+    store: store::RecoveryStore,
+    lock: store::WriterLock,
+    workspace_id: WorkspaceId,
+    root_hash: ContentHash,
+    root_device: u64,
+    root_inode: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitCommitIntentError {
+    Conflict,
+    Unsafe,
+    Unsupported,
+    TooLarge,
+    Io,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitCommitIntentStage {
+    Prepared,
+    IndexPublished,
+    RefPublished,
+    Complete,
+    Conflict,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitCommitIntentBranchRepresentation {
+    Unborn,
+    Loose,
+    Packed,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct GitCommitIntent {
+    pub(crate) generation: u64,
+    pub(crate) operation_id: OperationId,
+    pub(crate) workspace_id: WorkspaceId,
+    pub(crate) root_hash: ContentHash,
+    pub(crate) root_device: u64,
+    pub(crate) root_inode: u64,
+    pub(crate) git_device: u64,
+    pub(crate) git_inode: u64,
+    pub(crate) branch_relative: String,
+    pub(crate) representation: GitCommitIntentBranchRepresentation,
+    pub(crate) head_hash: ContentHash,
+    pub(crate) config_hash: ContentHash,
+    pub(crate) before_index_hash: Option<ContentHash>,
+    pub(crate) before_index_mode: u32,
+    pub(crate) candidate_index_hash: ContentHash,
+    pub(crate) candidate_index_mode: u32,
+    pub(crate) packed_refs_hash: Option<ContentHash>,
+    pub(crate) before_ref_hash: Option<ContentHash>,
+    pub(crate) before_ref_mode: u32,
+    pub(crate) candidate_ref_hash: ContentHash,
+    pub(crate) candidate_ref_mode: u32,
+    pub(crate) plan_hash: ContentHash,
+    pub(crate) stage: GitCommitIntentStage,
+    pub(crate) staging_name: String,
+    pub(crate) staging_device: u64,
+    pub(crate) staging_inode: u64,
+}
+
+impl fmt::Debug for GitCommitIntent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitCommitIntent")
+            .field("generation", &self.generation)
+            .field("operation_id", &self.operation_id)
+            .field("workspace_id", &self.workspace_id)
+            .field("branch_relative", &self.branch_relative)
+            .field("representation", &self.representation)
+            .field("stage", &self.stage)
+            .field("content", &"<redacted>")
+            .finish()
+    }
 }
 
 impl GitCloneStaging {
@@ -351,6 +441,115 @@ where
         .acquire_lock(runtime_directory)
         .map_err(map_commit_staging_error)?;
     Ok(action())
+}
+
+pub(super) fn open_git_commit_recovery_session(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+) -> Result<GitCommitRecoverySession, GitCommitIntentError> {
+    let (root_device, root_inode) = root.identity().map_err(map_git_commit_root_error)?;
+    let store = store::RecoveryStore::open(
+        state_home,
+        workspace_id,
+        root.root_hash(),
+        root.capability_hash(),
+    )
+    .map_err(map_git_commit_intent_store)?;
+    let lock = store
+        .acquire_lock(runtime_directory)
+        .map_err(map_git_commit_intent_store)?;
+    Ok(GitCommitRecoverySession {
+        store,
+        lock,
+        workspace_id,
+        root_hash: root.root_hash(),
+        root_device,
+        root_inode,
+    })
+}
+
+impl GitCommitRecoverySession {
+    pub(crate) fn workspace_id(&self) -> WorkspaceId {
+        self.workspace_id
+    }
+
+    pub(crate) fn root_hash(&self) -> ContentHash {
+        self.root_hash
+    }
+
+    pub(crate) fn root_identity(&self) -> (u64, u64) {
+        (self.root_device, self.root_inode)
+    }
+
+    pub(crate) fn store_bytes(&self, bytes: &[u8]) -> Result<ContentHash, GitCommitIntentError> {
+        self.store
+            .store_object(&self.lock, bytes)
+            .map_err(map_git_commit_intent_store)
+    }
+
+    pub(crate) fn read_bytes(&self, hash: &ContentHash) -> Result<Vec<u8>, GitCommitIntentError> {
+        self.store
+            .read_object(&self.lock, hash)
+            .map_err(map_git_commit_intent_store)
+    }
+
+    pub(crate) fn install_intent(
+        &self,
+        intent: &GitCommitIntent,
+    ) -> Result<(), GitCommitIntentError> {
+        self.store
+            .install_git_commit_intent(&self.lock, intent)
+            .map_err(map_git_commit_intent_store)
+    }
+
+    pub(crate) fn read_intent(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<GitCommitIntent, GitCommitIntentError> {
+        self.store
+            .read_git_commit_intent(&self.lock, operation_id)
+            .map_err(map_git_commit_intent_store)
+    }
+
+    pub(crate) fn list_intents(&self) -> Result<Vec<GitCommitIntent>, GitCommitIntentError> {
+        self.store
+            .list_git_commit_intents(&self.lock)
+            .map_err(map_git_commit_intent_store)
+    }
+
+    pub(crate) fn quarantine_staging(
+        &self,
+        stage_name: &str,
+        stage_identity: (u64, u64),
+    ) -> Result<(), GitCommitIntentError> {
+        self.store
+            .quarantine_git_commit_staging(&self.lock, stage_name, stage_identity)
+            .map_err(map_git_commit_intent_store)
+    }
+}
+
+fn map_git_commit_root_error(error: super::linux::MutationIoError) -> GitCommitIntentError {
+    match error {
+        super::linux::MutationIoError::Conflict => GitCommitIntentError::Conflict,
+        super::linux::MutationIoError::Unsafe => GitCommitIntentError::Unsafe,
+        super::linux::MutationIoError::Unsupported => GitCommitIntentError::Unsupported,
+        super::linux::MutationIoError::TooLarge => GitCommitIntentError::TooLarge,
+        super::linux::MutationIoError::Io => GitCommitIntentError::Io,
+    }
+}
+
+fn map_git_commit_intent_store(error: store::StoreError) -> GitCommitIntentError {
+    match error {
+        store::StoreError::Conflict | store::StoreError::Busy => GitCommitIntentError::Conflict,
+        store::StoreError::Unsafe | store::StoreError::Corrupt => GitCommitIntentError::Unsafe,
+        store::StoreError::Unsupported => GitCommitIntentError::Unsupported,
+        store::StoreError::TooLarge => GitCommitIntentError::TooLarge,
+        store::StoreError::Io => GitCommitIntentError::Io,
+        #[cfg(test)]
+        store::StoreError::Injected => GitCommitIntentError::Io,
+    }
 }
 
 fn map_commit_staging_error(error: store::StoreError) -> GitCommitStagingError {
@@ -2591,6 +2790,277 @@ pub(crate) enum JournalCodecError {
     Invalid,
 }
 
+const GIT_COMMIT_INTENT_VERSION: u64 = 1;
+const MAX_GIT_COMMIT_INTENT_BYTES: usize = 16 * 1024;
+
+impl GitCommitIntent {
+    pub(crate) fn encode(&self) -> Result<Vec<u8>, JournalCodecError> {
+        self.validate()?;
+        let mut writer = Writer::new()?;
+        writer.map(27)?;
+        writer.key(0)?;
+        writer.uint(GIT_COMMIT_INTENT_VERSION)?;
+        writer.key(1)?;
+        writer.uint(self.generation)?;
+        writer.key(2)?;
+        writer.text(&self.operation_id.to_string())?;
+        writer.key(3)?;
+        writer.text(&self.workspace_id.to_string())?;
+        writer.key(4)?;
+        writer.bytes(&self.root_hash)?;
+        writer.key(5)?;
+        writer.uint(self.root_device)?;
+        writer.key(6)?;
+        writer.uint(self.root_inode)?;
+        writer.key(7)?;
+        writer.uint(self.git_device)?;
+        writer.key(8)?;
+        writer.uint(self.git_inode)?;
+        writer.key(9)?;
+        writer.text(&self.branch_relative)?;
+        writer.key(10)?;
+        writer.uint(self.representation.code())?;
+        writer.key(11)?;
+        writer.bytes(&self.head_hash)?;
+        writer.key(12)?;
+        writer.bytes(&self.config_hash)?;
+        writer.key(13)?;
+        writer.optional_hash(self.before_index_hash.as_ref())?;
+        writer.key(14)?;
+        writer.uint(u64::from(self.before_index_mode))?;
+        writer.key(15)?;
+        writer.bytes(&self.candidate_index_hash)?;
+        writer.key(16)?;
+        writer.uint(u64::from(self.candidate_index_mode))?;
+        writer.key(17)?;
+        writer.optional_hash(self.packed_refs_hash.as_ref())?;
+        writer.key(18)?;
+        writer.optional_hash(self.before_ref_hash.as_ref())?;
+        writer.key(19)?;
+        writer.uint(u64::from(self.before_ref_mode))?;
+        writer.key(20)?;
+        writer.bytes(&self.candidate_ref_hash)?;
+        writer.key(21)?;
+        writer.uint(u64::from(self.candidate_ref_mode))?;
+        writer.key(22)?;
+        writer.bytes(&self.plan_hash)?;
+        writer.key(23)?;
+        writer.uint(self.stage.code())?;
+        writer.key(24)?;
+        writer.text(&self.staging_name)?;
+        writer.key(25)?;
+        writer.uint(self.staging_device)?;
+        writer.key(26)?;
+        writer.uint(self.staging_inode)?;
+        if writer.bytes.len() > MAX_GIT_COMMIT_INTENT_BYTES {
+            return Err(JournalCodecError::TooLarge);
+        }
+        Ok(writer.bytes)
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, JournalCodecError> {
+        if bytes.len() > MAX_GIT_COMMIT_INTENT_BYTES {
+            return Err(JournalCodecError::TooLarge);
+        }
+        let mut reader = Reader::new(bytes);
+        reader.map(27)?;
+        reader.key(0)?;
+        if reader.uint()? != GIT_COMMIT_INTENT_VERSION {
+            return Err(JournalCodecError::Invalid);
+        }
+        reader.key(1)?;
+        let generation = reader.uint()?;
+        reader.key(2)?;
+        let operation_id = reader.protocol_text::<OperationId>(36)?;
+        reader.key(3)?;
+        let workspace_id = reader.protocol_text::<WorkspaceId>(36)?;
+        reader.key(4)?;
+        let root_hash = reader.hash()?;
+        reader.key(5)?;
+        let root_device = reader.uint()?;
+        reader.key(6)?;
+        let root_inode = reader.uint()?;
+        reader.key(7)?;
+        let git_device = reader.uint()?;
+        reader.key(8)?;
+        let git_inode = reader.uint()?;
+        reader.key(9)?;
+        let branch_relative = reader.owned_text(MAX_PATH_BYTES)?;
+        reader.key(10)?;
+        let representation = GitCommitIntentBranchRepresentation::from_code(reader.uint()?)?;
+        reader.key(11)?;
+        let head_hash = reader.hash()?;
+        reader.key(12)?;
+        let config_hash = reader.hash()?;
+        reader.key(13)?;
+        let before_index_hash = reader.optional_hash()?;
+        reader.key(14)?;
+        let before_index_mode = reader.mode()?;
+        reader.key(15)?;
+        let candidate_index_hash = reader.hash()?;
+        reader.key(16)?;
+        let candidate_index_mode = reader.mode()?;
+        reader.key(17)?;
+        let packed_refs_hash = reader.optional_hash()?;
+        reader.key(18)?;
+        let before_ref_hash = reader.optional_hash()?;
+        reader.key(19)?;
+        let before_ref_mode = reader.mode()?;
+        reader.key(20)?;
+        let candidate_ref_hash = reader.hash()?;
+        reader.key(21)?;
+        let candidate_ref_mode = reader.mode()?;
+        reader.key(22)?;
+        let plan_hash = reader.hash()?;
+        reader.key(23)?;
+        let stage = GitCommitIntentStage::from_code(reader.uint()?)?;
+        reader.key(24)?;
+        let staging_name = reader.owned_text(64)?;
+        reader.key(25)?;
+        let staging_device = reader.uint()?;
+        reader.key(26)?;
+        let staging_inode = reader.uint()?;
+        if !reader.finished() {
+            return Err(JournalCodecError::Invalid);
+        }
+        let intent = Self {
+            generation,
+            operation_id,
+            workspace_id,
+            root_hash,
+            root_device,
+            root_inode,
+            git_device,
+            git_inode,
+            branch_relative,
+            representation,
+            head_hash,
+            config_hash,
+            before_index_hash,
+            before_index_mode,
+            candidate_index_hash,
+            candidate_index_mode,
+            packed_refs_hash,
+            before_ref_hash,
+            before_ref_mode,
+            candidate_ref_hash,
+            candidate_ref_mode,
+            plan_hash,
+            stage,
+            staging_name,
+            staging_device,
+            staging_inode,
+        };
+        intent.validate()?;
+        Ok(intent)
+    }
+
+    fn validate(&self) -> Result<(), JournalCodecError> {
+        if self.generation == 0
+            || !valid_git_commit_intent_branch(&self.branch_relative)
+            || self.staging_name.len() != 64
+            || !self
+                .staging_name
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || self.staging_device == 0
+            || self.staging_inode == 0
+            || !matches!(self.before_index_mode, 0o600 | 0o644)
+            || !matches!(self.candidate_index_mode, 0o600 | 0o644)
+            || !matches!(self.before_ref_mode, 0o600 | 0o644)
+            || !matches!(self.candidate_ref_mode, 0o600 | 0o644)
+            || (self.representation == GitCommitIntentBranchRepresentation::Unborn
+                && (self.before_index_hash.is_some() || self.before_ref_hash.is_some()))
+            || (self.representation == GitCommitIntentBranchRepresentation::Loose
+                && (self.before_index_hash.is_none() || self.before_ref_hash.is_none()))
+            || (self.representation == GitCommitIntentBranchRepresentation::Packed
+                && (self.before_index_hash.is_none()
+                    || self.before_ref_hash.is_some()
+                    || self.packed_refs_hash.is_none()))
+        {
+            return Err(JournalCodecError::Invalid);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn next_stage(
+        &self,
+        stage: GitCommitIntentStage,
+    ) -> Result<Self, JournalCodecError> {
+        let valid = matches!(
+            (self.stage, stage),
+            (
+                GitCommitIntentStage::Prepared,
+                GitCommitIntentStage::IndexPublished
+            ) | (
+                GitCommitIntentStage::IndexPublished,
+                GitCommitIntentStage::RefPublished
+            ) | (
+                GitCommitIntentStage::RefPublished,
+                GitCommitIntentStage::Complete
+            ) | (
+                GitCommitIntentStage::Prepared | GitCommitIntentStage::IndexPublished,
+                GitCommitIntentStage::Conflict
+            )
+        );
+        if !valid {
+            return Err(JournalCodecError::Invalid);
+        }
+        let mut next = self.clone();
+        next.generation = next
+            .generation
+            .checked_add(1)
+            .ok_or(JournalCodecError::ResourceLimit)?;
+        next.stage = stage;
+        Ok(next)
+    }
+
+    pub(super) fn is_next_generation_of(&self, next: &Self) -> bool {
+        self.operation_id == next.operation_id
+            && self.workspace_id == next.workspace_id
+            && self.root_hash == next.root_hash
+            && self.root_device == next.root_device
+            && self.root_inode == next.root_inode
+            && self.git_device == next.git_device
+            && self.git_inode == next.git_inode
+            && self.branch_relative == next.branch_relative
+            && self.representation == next.representation
+            && self.head_hash == next.head_hash
+            && self.config_hash == next.config_hash
+            && self.before_index_hash == next.before_index_hash
+            && self.before_index_mode == next.before_index_mode
+            && self.candidate_index_hash == next.candidate_index_hash
+            && self.candidate_index_mode == next.candidate_index_mode
+            && self.packed_refs_hash == next.packed_refs_hash
+            && self.before_ref_hash == next.before_ref_hash
+            && self.before_ref_mode == next.before_ref_mode
+            && self.candidate_ref_hash == next.candidate_ref_hash
+            && self.candidate_ref_mode == next.candidate_ref_mode
+            && self.plan_hash == next.plan_hash
+            && self.staging_name == next.staging_name
+            && self.staging_device == next.staging_device
+            && self.staging_inode == next.staging_inode
+            && self.generation.checked_add(1) == Some(next.generation)
+            && self
+                .next_stage(next.stage)
+                .is_ok_and(|expected| expected == *next)
+    }
+}
+
+fn valid_git_commit_intent_branch(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_PATH_BYTES
+        && value.split('/').all(|part| {
+            !part.is_empty()
+                && !part.starts_with('.')
+                && !part.ends_with('.')
+                && !part.ends_with(".lock")
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        })
+}
+
 impl Journal {
     pub(crate) fn encode(&self) -> Result<Vec<u8>, JournalCodecError> {
         self.validate()?;
@@ -3071,6 +3541,18 @@ coded_enum!(TargetStep,
     TargetStep::DirectorySynced => 2,
     TargetStep::Complete => 3,
 );
+coded_enum!(GitCommitIntentBranchRepresentation,
+    GitCommitIntentBranchRepresentation::Unborn => 0,
+    GitCommitIntentBranchRepresentation::Loose => 1,
+    GitCommitIntentBranchRepresentation::Packed => 2,
+);
+coded_enum!(GitCommitIntentStage,
+    GitCommitIntentStage::Prepared => 0,
+    GitCommitIntentStage::IndexPublished => 1,
+    GitCommitIntentStage::RefPublished => 2,
+    GitCommitIntentStage::Complete => 3,
+    GitCommitIntentStage::Conflict => 4,
+);
 
 impl TargetStep {
     fn next(self) -> Option<Self> {
@@ -3139,6 +3621,9 @@ impl Writer {
     fn bytes(&mut self, value: &[u8]) -> Result<(), JournalCodecError> {
         self.head(2, value.len() as u64)?;
         self.append(value)
+    }
+    fn optional_hash(&mut self, value: Option<&ContentHash>) -> Result<(), JournalCodecError> {
+        self.bytes(value.map_or(&[], |hash| hash.as_slice()))
     }
     fn text(&mut self, value: &str) -> Result<(), JournalCodecError> {
         self.head(3, value.len() as u64)?;
@@ -3297,6 +3782,18 @@ impl<'a> Reader<'a> {
             .try_into()
             .map_err(|_| JournalCodecError::Invalid)
     }
+    fn optional_hash(&mut self) -> Result<Option<ContentHash>, JournalCodecError> {
+        let length = self.expected_head(2)?;
+        match length {
+            0 => Ok(None),
+            32 => Ok(Some(
+                self.take(32)?
+                    .try_into()
+                    .map_err(|_| JournalCodecError::Invalid)?,
+            )),
+            _ => Err(JournalCodecError::Invalid),
+        }
+    }
     fn mode(&mut self) -> Result<u32, JournalCodecError> {
         let mode = u32::try_from(self.uint()?).map_err(|_| JournalCodecError::Invalid)?;
         if valid_mode(mode) {
@@ -3381,6 +3878,112 @@ fn parent(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_git_commit_intent() -> GitCommitIntent {
+        GitCommitIntent {
+            generation: 1,
+            operation_id: "0199a1d7-7b0d-7d8e-a38d-f936c5735e10".parse().unwrap(),
+            workspace_id: "0199a19f-4d15-7ca7-a645-e75311caa710".parse().unwrap(),
+            root_hash: [0x11; 32],
+            root_device: 8,
+            root_inode: 42,
+            git_device: 8,
+            git_inode: 84,
+            branch_relative: "team/rehow".to_owned(),
+            representation: GitCommitIntentBranchRepresentation::Loose,
+            head_hash: [0x22; 32],
+            config_hash: [0x33; 32],
+            before_index_hash: Some([0x44; 32]),
+            before_index_mode: 0o600,
+            candidate_index_hash: [0x55; 32],
+            candidate_index_mode: 0o600,
+            packed_refs_hash: Some([0x66; 32]),
+            before_ref_hash: Some([0x77; 32]),
+            before_ref_mode: 0o644,
+            candidate_ref_hash: [0x88; 32],
+            candidate_ref_mode: 0o644,
+            plan_hash: [0x99; 32],
+            stage: GitCommitIntentStage::Prepared,
+            staging_name: "ab".repeat(32),
+            staging_device: 8,
+            staging_inode: 126,
+        }
+    }
+
+    #[test]
+    fn git_commit_intent_round_trips_rejects_truncation_and_redacts_content() {
+        let intent = sample_git_commit_intent();
+        let encoded = intent.encode().unwrap();
+        assert_eq!(GitCommitIntent::decode(&encoded).unwrap(), intent);
+        for length in 0..encoded.len() {
+            assert!(
+                GitCommitIntent::decode(&encoded[..length]).is_err(),
+                "prefix {length}"
+            );
+        }
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert_eq!(
+            GitCommitIntent::decode(&trailing),
+            Err(JournalCodecError::Invalid)
+        );
+        let debug = format!("{intent:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains(&"99".repeat(32)));
+    }
+
+    #[test]
+    fn git_commit_intent_enforces_representations_modes_and_stage_order() {
+        let mut intent = sample_git_commit_intent();
+        intent.branch_relative = "../escape".to_owned();
+        assert_eq!(intent.encode(), Err(JournalCodecError::Invalid));
+
+        intent = sample_git_commit_intent();
+        intent.candidate_ref_mode = 0o666;
+        assert_eq!(intent.encode(), Err(JournalCodecError::Invalid));
+
+        intent = sample_git_commit_intent();
+        intent.representation = GitCommitIntentBranchRepresentation::Unborn;
+        assert_eq!(intent.encode(), Err(JournalCodecError::Invalid));
+        intent.before_index_hash = None;
+        intent.before_ref_hash = None;
+        assert_eq!(
+            GitCommitIntent::decode(&intent.encode().unwrap()).unwrap(),
+            intent
+        );
+
+        intent = sample_git_commit_intent();
+        intent.representation = GitCommitIntentBranchRepresentation::Packed;
+        intent.before_ref_hash = None;
+        intent.packed_refs_hash = None;
+        assert_eq!(intent.encode(), Err(JournalCodecError::Invalid));
+
+        let prepared = sample_git_commit_intent();
+        assert_eq!(
+            prepared.next_stage(GitCommitIntentStage::Complete),
+            Err(JournalCodecError::Invalid)
+        );
+        let index = prepared
+            .next_stage(GitCommitIntentStage::IndexPublished)
+            .unwrap();
+        assert!(prepared.is_next_generation_of(&index));
+        let reference = index
+            .next_stage(GitCommitIntentStage::RefPublished)
+            .unwrap();
+        let complete = reference
+            .next_stage(GitCommitIntentStage::Complete)
+            .unwrap();
+        assert_eq!(complete.generation, 4);
+        assert_eq!(complete.stage, GitCommitIntentStage::Complete);
+        assert_eq!(
+            complete.next_stage(GitCommitIntentStage::Conflict),
+            Err(JournalCodecError::Invalid)
+        );
+
+        let mut changed = index.clone();
+        changed.plan_hash = [0xaa; 32];
+        assert!(!prepared.is_next_generation_of(&changed));
+    }
 
     fn sample() -> Journal {
         Journal {
