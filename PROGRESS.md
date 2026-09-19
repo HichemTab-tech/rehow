@@ -9,7 +9,7 @@ Phase 5C1 read-only manual-commit planning and candidate construction is complet
 
 ## Current task
 
-Begin Phase 5C2: publish only a still-current confirmed candidate through append-only object installation and recoverable private-index/direct-ref compare-and-swap. Active mutation must remain absent until the Phase 5C2 packet is precise.
+Implement Phase 5C2A from the approved packet at `3a13689`: pack and independently verify the candidate-created private objects, then install only immutable pack/index files append-only. Index/ref publication remains Phase 5C2B.
 
 ## Overall status
 
@@ -103,6 +103,7 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Added owner-private Phase 5C1 commit staging at signed checkpoint `79afdee`: exclusive 64-hex operation directories, copied-index and synthetic-repository scaffolding, descriptor-retained validation mirror, exact private modes, per-operation entry and aggregate byte bounds, eight-operation quota, hostile-entry refusal, durable directory syncs, and retained crash evidence. It does not mutate active Git or Workspace bytes.
 - Added copied-index and prior-snapshot proof at signed checkpoint `91763a0`: config-free private `write-tree` must equal the direct `HEAD` root tree; prior managed blobs stream through a networkless, replacement-disabled object view into a confined mirror and must form an issue-free compatible Workspace with the same stable Workspace ID. Malformed/partial/replaced history and dirty indexes fail closed; active Git and Workspace bytes remain unchanged.
 - Completed Phase 5C1 at signed checkpoint `4ffc4f8`: the opaque public plan binds fresh repository/Workspace state, managed effects, unrelated-status count, private candidate tree/unsigned commit, and a deterministic staging snapshot. Candidate blobs/trees/commits are independently verified for SHA-1/SHA-256; unrelated `HEAD` leaves are preserved; cache-tree extensions are stripped before index equality proof; preserved objects are streamed and independently rehashed; cancellation quarantines rather than deletes. No active Workspace, object, index, ref, reflog, or configuration byte is changed. The single reused Security Reviewer passed the correction delta.
+- Defined the exact Phase 5C2 append-only-pack and recoverable index/ref-last publication boundary in `docs/task-packets/phase-5c2-git-commit-publication.md` at signed checkpoint `3a13689`.
 
 ## Work in progress
 
@@ -217,7 +218,7 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Latest verified commit
 
-`4ffc4f85cf52758a485c75c290648a7cd797e766` — signed and verified Phase 5C1 safe Git commit-plan construction. This progress-only ledger update follows that implementation commit.
+`3a13689` — signed and verified Phase 5C2 publication task packet. Phase 5C1 implementation remains signed checkpoint `4ffc4f8`; this progress-only ledger update follows the packet.
 
 ## Tests last run and results
 
@@ -422,7 +423,7 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 
 ## Next recommended action
 
-Define the narrow Phase 5C2 publication packet, then implement append-only object installation and recoverable private-index/direct-ref compare-and-swap. Do not add native/UI confirmation until the core apply boundary passes.
+Implement Phase 5C2A append-only verified pack installation. Keep index/ref/recovery publication, native/UI confirmation, synchronization, and MCP out of this checkpoint.
 
 ## Recommended agent role and reasoning effort
 
@@ -433,6 +434,6 @@ Architect — `gpt-5.6-sol`, xhigh locally for the Phase 5C2 core security bound
 1. Read `AGENTS.md` and this file.
 2. Read the Git sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `4ffc4f8`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoints `4ffc4f8` and `3a13689`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 5C1 as complete. Specify Phase 5C2 before implementing active object/index/direct-ref publication; native/UI authority remains later.
+6. Treat Phase 5C1 and the Phase 5C2 packet as complete. Implement only the packet's 5C2A append-only pack checkpoint first; native/UI authority remains later.
