@@ -5,20 +5,20 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 4C — revision-driven incremental search reconciliation accepted; next is automatic external-change detection and search interaction completion.
+Phase 4D — automatic external-change reconciliation accepted; next is search interaction completion.
 
 ## Current task
 
-Specify the narrow Phase 4D slice for loss-tolerant automatic external-change detection while retaining manual refresh and full descriptor-confined reconciliation.
+Specify Phase 4E excerpts/highlights, scopes/archived search, renderer latency, and the final Phase 4 interaction/visual gate.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; manually refresh external changes; validate, import, and recoverably remove managed Attachments; and search a precomputed disposable index whose 5,000-Guide backend and incremental-reconciliation budgets pass. Automatic external-change watching, Attachment viewing/export/reveal, and MCP mutation remain unimplemented; MCP remains read-only.
+In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; automatically or manually reconcile external changes without discarding dirty edits; validate, import, and recoverably remove managed Attachments; and search a precomputed disposable index whose 5,000-Guide backend and incremental-reconciliation budgets pass. Search excerpts/highlights/scopes, Attachment viewing/export/reveal, and MCP mutation remain unimplemented; MCP remains read-only.
 
 ## Completed work
 
 - Inspected repository/Git history/status: no initial files/commits/remotes.
-- Inspected toolchain: Git 2.55.0, Node 26.2.0 host, pnpm 11.20.0, Rust/Cargo 1.98.0; no standalone global Tauri CLI (project-local CLI is planned).
+- Inspected toolchain: Git 2.55.0, Node 26.2.0 host, current machine pnpm 11.3.0, Rust/Cargo 1.98.0; no standalone global Tauri CLI. No Node/pnpm installation or switch was performed.
 - Checked current official Codex custom-agent and AGENTS.md configuration documentation.
 - Installed the required Vercel web-design-guidelines skill project-locally and fetched/applied its current upstream planning rules.
 - Researched current Tauri/React/Vite/Tailwind/shadcn/Linux/Wayland constraints and recorded sources.
@@ -85,10 +85,11 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Added native recoverable Attachment removal at signed checkpoint `f614e08`: ID-only IPC and exact native confirmation bind the Guide candidate and Attachment state; metadata and bytes change through one journal; an independently streamed recovery object and held-inode isolation keep canonical trash exact even when another process retains a writable descriptor; tested Guides become stale and unknown metadata remains preserved.
 - Added the dependency-free disposable search index at signed checkpoint `c53378d`: normalized field extraction and Markdown parsing happen once per compatible Workspace view, every successful refresh atomically swaps content plus index, malformed Guides remain isolated, and accepted ranking/scope/reasons remain unchanged. Five enforced release runs over 5,000 Guides / 52,665,331 bytes measured worst-case 1.514 s cold rebuild, 5.382 ms warm backend p95, and about 140 MiB peak RSS.
 - Added revision-driven incremental search reconciliation at signed checkpoint `a4ca4e3`: successful canonical refreshes correlate stable Guide IDs and exact revisions, reuse unchanged indexed allocations, cheaply refresh Category/status wrappers, add/remove/rebuild changed Guides, and retain the exact prior view/index on failure. Six release measurements over 5,000 Guides reused 4,999 allocations and measured 1.234–1.424 ms.
+- Added loss-tolerant external-change reconciliation at signed checkpoint `f2edc2a`: descriptor-bound nonrecursive watches emit path-free invalidation hints; clean sessions refresh automatically; dirty or in-flight edits remain intact; stale sessions are rejected; degraded/refocus/manual recovery stays available. The single Security Reviewer passed the corrected boundary with no blocker/high/medium finding.
 
 ## Work in progress
 
-- Incremental search reconciliation is committed at signed checkpoint `a4ca4e3`. The next batch is loss-tolerant automatic external-change detection; renderer latency/highlights/scopes, Attachment viewing/export/reveal, and MCP mutation remain deferred.
+- External-change reconciliation is committed at signed checkpoint `f2edc2a`. The next batch is Phase 4E search excerpts/highlights/scopes, archived search, renderer latency, and interaction screenshots; Attachment viewing/export/reveal and MCP mutation remain deferred.
 
 ## Remaining work
 
@@ -102,10 +103,11 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 
 ## Known bugs
 
-No known regression in accepted phases. If the process is killed after the initialization manifest commits but before `categories/` is durably created, reopening classifies the folder as malformed with `categoriesMissing`; an explicit descriptor-bound repair flow is still required and Rehow never auto-adopts the residue. An interrupted Category create can similarly leave an empty private Category directory; inspection reports a missing descriptor and never deletes or adopts it automatically. An interrupted Guide create can leave a recovery journal or same-directory temp; the scan does not execute recovery automatically, so the explicit recovery UX remains required. Phase 1E-A currently retains all parsed Guide bodies in native memory for the session; broad IPC is bounded, but streaming/lazy native reread is still required before claiming the 2 GiB worst-case scan budget is production-memory-safe. External changes are not watched automatically; manual refresh uses accepted incremental reconciliation. Safe links are intentionally inert until the guarded native opener exists.
+No known regression in accepted phases. If the process is killed after the initialization manifest commits but before `categories/` is durably created, reopening classifies the folder as malformed with `categoriesMissing`; an explicit descriptor-bound repair flow is still required and Rehow never auto-adopts the residue. An interrupted Category create can similarly leave an empty private Category directory; inspection reports a missing descriptor and never deletes or adopts it automatically. An interrupted Guide create can leave a recovery journal or same-directory temp; the scan does not execute recovery automatically, so the explicit recovery UX remains required. Phase 1E-A currently retains all parsed Guide bodies in native memory for the session; broad IPC is bounded, but streaming/lazy native reread is still required before claiming the 2 GiB worst-case scan budget is production-memory-safe. Automatic watching can degrade on unsupported/network filesystems or exhausted kernel limits; visible degraded state, refocus reconciliation, and manual refresh remain the recovery path. Safe links are intentionally inert until the guarded native opener exists.
 
 ## Design and accessibility findings
 
+- 2026-09-19: Phase 4D adds concise toolbar health text and a named manual recovery action without changing shell geometry. Automatic refresh never steals focus; dirty/in-flight edits are retained and announced. The current guideline review found no blocking issue; the complete search-interaction screenshot matrix remains the Phase 4 gate.
 - 2026-09-19: Attachment removal adds one named semantic action to each existing Attachment row, with specific accessible naming, visible focus, busy/error/live feedback, cancellation focus restoration, and post-success focus on Add Attachment. The current upstream guideline review passed; no new screenshot gate was required for this bounded list action.
 - 2026-09-18: Mark Tested uses a named semantic control with busy/error/live feedback, mandatory native confirmation, visible focus, and post-success focus restoration. Fresh current-guideline static review found no issue; native dialog and screenshot smoke coverage remain in the combined manual UI gate.
 - 2026-09-18: Workspace refresh adds a labeled icon button with tooltip, visible focus, disabled/busy states, polite result/error announcements, dirty-form confirmation, selection fallback, and narrow-toolbar compatibility. The current upstream guideline review found no issue.
@@ -173,19 +175,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - The `f614e08` removal boundary keeps paths out of renderer IPC, binds native confirmation to stable IDs plus exact candidate/path/hash/size/mode/revisions, streams a durable content-addressed before-image, and moves the original inode to an operation-bound held-source path before materializing canonical trash. Symlink, hardlink, special-mode/type, drift, collision, and interrupted replay cases fail closed or recover without losing approved bytes. Security Reviewer/xhigh re-review is PASS with no blocker/high/medium finding.
 - The `c53378d` search index is derived in memory only, has no write authority or new product filesystem/process/network access, and is atomically paired with a successfully inspected Workspace view. ADR 0018 supersedes only ADR 0004's Tantivy presumption based on measured fit and defines explicit scale/p95/RSS/incremental revisit triggers. Independent Reviewer/high reports no blocker/high/medium finding.
 - The `a4ca4e3` reconciler trusts only freshly confined canonical records and exact revisions, never filesystem events or prior index content. A complete compatible view/index is built before the retained pair is replaced; independent Reviewer/high reports no remaining finding.
+- The `f2edc2a` watcher holds no-follow directory descriptors, emits no paths/content, treats events only as invalidation hints, rejects stale native sessions, and retains dirty/in-flight edits. Review corrections closed a lost-wakeup race and exact managed-directory selection; Security Reviewer/xhigh reports no remaining blocker/high/medium finding.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 4C used one independent Reviewer/high at its acceptance boundary and it is complete.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 4D used exactly one Security Reviewer/xhigh at its acceptance boundary and it is complete.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`a4ca4e3` — signed and verified incremental search reconciliation. This progress-only ledger update follows that feature commit.
+`f2edc2a` — signed and verified automatic external-change reconciliation. This progress-only ledger update follows that feature commit.
 
 ## Tests last run and results
 
+- 2026-09-19: external-change checkpoint at `f2edc2a`: the full pre-review gate passed 301 normal core tests plus the protocol/error/public-API/unknown-YAML/desktop/MCP suites, 24 Vitest tests, production web/Cargo/Tauri builds, and one intentional release benchmark ignore. Corrections then passed 7/7 watcher, 13/13 desktop Rust, and 25/25 Vitest tests; full all-target/all-feature locked Workspace Clippy denies warnings, formatting, `pnpm check`, bootstrap, contracts, and whitespace checks pass. Security Reviewer/xhigh final verdict: PASS with no blocker/high/medium finding.
 - 2026-09-19: incremental search checkpoint at `a4ca4e3`: full locked all-feature Workspace tests passed before the review-only coverage correction — 296/296 normal core tests plus 18 error-contract, 13 protocol, 1 public-API/trybuild, 11 unknown-YAML, 12 desktop Rust, and 1 MCP test. After adding the requested archive-transition lifecycle test, focused search passed 7/7 with the production gate intentionally ignored; formatting, locked core Clippy with warnings denied, bootstrap validation, and whitespace checks pass. Six release processes over 5,000 Guides measured 1.234–1.424 ms and reused exactly 4,999/5,000 document allocations. Independent Reviewer/high final verdict: PASS with no finding.
 - 2026-09-19: disposable search checkpoint at `c53378d`: Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, all-feature Workspace tests, bootstrap validation, and whitespace checks pass. Counts include 294 core library tests, 12 desktop Rust tests, and 1 MCP test. Search lifecycle/ranking tests pass 4/4. Five final enforced release processes each generated 5,000 Guides / 52,665,331 bytes; worst observed cold rebuild was 1.514 s, warm backend p95 5.382 ms, and peak RSS 143,772 KiB. Independent Reviewer/high final verdict: PASS with no blocker/high/medium finding.
 - 2026-09-19: native Attachment removal checkpoint at `f614e08`: Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, all-feature Workspace tests, and whitespace checks pass after the final recovery correction. Counts include 293 core library tests, 12 desktop Rust tests, and 1 MCP test; the previously completed feature gate also passed 21 Vitest tests, `pnpm check/test/build`, optimized Tauri no-bundle build, bootstrap validation, and contract drift. Adversarial evidence covers exact effect binding, symlink/hardlink/FIFO/socket/special-mode/limit refusal, in-stream mutation, external drift, trash collision, unknown preservation, tested-to-stale, interruption replay, and held-open-inode writes. Security Reviewer/xhigh final verdict: PASS with no blocker/high/medium finding.
@@ -347,20 +351,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0017, `docs/task-packets/phase-3r-native-attachment-removal.md`, the exact removal planner/application/native/UI path, independent streamed recovery object, held-inode isolation, canonical trash replay, and adversarial tests implement recoverable Attachment removal at `f614e08`.
 - ADR 0018, `docs/task-packets/phase-4b-disposable-search-index.md`, `docs/evidence/phase-4b-search-performance.md`, the precomputed field index, refresh lifecycle test, and enforcing release benchmark implement the first indexed-search production gate at `c53378d`.
 - `docs/task-packets/phase-4c-incremental-search-reconciliation.md`, `docs/evidence/phase-4c-incremental-search.md`, and the revision-aware index/storage refresh path implement incremental reconciliation at `a4ca4e3`.
+- ADR 0019, `docs/task-packets/phase-4d-external-change-watching.md`, `docs/evidence/phase-4d-external-change-watching.md`, the core watcher, native path-free event adapter, and dirty-safe UI reconciliation implement automatic external-change handling at `f2edc2a`.
 
 ## Next recommended action
 
-Implement Phase 4D loss-tolerant automatic external-change detection. Events may only trigger a bounded descriptor-confined reconciliation; they are never trusted as content authority. Preserve manual refresh, dirty-form protection, failure retention, and recovery-journal behavior.
+Implement Phase 4E search excerpts/highlights, scopes/archived search, renderer latency evidence, and the final Phase 4 search interaction/accessibility/screenshot gate.
 
 ## Recommended agent role and reasoning effort
 
-Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents during routine implementation; use one Reviewer/high only at the Phase 4D acceptance boundary.
+Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents during routine implementation; use one reviewer only at the Phase 4 acceptance boundary.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read the search/external-change sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, ADRs 0004/0018, and the Phase 4B/4C search evidence.
+2. Read the search sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, ADRs 0004/0018/0019, and the Phase 4B/4C/4D evidence.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `a4ca4e3`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `f2edc2a`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Resume with loss-tolerant automatic external-change detection. Treat events only as invalidation hints and preserve manual refresh plus full descriptor-confined reconciliation.
+6. Resume with Phase 4E search interaction completion: excerpts/highlights, scopes/archived search, renderer latency, accessibility, and representative screenshots.
