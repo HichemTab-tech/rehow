@@ -3,10 +3,10 @@
 use crate::{
     domain::GuideStatus,
     markdown::{SafeMarkdownContainer, SafeMarkdownEvent, parse_safe_markdown},
-    protocol::GuideId,
+    protocol::{GuideId, Revision},
     storage::{LoadedCategory, LoadedGuide, WorkspaceView},
 };
-use std::cmp::Reverse;
+use std::{cmp::Reverse, collections::BTreeMap, sync::Arc};
 use unicode_normalization::UnicodeNormalization;
 
 pub const MAX_SEARCH_QUERY_BYTES: usize = 512;
@@ -55,29 +55,68 @@ pub enum SearchError {
 }
 
 pub(crate) struct SearchIndex {
-    documents: Vec<SearchDocument>,
+    documents: Vec<Arc<SearchDocument>>,
 }
 
 struct SearchDocument {
     guide_id: GuideId,
+    revision: Revision,
     status: GuideStatus,
+    category: String,
     title: String,
-    fields: SearchFields,
+    fields: Arc<SearchFields>,
 }
 
 impl SearchIndex {
-    pub(crate) fn build(categories: &[LoadedCategory]) -> Self {
-        let documents = categories
-            .iter()
-            .flat_map(|category| {
-                category.guides().iter().map(|loaded| SearchDocument {
-                    guide_id: *loaded.guide().id(),
-                    status: loaded.effective_status(),
-                    title: normalize(loaded.guide().title()),
-                    fields: SearchFields::extract(category, loaded),
-                })
-            })
-            .collect();
+    pub(crate) fn reconcile(categories: &[LoadedCategory], previous: Option<&Self>) -> Self {
+        let previous = previous.map(|index| {
+            index
+                .documents
+                .iter()
+                .map(|document| (document.guide_id, document))
+                .collect::<BTreeMap<_, _>>()
+        });
+        let mut documents = Vec::with_capacity(
+            categories
+                .iter()
+                .map(|category| category.guides().len())
+                .sum(),
+        );
+        for category in categories {
+            let category_name = normalize(category.category().name());
+            for loaded in category.guides() {
+                let guide_id = *loaded.guide().id();
+                let previous_document = previous
+                    .as_ref()
+                    .and_then(|documents| documents.get(&guide_id))
+                    .filter(|document| document.revision == loaded.revision());
+                if let Some(document) = previous_document {
+                    if document.status == loaded.effective_status()
+                        && document.category == category_name
+                    {
+                        documents.push(Arc::clone(document));
+                    } else {
+                        documents.push(Arc::new(SearchDocument {
+                            guide_id,
+                            revision: loaded.revision(),
+                            status: loaded.effective_status(),
+                            category: category_name.clone(),
+                            title: document.title.clone(),
+                            fields: Arc::clone(&document.fields),
+                        }));
+                    }
+                } else {
+                    documents.push(Arc::new(SearchDocument {
+                        guide_id,
+                        revision: loaded.revision(),
+                        status: loaded.effective_status(),
+                        category: category_name.clone(),
+                        title: normalize(loaded.guide().title()),
+                        fields: Arc::new(SearchFields::extract(loaded)),
+                    }));
+                }
+            }
+        }
         Self { documents }
     }
 
@@ -101,13 +140,15 @@ impl SearchIndex {
             if !parsed
                 .terms
                 .iter()
-                .all(|term| document.fields.contains(term))
+                .all(|term| document.fields.contains(term, &document.category))
             {
                 continue;
             }
-            let (mut base_score, mut matched_fields) = document.fields.score(&parsed.normalized);
+            let (mut base_score, mut matched_fields) = document
+                .fields
+                .score(&parsed.normalized, &document.category);
             for term in &parsed.terms {
-                let (term_score, term_fields) = document.fields.score(term);
+                let (term_score, term_fields) = document.fields.score(term, &document.category);
                 base_score = base_score.max(term_score);
                 matched_fields.extend(term_fields);
             }
@@ -203,14 +244,13 @@ struct SearchFields {
     paths: Vec<String>,
     errors: Vec<String>,
     tags: Vec<String>,
-    category: String,
     summary: String,
     headings: Vec<String>,
     body: String,
 }
 
 impl SearchFields {
-    fn extract(category: &LoadedCategory, loaded: &LoadedGuide) -> Self {
+    fn extract(loaded: &LoadedGuide) -> Self {
         let guide = loaded.guide();
         let body_source = std::str::from_utf8(guide.body()).unwrap_or_default();
         let mut paths = guide
@@ -297,17 +337,16 @@ impl SearchFields {
             paths,
             errors,
             tags: guide.tags().iter().map(|value| normalize(value)).collect(),
-            category: normalize(category.category().name()),
             summary: normalize(guide.summary()),
             headings,
             body,
         }
     }
 
-    fn contains(&self, term: &str) -> bool {
+    fn contains(&self, term: &str, category: &str) -> bool {
         self.title.contains(term)
             || self.summary.contains(term)
-            || self.category.contains(term)
+            || category.contains(term)
             || self.body.contains(term)
             || [
                 &self.aliases,
@@ -321,7 +360,7 @@ impl SearchFields {
             .any(|values| values.iter().any(|value| value.contains(term)))
     }
 
-    fn score(&self, query: &str) -> (u16, Vec<SearchMatchField>) {
+    fn score(&self, query: &str, category: &str) -> (u16, Vec<SearchMatchField>) {
         let mut matches = Vec::new();
         let mut score = 0;
         record(
@@ -383,7 +422,7 @@ impl SearchFields {
         record(
             &mut score,
             &mut matches,
-            self.category.contains(query),
+            category.contains(query),
             40,
             SearchMatchField::Category,
         );
@@ -710,6 +749,10 @@ mod tests {
     #[test]
     fn disposable_index_rebuild_tracks_external_changes_and_ignores_malformed_guides() {
         let (temp, mut workspace) = workspace();
+        let changed_id: GuideId = "0199a1d7-7b0d-7d8e-a38d-f936c5735e21".parse().unwrap();
+        let unchanged_id: GuideId = "0199a1d7-7b0d-7d8e-a38d-f936c5735e22".parse().unwrap();
+        let changed_before = indexed_document(workspace.search_index(), changed_id);
+        let unchanged_before = indexed_document(workspace.search_index(), unchanged_id);
         assert!(
             search_workspace(&workspace, "new external token", false, 10)
                 .unwrap()
@@ -746,5 +789,244 @@ mod tests {
         );
         assert!(!workspace.issues().is_empty());
         assert_eq!(workspace.search_index().documents.len(), 4);
+        let changed_after = indexed_document(workspace.search_index(), changed_id);
+        assert!(!Arc::ptr_eq(&changed_before, &changed_after));
+        assert!(!Arc::ptr_eq(&changed_before.fields, &changed_after.fields));
+        assert!(Arc::ptr_eq(
+            &unchanged_before,
+            &indexed_document(workspace.search_index(), unchanged_id)
+        ));
+    }
+
+    #[test]
+    fn incremental_reconcile_adds_removes_and_rebuilds_category_dependents() {
+        let (temp, mut workspace) = workspace();
+        let stable_desktop_id: GuideId = "0199a1d7-7b0d-7d8e-a38d-f936c5735e24".parse().unwrap();
+        let linux_id: GuideId = "0199a1d7-7b0d-7d8e-a38d-f936c5735e22".parse().unwrap();
+        let stable_desktop = indexed_document(workspace.search_index(), stable_desktop_id);
+        let linux_before = indexed_document(workspace.search_index(), linux_id);
+
+        fs::remove_file(
+            temp.path()
+                .join("categories/desktop/0199a1d7-7b0d-7d8e-a38d-f936c5735e23.md"),
+        )
+        .unwrap();
+        crate::storage::refresh_workspace(&mut workspace).unwrap();
+        assert_eq!(workspace.search_index().documents.len(), 3);
+        assert!(Arc::ptr_eq(
+            &stable_desktop,
+            &indexed_document(workspace.search_index(), stable_desktop_id)
+        ));
+        assert!(
+            search_workspace(&workspace, "tar notes", false, 10)
+                .unwrap()
+                .is_empty()
+        );
+
+        guide(
+            temp.path(),
+            "desktop",
+            "0199a1d7-7b0d-7d8e-a38d-f936c5735e25",
+            "New indexed guide",
+            "Added externally",
+            "[]",
+            "[]",
+            "draft",
+            "A newly indexed token.\n",
+        );
+        crate::storage::refresh_workspace(&mut workspace).unwrap();
+        assert_eq!(workspace.search_index().documents.len(), 4);
+        assert!(Arc::ptr_eq(
+            &stable_desktop,
+            &indexed_document(workspace.search_index(), stable_desktop_id)
+        ));
+        assert_eq!(
+            search_workspace(&workspace, "newly indexed token", false, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let category_path = temp.path().join("categories/linux/category.yaml");
+        let category = fs::read_to_string(&category_path).unwrap();
+        fs::write(
+            &category_path,
+            category.replace("name: Linux", "name: Servers"),
+        )
+        .unwrap();
+        crate::storage::refresh_workspace(&mut workspace).unwrap();
+        assert_eq!(
+            search_workspace(&workspace, "servers", false, 10)
+                .unwrap()
+                .len(),
+            2
+        );
+        let linux_after = indexed_document(workspace.search_index(), linux_id);
+        assert!(!Arc::ptr_eq(&linux_before, &linux_after));
+        assert!(Arc::ptr_eq(&linux_before.fields, &linux_after.fields));
+        assert!(Arc::ptr_eq(
+            &stable_desktop,
+            &indexed_document(workspace.search_index(), stable_desktop_id)
+        ));
+    }
+
+    #[test]
+    fn incremental_reconcile_applies_external_archive_transition() {
+        let (temp, mut workspace) = workspace();
+        let archived_id: GuideId = "0199a1d7-7b0d-7d8e-a38d-f936c5735e21".parse().unwrap();
+        let unchanged_id: GuideId = "0199a1d7-7b0d-7d8e-a38d-f936c5735e22".parse().unwrap();
+        let archived_before = indexed_document(workspace.search_index(), archived_id);
+        let unchanged_before = indexed_document(workspace.search_index(), unchanged_id);
+        let guide_path = temp
+            .path()
+            .join("categories/linux/0199a1d7-7b0d-7d8e-a38d-f936c5735e21.md");
+        let source = fs::read_to_string(&guide_path).unwrap();
+        let source = source
+            .replace("status: draft\n", "status: archived\n")
+            .replace(
+                "updated_at: \"2026-09-18T00:00:00Z\"\n---",
+                "updated_at: \"2026-09-19T00:00:00Z\"\narchived_from_status: draft\narchived_at: \"2026-09-19T00:00:00Z\"\n---",
+            );
+        fs::write(guide_path, source).unwrap();
+
+        crate::storage::refresh_workspace(&mut workspace).unwrap();
+
+        assert!(
+            search_workspace(&workspace, "install package", false, 10)
+                .unwrap()
+                .iter()
+                .all(|hit| hit.guide_id() != archived_id)
+        );
+        assert!(
+            search_workspace(&workspace, "install package", true, 10)
+                .unwrap()
+                .iter()
+                .any(|hit| hit.guide_id() == archived_id)
+        );
+        let archived_after = indexed_document(workspace.search_index(), archived_id);
+        assert!(!Arc::ptr_eq(&archived_before, &archived_after));
+        assert!(!Arc::ptr_eq(
+            &archived_before.fields,
+            &archived_after.fields
+        ));
+        assert!(Arc::ptr_eq(
+            &unchanged_before,
+            &indexed_document(workspace.search_index(), unchanged_id)
+        ));
+    }
+
+    #[test]
+    fn failed_refresh_retains_the_exact_prior_index() {
+        let (temp, mut workspace) = workspace();
+        let guide_id: GuideId = "0199a1d7-7b0d-7d8e-a38d-f936c5735e21".parse().unwrap();
+        let before = indexed_document(workspace.search_index(), guide_id);
+        fs::write(temp.path().join("rehow.yaml"), "not: [valid").unwrap();
+
+        assert!(crate::storage::refresh_workspace(&mut workspace).is_err());
+
+        assert!(Arc::ptr_eq(
+            &before,
+            &indexed_document(workspace.search_index(), guide_id)
+        ));
+        assert_eq!(
+            search_workspace(&workspace, "install package", false, 10)
+                .unwrap()
+                .first()
+                .map(SearchHit::guide_id),
+            Some(guide_id)
+        );
+    }
+
+    #[test]
+    #[ignore = "production performance gate; run explicitly with Cargo --release"]
+    fn single_guide_incremental_reindex_meets_production_budget() {
+        let temp = TestDirectory::new();
+        write_performance_workspace(temp.path());
+        let inspection = inspect_workspace(temp.path()).unwrap().into_parts().1;
+        let WorkspaceInspection::Compatible(workspace) = inspection else {
+            panic!("expected compatible performance Workspace");
+        };
+        let changed_path = temp.path().join("categories/benchmark/guide-02500.md");
+        let changed = fs::read_to_string(&changed_path).unwrap();
+        fs::write(
+            &changed_path,
+            changed.replace(
+                "Error: permission denied synthetic failure 02500.",
+                "Error: permission denied externally changed 02500.",
+            ),
+        )
+        .unwrap();
+        let refreshed = inspect_workspace(temp.path()).unwrap().into_parts().1;
+        let WorkspaceInspection::Compatible(refreshed) = refreshed else {
+            panic!("expected refreshed performance Workspace");
+        };
+
+        let started = std::time::Instant::now();
+        let reconciled =
+            SearchIndex::reconcile(refreshed.categories(), Some(workspace.search_index()));
+        let elapsed = started.elapsed();
+        let previous = workspace
+            .search_index()
+            .documents
+            .iter()
+            .map(|document| (document.guide_id, document))
+            .collect::<BTreeMap<_, _>>();
+        let reused = reconciled
+            .documents
+            .iter()
+            .filter(|document| {
+                previous
+                    .get(&document.guide_id)
+                    .is_some_and(|prior| Arc::ptr_eq(document, prior))
+            })
+            .count();
+
+        println!(
+            "single_guide_incremental_reindex_ms={:.3}",
+            elapsed.as_secs_f64() * 1_000.0
+        );
+        assert_eq!(reconciled.documents.len(), 5_000);
+        assert_eq!(reused, 4_999);
+        assert!(
+            elapsed <= std::time::Duration::from_millis(150),
+            "single-Guide incremental reindex exceeded 150 ms"
+        );
+    }
+
+    fn write_performance_workspace(root: &Path) {
+        const GUIDE_COUNT: usize = 5_000;
+        const BODY_BYTES: usize = 10_128;
+
+        fs::create_dir(root.join("categories")).unwrap();
+        fs::write(
+            root.join("rehow.yaml"),
+            "schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Incremental search benchmark\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n",
+        )
+        .unwrap();
+        let category = root.join("categories/benchmark");
+        fs::create_dir(&category).unwrap();
+        fs::write(
+            category.join("category.yaml"),
+            "schema_version: 1\nid: 0199a1d7-7b0d-7d8e-a38d-f936c5735e11\nname: Benchmark\norder: 1\nstatus: active\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n",
+        )
+        .unwrap();
+        let filler = "rehow-benchmark-token ".repeat(BODY_BYTES / 22);
+        for index in 0..GUIDE_COUNT {
+            let id = format!("0199a1d7-7b0d-7d8e-a38d-{index:012x}");
+            let source = format!(
+                "---\nschema_version: 1\nid: {id}\ntitle: Guide {index:05}\nsummary: Synthetic benchmark guide {index:05}\ncategory_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e11\ntags: [benchmark]\naliases: []\nstatus: draft\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n---\n\n## Steps\n\n```sh\necho guide-{index:05}\n```\n\nEdit `/etc/rehow/{index:05}.conf`.\n\nError: permission denied synthetic failure {index:05}.\n\n{filler}\n"
+            );
+            fs::write(category.join(format!("guide-{index:05}.md")), source).unwrap();
+        }
+    }
+
+    fn indexed_document(index: &SearchIndex, guide_id: GuideId) -> Arc<SearchDocument> {
+        Arc::clone(
+            index
+                .documents
+                .iter()
+                .find(|document| document.guide_id == guide_id)
+                .unwrap(),
+        )
     }
 }

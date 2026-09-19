@@ -633,7 +633,9 @@ pub(crate) fn refresh_workspace(
     workspace: &mut WorkspaceView,
 ) -> Result<(), WorkspaceInspectError> {
     let root = workspace._root.duplicate().map_err(map_io)?;
-    let WorkspaceInspection::Compatible(refreshed) = inspect_open_root(root)? else {
+    let WorkspaceInspection::Compatible(refreshed) =
+        inspect_open_root_with_index(root, Some(&workspace.search_index))?
+    else {
         return Err(WorkspaceInspectError::ChangedDuringRead);
     };
     *workspace = *refreshed;
@@ -642,6 +644,13 @@ pub(crate) fn refresh_workspace(
 
 fn inspect_open_root(
     root: linux::DirectoryCapability,
+) -> Result<WorkspaceInspection, WorkspaceInspectError> {
+    inspect_open_root_with_index(root, None)
+}
+
+fn inspect_open_root_with_index(
+    root: linux::DirectoryCapability,
+    previous_index: Option<&crate::search::SearchIndex>,
 ) -> Result<WorkspaceInspection, WorkspaceInspectError> {
     let root_entries = root.entries(20_000)?;
     if root_entries.is_empty() {
@@ -937,7 +946,7 @@ fn inspect_open_root(
 
     inspect_attachments(&root, &categories, &mut issues)?;
 
-    let search_index = crate::search::SearchIndex::build(&categories);
+    let search_index = crate::search::SearchIndex::reconcile(&categories, previous_index);
     Ok(WorkspaceInspection::Compatible(Box::new(WorkspaceView {
         _root: root,
         manifest,
