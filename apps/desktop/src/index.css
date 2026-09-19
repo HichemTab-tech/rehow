@@ -1596,6 +1596,88 @@ h1 {
   margin-top: 5px;
 }
 
+.git-sync-panel {
+  position: fixed;
+  z-index: 30;
+  right: 12px;
+  bottom: 34px;
+  width: min(440px, calc(100vw - 24px));
+  max-height: calc(100vh - 58px);
+  overflow-y: auto;
+  border: 1px solid var(--divider-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 18%);
+  overscroll-behavior: contain;
+}
+.git-sync-content {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+}
+.git-sync-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.git-sync-heading > div {
+  min-width: 0;
+}
+.git-sync-heading h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.3;
+  text-wrap: balance;
+}
+.git-sync-heading p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.git-sync-summary {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) minmax(0, 2fr);
+  margin: 3px 0 0;
+  border-top: 1px solid var(--divider);
+  font-size: 11px;
+}
+.git-sync-summary > div {
+  display: contents;
+}
+.git-sync-summary dt,
+.git-sync-summary dd {
+  min-width: 0;
+  margin: 0;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--divider);
+}
+.git-sync-summary dt {
+  color: var(--muted);
+}
+.git-sync-summary dd {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  text-align: right;
+}
+.git-sync-content .git-action-error {
+  margin: 2px 0 0;
+  overflow: visible;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
+.git-sync-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 5px;
+}
+
 .git-commit-panel {
   position: fixed;
   z-index: 30;
@@ -1821,7 +1903,8 @@ h1 {
     display: grid;
     gap: 6px;
   }
-  .git-commit-actions {
+  .git-commit-actions,
+  .git-sync-actions {
     flex-wrap: wrap;
   }
 }
@@ -1907,4 +1990,8 @@ h1 {
   --tested: #83c9aa;
   --draft: #b0b7b1;
   --stale: #edbd60;
+}
+:root[data-theme="dark"] .button-primary,
+:root[data-theme="dark"] .brand-mark {
+  color: #102d21;
 }

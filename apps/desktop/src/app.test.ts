@@ -10,6 +10,7 @@ import {
   focusGitCommitReview,
   gitFactLabel,
   gitStatusLabel,
+  gitSyncPresentation,
   guideLifecycleLabel,
   guideMatchesSearchScope,
   hasUnsavedChanges,
@@ -28,6 +29,10 @@ import {
   isGitRemotePlanPayload,
   isGitRemoteResultPayload,
   isGitStatusPayload,
+  isGitSyncApplyResultPayload,
+  isGitSyncCancelResultPayload,
+  isGitSyncInspectionPayload,
+  isGitSyncRecoveryResultPayload,
   isSearchHitPayload,
   isWorkspaceWatchEvent,
   movedCategoryOrder,
@@ -126,7 +131,7 @@ describe("application identity", () => {
       remoteCount: 0,
     };
     expect(isGitStatusPayload(recovery)).toBe(true);
-    expect(gitStatusLabel(recovery)).toBe("Git commit needs recovery");
+    expect(gitStatusLabel(recovery)).toBe("Git operation needs recovery");
   });
 
   it("accepts only closed Git initialization plan and result payloads", () => {
@@ -237,6 +242,97 @@ describe("application identity", () => {
     rendered = true;
     deferred?.();
     expect(focused).toBe(true);
+  });
+
+  it("accepts only closed sync payloads and maps every safe result", () => {
+    const inspection = {
+      planToken: `plan:v1:${"A".repeat(43)}`,
+      remoteName: "origin",
+      transport: "https" as const,
+      host: "example.invalid",
+      ancestry: "remoteFastForward" as const,
+      localChanges: false,
+      workspaceMatchesRemote: false,
+    };
+    expect(isGitSyncInspectionPayload(inspection)).toBe(true);
+    expect(
+      isGitSyncInspectionPayload({
+        ...inspection,
+        remoteUrl: "https://secret",
+      }),
+    ).toBe(false);
+    expect(
+      isGitSyncInspectionPayload({ ...inspection, host: "bad\nhost" }),
+    ).toBe(false);
+    expect(
+      isGitSyncInspectionPayload({ ...inspection, ancestry: "unknown" }),
+    ).toBe(false);
+    expect(isGitSyncCancelResultPayload({ cancellationRequested: true })).toBe(
+      true,
+    );
+    expect(
+      isGitSyncCancelResultPayload({
+        cancellationRequested: true,
+        path: "/tmp",
+      }),
+    ).toBe(false);
+    expect(isGitSyncApplyResultPayload({ kind: "declined" })).toBe(true);
+    expect(isGitSyncRecoveryResultPayload({ kind: "declined" })).toBe(true);
+
+    expect(gitSyncPresentation(inspection)).toMatchObject({
+      title: "Fast-Forward Available",
+      canApply: true,
+    });
+    expect(
+      gitSyncPresentation({ ...inspection, workspaceMatchesRemote: true })
+        .detail,
+    ).toContain("metadata");
+    expect(
+      gitSyncPresentation({ ...inspection, localChanges: true }),
+    ).toMatchObject({ title: "Commit Local Changes First", canApply: false });
+    for (const [ancestry, title] of [
+      ["upToDate", "Already Up to Date"],
+      ["localAhead", "Local Branch Is Ahead"],
+      ["diverged", "Branches Have Diverged"],
+      ["historyLimit", "History Needs Review"],
+    ] as const) {
+      expect(gitSyncPresentation({ ...inspection, ancestry })).toMatchObject({
+        title,
+        canApply: false,
+      });
+    }
+
+    const workspace = {
+      id: "workspace-id",
+      name: "Personal",
+      categories: [],
+      guides: [],
+      issueCount: 0,
+      facts: {
+        writable: true,
+        existingGitRepository: true,
+        nestedGitRepository: false,
+        gitProbeComplete: true,
+        unsafeGitMarker: false,
+      },
+      watchStatus: "active",
+      watchSession: "2",
+    };
+    expect(
+      isGitSyncApplyResultPayload({
+        kind: "completed",
+        workspace,
+        changed: true,
+      }),
+    ).toBe(true);
+    expect(
+      isGitSyncApplyResultPayload({
+        kind: "completed",
+        workspace,
+        changed: true,
+        objectId: "a".repeat(40),
+      }),
+    ).toBe(false);
   });
 
   it("accepts only closed path-free Git clone lifecycle payloads", () => {

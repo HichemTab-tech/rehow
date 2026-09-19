@@ -129,6 +129,38 @@ type GitCommitStage =
   | "cancelling"
   | "recovering";
 
+type GitSyncAncestry =
+  | "upToDate"
+  | "localAhead"
+  | "remoteFastForward"
+  | "diverged"
+  | "historyLimit";
+
+type GitSyncInspectionPayload = {
+  planToken: string;
+  remoteName: string;
+  transport: "https";
+  host: string;
+  ancestry: GitSyncAncestry;
+  localChanges: boolean;
+  workspaceMatchesRemote: boolean;
+};
+
+type GitSyncCancelResultPayload = {
+  cancellationRequested: boolean;
+};
+
+type GitSyncApplyResultPayload =
+  | { kind: "declined" }
+  | { kind: "completed"; workspace: WorkspacePayload; changed: boolean };
+
+type GitSyncStage =
+  | "idle"
+  | "inspecting"
+  | "cancelling"
+  | "applying"
+  | "recovering";
+
 type GitClonePlanPayload = {
   planToken: string;
   transport: "https" | "ssh";
@@ -667,7 +699,7 @@ export function gitStatusLabel(status: GitStatusPayload | null) {
   if (status.kind === "unavailable") return "Git unavailable";
   if (status.kind === "notRepository") return "No Git repository";
   if (status.kind === "unsafe") return "Git repository needs attention";
-  if (status.kind === "recoveryRequired") return "Git commit needs recovery";
+  if (status.kind === "recoveryRequired") return "Git operation needs recovery";
   if (status.kind === "failed")
     return status.failure ?? "Git status unavailable";
   const branch = status.detached
@@ -873,6 +905,65 @@ export function isGitCommitRecoveryResultPayload(
   );
 }
 
+export function isGitSyncInspectionPayload(
+  value: unknown,
+): value is GitSyncInspectionPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const inspection = value as Partial<GitSyncInspectionPayload> &
+    Record<string, unknown>;
+  return (
+    Object.keys(inspection).length === 7 &&
+    typeof inspection.planToken === "string" &&
+    /^plan:v1:[A-Za-z0-9_-]{43}$/.test(inspection.planToken) &&
+    isBoundedText(inspection.remoteName, 1, 64) &&
+    !containsUnsafeDisplayCodePoint(String(inspection.remoteName)) &&
+    inspection.transport === "https" &&
+    isBoundedText(inspection.host, 1, 253) &&
+    !containsUnsafeDisplayCodePoint(String(inspection.host)) &&
+    [
+      "upToDate",
+      "localAhead",
+      "remoteFastForward",
+      "diverged",
+      "historyLimit",
+    ].includes(String(inspection.ancestry)) &&
+    typeof inspection.localChanges === "boolean" &&
+    typeof inspection.workspaceMatchesRemote === "boolean"
+  );
+}
+
+export function isGitSyncCancelResultPayload(
+  value: unknown,
+): value is GitSyncCancelResultPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as Partial<GitSyncCancelResultPayload> &
+    Record<string, unknown>;
+  return (
+    Object.keys(result).length === 1 &&
+    typeof result.cancellationRequested === "boolean"
+  );
+}
+
+export function isGitSyncApplyResultPayload(
+  value: unknown,
+): value is GitSyncApplyResultPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as {
+    kind?: unknown;
+    workspace?: unknown;
+    changed?: unknown;
+  };
+  if (result.kind === "declined") return Object.keys(result).length === 1;
+  return (
+    result.kind === "completed" &&
+    Object.keys(result).length === 3 &&
+    isWorkspacePayload(result.workspace) &&
+    typeof result.changed === "boolean"
+  );
+}
+
+export const isGitSyncRecoveryResultPayload = isGitSyncApplyResultPayload;
+
 export function isGitClonePlanPayload(
   value: unknown,
 ): value is GitClonePlanPayload {
@@ -1067,6 +1158,54 @@ export function focusGitCommitReview(
   schedule(() => target()?.focus());
 }
 
+export function gitSyncPresentation(inspection: GitSyncInspectionPayload) {
+  if (inspection.ancestry === "upToDate") {
+    return {
+      title: "Already Up to Date",
+      detail: "The local branch already matches the validated upstream commit.",
+      canApply: false,
+    };
+  }
+  if (inspection.ancestry === "localAhead") {
+    return {
+      title: "Local Branch Is Ahead",
+      detail: "Nothing was changed. Push is not available in Rehow yet.",
+      canApply: false,
+    };
+  }
+  if (inspection.ancestry === "diverged") {
+    return {
+      title: "Branches Have Diverged",
+      detail:
+        "Rehow will not merge automatically. Resolve the histories with Git, then inspect again.",
+      canApply: false,
+    };
+  }
+  if (inspection.ancestry === "historyLimit") {
+    return {
+      title: "History Needs Review",
+      detail:
+        "Rehow could not prove the relationship within its safety limit. Review the repository with Git.",
+      canApply: false,
+    };
+  }
+  if (inspection.localChanges) {
+    return {
+      title: "Commit Local Changes First",
+      detail:
+        "A fast-forward is available, but Rehow will not overwrite local changes. Commit them, then inspect again.",
+      canApply: false,
+    };
+  }
+  return {
+    title: "Fast-Forward Available",
+    detail: inspection.workspaceMatchesRemote
+      ? "Workspace content already matches. Apply the validated Git metadata update."
+      : "Apply the validated upstream Workspace and Git metadata update.",
+    canApply: true,
+  };
+}
+
 export function normalizedCloneUrl(value: string) {
   const normalized = value.trim();
   if (
@@ -1191,6 +1330,11 @@ export function App() {
   );
   const [commitStage, setCommitStage] = useState<GitCommitStage>("idle");
   const [commitError, setCommitError] = useState("");
+  const [syncPanelOpen, setSyncPanelOpen] = useState(false);
+  const [syncInspection, setSyncInspection] =
+    useState<GitSyncInspectionPayload | null>(null);
+  const [syncStage, setSyncStage] = useState<GitSyncStage>("idle");
+  const [syncError, setSyncError] = useState("");
   const [selectedId, setSelectedId] = useState(
     () => initialParameter("guide") ?? "",
   );
@@ -1277,6 +1421,10 @@ export function App() {
   const commitMessageRef = useRef<HTMLInputElement>(null);
   const commitApplyRef = useRef<HTMLButtonElement>(null);
   const commitErrorRef = useRef<HTMLParagraphElement>(null);
+  const syncButtonRef = useRef<HTMLButtonElement>(null);
+  const syncPrimaryRef = useRef<HTMLButtonElement>(null);
+  const syncErrorRef = useRef<HTMLParagraphElement>(null);
+  const syncGenerationRef = useRef(0);
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const editDetailsButtonRef = useRef<HTMLButtonElement>(null);
   const guideStatusButtonRef = useRef<HTMLButtonElement>(null);
@@ -1378,7 +1526,8 @@ export function App() {
     reorderingCategoryId !== "" ||
     removingCategoryId !== "" ||
     removingGuide ||
-    refreshingWorkspace;
+    refreshingWorkspace ||
+    syncPanelOpen;
   const gitCloneOperationBusy =
     gitCloneStage === "validating" ||
     gitCloneStage === "cancelling" ||
@@ -1386,6 +1535,9 @@ export function App() {
   const gitCloneRequiresResolution =
     gitCloneStage === "validated" || gitCloneStage === "recovery";
   const commitOperationBusy = commitStage !== "idle";
+  const syncOperationBusy = syncStage !== "idle";
+  const syncPresentation =
+    syncInspection === null ? null : gitSyncPresentation(syncInspection);
   const dirtyGitCommit =
     commitFormOpen && (commitMessage.trim() !== "" || commitPlan !== null);
   const autoRefreshBlocked = automaticRefreshBlocked({
@@ -1393,7 +1545,8 @@ export function App() {
       workspaceOperationBusy ||
       openingWorkspace ||
       gitCloneOperationBusy ||
-      commitOperationBusy,
+      commitOperationBusy ||
+      syncOperationBusy,
     dirtyGuide,
     dirtyGuideDetails,
     dirtyCategoryRename,
@@ -1418,6 +1571,9 @@ export function App() {
   });
   const cancelGitCommitFromEffect = useEffectEvent(() => {
     void cancelGitCommit();
+  });
+  const cancelGitSyncFromEffect = useEffectEvent(() => {
+    void cancelGitSync();
   });
 
   useEffect(() => {
@@ -1531,6 +1687,16 @@ export function App() {
         event.preventDefault();
         searchRef.current?.focus();
       } else if (event.key === "Escape") {
+        if (
+          syncPanelOpen &&
+          syncStage !== "applying" &&
+          syncStage !== "recovering" &&
+          syncStage !== "cancelling"
+        ) {
+          event.preventDefault();
+          cancelGitSyncFromEffect();
+          return;
+        }
         if (commitFormOpen && !commitOperationBusy) {
           event.preventDefault();
           cancelGitCommitFromEffect();
@@ -1569,6 +1735,8 @@ export function App() {
     railOpen,
     readerOpen,
     remoteFormOpen,
+    syncPanelOpen,
+    syncStage,
   ]);
 
   useEffect(() => {
@@ -1803,6 +1971,14 @@ export function App() {
     setGitCloneHost("");
   }
 
+  function resetGitSyncUi() {
+    syncGenerationRef.current += 1;
+    setSyncPanelOpen(false);
+    setSyncInspection(null);
+    setSyncStage("idle");
+    setSyncError("");
+  }
+
   function installClonedWorkspace(completed: WorkspacePayload) {
     setWorkspace(completed);
     setGitStatus(null);
@@ -1825,6 +2001,7 @@ export function App() {
     if (
       gitCloneOperationBusy ||
       gitCloneRequiresResolution ||
+      syncOperationBusy ||
       !confirmDiscard()
     )
       return;
@@ -1835,6 +2012,7 @@ export function App() {
       const result = await invoke<OpenWorkspaceResult>("choose_workspace");
       if (result.kind !== "cancelled") {
         resetGitCloneUi();
+        resetGitSyncUi();
         setGitInitError("");
         setExternalChangeWorkspaceId("");
         setWatchDegradedWorkspaceId("");
@@ -2233,7 +2411,9 @@ export function App() {
       workspace === null ||
       gitStatus?.kind !== "ready" ||
       commitFormOpen ||
-      commitOperationBusy
+      commitOperationBusy ||
+      syncPanelOpen ||
+      syncOperationBusy
     )
       return;
     setRemoteName("origin");
@@ -2307,6 +2487,8 @@ export function App() {
       workspace === null ||
       gitStatus?.kind !== "ready" ||
       remoteFormOpen ||
+      syncPanelOpen ||
+      syncOperationBusy ||
       commitOperationBusy ||
       workspaceOperationBusy ||
       dirtyGuide ||
@@ -2436,29 +2618,206 @@ export function App() {
     }
   }
 
-  async function recoverGitCommit() {
+  async function beginGitSync() {
+    if (
+      workspace === null ||
+      gitStatus?.kind !== "ready" ||
+      gitStatus.upstream === null ||
+      syncPanelOpen ||
+      syncOperationBusy ||
+      commitFormOpen ||
+      commitOperationBusy ||
+      remoteFormOpen ||
+      connectingRemote ||
+      workspaceOperationBusy ||
+      editingGuide ||
+      editingGuideDetails ||
+      creatingCategory ||
+      renamingCategoryId !== "" ||
+      creatingGuide ||
+      dirtyGuide ||
+      dirtyGuideDetails ||
+      dirtyCategoryCreate ||
+      dirtyCategoryRename ||
+      dirtyGuideCreate
+    )
+      return;
+    const generation = ++syncGenerationRef.current;
+    setSyncPanelOpen(true);
+    setSyncInspection(null);
+    setSyncError("");
+    setSyncStage("inspecting");
+    requestAnimationFrame(() => syncPrimaryRef.current?.focus());
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<unknown>("git_sync_inspect_open_workspace");
+      if (generation !== syncGenerationRef.current) return;
+      if (!isGitSyncInspectionPayload(result)) {
+        await invoke("git_sync_cancel_active").catch(() => undefined);
+        throw new Error("invalid Git sync inspection result");
+      }
+      setSyncInspection(result);
+      setSyncStage("idle");
+      setAnnouncement(
+        `${gitSyncPresentation(result).title}. Review the sync result.`,
+      );
+      requestAnimationFrame(() => syncPrimaryRef.current?.focus());
+    } catch (error) {
+      if (generation !== syncGenerationRef.current) return;
+      const failure = nativeCommandError(error);
+      setSyncStage("idle");
+      if (failure.code === "cancelled") {
+        resetGitSyncUi();
+        setAnnouncement("Git sync inspection cancelled.");
+        requestAnimationFrame(() => syncButtonRef.current?.focus());
+        return;
+      }
+      setSyncError(failure.message);
+      setAnnouncement(failure.message);
+      if (failure.code === "recoveryRequired") setGitStatus(null);
+      requestAnimationFrame(() => syncErrorRef.current?.focus());
+    }
+  }
+
+  async function cancelGitSync() {
+    if (
+      !syncPanelOpen ||
+      syncStage === "applying" ||
+      syncStage === "recovering" ||
+      syncStage === "cancelling"
+    )
+      return;
+    const generation = ++syncGenerationRef.current;
+    setSyncStage("cancelling");
+    setSyncError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<unknown>("git_sync_cancel_active");
+      if (!isGitSyncCancelResultPayload(result))
+        throw new Error("invalid Git sync cancellation result");
+      if (generation !== syncGenerationRef.current) return;
+      resetGitSyncUi();
+      setAnnouncement(
+        result.cancellationRequested
+          ? "Git sync cancelled."
+          : "Git sync panel closed.",
+      );
+      requestAnimationFrame(() => syncButtonRef.current?.focus());
+    } catch (error) {
+      if (generation !== syncGenerationRef.current) return;
+      const failure = nativeCommandError(error);
+      setSyncStage("idle");
+      setSyncError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => syncErrorRef.current?.focus());
+    }
+  }
+
+  function installSyncedWorkspace(
+    completed: WorkspacePayload,
+    message: string,
+  ) {
+    setWorkspace(completed);
+    setGitStatus(null);
+    setExternalChangeWorkspaceId("");
+    setWatchDegradedWorkspaceId(
+      completed.watchStatus === "degraded" ? completed.id : "",
+    );
+    setSelectedId((current) =>
+      completed.guides.some((guide) => guide.id === current)
+        ? current
+        : (completed.guides[0]?.id ?? ""),
+    );
+    resetGitSyncUi();
+    setAnnouncement(message);
+    requestAnimationFrame(() => searchRef.current?.focus());
+  }
+
+  async function applyGitSync() {
+    if (
+      workspace === null ||
+      syncInspection === null ||
+      syncOperationBusy ||
+      !gitSyncPresentation(syncInspection).canApply
+    )
+      return;
+    setSyncStage("applying");
+    setSyncError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<unknown>("git_sync_apply_open_workspace", {
+        planToken: syncInspection.planToken,
+      });
+      if (!isGitSyncApplyResultPayload(result))
+        throw new Error("invalid Git sync apply result");
+      if (result.kind === "declined") {
+        resetGitSyncUi();
+        setAnnouncement("Git fast-forward cancelled.");
+        requestAnimationFrame(() => syncButtonRef.current?.focus());
+        return;
+      }
+      installSyncedWorkspace(
+        result.workspace,
+        result.changed
+          ? "Workspace fast-forward applied successfully."
+          : "Git sync completed with no Workspace changes.",
+      );
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setSyncStage("idle");
+      setSyncInspection(null);
+      setSyncError(failure.message);
+      setGitStatus(null);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => syncErrorRef.current?.focus());
+    }
+  }
+
+  async function recoverGitOperation() {
     if (
       workspace === null ||
       gitStatus?.kind !== "recoveryRequired" ||
-      commitOperationBusy
+      commitOperationBusy ||
+      syncOperationBusy
     )
       return;
-    setCommitStage("recovering");
+    setSyncStage("recovering");
     setGitInitError("");
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const result = await invoke<unknown>("git_commit_recover_open_workspace");
-      if (!isGitCommitRecoveryResultPayload(result))
+      try {
+        const syncResult = await invoke<unknown>(
+          "git_sync_recover_open_workspace",
+        );
+        if (!isGitSyncRecoveryResultPayload(syncResult))
+          throw new Error("invalid Git sync recovery result");
+        if (syncResult.kind === "declined") {
+          setAnnouncement("Git sync recovery cancelled.");
+          return;
+        }
+        installSyncedWorkspace(
+          syncResult.workspace,
+          "Interrupted Git sync recovered successfully.",
+        );
+        return;
+      } catch (error) {
+        const failure = nativeCommandError(error);
+        if (failure.code !== "recoveryNotRequired") throw error;
+      }
+      const commitResult = await invoke<unknown>(
+        "git_commit_recover_open_workspace",
+      );
+      if (!isGitCommitRecoveryResultPayload(commitResult))
         throw new Error("invalid Git commit recovery result");
-      if (!result.recovered) {
+      if (!commitResult.recovered) {
         setAnnouncement("Git commit recovery cancelled.");
         return;
       }
-      if (result.workspaceChanged) await refreshWorkspace();
+      if (commitResult.workspaceChanged) await refreshWorkspace();
       else
         setWorkspace((current) => (current === null ? null : { ...current }));
       setAnnouncement(
-        result.workspaceChanged
+        commitResult.workspaceChanged
           ? "Git commit recovered. Newer Workspace changes remain uncommitted."
           : "Git commit recovered successfully.",
       );
@@ -2467,7 +2826,7 @@ export function App() {
       setGitInitError(failure.message);
       setAnnouncement(failure.message);
     } finally {
-      setCommitStage("idle");
+      setSyncStage("idle");
     }
   }
 
@@ -3223,7 +3582,8 @@ export function App() {
           disabled={
             openingWorkspace ||
             gitCloneOperationBusy ||
-            gitCloneRequiresResolution
+            gitCloneRequiresResolution ||
+            syncOperationBusy
           }
         >
           <span className="workspace-dot" aria-hidden="true" />
@@ -3271,7 +3631,10 @@ export function App() {
                       : "Refresh Workspace"
             }
             disabled={
-              workspace === null || workspaceOperationBusy || openingWorkspace
+              workspace === null ||
+              workspaceOperationBusy ||
+              openingWorkspace ||
+              syncOperationBusy
             }
             onClick={() => void refreshWorkspace()}
           >
@@ -4643,6 +5006,113 @@ export function App() {
         )}
       </main>
 
+      {syncPanelOpen ? (
+        <section
+          id="git-sync-panel"
+          className="git-sync-panel"
+          aria-labelledby="git-sync-heading"
+          aria-busy={syncOperationBusy}
+        >
+          <div className="git-sync-content">
+            <div className="git-sync-heading">
+              <div>
+                <h2 id="git-sync-heading">
+                  {syncStage === "inspecting" || syncStage === "cancelling"
+                    ? "Inspecting Git Upstream"
+                    : (syncPresentation?.title ?? "Git Sync Needs Attention")}
+                </h2>
+                <p>
+                  {syncStage === "inspecting"
+                    ? "Fetching and validating the configured upstream without changing this Workspace…"
+                    : syncStage === "cancelling"
+                      ? "Stopping the isolated inspection safely…"
+                      : (syncPresentation?.detail ??
+                        "Inspect the error, then retry from current Git status.")}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="panel-close"
+                aria-label={
+                  syncStage === "inspecting"
+                    ? "Cancel Git sync inspection"
+                    : "Close Git sync panel"
+                }
+                disabled={
+                  syncStage === "applying" ||
+                  syncStage === "recovering" ||
+                  syncStage === "cancelling"
+                }
+                onClick={() => void cancelGitSync()}
+              >
+                ×
+              </button>
+            </div>
+            {syncInspection !== null ? (
+              <dl className="git-sync-summary">
+                <div>
+                  <dt>Remote</dt>
+                  <dd translate="no">{syncInspection.remoteName}</dd>
+                </div>
+                <div>
+                  <dt>Connection</dt>
+                  <dd>
+                    <span translate="no">HTTPS</span> ·{" "}
+                    <span translate="no">{syncInspection.host}</span>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Local Changes</dt>
+                  <dd>{syncInspection.localChanges ? "Present" : "None"}</dd>
+                </div>
+              </dl>
+            ) : null}
+            {syncError !== "" ? (
+              <p
+                ref={syncErrorRef}
+                className="git-action-error"
+                role="alert"
+                tabIndex={-1}
+              >
+                {syncError}
+              </p>
+            ) : null}
+            <div className="git-sync-actions">
+              <button
+                ref={syncPresentation?.canApply ? undefined : syncPrimaryRef}
+                type="button"
+                className="button"
+                disabled={
+                  syncStage === "applying" ||
+                  syncStage === "cancelling" ||
+                  syncStage === "recovering"
+                }
+                onClick={() => void cancelGitSync()}
+              >
+                {syncStage === "inspecting"
+                  ? "Cancel Inspection"
+                  : syncStage === "cancelling"
+                    ? "Cancelling…"
+                    : "Close"}
+              </button>
+              {syncPresentation?.canApply ? (
+                <button
+                  ref={syncPrimaryRef}
+                  type="button"
+                  className="button button-primary"
+                  disabled={syncOperationBusy}
+                  onClick={() => void applyGitSync()}
+                >
+                  {syncStage === "applying"
+                    ? "Applying…"
+                    : "Apply Fast-Forward"}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </section>
+      ) : null}
+
       {commitFormOpen ? (
         <section
           id="git-commit-panel"
@@ -4930,7 +5400,12 @@ export function App() {
               className="status-action"
               aria-expanded={remoteFormOpen}
               aria-controls="git-remote-panel"
-              disabled={commitFormOpen || commitOperationBusy}
+              disabled={
+                commitFormOpen ||
+                commitOperationBusy ||
+                syncPanelOpen ||
+                syncOperationBusy
+              }
               onClick={beginRemoteConnection}
             >
               Connect Remote
@@ -4945,6 +5420,8 @@ export function App() {
               aria-controls="git-commit-panel"
               disabled={
                 remoteFormOpen ||
+                syncPanelOpen ||
+                syncOperationBusy ||
                 commitOperationBusy ||
                 workspaceOperationBusy ||
                 dirtyGuide ||
@@ -4959,14 +5436,49 @@ export function App() {
             </button>
           ) : null}
           {workspace?.facts.writable &&
+          gitStatus?.kind === "ready" &&
+          gitStatus.upstream !== null ? (
+            <button
+              ref={syncButtonRef}
+              type="button"
+              className="status-action"
+              aria-expanded={syncPanelOpen}
+              aria-controls="git-sync-panel"
+              disabled={
+                syncPanelOpen ||
+                syncOperationBusy ||
+                remoteFormOpen ||
+                connectingRemote ||
+                commitFormOpen ||
+                commitOperationBusy ||
+                workspaceOperationBusy ||
+                editingGuide ||
+                editingGuideDetails ||
+                creatingCategory ||
+                renamingCategoryId !== "" ||
+                creatingGuide ||
+                dirtyGuide ||
+                dirtyGuideDetails ||
+                dirtyCategoryCreate ||
+                dirtyCategoryRename ||
+                dirtyGuideCreate
+              }
+              onClick={() => void beginGitSync()}
+            >
+              {syncStage === "inspecting" ? "Inspecting…" : "Sync"}
+            </button>
+          ) : null}
+          {workspace?.facts.writable &&
           gitStatus?.kind === "recoveryRequired" ? (
             <button
               type="button"
               className="status-action"
-              disabled={commitOperationBusy}
-              onClick={() => void recoverGitCommit()}
+              disabled={commitOperationBusy || syncOperationBusy}
+              onClick={() => void recoverGitOperation()}
             >
-              {commitStage === "recovering" ? "Recovering…" : "Resume Commit"}
+              {syncStage === "recovering"
+                ? "Recovering…"
+                : "Resume Git Operation"}
             </button>
           ) : null}
           {gitInitError !== "" ? (

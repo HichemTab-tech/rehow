@@ -49,6 +49,12 @@ Only a clean proven `remoteFastForward` can reach apply. Apply consumes the toke
 
 This gate deliberately adds no React UI. The next UI slice must explain unsupported packed branches, conflicts, dirty state, divergence, and history limits using only the closed native result. It must not add renderer URL/ref/OID/path authority.
 
+### 5D2D — Reference Desk manual sync
+
+The status bar exposes manual Sync only for a writable ready repository with an upstream. A compact, keyboard-focused panel validates the exact closed native payload and explains up-to-date, local-ahead, dirty fast-forward, divergence, history-limit, and clean fast-forward outcomes. Only the last state exposes Apply; cancellation, decline, errors, and focus restoration remain explicit. Successful native apply/recovery replaces the validated Workspace payload and reconciles the current Guide and watcher state.
+
+Recovery remains one generic user action without adding a recovery-kind disclosure. The UI calls pathless sync recovery first; only the stable `recoveryNotRequired` result falls through to commit recovery, so the correct native confirmation is shown. All other errors stop. Renderer input/output still contains no URL, ref, OID, path, Git output, credential, content, or staging authority.
+
 5D3 may push only an exact reviewed local commit from the expected remote OID using an explicit refspec and native confirmation. Non-fast-forward, changed remote, auth, host-key, and transport failures are preserved and reported. No force option exists.
 
 Authenticated HTTPS/SSH requires the separately audited credential/agent provenance described by ADR 0023. Scheduled or start-time sync remains opt-in and cannot precede acceptance of the same gates used by manual sync.
@@ -58,5 +64,5 @@ Authenticated HTTPS/SSH requires the separately audited credential/agent provena
 - The first accepted slice can securely answer whether the configured upstream snapshot is valid and changed, but cannot yet modify or publish anything.
 - A changed remote is called remote-fast-forward, local-ahead, or diverged only when bounded history proves that result; otherwise it is history-limited.
 - Private staging is retained as exact evidence/input for the next gate; identity-safe retention/pruning remains required.
-- Portable fast-forward publication is interruption-recoverable and callable only through the accepted pathless native lifecycle; renderer presentation remains pending.
+- Portable fast-forward publication is interruption-recoverable and callable only through the accepted pathless native lifecycle and bounded Reference Desk presentation.
 - Unsupported authentication degrades to an actionable unavailable state rather than a token prompt.
