@@ -128,7 +128,7 @@ Every mutation accepts `expected_revision`, a full inventory snapshot, or an ope
 ### Git
 
 - Accepted read surface: `git_capabilities`, `git_status`.
-- Accepted onboarding surface: pathless `git_initialize_plan_open_workspace` / `git_initialize_apply_open_workspace`, plus `git_remote_plan_open_workspace` / `git_remote_apply_open_workspace`; only the remote plan request accepts a bounded name and secret-free URL, and its response omits the URL. Proposed gated surface: `git_clone_choose_destination/plan/apply`, `git_commit_plan/commit`, `git_sync_plan/sync`. A command does not exist until its operation ADR/security gate is accepted.
+- Accepted onboarding surface: pathless `git_initialize_plan_open_workspace` / `git_initialize_apply_open_workspace`, `git_remote_plan_open_workspace` / `git_remote_apply_open_workspace`, and the read-only `git_clone_plan_selected_workspace`; only remote/clone planning accepts a secret-free URL and responses omit it. Proposed gated surface: clone apply/cancel, `git_commit_plan/commit`, and `git_sync_plan/sync`. A command does not exist until its operation ADR/security gate is accepted.
 
 There is no generic `read_file`, `write_file`, `open_path`, or `run_command` command.
 

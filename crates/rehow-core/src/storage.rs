@@ -647,6 +647,66 @@ pub struct EmptyWorkspaceTarget {
     root: linux::DirectoryCapability,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) struct CloneDestinationSnapshot {
+    device: u64,
+    inode: u64,
+    root_hash: [u8; 32],
+    capability_hash: [u8; 32],
+    facts: WorkspaceFolderFacts,
+}
+
+impl CloneDestinationSnapshot {
+    pub(crate) fn device(self) -> u64 {
+        self.device
+    }
+
+    pub(crate) fn inode(self) -> u64 {
+        self.inode
+    }
+
+    pub(crate) fn root_hash(self) -> [u8; 32] {
+        self.root_hash
+    }
+
+    pub(crate) fn capability_hash(self) -> [u8; 32] {
+        self.capability_hash
+    }
+
+    pub(crate) fn facts(self) -> WorkspaceFolderFacts {
+        self.facts
+    }
+}
+
+impl EmptyWorkspaceTarget {
+    pub(crate) fn clone_destination_snapshot(
+        &self,
+    ) -> Result<CloneDestinationSnapshot, WorkspaceInspectError> {
+        self.root
+            .verify_empty_workspace_root()
+            .map_err(map_clone_destination_error)?;
+        let (device, inode) = self.root.identity().map_err(map_clone_destination_error)?;
+        Ok(CloneDestinationSnapshot {
+            device,
+            inode,
+            root_hash: self.root.root_hash(),
+            capability_hash: self.root.capability_hash(),
+            facts: inspect_folder_facts(&self.root)?,
+        })
+    }
+}
+
+fn map_clone_destination_error(error: linux::MutationIoError) -> WorkspaceInspectError {
+    match error {
+        linux::MutationIoError::Unsafe => WorkspaceInspectError::UnsafeRoot,
+        linux::MutationIoError::Conflict => WorkspaceInspectError::ChangedDuringRead,
+        linux::MutationIoError::Unsupported | linux::MutationIoError::Io => {
+            WorkspaceInspectError::Io
+        }
+        linux::MutationIoError::TooLarge => WorkspaceInspectError::ResourceLimit,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WorkspaceFolderFacts {
     writable: bool,

@@ -14,9 +14,9 @@ use rehow_core::{
     },
     domain::GuideStatus,
     git::{
-        GitInitError, GitInitPlan, GitReadError, GitRemoteError, GitRemotePlan,
-        GitRepositoryStatus, apply_git_initialize, apply_git_remote_connect, plan_git_initialize,
-        plan_git_remote_connect, read_git_status,
+        GitCloneError, GitClonePlan, GitInitError, GitInitPlan, GitReadError, GitRemoteError,
+        GitRemotePlan, GitRepositoryStatus, apply_git_initialize, apply_git_remote_connect,
+        plan_git_clone, plan_git_initialize, plan_git_remote_connect, read_git_status,
     },
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
     protocol::{AttachmentId, CategoryId, GuideId, PlanToken, Revision},
@@ -46,6 +46,7 @@ struct DesktopState {
     pending_empty: Mutex<Option<PendingWorkspace>>,
     pending_git_init: Mutex<Option<(PlanToken, GitInitPlan)>>,
     pending_git_remote: Mutex<Option<(PlanToken, GitRemotePlan)>>,
+    pending_git_clone: Mutex<Option<(PlanToken, GitClonePlan)>>,
     next_watch_session: AtomicU64,
 }
 
@@ -191,6 +192,14 @@ struct GitRemotePlanPayload {
 #[serde(rename_all = "camelCase")]
 struct GitRemoteResultPayload {
     connected: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitClonePlanPayload {
+    plan_token: PlanToken,
+    transport: &'static str,
+    host: String,
 }
 
 #[derive(Serialize)]
@@ -898,6 +907,79 @@ fn git_remote_confirmation(plan: &GitRemotePlan) -> String {
         plan.transport().as_str(),
         plan.remote_url(),
     )
+}
+
+#[tauri::command]
+fn git_clone_plan_selected_workspace(
+    remote_url: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<GitClonePlanPayload, NativeCommandError> {
+    let mut pending_clone = state.pending_git_clone.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Git clone plan is unavailable".to_owned(),
+        )
+    })?;
+    *pending_clone = None;
+    let pending_workspace = state.pending_empty.lock().map_err(|_| {
+        native_command_error(
+            "selectionUnavailable",
+            "Workspace selection is unavailable".to_owned(),
+        )
+    })?;
+    let selected = pending_workspace.as_ref().ok_or_else(|| {
+        native_command_error(
+            "selectionUnavailable",
+            "Choose an empty folder before cloning a Workspace.".to_owned(),
+        )
+    })?;
+    let plan = plan_git_clone(&selected.target, &remote_url)
+        .map_err(|error| native_command_error(git_clone_code(error), git_clone_message(error)))?;
+    let payload = GitClonePlanPayload {
+        plan_token: plan.token().clone(),
+        transport: plan.transport().as_str(),
+        host: plan.host().to_owned(),
+    };
+    *pending_clone = Some((payload.plan_token.clone(), plan));
+    Ok(payload)
+}
+
+fn git_clone_code(error: GitCloneError) -> &'static str {
+    match error {
+        GitCloneError::InvalidUrl => "invalidRemoteUrl",
+        GitCloneError::DestinationChanged => "destinationChanged",
+        GitCloneError::ReadOnly => "readOnly",
+        GitCloneError::NestedRepository => "nestedRepository",
+        GitCloneError::Unsafe => "unsafeDestination",
+        GitCloneError::Io => "io",
+    }
+}
+
+fn git_clone_message(error: GitCloneError) -> String {
+    match error {
+        GitCloneError::InvalidUrl => {
+            "Use a secret-free HTTPS or SSH repository address without a password, token, query, fragment, space, or encoded path."
+                .to_owned()
+        }
+        GitCloneError::DestinationChanged => {
+            "That folder changed after selection. Choose the empty folder again.".to_owned()
+        }
+        GitCloneError::ReadOnly => {
+            "That folder is read-only. Choose a writable folder.".to_owned()
+        }
+        GitCloneError::NestedRepository => {
+            "That folder is inside another Git repository. Choose a destination outside it."
+                .to_owned()
+        }
+        GitCloneError::Unsafe => {
+            "That destination is unsafe or no longer empty. Existing content was not changed."
+                .to_owned()
+        }
+        GitCloneError::Io => {
+            "Rehow could not inspect the clone destination. Check folder access and try again."
+                .to_owned()
+        }
+    }
 }
 
 fn git_remote_confirmation_fields(remote_name: &str, transport: &str, remote_url: &str) -> String {
@@ -1803,6 +1885,12 @@ fn initialize_selected_workspace(
             "Rehow could not prepare its private recovery folder.".to_owned(),
         )
     })?;
+    *state.pending_git_clone.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Git clone plan is unavailable".to_owned(),
+        )
+    })? = None;
     let mut pending = state.pending_empty.lock().map_err(|_| {
         native_command_error(
             "selectionUnavailable",
@@ -2566,6 +2654,10 @@ fn cancel_selected_workspace_initialization(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     *state
+        .pending_git_clone
+        .lock()
+        .map_err(|_| "Git clone plan is unavailable".to_owned())? = None;
+    *state
         .pending_empty
         .lock()
         .map_err(|_| "Workspace selection is unavailable".to_owned())? = None;
@@ -2588,6 +2680,10 @@ fn choose_workspace(
         .map_err(|error| error.to_string())?
         .into_parts();
     let facts = FolderFactsPayload::from(report_facts);
+    *state
+        .pending_git_clone
+        .lock()
+        .map_err(|_| "Git clone plan is unavailable".to_owned())? = None;
     *state
         .pending_empty
         .lock()
@@ -2668,6 +2764,7 @@ pub fn run() {
             git_initialize_apply_open_workspace,
             git_remote_plan_open_workspace,
             git_remote_apply_open_workspace,
+            git_clone_plan_selected_workspace,
             git_status_open_workspace,
             search_open_workspace
         ])
@@ -2678,15 +2775,15 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        APPLICATION_NAME, CategoryPayload, FolderFactsPayload, GitInitPlanPayload,
-        GitInitResultPayload, GitRemotePlanPayload, GitRemoteResultPayload, GuideBodyPayload,
-        GuidePayload, PendingGitPlanError, SearchHighlightPayload, SearchHitPayload,
-        WorkspacePayload, WorkspaceWatchEventPayload, attachment_removal_code,
+        APPLICATION_NAME, CategoryPayload, FolderFactsPayload, GitClonePlanPayload,
+        GitInitPlanPayload, GitInitResultPayload, GitRemotePlanPayload, GitRemoteResultPayload,
+        GuideBodyPayload, GuidePayload, PendingGitPlanError, SearchHighlightPayload,
+        SearchHitPayload, WorkspacePayload, WorkspaceWatchEventPayload, attachment_removal_code,
         attachment_removal_message, category_create_code, category_create_message,
         category_remove_code, category_remove_message, category_reorder_code,
         category_reorder_message, category_update_code, category_update_message, empty_git_payload,
-        git_init_code, git_init_confirmation, git_init_message, git_remote_code,
-        git_remote_confirmation_fields, git_remote_message, guide_create_code,
+        git_clone_code, git_clone_message, git_init_code, git_init_confirmation, git_init_message,
+        git_remote_code, git_remote_confirmation_fields, git_remote_message, guide_create_code,
         guide_create_message, guide_remove_code, guide_remove_confirmation, guide_remove_message,
         guide_update_code, guide_update_message, native_command_error, search_status_scope,
         take_matching_git_plan, workspace_initialization_message, workspace_refresh_code,
@@ -2698,7 +2795,7 @@ mod tests {
             CategoryUpdateError, GuideCreateError, GuideRemoveError, GuideUpdateError,
             WorkspaceInitializationError, WorkspaceRefreshError,
         },
-        git::{GitInitError, GitRemoteError},
+        git::{GitCloneError, GitInitError, GitRemoteError},
         markdown::parse_safe_markdown,
         protocol::PlanToken,
     };
@@ -2770,6 +2867,26 @@ mod tests {
         assert!(confirmation.contains("origin"));
         assert!(confirmation.contains("https://example.invalid/team/rehow.git"));
         assert!(confirmation.contains("will not connect"));
+    }
+
+    #[test]
+    fn git_clone_plan_payload_and_errors_are_closed_and_url_free() {
+        let token = PlanToken::from_str(&format!("plan:v1:{}", "A".repeat(43))).unwrap();
+        let plan = serde_json::to_value(GitClonePlanPayload {
+            plan_token: token,
+            transport: "ssh",
+            host: "example.invalid".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(plan.as_object().unwrap().len(), 3);
+        assert!(plan.get("url").is_none());
+        assert!(plan.get("path").is_none());
+        assert_eq!(
+            git_clone_code(GitCloneError::DestinationChanged),
+            "destinationChanged"
+        );
+        assert!(!git_clone_message(GitCloneError::InvalidUrl).contains("https://"));
+        assert!(git_clone_message(GitCloneError::NestedRepository).contains("inside"));
     }
 
     #[test]

@@ -3,10 +3,10 @@
 use crate::{
     protocol::{PlanToken, Revision},
     storage::{
-        ATTACHMENT_BYTES_LIMIT, ATTACHMENT_COUNT_LIMIT, CATEGORY_LIMIT, GUIDE_COUNT_LIMIT,
-        GitConfigStorageError, GitInitializeStorageError, GitMaterializationPathKind,
-        GitRepositoryCapabilityError, MANAGED_BYTES_LIMIT, WorkspaceView,
-        classify_git_materialization_path,
+        ATTACHMENT_BYTES_LIMIT, ATTACHMENT_COUNT_LIMIT, CATEGORY_LIMIT, CloneDestinationSnapshot,
+        EmptyWorkspaceTarget, GUIDE_COUNT_LIMIT, GitConfigStorageError, GitInitializeStorageError,
+        GitMaterializationPathKind, GitRepositoryCapabilityError, MANAGED_BYTES_LIMIT,
+        WorkspaceView, classify_git_materialization_path,
     },
 };
 use std::{
@@ -252,6 +252,123 @@ pub enum GitRemoteError {
     Unsupported,
     GitUnavailable,
     Io,
+}
+
+pub struct GitClonePlan {
+    token: PlanToken,
+    remote_url: String,
+    transport: GitRemoteTransport,
+    host: String,
+    destination: CloneDestinationSnapshot,
+}
+
+impl fmt::Debug for GitClonePlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitClonePlan")
+            .field("token", &"<redacted>")
+            .field("remote_url", &"<redacted>")
+            .field("transport", &self.transport)
+            .field("host", &self.host)
+            .field("destination", &"<redacted>")
+            .finish()
+    }
+}
+
+impl GitClonePlan {
+    pub fn token(&self) -> &PlanToken {
+        &self.token
+    }
+
+    pub fn remote_url(&self) -> &str {
+        &self.remote_url
+    }
+
+    pub fn transport(&self) -> GitRemoteTransport {
+        self.transport
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitCloneError {
+    InvalidUrl,
+    DestinationChanged,
+    ReadOnly,
+    NestedRepository,
+    Unsafe,
+    Io,
+}
+
+pub fn plan_git_clone(
+    destination: &EmptyWorkspaceTarget,
+    remote_url: &str,
+) -> Result<GitClonePlan, GitCloneError> {
+    let url = validate_remote_url(remote_url).map_err(|_| GitCloneError::InvalidUrl)?;
+    let snapshot = destination
+        .clone_destination_snapshot()
+        .map_err(map_clone_inspection)?;
+    validate_clone_destination_facts(snapshot)?;
+    let mut random = [0_u8; 32];
+    fill_random(&mut random).map_err(|_| GitCloneError::Io)?;
+    Ok(GitClonePlan {
+        token: PlanToken::from_random_bytes(random),
+        remote_url: url.canonical,
+        transport: url.transport,
+        host: url.host,
+        destination: snapshot,
+    })
+}
+
+pub fn revalidate_git_clone_plan(
+    destination: &EmptyWorkspaceTarget,
+    plan: &GitClonePlan,
+) -> Result<(), GitCloneError> {
+    let current = destination
+        .clone_destination_snapshot()
+        .map_err(map_clone_inspection)?;
+    validate_clone_destination_facts(current)?;
+    if current.device() != plan.destination.device()
+        || current.inode() != plan.destination.inode()
+        || current.root_hash() != plan.destination.root_hash()
+        || current.capability_hash() != plan.destination.capability_hash()
+    {
+        return Err(GitCloneError::DestinationChanged);
+    }
+    Ok(())
+}
+
+fn validate_clone_destination_facts(
+    snapshot: CloneDestinationSnapshot,
+) -> Result<(), GitCloneError> {
+    let facts = snapshot.facts();
+    if !facts.git_probe_complete() || facts.unsafe_git_marker() || facts.existing_git_repository() {
+        return Err(GitCloneError::Unsafe);
+    }
+    if facts.nested_git_repository() {
+        return Err(GitCloneError::NestedRepository);
+    }
+    if !facts.writable() {
+        return Err(GitCloneError::ReadOnly);
+    }
+    Ok(())
+}
+
+fn map_clone_inspection(error: crate::storage::WorkspaceInspectError) -> GitCloneError {
+    match error {
+        crate::storage::WorkspaceInspectError::ChangedDuringRead => {
+            GitCloneError::DestinationChanged
+        }
+        crate::storage::WorkspaceInspectError::UnsafeRoot
+        | crate::storage::WorkspaceInspectError::ResourceLimit => GitCloneError::Unsafe,
+        crate::storage::WorkspaceInspectError::NotFound
+        | crate::storage::WorkspaceInspectError::NotDirectory
+        | crate::storage::WorkspaceInspectError::PermissionDenied
+        | crate::storage::WorkspaceInspectError::Io => GitCloneError::Io,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1475,6 +1592,14 @@ mod tests {
         open_workspace(temp)
     }
 
+    fn empty_target(temp: &Temp) -> EmptyWorkspaceTarget {
+        let (_, inspection) = inspect_workspace(&temp.0).unwrap().into_parts();
+        let WorkspaceInspection::Empty(target) = inspection else {
+            panic!("expected empty destination")
+        };
+        target
+    }
+
     fn config_backups(temp: &Temp) -> Vec<Vec<u8>> {
         let mut backups = fs::read_dir(temp.0.join(".git"))
             .unwrap()
@@ -1790,6 +1915,54 @@ mod tests {
         assert!(!debug.contains(blob));
         assert!(!debug.contains("rehow.yaml"));
         assert!(debug.contains("entries: 1"));
+    }
+
+    #[test]
+    fn clone_plan_binds_an_unchanged_empty_destination_and_redacts_authority() {
+        let temp = Temp::new();
+        let target = empty_target(&temp);
+        let url = "https://github.com/example/rehow.git";
+        let plan = plan_git_clone(&target, url).unwrap();
+        assert_eq!(plan.remote_url(), url);
+        assert_eq!(plan.transport(), GitRemoteTransport::Https);
+        assert_eq!(plan.host(), "github.com");
+        revalidate_git_clone_plan(&target, &plan).unwrap();
+
+        let debug = format!("{plan:?}");
+        assert!(!debug.contains(url));
+        let token = serde_json::to_string(plan.token()).unwrap();
+        assert!(!debug.contains(token.trim_matches('"')));
+        assert!(debug.contains("destination: \"<redacted>\""));
+
+        fs::write(temp.0.join("appeared-after-plan"), b"external").unwrap();
+        assert_eq!(
+            revalidate_git_clone_plan(&target, &plan),
+            Err(GitCloneError::DestinationChanged)
+        );
+    }
+
+    #[test]
+    fn clone_plan_refuses_invalid_urls_and_nested_repositories() {
+        let temp = Temp::new();
+        let target = empty_target(&temp);
+        assert!(matches!(
+            plan_git_clone(&target, "https://user:secret@example.com/rehow.git"),
+            Err(GitCloneError::InvalidUrl)
+        ));
+
+        let parent = Temp::new();
+        fs::create_dir(parent.0.join(".git")).unwrap();
+        fs::create_dir(parent.0.join("destination")).unwrap();
+        let (_, inspection) = inspect_workspace(&parent.0.join("destination"))
+            .unwrap()
+            .into_parts();
+        let WorkspaceInspection::Empty(nested) = inspection else {
+            panic!("expected empty nested destination")
+        };
+        assert!(matches!(
+            plan_git_clone(&nested, "git@example.com:team/rehow.git"),
+            Err(GitCloneError::NestedRepository)
+        ));
     }
 
     #[test]
