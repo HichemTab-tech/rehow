@@ -332,6 +332,65 @@ impl CommitStaging {
         self.snapshot(limit).map(|current| current == expected)
     }
 
+    pub(super) fn inspect_loose_object_ids(
+        &self,
+        object_id_hex_len: usize,
+        object_limit: usize,
+        aggregate_limit: u64,
+    ) -> Result<Vec<String>, StoreError> {
+        if !matches!(object_id_hex_len, 40 | 64) || object_limit == 0 {
+            return Err(StoreError::Unsafe);
+        }
+        let git = Directory {
+            descriptor: self._git.try_clone().map_err(|_| StoreError::Io)?,
+        };
+        let objects = git.open_directory("objects")?;
+        let directories = objects.entries(258)?;
+        let mut object_ids = Vec::new();
+        let mut total = 0u64;
+        for prefix in directories {
+            if matches!(prefix.as_str(), "info" | "pack") {
+                continue;
+            }
+            if prefix.len() != 2 || !prefix.bytes().all(is_lower_hex) {
+                return Err(StoreError::Unsafe);
+            }
+            let directory = objects.open_directory_relaxed(&prefix)?;
+            for suffix in directory.entries(object_limit.saturating_add(1))? {
+                if object_ids.len() >= object_limit {
+                    return Err(StoreError::TooLarge);
+                }
+                if suffix.len() != object_id_hex_len - 2 || !suffix.bytes().all(is_lower_hex) {
+                    return Err(StoreError::Unsafe);
+                }
+                let (size, _) = directory
+                    .hash_regular_relaxed(&suffix, aggregate_limit.saturating_sub(total))?;
+                total = total.checked_add(size).ok_or(StoreError::TooLarge)?;
+                if total > aggregate_limit {
+                    return Err(StoreError::TooLarge);
+                }
+                object_ids.push(format!("{prefix}{suffix}"));
+            }
+        }
+        object_ids.sort_unstable();
+        if object_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(StoreError::Corrupt);
+        }
+        Ok(object_ids)
+    }
+
+    pub(super) fn inspect_pack_sources(
+        &self,
+        object_id_hex_len: usize,
+        aggregate_limit: u64,
+    ) -> Result<Vec<GitClonePackSource>, StoreError> {
+        inspect_pack_sources(&self._git, object_id_hex_len, aggregate_limit, true)
+    }
+
+    pub(super) fn open_pack_source(&self, source: &GitClonePackSource) -> Result<File, StoreError> {
+        open_pack_source(&self._git, source)
+    }
+
     pub(super) fn quarantine(self) -> Result<(), StoreError> {
         let expected_identity = identity(&self._stage)?;
         let source = self.commit_staging.open_directory(&self.stage_name)?;
@@ -510,88 +569,112 @@ impl CloneStaging {
         object_id_hex_len: usize,
         aggregate_limit: u64,
     ) -> Result<Vec<GitClonePackSource>, StoreError> {
-        if !matches!(object_id_hex_len, 40 | 64) {
-            return Err(StoreError::Unsafe);
-        }
-        let git = Directory {
-            descriptor: self._git.try_clone().map_err(|_| StoreError::Io)?,
-        };
-        let pack = git.open_directory("objects")?.open_directory("pack")?;
-        let entries = pack.entries(192)?;
-        let mut stems = std::collections::BTreeMap::<String, (bool, bool)>::new();
-        for name in &entries {
-            let Some((stem, suffix)) = name.rsplit_once('.') else {
-                return Err(StoreError::Unsafe);
-            };
-            if stem.len() != 5 + object_id_hex_len
-                || !stem.starts_with("pack-")
-                || !stem[5..]
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            {
-                return Err(StoreError::Unsafe);
-            }
-            let pair = stems.entry(stem.to_owned()).or_default();
-            match suffix {
-                "pack" if !pair.0 => pair.0 = true,
-                "idx" if !pair.1 => pair.1 = true,
-                "promisor" => {}
-                _ => return Err(StoreError::Unsafe),
-            }
-        }
-        if stems.is_empty() || stems.values().any(|pair| *pair != (true, true)) {
-            return Err(StoreError::Corrupt);
-        }
-
-        let mut sources = Vec::new();
-        let mut total = 0u64;
-        for name in entries
-            .into_iter()
-            .filter(|name| name.ends_with(".pack") || name.ends_with(".idx"))
-        {
-            let (size, hash) = pack.hash_regular_relaxed(&name, aggregate_limit)?;
-            total = total.checked_add(size).ok_or(StoreError::TooLarge)?;
-            if total > aggregate_limit {
-                return Err(StoreError::TooLarge);
-            }
-            sources.push(GitClonePackSource { name, size, hash });
-        }
-        sources.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(sources)
+        inspect_pack_sources(&self._git, object_id_hex_len, aggregate_limit, false)
     }
 
     pub(super) fn open_pack_source(&self, source: &GitClonePackSource) -> Result<File, StoreError> {
-        let git = Directory {
-            descriptor: self._git.try_clone().map_err(|_| StoreError::Io)?,
+        open_pack_source(&self._git, source)
+    }
+}
+
+fn is_lower_hex(byte: u8) -> bool {
+    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+}
+
+fn inspect_pack_sources(
+    git_descriptor: &OwnedFd,
+    object_id_hex_len: usize,
+    aggregate_limit: u64,
+    require_single_pack: bool,
+) -> Result<Vec<GitClonePackSource>, StoreError> {
+    if !matches!(object_id_hex_len, 40 | 64) {
+        return Err(StoreError::Unsafe);
+    }
+    let git = Directory {
+        descriptor: git_descriptor.try_clone().map_err(|_| StoreError::Io)?,
+    };
+    let pack = git.open_directory("objects")?.open_directory("pack")?;
+    let entries = pack.entries(192)?;
+    let mut stems = std::collections::BTreeMap::<String, (bool, bool)>::new();
+    for name in &entries {
+        let Some((stem, suffix)) = name.rsplit_once('.') else {
+            return Err(StoreError::Unsafe);
         };
-        let pack = git.open_directory("objects")?.open_directory("pack")?;
-        let mut file = pack.open_regular_relaxed(&source.name, source.size)?;
-        let before = status(file.as_raw_fd())?;
-        let mut hasher = blake3::Hasher::new();
-        let mut buffer = [0_u8; 64 * 1024];
-        let mut size = 0u64;
-        loop {
-            let read = file.read(&mut buffer).map_err(|_| StoreError::Io)?;
-            if read == 0 {
-                break;
-            }
-            size = size.checked_add(read as u64).ok_or(StoreError::TooLarge)?;
-            if size > source.size {
-                return Err(StoreError::Corrupt);
-            }
-            hasher.update(&buffer[..read]);
-        }
-        let after = status(file.as_raw_fd())?;
-        if size != source.size
-            || !same_file_state(&before, &after)
-            || hasher.finalize().as_bytes() != &source.hash
+        if stem.len() != 5 + object_id_hex_len
+            || !stem.starts_with("pack-")
+            || !stem[5..].bytes().all(is_lower_hex)
         {
-            return Err(StoreError::Corrupt);
+            return Err(StoreError::Unsafe);
         }
-        file.seek(SeekFrom::Start(0)).map_err(|_| StoreError::Io)?;
-        Ok(file)
+        let pair = stems.entry(stem.to_owned()).or_default();
+        match suffix {
+            "pack" if !pair.0 => pair.0 = true,
+            "idx" if !pair.1 => pair.1 = true,
+            "promisor" if !require_single_pack => {}
+            _ => return Err(StoreError::Unsafe),
+        }
+    }
+    if stems.is_empty()
+        || (require_single_pack && stems.len() != 1)
+        || stems.values().any(|pair| *pair != (true, true))
+    {
+        return Err(StoreError::Corrupt);
     }
 
+    let mut sources = Vec::new();
+    let mut total = 0u64;
+    for name in entries
+        .into_iter()
+        .filter(|name| name.ends_with(".pack") || name.ends_with(".idx"))
+    {
+        let (size, hash) =
+            pack.hash_regular_relaxed(&name, aggregate_limit.saturating_sub(total))?;
+        total = total.checked_add(size).ok_or(StoreError::TooLarge)?;
+        if total > aggregate_limit {
+            return Err(StoreError::TooLarge);
+        }
+        sources.push(GitClonePackSource { name, size, hash });
+    }
+    sources.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(sources)
+}
+
+fn open_pack_source(
+    git_descriptor: &OwnedFd,
+    source: &GitClonePackSource,
+) -> Result<File, StoreError> {
+    let git = Directory {
+        descriptor: git_descriptor.try_clone().map_err(|_| StoreError::Io)?,
+    };
+    let pack = git.open_directory("objects")?.open_directory("pack")?;
+    let mut file = pack.open_regular_relaxed(&source.name, source.size)?;
+    let before = status(file.as_raw_fd())?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut size = 0u64;
+    loop {
+        let read = file.read(&mut buffer).map_err(|_| StoreError::Io)?;
+        if read == 0 {
+            break;
+        }
+        size = size.checked_add(read as u64).ok_or(StoreError::TooLarge)?;
+        if size > source.size {
+            return Err(StoreError::Corrupt);
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let after = status(file.as_raw_fd())?;
+    if size != source.size
+        || !same_file_state(&before, &after)
+        || hasher.finalize().as_bytes() != &source.hash
+    {
+        return Err(StoreError::Corrupt);
+    }
+    file.seek(SeekFrom::Start(0)).map_err(|_| StoreError::Io)?;
+    Ok(file)
+}
+
+impl CloneStaging {
     pub(super) fn inspect_index_source(
         &self,
         staging_name: &str,

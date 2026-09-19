@@ -51,7 +51,10 @@ use std::{
     fmt,
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    os::{
+        fd::{AsRawFd, FromRawFd, OwnedFd},
+        unix::fs::{MetadataExt, PermissionsExt},
+    },
     path::Path,
 };
 
@@ -111,6 +114,15 @@ pub(crate) enum GitCommitSnapshotError {
     OperationInProgress,
     Conflict,
     Unsafe,
+    TooLarge,
+    Io,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitCommitPackInstallError {
+    Conflict,
+    Unsafe,
+    Unsupported,
     TooLarge,
     Io,
 }
@@ -275,6 +287,56 @@ impl GitRepositoryCapability {
     }
     pub(crate) fn shallow_path(&self) -> Option<&str> {
         self.shallow_path.as_deref()
+    }
+
+    pub(crate) fn install_commit_pack_sources(
+        &self,
+        sources: &[GitClonePackSource],
+        files: &mut [File],
+        object_id_hex_len: usize,
+    ) -> Result<(), GitCommitPackInstallError> {
+        if sources.len() != 2
+            || files.len() != sources.len()
+            || !matches!(object_id_hex_len, 40 | 64)
+        {
+            return Err(GitCommitPackInstallError::Unsafe);
+        }
+        validate_git_directory_for_mutation(&self._git_dir).map_err(map_git_pack_install_config)?;
+        let pack =
+            open_git_directory(&self._objects, "pack").map_err(map_git_pack_install_snapshot)?;
+        let mut stem: Option<&str> = None;
+        let mut index_position = None;
+        let mut pack_position = None;
+        for (position, source) in sources.iter().enumerate() {
+            let Some((candidate_stem, suffix)) = source.name.rsplit_once('.') else {
+                return Err(GitCommitPackInstallError::Unsafe);
+            };
+            if candidate_stem.len() != 5 + object_id_hex_len
+                || !candidate_stem.starts_with("pack-")
+                || !candidate_stem[5..]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                || stem.is_some_and(|value| value != candidate_stem)
+            {
+                return Err(GitCommitPackInstallError::Unsafe);
+            }
+            stem = Some(candidate_stem);
+            match suffix {
+                "idx" if index_position.is_none() => index_position = Some(position),
+                "pack" if pack_position.is_none() => pack_position = Some(position),
+                _ => return Err(GitCommitPackInstallError::Unsafe),
+            }
+        }
+        let (Some(pack_position), Some(index_position)) = (pack_position, index_position) else {
+            return Err(GitCommitPackInstallError::Unsafe);
+        };
+        install_git_commit_pack_file(&pack, &sources[pack_position], &mut files[pack_position])?;
+        install_git_commit_pack_file(&pack, &sources[index_position], &mut files[index_position])?;
+        // SAFETY: the retained objects directory is valid and owns the pack child.
+        if unsafe { libc::fsync(self._objects.as_raw_fd()) } != 0 {
+            return Err(GitCommitPackInstallError::Unsupported);
+        }
+        Ok(())
     }
 
     pub(crate) fn read_commit_repository_snapshot(
@@ -592,6 +654,223 @@ fn open_git_directory(directory: &OwnedFd, name: &str) -> Result<OwnedFd, GitCom
     Ok(descriptor)
 }
 
+fn map_git_pack_install_config(error: GitConfigStorageError) -> GitCommitPackInstallError {
+    match error {
+        GitConfigStorageError::Conflict => GitCommitPackInstallError::Conflict,
+        GitConfigStorageError::Unsafe => GitCommitPackInstallError::Unsafe,
+        GitConfigStorageError::Unsupported => GitCommitPackInstallError::Unsupported,
+        GitConfigStorageError::TooLarge => GitCommitPackInstallError::TooLarge,
+        GitConfigStorageError::Io => GitCommitPackInstallError::Io,
+    }
+}
+
+fn map_git_pack_install_snapshot(error: GitCommitSnapshotError) -> GitCommitPackInstallError {
+    match error {
+        GitCommitSnapshotError::OperationInProgress | GitCommitSnapshotError::Conflict => {
+            GitCommitPackInstallError::Conflict
+        }
+        GitCommitSnapshotError::Unsafe => GitCommitPackInstallError::Unsafe,
+        GitCommitSnapshotError::TooLarge => GitCommitPackInstallError::TooLarge,
+        GitCommitSnapshotError::Io => GitCommitPackInstallError::Io,
+    }
+}
+
+fn install_git_commit_pack_file(
+    directory: &OwnedFd,
+    source: &GitClonePackSource,
+    input: &mut File,
+) -> Result<(), GitCommitPackInstallError> {
+    let name = std::ffi::CString::new(source.name.as_bytes())
+        .map_err(|_| GitCommitPackInstallError::Unsafe)?;
+    let source_before = input
+        .metadata()
+        .map_err(|_| GitCommitPackInstallError::Io)?;
+    if !source_before.file_type().is_file()
+        || source_before.nlink() != 1
+        || source_before.uid() != unsafe { libc::geteuid() }
+        || source_before.len() != source.size
+        || source_before.permissions().mode() & 0o022 != 0
+    {
+        return Err(GitCommitPackInstallError::Unsafe);
+    }
+    input
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| GitCommitPackInstallError::Io)?;
+    // SAFETY: retained directory and static dot component are valid.
+    let raw = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            c".".as_ptr(),
+            libc::O_WRONLY | libc::O_TMPFILE | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            0o444,
+        )
+    };
+    if raw < 0 {
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EOPNOTSUPP | libc::EINVAL | libc::EISDIR) => {
+                Err(GitCommitPackInstallError::Unsupported)
+            }
+            _ => Err(GitCommitPackInstallError::Io),
+        };
+    }
+    // SAFETY: successful openat returned a newly owned descriptor.
+    let mut output = unsafe { File::from_raw_fd(raw) };
+    // SAFETY: the owned descriptor is valid.
+    if unsafe { libc::fchmod(output.as_raw_fd(), 0o444) } != 0 {
+        return Err(GitCommitPackInstallError::Io);
+    }
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut size = 0u64;
+    loop {
+        let read = input
+            .read(&mut buffer)
+            .map_err(|_| GitCommitPackInstallError::Io)?;
+        if read == 0 {
+            break;
+        }
+        size = size
+            .checked_add(read as u64)
+            .ok_or(GitCommitPackInstallError::TooLarge)?;
+        if size > source.size {
+            return Err(GitCommitPackInstallError::Conflict);
+        }
+        hasher.update(&buffer[..read]);
+        output
+            .write_all(&buffer[..read])
+            .map_err(|_| GitCommitPackInstallError::Io)?;
+    }
+    let source_after = input
+        .metadata()
+        .map_err(|_| GitCommitPackInstallError::Io)?;
+    if !same_git_pack_metadata(&source_before, &source_after)
+        || size != source.size
+        || hasher.finalize().as_bytes() != &source.hash
+    {
+        return Err(GitCommitPackInstallError::Conflict);
+    }
+    output
+        .sync_all()
+        .map_err(|_| GitCommitPackInstallError::Unsupported)?;
+    // SAFETY: output is an owned unnamed inode and target is confined.
+    let mut published = unsafe {
+        libc::linkat(
+            output.as_raw_fd(),
+            c"".as_ptr(),
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::AT_EMPTY_PATH,
+        )
+    };
+    if published != 0
+        && matches!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EPERM | libc::EINVAL | libc::ENOENT)
+        )
+    {
+        let source_path = std::ffi::CString::new(format!("/proc/self/fd/{}", output.as_raw_fd()))
+            .map_err(|_| GitCommitPackInstallError::Io)?;
+        // SAFETY: source names the still-open inode and target is confined.
+        published = unsafe {
+            libc::linkat(
+                libc::AT_FDCWD,
+                source_path.as_ptr(),
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::AT_SYMLINK_FOLLOW,
+            )
+        };
+    }
+    if published != 0 {
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EEXIST) => verify_git_commit_pack_file(directory, source),
+            Some(libc::EOPNOTSUPP | libc::EINVAL | libc::EPERM) => {
+                Err(GitCommitPackInstallError::Unsupported)
+            }
+            _ => Err(GitCommitPackInstallError::Io),
+        };
+    }
+    // SAFETY: retained pack directory is valid.
+    if unsafe { libc::fsync(directory.as_raw_fd()) } != 0 {
+        return Err(GitCommitPackInstallError::Unsupported);
+    }
+    verify_git_commit_pack_file(directory, source)
+}
+
+fn verify_git_commit_pack_file(
+    directory: &OwnedFd,
+    source: &GitClonePackSource,
+) -> Result<(), GitCommitPackInstallError> {
+    let name = std::ffi::CString::new(source.name.as_bytes())
+        .map_err(|_| GitCommitPackInstallError::Unsafe)?;
+    // SAFETY: retained directory and validated name are valid.
+    let raw = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if raw < 0 {
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ENOENT) => Err(GitCommitPackInstallError::Conflict),
+            Some(libc::ELOOP | libc::ENXIO | libc::ENODEV) => {
+                Err(GitCommitPackInstallError::Unsafe)
+            }
+            _ => Err(GitCommitPackInstallError::Io),
+        };
+    }
+    // SAFETY: successful openat returned an owned descriptor.
+    let mut file = unsafe { File::from_raw_fd(raw) };
+    let before = file.metadata().map_err(|_| GitCommitPackInstallError::Io)?;
+    if !before.file_type().is_file()
+        || before.nlink() != 1
+        || before.uid() != unsafe { libc::geteuid() }
+        || before.len() != source.size
+        || before.permissions().mode() & 0o022 != 0
+    {
+        return Err(GitCommitPackInstallError::Unsafe);
+    }
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut size = 0u64;
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|_| GitCommitPackInstallError::Io)?;
+        if read == 0 {
+            break;
+        }
+        size = size
+            .checked_add(read as u64)
+            .ok_or(GitCommitPackInstallError::TooLarge)?;
+        if size > source.size {
+            return Err(GitCommitPackInstallError::Conflict);
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let after = file.metadata().map_err(|_| GitCommitPackInstallError::Io)?;
+    if !same_git_pack_metadata(&before, &after)
+        || size != source.size
+        || hasher.finalize().as_bytes() != &source.hash
+    {
+        return Err(GitCommitPackInstallError::Conflict);
+    }
+    Ok(())
+}
+
+fn same_git_pack_metadata(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    left.dev() == right.dev()
+        && left.ino() == right.ino()
+        && left.len() == right.len()
+        && left.mtime() == right.mtime()
+        && left.mtime_nsec() == right.mtime_nsec()
+        && left.ctime() == right.ctime()
+        && left.ctime_nsec() == right.ctime_nsec()
+        && left.permissions().mode() == right.permissions().mode()
+        && left.nlink() == right.nlink()
+}
+
 fn valid_git_ref_part(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 255
@@ -605,7 +884,6 @@ fn valid_git_ref_part(value: &str) -> bool {
 
 fn git_config_metadata(file: &File) -> Result<GitConfigMetadata, GitConfigStorageError> {
     let metadata = file.metadata().map_err(|_| GitConfigStorageError::Io)?;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let mode = metadata.permissions().mode() & 0o7777;
     if !metadata.file_type().is_file()
         || metadata.nlink() != 1
@@ -1099,6 +1377,24 @@ impl WorkspaceView {
         &self,
     ) -> Result<GitRepositoryCapability, GitRepositoryCapabilityError> {
         self._root.git_repository_capability()
+    }
+
+    pub(crate) fn with_git_commit_writer_lock<T, E, F>(
+        &self,
+        state_home: &Path,
+        runtime_directory: Option<&Path>,
+        action: F,
+    ) -> Result<Result<T, E>, recovery::GitCommitStagingError>
+    where
+        F: FnOnce() -> Result<T, E>,
+    {
+        recovery::with_git_commit_writer_lock(
+            &self._root,
+            state_home,
+            runtime_directory,
+            *self.manifest.workspace_id(),
+            action,
+        )
     }
 
     pub(crate) fn read_git_commit_managed_file(

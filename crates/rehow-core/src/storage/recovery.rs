@@ -115,6 +115,36 @@ impl GitCommitStaging {
             .map_err(map_commit_staging_error)
     }
 
+    pub(crate) fn inspect_loose_object_ids(
+        &self,
+        object_id_hex_len: usize,
+        object_limit: usize,
+        aggregate_limit: u64,
+    ) -> Result<Vec<String>, GitCommitStagingError> {
+        self.inner
+            .inspect_loose_object_ids(object_id_hex_len, object_limit, aggregate_limit)
+            .map_err(map_commit_staging_error)
+    }
+
+    pub(crate) fn inspect_pack_sources(
+        &self,
+        object_id_hex_len: usize,
+        aggregate_limit: u64,
+    ) -> Result<Vec<GitClonePackSource>, GitCommitStagingError> {
+        self.inner
+            .inspect_pack_sources(object_id_hex_len, aggregate_limit)
+            .map_err(map_commit_staging_error)
+    }
+
+    pub(crate) fn open_pack_source(
+        &self,
+        source: &GitClonePackSource,
+    ) -> Result<File, GitCommitStagingError> {
+        self.inner
+            .open_pack_source(source)
+            .map_err(map_commit_staging_error)
+    }
+
     pub(crate) fn quarantine(self) -> Result<(), GitCommitStagingError> {
         self.inner.quarantine().map_err(map_commit_staging_error)
     }
@@ -273,6 +303,29 @@ pub(crate) fn create_git_commit_staging(
     store::CommitStaging::create(state_home, stage_name, provenance, git_config, index)
         .map(|inner| GitCommitStaging { inner })
         .map_err(map_commit_staging_error)
+}
+
+pub(super) fn with_git_commit_writer_lock<T, E, F>(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    action: F,
+) -> Result<Result<T, E>, GitCommitStagingError>
+where
+    F: FnOnce() -> Result<T, E>,
+{
+    let store = store::RecoveryStore::open(
+        state_home,
+        workspace_id,
+        root.root_hash(),
+        root.capability_hash(),
+    )
+    .map_err(map_commit_staging_error)?;
+    let _lock = store
+        .acquire_lock(runtime_directory)
+        .map_err(map_commit_staging_error)?;
+    Ok(action())
 }
 
 fn map_commit_staging_error(error: store::StoreError) -> GitCommitStagingError {

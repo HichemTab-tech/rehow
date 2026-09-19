@@ -33,3 +33,18 @@ Verified implementation checks:
 - `git diff --check`
 
 The same Security Reviewer rechecked only the two corrections and returned **PASS**.
+
+## Phase 5C2A append-only object publication evidence
+
+The core now enumerates the exact private loose candidate objects, creates one deterministic pack with reverse-index and delta reuse disabled, and independently verifies the v2 index, fanout, object set, offsets, pack checksum, index checksum, pack body, object types, sizes, and recomputed SHA-1/SHA-256 object IDs through a pack-only sandbox.
+
+Under the existing cooperating Workspace writer lock, a fresh Phase 5C1 preflight and the exact staging snapshot must still match before mutation. The retained active object-store capability installs only the verified `.pack` then `.idx` pair through owner-only unnamed inodes, durable sync, and no-replace links. Existing targets are accepted only when their exact size and BLAKE3 content match. Collisions, symlinks, hardlinks, changed sources, unsafe modes, stale state, and unsupported durability fail closed. Installed objects are immutable append-only residue: this checkpoint never changes the index, branch, packed refs, reflogs, configuration, or Workspace bytes and never deletes active objects.
+
+Verified checks:
+
+- `cargo fmt --all --check`
+- `cargo clippy -p rehow-core --all-targets --all-features --locked -- -D warnings`
+- `cargo test -p rehow-core --all-features --locked` — 385 unit tests passed, 2 intentional tests ignored; all 43 error-contract, protocol, public-API/trybuild, and unknown-YAML tests passed.
+- `git diff --check`
+
+Focused coverage proves exact candidate closure, append-only installation, idempotent identical installation, unchanged branch/index, candidate readability without publication, stale-plan refusal before active mutation, and preservation of a mismatched active pack collision. Phase 5C2B remains responsible for the recoverable index/direct-ref-last transaction and final confirmation surface.

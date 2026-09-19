@@ -8,10 +8,11 @@ use crate::{
     storage::{
         ATTACHMENT_BYTES_LIMIT, ATTACHMENT_COUNT_LIMIT, CATEGORY_LIMIT, CloneDestinationSnapshot,
         EmptyWorkspaceTarget, GUIDE_COUNT_LIMIT, GitCloneMaterializationSource,
-        GitCloneMaterializationStorageError, GitCloneStaging, GitCloneStagingError,
-        GitCommitRepositorySnapshot, GitCommitSnapshotError, GitConfigStorageError,
-        GitInitializeStorageError, GitMaterializationPathKind, GitRepositoryCapabilityError,
-        MANAGED_BYTES_LIMIT, WorkspaceInspection, WorkspaceView, classify_git_materialization_path,
+        GitCloneMaterializationStorageError, GitClonePackSource, GitCloneStaging,
+        GitCloneStagingError, GitCommitPackInstallError, GitCommitRepositorySnapshot,
+        GitCommitSnapshotError, GitConfigStorageError, GitInitializeStorageError,
+        GitMaterializationPathKind, GitRepositoryCapabilityError, MANAGED_BYTES_LIMIT,
+        WorkspaceInspection, WorkspaceView, classify_git_materialization_path,
         create_git_clone_staging, execute_git_clone_materialization, finalize_git_clone_repository,
         inspect_workspace, open_initialized_workspace, seal_git_clone_repository,
     },
@@ -286,6 +287,23 @@ struct GitCommitCandidate {
     updated: u32,
     deleted: u32,
     git_timestamp: String,
+}
+
+struct GitCommitPackedCandidate {
+    object_ids: Vec<String>,
+    sources: Vec<GitClonePackSource>,
+    staging_snapshot: GitCommitStagingSnapshot,
+}
+
+impl fmt::Debug for GitCommitPackedCandidate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitCommitPackedCandidate")
+            .field("objects", &self.object_ids.len())
+            .field("sources", &self.sources.len())
+            .field("staging_snapshot", &"<redacted>")
+            .finish()
+    }
 }
 
 impl fmt::Debug for GitCommitCandidate {
@@ -4700,6 +4718,154 @@ pub fn cancel_git_commit_plan(plan: GitCommitPlan) -> Result<(), GitCommitPlanEr
         .map_err(map_git_commit_staging_error)
 }
 
+fn prepare_git_commit_pack(
+    plan: &mut GitCommitPlan,
+) -> Result<GitCommitPackedCandidate, GitCommitPlanError> {
+    let _deadline = GitCommitDeadlineGuard::enter();
+    let staging = &plan.candidate.prepared.staging;
+    if !staging
+        .verify_snapshot(plan.staging_snapshot, MAX_COMMIT_STAGING_BYTES)
+        .map_err(map_git_commit_staging_error)?
+    {
+        return Err(GitCommitPlanError::PlanStale);
+    }
+    let object_id_hex_len = match plan.preflight.object_format {
+        GitObjectFormat::Sha1 => 40,
+        GitObjectFormat::Sha256 => 64,
+    };
+    let object_ids = staging
+        .inspect_loose_object_ids(
+            object_id_hex_len,
+            MAX_COMMIT_STAGING_OBJECTS,
+            MAX_COMMIT_STAGING_BYTES,
+        )
+        .map_err(map_git_commit_staging_error)?;
+    if object_ids.is_empty() {
+        return Ok(GitCommitPackedCandidate {
+            object_ids,
+            sources: Vec::new(),
+            staging_snapshot: plan.staging_snapshot,
+        });
+    }
+    let executable =
+        trusted_executable("/usr/bin/git").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+    let sandbox =
+        trusted_executable("/usr/bin/bwrap").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+    let mut input = Vec::new();
+    input
+        .try_reserve_exact(object_ids.len().saturating_mul(object_id_hex_len + 1))
+        .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    for object_id in &object_ids {
+        input.extend_from_slice(object_id.as_bytes());
+        input.push(b'\n');
+    }
+    let command = git_commit_staging_write_command(
+        &executable,
+        &sandbox,
+        &plan.preflight.capability,
+        staging,
+        &[
+            "-c",
+            "pack.writeReverseIndex=false",
+            "pack-objects",
+            "--compression=0",
+            "--window=0",
+            "--no-reuse-delta",
+            "--no-reuse-object",
+            "/repo.git/objects/pack/pack",
+        ],
+    );
+    let output = run_bounded_git_command_with_input(
+        command,
+        COMMIT_PROCESS_TIMEOUT,
+        128,
+        OUTPUT_LIMIT,
+        Some(input),
+    )
+    .map_err(map_git_commit_read_error)?;
+    let pack_hash = parse_git_commit_object_id_line(&output.stdout, plan.preflight.object_format)?;
+    let sources = staging
+        .inspect_pack_sources(object_id_hex_len, MAX_COMMIT_STAGING_BYTES)
+        .map_err(map_git_commit_staging_error)?;
+    verify_git_commit_pack(
+        &executable,
+        &sandbox,
+        staging,
+        plan.preflight.object_format,
+        &object_ids,
+        &sources,
+        &pack_hash,
+    )?;
+    staging
+        .verify_size_limit(MAX_COMMIT_STAGING_BYTES)
+        .map_err(map_git_commit_staging_error)?;
+    let staging_snapshot = staging
+        .snapshot(MAX_COMMIT_STAGING_BYTES)
+        .map_err(map_git_commit_staging_error)?;
+    plan.staging_snapshot = staging_snapshot;
+    Ok(GitCommitPackedCandidate {
+        object_ids,
+        sources,
+        staging_snapshot,
+    })
+}
+
+#[allow(
+    dead_code,
+    reason = "Phase 5C2B consumes this after the recoverable index/ref transaction is added"
+)]
+fn install_git_commit_candidate_pack(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    plan: &mut GitCommitPlan,
+) -> Result<GitCommitPackedCandidate, GitCommitPlanError> {
+    let packed = prepare_git_commit_pack(plan)?;
+    workspace
+        .with_git_commit_writer_lock(state_home, runtime_directory, || {
+            let current = inspect_git_commit_repository(workspace)?;
+            if !same_git_commit_preflight(&plan.preflight, &current)
+                || !plan
+                    .candidate
+                    .prepared
+                    .staging
+                    .verify_snapshot(packed.staging_snapshot, MAX_COMMIT_STAGING_BYTES)
+                    .map_err(map_git_commit_staging_error)?
+            {
+                return Err(GitCommitPlanError::PlanStale);
+            }
+            if packed.sources.is_empty() {
+                return Ok(());
+            }
+            let mut files = packed
+                .sources
+                .iter()
+                .map(|source| plan.candidate.prepared.staging.open_pack_source(source))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(map_git_commit_staging_error)?;
+            let object_id_hex_len = match plan.preflight.object_format {
+                GitObjectFormat::Sha1 => 40,
+                GitObjectFormat::Sha256 => 64,
+            };
+            current
+                .capability
+                .install_commit_pack_sources(&packed.sources, &mut files, object_id_hex_len)
+                .map_err(map_git_commit_pack_install_error)
+        })
+        .map_err(map_git_commit_staging_error)??;
+    Ok(packed)
+}
+
+fn map_git_commit_pack_install_error(error: GitCommitPackInstallError) -> GitCommitPlanError {
+    match error {
+        GitCommitPackInstallError::Conflict => GitCommitPlanError::PlanStale,
+        GitCommitPackInstallError::Unsafe => GitCommitPlanError::UnsafeRepository,
+        GitCommitPackInstallError::Unsupported => GitCommitPlanError::UnsupportedRepository,
+        GitCommitPackInstallError::TooLarge => GitCommitPlanError::ResourceLimit,
+        GitCommitPackInstallError::Io => GitCommitPlanError::Io,
+    }
+}
+
 fn ensure_git_commit_plan_time(started: Instant) -> Result<(), GitCommitPlanError> {
     if started.elapsed() >= COMMIT_PLAN_TIMEOUT || active_git_commit_deadline_reached() {
         Err(GitCommitPlanError::ResourceLimit)
@@ -6162,6 +6328,398 @@ fn read_git_commit_batch_header(reader: &mut impl Read) -> Result<Vec<u8>, GitCo
         }
     }
     Err(GitCommitPlanError::AmbiguousManagedHistory)
+}
+
+fn verify_git_commit_pack(
+    executable: &Path,
+    sandbox: &Path,
+    staging: &GitCommitStaging,
+    object_format: GitObjectFormat,
+    object_ids: &[String],
+    sources: &[GitClonePackSource],
+    pack_hash: &str,
+) -> Result<(), GitCommitPlanError> {
+    if sources.len() != 2 || validate_object_id(pack_hash) != Some(object_format) {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    let expected_stem = format!("pack-{pack_hash}");
+    let pack_source = sources
+        .iter()
+        .find(|source| source.name == format!("{expected_stem}.pack"))
+        .ok_or(GitCommitPlanError::UnsafeRepository)?;
+    let index_source = sources
+        .iter()
+        .find(|source| source.name == format!("{expected_stem}.idx"))
+        .ok_or(GitCommitPlanError::UnsafeRepository)?;
+    let hash_len = match object_format {
+        GitObjectFormat::Sha1 => 20,
+        GitObjectFormat::Sha256 => 32,
+    };
+    if index_source.size > MAX_COMMIT_INDEX_BYTES as u64
+        || pack_source.size < (12 + hash_len) as u64
+    {
+        return Err(GitCommitPlanError::ResourceLimit);
+    }
+    let mut index = staging
+        .open_pack_source(index_source)
+        .map_err(map_git_commit_staging_error)?;
+    let index_len =
+        usize::try_from(index_source.size).map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    let mut index_bytes = Vec::new();
+    index_bytes
+        .try_reserve_exact(index_len)
+        .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    index
+        .read_to_end(&mut index_bytes)
+        .map_err(|_| GitCommitPlanError::Io)?;
+    if index_bytes.len() != index_len {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    let pack_checksum = verify_git_commit_pack_index(
+        &index_bytes,
+        object_format,
+        object_ids,
+        pack_source.size,
+        pack_hash,
+    )?;
+    verify_git_commit_pack_file(
+        staging,
+        pack_source,
+        object_format,
+        object_ids.len(),
+        &pack_checksum,
+    )?;
+
+    let expectations =
+        inspect_git_commit_pack_expectations(executable, sandbox, staging, object_ids)?;
+    let command = git_commit_pack_only_read_command(executable, sandbox, staging, true);
+    stream_and_verify_git_commit_objects(command, object_format, expectations)
+}
+
+fn verify_git_commit_pack_index(
+    bytes: &[u8],
+    object_format: GitObjectFormat,
+    object_ids: &[String],
+    pack_size: u64,
+    pack_hash: &str,
+) -> Result<Vec<u8>, GitCommitPlanError> {
+    let hash_len = match object_format {
+        GitObjectFormat::Sha1 => 20,
+        GitObjectFormat::Sha256 => 32,
+    };
+    if bytes.len() < 8 + 256 * 4 + 2 * hash_len
+        || bytes.get(..4) != Some(&[0xff, b't', b'O', b'c'])
+        || read_be_u32(bytes, 4)? != 2
+    {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    let fanout_start = 8usize;
+    let mut previous = 0u32;
+    for index in 0..256 {
+        let value = read_be_u32(bytes, fanout_start + index * 4)?;
+        if value < previous {
+            return Err(GitCommitPlanError::UnsafeRepository);
+        }
+        previous = value;
+    }
+    let count = usize::try_from(previous).map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    if count != object_ids.len() || count > MAX_COMMIT_STAGING_OBJECTS {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    let names_start = fanout_start + 256 * 4;
+    let names_end = names_start
+        .checked_add(count.saturating_mul(hash_len))
+        .ok_or(GitCommitPlanError::ResourceLimit)?;
+    let crc_end = names_end
+        .checked_add(count.saturating_mul(4))
+        .ok_or(GitCommitPlanError::ResourceLimit)?;
+    let offsets_end = crc_end
+        .checked_add(count.saturating_mul(4))
+        .ok_or(GitCommitPlanError::ResourceLimit)?;
+    if offsets_end > bytes.len() {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    for (index, object_id) in object_ids.iter().enumerate() {
+        let start = names_start + index * hash_len;
+        let end = start + hash_len;
+        if bytes.get(start..end) != Some(decode_git_object_id(object_id, object_format)?.as_slice())
+        {
+            return Err(GitCommitPlanError::UnsafeRepository);
+        }
+    }
+    let mut large_indexes = std::collections::BTreeSet::new();
+    for index in 0..count {
+        let value = read_be_u32(bytes, crc_end + index * 4)?;
+        if value & 0x8000_0000 != 0 {
+            large_indexes.insert((value & 0x7fff_ffff) as usize);
+        } else if value < 12 || u64::from(value) >= pack_size.saturating_sub(hash_len as u64) {
+            return Err(GitCommitPlanError::UnsafeRepository);
+        }
+    }
+    if large_indexes.iter().copied().ne(0..large_indexes.len()) {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    let large_end = offsets_end
+        .checked_add(large_indexes.len().saturating_mul(8))
+        .ok_or(GitCommitPlanError::ResourceLimit)?;
+    let expected_len = large_end
+        .checked_add(2 * hash_len)
+        .ok_or(GitCommitPlanError::ResourceLimit)?;
+    if bytes.len() != expected_len {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    for index in 0..large_indexes.len() {
+        let start = offsets_end + index * 8;
+        let value = u64::from_be_bytes(
+            bytes[start..start + 8]
+                .try_into()
+                .map_err(|_| GitCommitPlanError::UnsafeRepository)?,
+        );
+        if value < 12 || value >= pack_size.saturating_sub(hash_len as u64) {
+            return Err(GitCommitPlanError::UnsafeRepository);
+        }
+    }
+    let pack_checksum = bytes[large_end..large_end + hash_len].to_vec();
+    if hex_lower(&pack_checksum) != pack_hash
+        || git_index_checksum(&bytes[..bytes.len() - hash_len], object_format).as_slice()
+            != &bytes[bytes.len() - hash_len..]
+    {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    Ok(pack_checksum)
+}
+
+fn verify_git_commit_pack_file(
+    staging: &GitCommitStaging,
+    source: &GitClonePackSource,
+    object_format: GitObjectFormat,
+    expected_count: usize,
+    expected_checksum: &[u8],
+) -> Result<(), GitCommitPlanError> {
+    use sha1::Digest as _;
+    let hash_len = expected_checksum.len();
+    let body_len = source
+        .size
+        .checked_sub(hash_len as u64)
+        .ok_or(GitCommitPlanError::UnsafeRepository)?;
+    let mut file = staging
+        .open_pack_source(source)
+        .map_err(map_git_commit_staging_error)?;
+    let mut header = [0u8; 12];
+    file.read_exact(&mut header)
+        .map_err(|_| GitCommitPlanError::UnsafeRepository)?;
+    let version = read_be_u32(&header, 4)?;
+    let count =
+        usize::try_from(read_be_u32(&header, 8)?).map_err(|_| GitCommitPlanError::ResourceLimit)?;
+    if &header[..4] != b"PACK"
+        || !matches!(version, 2 | 3)
+        || count != expected_count
+        || count > MAX_COMMIT_STAGING_OBJECTS
+    {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    let mut sha1 = (object_format == GitObjectFormat::Sha1).then(sha1::Sha1::new);
+    let mut sha256 = (object_format == GitObjectFormat::Sha256).then(sha2::Sha256::new);
+    if let Some(digest) = &mut sha1 {
+        digest.update(header);
+    }
+    if let Some(digest) = &mut sha256 {
+        digest.update(header);
+    }
+    let mut remaining = body_len
+        .checked_sub(header.len() as u64)
+        .ok_or(GitCommitPlanError::UnsafeRepository)?;
+    let mut buffer = [0u8; 64 * 1024];
+    while remaining > 0 {
+        if active_git_commit_deadline_reached() {
+            return Err(GitCommitPlanError::ResourceLimit);
+        }
+        let amount = usize::try_from(remaining.min(buffer.len() as u64))
+            .map_err(|_| GitCommitPlanError::ResourceLimit)?;
+        file.read_exact(&mut buffer[..amount])
+            .map_err(|_| GitCommitPlanError::UnsafeRepository)?;
+        if let Some(digest) = &mut sha1 {
+            digest.update(&buffer[..amount]);
+        }
+        if let Some(digest) = &mut sha256 {
+            digest.update(&buffer[..amount]);
+        }
+        remaining -= amount as u64;
+    }
+    let actual = match (sha1, sha256) {
+        (Some(digest), None) => digest.finalize().to_vec(),
+        (None, Some(digest)) => digest.finalize().to_vec(),
+        _ => return Err(GitCommitPlanError::UnsafeRepository),
+    };
+    let mut trailer = vec![0u8; hash_len];
+    file.read_exact(&mut trailer)
+        .map_err(|_| GitCommitPlanError::UnsafeRepository)?;
+    let mut unexpected = [0u8; 1];
+    if file
+        .read(&mut unexpected)
+        .map_err(|_| GitCommitPlanError::Io)?
+        != 0
+        || actual != trailer
+        || trailer != expected_checksum
+    {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    Ok(())
+}
+
+fn inspect_git_commit_pack_expectations(
+    executable: &Path,
+    sandbox: &Path,
+    staging: &GitCommitStaging,
+    object_ids: &[String],
+) -> Result<Vec<GitCommitObjectExpectation>, GitCommitPlanError> {
+    let mut input = Vec::new();
+    for object_id in object_ids {
+        input.extend_from_slice(object_id.as_bytes());
+        input.push(b'\n');
+    }
+    let command = git_commit_pack_only_read_command(executable, sandbox, staging, false);
+    let output = run_bounded_git_command_with_input(
+        command,
+        COMMIT_PROCESS_TIMEOUT,
+        MAX_COMMIT_TREE_BYTES,
+        OUTPUT_LIMIT,
+        Some(input),
+    )
+    .map_err(map_git_commit_read_error)?;
+    let text =
+        std::str::from_utf8(&output.stdout).map_err(|_| GitCommitPlanError::UnsafeRepository)?;
+    let mut lines = text.lines();
+    let mut expectations = Vec::new();
+    for object_id in object_ids {
+        let mut fields = lines
+            .next()
+            .ok_or(GitCommitPlanError::UnsafeRepository)?
+            .split_ascii_whitespace();
+        let actual_id = fields.next().ok_or(GitCommitPlanError::UnsafeRepository)?;
+        let object_type = match fields.next() {
+            Some("blob") => "blob",
+            Some("tree") => "tree",
+            Some("commit") => "commit",
+            _ => return Err(GitCommitPlanError::UnsafeRepository),
+        };
+        let size = fields
+            .next()
+            .and_then(parse_canonical_u64)
+            .ok_or(GitCommitPlanError::UnsafeRepository)?;
+        if fields.next().is_some() || actual_id != object_id {
+            return Err(GitCommitPlanError::UnsafeRepository);
+        }
+        expectations.push(GitCommitObjectExpectation {
+            object_id: object_id.clone(),
+            object_type,
+            size: Some(size),
+        });
+    }
+    if lines.next().is_some() {
+        return Err(GitCommitPlanError::UnsafeRepository);
+    }
+    Ok(expectations)
+}
+
+fn git_commit_pack_only_read_command(
+    executable: &Path,
+    sandbox: &Path,
+    staging: &GitCommitStaging,
+    contents: bool,
+) -> Command {
+    let descriptor = staging.git_descriptor();
+    let pack_path = format!("{}/objects/pack", staging.git_path());
+    let config_path = format!("{}/config", staging.git_path());
+    let head_path = format!("{}/HEAD", staging.git_path());
+    let refs_path = format!("{}/refs", staging.git_path());
+    let mut command = Command::new(sandbox);
+    command
+        .env_clear()
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args([
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-all",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib",
+            "/lib64",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/repo.git",
+            "--dir",
+            "/repo.git/objects",
+            "--ro-bind",
+            &pack_path,
+            "/repo.git/objects/pack",
+            "--dir",
+            "/repo.git/objects/info",
+            "--ro-bind",
+            &config_path,
+            "/repo.git/config",
+            "--ro-bind",
+            &head_path,
+            "/repo.git/HEAD",
+            "--ro-bind",
+            &refs_path,
+            "/repo.git/refs",
+            "--tmpfs",
+            "/tmp",
+            "--chdir",
+            "/tmp",
+            "--setenv",
+            "GIT_DIR",
+            "/repo.git",
+            "--",
+        ])
+        .arg(executable)
+        .args([
+            "--no-pager",
+            "--literal-pathspecs",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "protocol.allow=never",
+        ])
+        .arg("cat-file")
+        .arg(if contents {
+            "--batch"
+        } else {
+            "--batch-check=%(objectname) %(objecttype) %(objectsize)"
+        })
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.process_group(0);
+    // SAFETY: only the retained core-created staging descriptor is exposed to
+    // Bubblewrap for fixed pack/config/HEAD/ref paths.
+    unsafe {
+        command.pre_exec(move || {
+            let flags = libc::fcntl(descriptor, libc::F_GETFD);
+            if flags < 0 || libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command
 }
 
 fn map_prior_git_commit_inspection_error(
@@ -7795,6 +8353,179 @@ mod tests {
             (candidate.created, candidate.updated, candidate.deleted),
             (0, 0, 2)
         );
+    }
+
+    #[test]
+    fn commit_candidate_pack_is_exact_verified_and_keeps_active_objects_unchanged() {
+        let temp = Temp::new();
+        drop(initialized_workspace(&temp));
+        configure_fixture_identity(&temp);
+        fixture_git(&temp, &["add", "--", "rehow.yaml"]);
+        fixture_git(&temp, &["commit", "-qm", "base"]);
+        let changed = fs::read_to_string(temp.0.join("rehow.yaml"))
+            .unwrap()
+            .replace("name: Git", "name: Packed candidate");
+        fs::write(temp.0.join("rehow.yaml"), changed).unwrap();
+        let workspace = open_workspace(&temp);
+        let state = Temp::new();
+        let mut plan = plan_git_commit(&workspace, &state.0, "Pack managed candidate").unwrap();
+        let commit_id = plan.candidate.commit_object_id.clone();
+        let active_pack = temp.0.join(".git/objects/pack");
+        let active_before = fs::read_dir(&active_pack)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+
+        let packed = prepare_git_commit_pack(&mut plan).unwrap();
+        assert!(!packed.object_ids.is_empty());
+        assert!(packed.object_ids.contains(&commit_id));
+        assert_eq!(packed.sources.len(), 2);
+        assert!(packed.sources[0].name.ends_with(".idx"));
+        assert!(packed.sources[1].name.ends_with(".pack"));
+        assert_eq!(packed.staging_snapshot, plan.staging_snapshot);
+        assert!(!format!("{packed:?}").contains(&commit_id));
+        assert_eq!(
+            fs::read_dir(active_pack)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<Vec<_>>(),
+            active_before
+        );
+        cancel_git_commit_plan(plan).unwrap();
+    }
+
+    #[test]
+    fn commit_candidate_pack_installs_append_only_without_publishing_commit() {
+        let temp = Temp::new();
+        drop(initialized_workspace(&temp));
+        configure_fixture_identity(&temp);
+        fixture_git(&temp, &["add", "--", "rehow.yaml"]);
+        fixture_git(&temp, &["commit", "-qm", "base"]);
+        let head_before = fixture_git_stdout(&temp, &["rev-parse", "HEAD"]);
+        let index_before = fs::read(temp.0.join(".git/index")).unwrap();
+        let changed = fs::read_to_string(temp.0.join("rehow.yaml"))
+            .unwrap()
+            .replace("name: Git", "name: Installed pack");
+        fs::write(temp.0.join("rehow.yaml"), changed).unwrap();
+        let workspace = open_workspace(&temp);
+        let state = Temp::new();
+        let mut plan = plan_git_commit(&workspace, &state.0, "Install candidate pack").unwrap();
+        let commit_id = plan.candidate.commit_object_id.clone();
+
+        let packed =
+            install_git_commit_candidate_pack(&workspace, &state.0, None, &mut plan).unwrap();
+        let installed = fs::read_dir(temp.0.join(".git/objects/pack"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(installed.len(), 2);
+        assert!(
+            packed
+                .sources
+                .iter()
+                .all(|source| installed.contains(&source.name))
+        );
+        fixture_git(&temp, &["cat-file", "-e", &commit_id]);
+        assert_eq!(
+            fixture_git_stdout(&temp, &["rev-parse", "HEAD"]),
+            head_before
+        );
+        assert_eq!(fs::read(temp.0.join(".git/index")).unwrap(), index_before);
+
+        install_git_commit_candidate_pack(&workspace, &state.0, None, &mut plan).unwrap();
+        assert_eq!(
+            fs::read_dir(temp.0.join(".git/objects/pack"))
+                .unwrap()
+                .count(),
+            2
+        );
+        cancel_git_commit_plan(plan).unwrap();
+    }
+
+    #[test]
+    fn commit_candidate_pack_refuses_stale_workspace_before_active_install() {
+        let temp = Temp::new();
+        drop(initialized_workspace(&temp));
+        configure_fixture_identity(&temp);
+        fixture_git(&temp, &["add", "--", "rehow.yaml"]);
+        fixture_git(&temp, &["commit", "-qm", "base"]);
+        let changed = fs::read_to_string(temp.0.join("rehow.yaml"))
+            .unwrap()
+            .replace("name: Git", "name: Planned pack");
+        fs::write(temp.0.join("rehow.yaml"), changed).unwrap();
+        let workspace = open_workspace(&temp);
+        let state = Temp::new();
+        let mut plan = plan_git_commit(&workspace, &state.0, "Stale candidate").unwrap();
+        prepare_git_commit_pack(&mut plan).unwrap();
+        fs::OpenOptions::new()
+            .append(true)
+            .open(temp.0.join("rehow.yaml"))
+            .unwrap()
+            .write_all(b"\n# changed after planning\n")
+            .unwrap();
+
+        assert_eq!(
+            install_git_commit_candidate_pack(&workspace, &state.0, None, &mut plan).unwrap_err(),
+            GitCommitPlanError::PlanStale
+        );
+        assert_eq!(
+            fs::read_dir(temp.0.join(".git/objects/pack"))
+                .unwrap()
+                .count(),
+            0
+        );
+        cancel_git_commit_plan(plan).unwrap();
+    }
+
+    #[test]
+    fn commit_candidate_pack_refuses_a_mismatched_active_pack_collision() {
+        let temp = Temp::new();
+        drop(initialized_workspace(&temp));
+        configure_fixture_identity(&temp);
+        fixture_git(&temp, &["add", "--", "rehow.yaml"]);
+        fixture_git(&temp, &["commit", "-qm", "base"]);
+        let changed = fs::read_to_string(temp.0.join("rehow.yaml"))
+            .unwrap()
+            .replace("name: Git", "name: Collision candidate");
+        fs::write(temp.0.join("rehow.yaml"), changed).unwrap();
+        let workspace = open_workspace(&temp);
+        let state = Temp::new();
+        let mut plan = plan_git_commit(&workspace, &state.0, "Collision candidate").unwrap();
+        let packed = prepare_git_commit_pack(&mut plan).unwrap();
+        let pack_source = packed
+            .sources
+            .iter()
+            .find(|source| source.name.ends_with(".pack"))
+            .unwrap();
+        let collision_path = temp.0.join(".git/objects/pack").join(&pack_source.name);
+        let collision = vec![0x5a; usize::try_from(pack_source.size).unwrap()];
+        fs::write(&collision_path, &collision).unwrap();
+        let mut files = packed
+            .sources
+            .iter()
+            .map(|source| {
+                plan.candidate
+                    .prepared
+                    .staging
+                    .open_pack_source(source)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            plan.preflight
+                .capability
+                .install_commit_pack_sources(&packed.sources, &mut files, 40,),
+            Err(GitCommitPackInstallError::Conflict)
+        );
+        assert_eq!(fs::read(collision_path).unwrap(), collision);
+        assert_eq!(
+            fs::read_dir(temp.0.join(".git/objects/pack"))
+                .unwrap()
+                .count(),
+            1
+        );
+        cancel_git_commit_plan(plan).unwrap();
     }
 
     #[test]
