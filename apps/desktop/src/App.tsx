@@ -72,6 +72,15 @@ type GitStatusPayload = {
   failure: string | null;
 };
 
+type GitInitPlanPayload = {
+  planToken: string;
+  initialBranch: "main";
+};
+
+type GitInitResultPayload = {
+  initialized: boolean;
+};
+
 type WorkspaceWatchEventPayload = {
   workspaceId: string;
   watchSession: string;
@@ -642,6 +651,30 @@ export function isGitStatusPayload(value: unknown): value is GitStatusPayload {
   );
 }
 
+export function isGitInitPlanPayload(
+  value: unknown,
+): value is GitInitPlanPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const plan = value as Partial<GitInitPlanPayload> & Record<string, unknown>;
+  return (
+    Object.keys(plan).length === 2 &&
+    typeof plan.planToken === "string" &&
+    /^plan:v1:[A-Za-z0-9_-]{43}$/.test(plan.planToken) &&
+    plan.initialBranch === "main"
+  );
+}
+
+export function isGitInitResultPayload(
+  value: unknown,
+): value is GitInitResultPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as Partial<GitInitResultPayload> &
+    Record<string, unknown>;
+  return (
+    Object.keys(result).length === 1 && typeof result.initialized === "boolean"
+  );
+}
+
 function folderFactSuffix(facts: FolderFacts) {
   const access = facts.writable
     ? "The folder is writable."
@@ -725,6 +758,8 @@ export function App() {
   });
   const [workspace, setWorkspace] = useState<WorkspacePayload | null>(null);
   const [gitStatus, setGitStatus] = useState<GitStatusPayload | null>(null);
+  const [initializingGit, setInitializingGit] = useState(false);
+  const [gitInitError, setGitInitError] = useState("");
   const [selectedId, setSelectedId] = useState(
     () => initialParameter("guide") ?? "",
   );
@@ -1281,6 +1316,7 @@ export function App() {
       const { invoke } = await import("@tauri-apps/api/core");
       const result = await invoke<OpenWorkspaceResult>("choose_workspace");
       if (result.kind !== "cancelled") {
+        setGitInitError("");
         setExternalChangeWorkspaceId("");
         setWatchDegradedWorkspaceId("");
         setCreatingCategory(false);
@@ -1429,6 +1465,7 @@ export function App() {
         { name },
       );
       setWorkspace(created);
+      setGitInitError("");
       setExternalChangeWorkspaceId("");
       setWatchDegradedWorkspaceId(
         created.watchStatus === "degraded" ? created.id : "",
@@ -1448,6 +1485,57 @@ export function App() {
       requestAnimationFrame(() => workspaceSetupErrorRef.current?.focus());
     } finally {
       setInitializingWorkspace(false);
+    }
+  }
+
+  async function initializeGit() {
+    if (
+      workspace === null ||
+      gitStatus?.kind !== "notRepository" ||
+      initializingGit
+    )
+      return;
+    setInitializingGit(true);
+    setGitInitError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const plan = await invoke<unknown>("git_initialize_plan_open_workspace");
+      if (!isGitInitPlanPayload(plan))
+        throw new Error("invalid Git initialization plan");
+      const result = await invoke<unknown>(
+        "git_initialize_apply_open_workspace",
+        {
+          planToken: plan.planToken,
+        },
+      );
+      if (!isGitInitResultPayload(result))
+        throw new Error("invalid Git initialization result");
+      if (!result.initialized) {
+        setAnnouncement("Git initialization cancelled.");
+        return;
+      }
+      setGitStatus(null);
+      setWorkspace((current) =>
+        current === null
+          ? null
+          : {
+              ...current,
+              facts: {
+                ...current.facts,
+                existingGitRepository: true,
+                gitProbeComplete: true,
+                unsafeGitMarker: false,
+              },
+            },
+      );
+      setAnnouncement("Git initialized with initial branch main.");
+      requestAnimationFrame(() => searchRef.current?.focus());
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setGitInitError(failure.message);
+      setAnnouncement(failure.message);
+    } finally {
+      setInitializingGit(false);
     }
   }
 
@@ -3474,7 +3562,31 @@ export function App() {
         <span className="status-path" translate="no">
           {workspace?.name ?? "No Workspace"}
         </span>
-        <span>{workspace ? gitStatusLabel(gitStatus) : "Read-only"}</span>
+        <span className="git-status">
+          {workspace
+            ? gitStatus?.kind === "notRepository" &&
+              workspace.facts.nestedGitRepository
+              ? "Inside existing Git repository"
+              : gitStatusLabel(gitStatus)
+            : "Read-only"}
+          {workspace?.facts.writable &&
+          !workspace.facts.nestedGitRepository &&
+          gitStatus?.kind === "notRepository" ? (
+            <button
+              type="button"
+              className="status-action"
+              onClick={initializeGit}
+              disabled={initializingGit}
+            >
+              {initializingGit ? "Initializing…" : "Initialize Git"}
+            </button>
+          ) : null}
+          {gitInitError !== "" ? (
+            <span className="git-action-error" role="alert">
+              {gitInitError}
+            </span>
+          ) : null}
+        </span>
       </footer>
       <div className="sr-only" aria-live="polite">
         {announcement}

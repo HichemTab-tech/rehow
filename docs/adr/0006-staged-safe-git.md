@@ -1,6 +1,6 @@
 # ADR 0006: Staged Safe Git Integration
 
-- Status: Partially Accepted — discovery/status only; each mutation stage is Proposed and blocked on a separate ADR/security gate
+- Status: Partially Accepted — discovery/status and ADR 0022 local initialization; connect/clone/commit/sync remain Proposed behind separate ADR/security gates
 - Date: 2026-09-05
 
 ## Context
@@ -9,10 +9,10 @@ Git is required and must eventually support init/connect/clone/commit/sync, but 
 
 ## Decision
 
-Accept only stage 1 now. The remaining required product stages are proposed and must each receive a separate operation ADR/security gate:
+Accept stage 1 and ADR 0022's process-free local initialization. The remaining required product stages are proposed and must each receive a separate operation ADR/security gate:
 
 1. executable/repository discovery and bounded machine-readable status/branch/remotes/divergence/conflict;
-2. safe init/connect/clone plans for unchanged destinations;
+2. safe init/connect/clone plans for unchanged destinations (only local init is accepted by ADR 0022);
 3. deliberate commit using a primitive proven not to execute repository hooks/filters (audited libgit2 or filter-free plumbing/update-ref with expected OID if porcelain cannot be contained);
 4. explicit fetch/validated-incoming-tree/journaled-materialization/push sync with plan/current-state checks and trusted normal credentials.
 

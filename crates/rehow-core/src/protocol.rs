@@ -407,6 +407,11 @@ impl FromStr for PlanToken {
         Ok(Self(bytes))
     }
 }
+impl PlanToken {
+    pub(crate) fn from_random_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+}
 impl TryFrom<&str> for PlanToken {
     type Error = ValueConstructionError;
     fn try_from(v: &str) -> Result<Self, Self::Error> {

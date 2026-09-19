@@ -1422,8 +1422,37 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.status-bar span:last-child {
+.status-bar > span:last-child {
   margin-left: auto;
+}
+.status-bar .git-status {
+  max-width: 58%;
+  overflow: hidden;
+}
+.status-action {
+  border: 0;
+  padding: 2px 4px;
+  background: transparent;
+  color: var(--accent-strong);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+.status-action:hover {
+  text-decoration: underline;
+}
+.status-action:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+.status-action:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.git-action-error {
+  overflow: hidden;
+  color: var(--warning);
+  text-overflow: ellipsis;
 }
 
 @media (max-width: 1099px) {

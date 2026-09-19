@@ -14,6 +14,8 @@ import {
   hasUnsavedChanges,
   highlightedExcerptSegments,
   isCurrentWorkspaceWatchEvent,
+  isGitInitPlanPayload,
+  isGitInitResultPayload,
   isGitStatusPayload,
   isSearchHitPayload,
   isWorkspaceWatchEvent,
@@ -94,6 +96,24 @@ describe("application identity", () => {
     expect(gitStatusLabel({ ...status, conflicts: 2 })).toBe(
       "main · 2 conflicts",
     );
+  });
+
+  it("accepts only closed Git initialization plan and result payloads", () => {
+    const plan = {
+      planToken: `plan:v1:${"A".repeat(43)}`,
+      initialBranch: "main",
+    };
+    expect(isGitInitPlanPayload(plan)).toBe(true);
+    expect(isGitInitPlanPayload({ ...plan, path: "/tmp/workspace" })).toBe(
+      false,
+    );
+    expect(isGitInitPlanPayload({ ...plan, initialBranch: "master" })).toBe(
+      false,
+    );
+    expect(isGitInitResultPayload({ initialized: true })).toBe(true);
+    expect(
+      isGitInitResultPayload({ initialized: true, repositoryPath: "/tmp" }),
+    ).toBe(false);
   });
 
   it("detects exact Guide editor dirty state", () => {

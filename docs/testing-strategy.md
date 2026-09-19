@@ -87,6 +87,8 @@ Use the most stable Tauri/WebDriver-compatible automation available at Phase 2 a
 | Git | unavailable, clean/dirty/untracked, branch/detached, remotes/redaction, ahead/behind/diverged, merge/rebase conflict, unsafe owner, nested repo, auth/offline, timeout/output cap, hostile hook/filter/fsmonitor/textconv/pager/env |
 
 Phase 5A additionally proves that repository hook/fsmonitor/clean/process/include configuration cannot create a sentinel, secret-bearing remote URLs never cross the core boundary, direct gitfiles/common directories/object alternates are rejected, a post-check alternates race is masked, non-UTF-8 path bytes stay opaque, tracking divergence is explicit, and status uses retained descriptor roots with no optional lock.
+
+Phase 5B1 proves that local initialization invokes no Git subprocess; creates only owner-private canonical direct metadata; binds a random single-use plan to the retained root, Workspace identity, and current manifest revision; rejects stale/replayed plans, symlinks, files, and unknown residue; and resumes exact marker-bound interruptions after the marker, directory, and file durability stages.
 | MCP | schemas/errors, aliased launch handles, duplicate/nested roots, per-root capabilities, revisions, prompt injection, plan/approval-child provenance+pipe expiry/replay/substitution, change summary, stdout purity |
 | UI | empty/loading/error/conflict, keyboard, focus, announcements, long content, 200% zoom, theme, reduced motion, narrow panes |
 

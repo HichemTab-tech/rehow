@@ -1,6 +1,9 @@
-//! Bounded, noninteractive, read-only Git discovery and status.
+//! Confined Git discovery/status and separately gated repository operations.
 
-use crate::storage::{GitRepositoryCapabilityError, WorkspaceView};
+use crate::{
+    protocol::{PlanToken, Revision},
+    storage::{GitInitializeStorageError, GitRepositoryCapabilityError, WorkspaceView},
+};
 use std::{
     fs,
     io::Read,
@@ -114,6 +117,155 @@ pub enum GitReadError {
     Timeout,
     OutputLimit,
     InvalidOutput,
+}
+
+#[derive(Debug)]
+pub struct GitInitPlan {
+    token: PlanToken,
+    workspace_id: String,
+    manifest_revision: Revision,
+    root_capability_hash: [u8; 32],
+}
+
+impl GitInitPlan {
+    pub fn token(&self) -> &PlanToken {
+        &self.token
+    }
+
+    pub fn initial_branch(&self) -> &'static str {
+        "main"
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitInitError {
+    AlreadyRepository,
+    PlanStale,
+    ReadOnly,
+    NestedRepository,
+    Unsafe,
+    Unsupported,
+    Io,
+}
+
+pub fn plan_git_initialize(workspace: &WorkspaceView) -> Result<GitInitPlan, GitInitError> {
+    ensure_git_initialization_facts(workspace)?;
+    ensure_git_initializable(workspace, false)?;
+    let (workspace_id, manifest_revision, root_capability_hash) =
+        workspace.git_initialization_binding();
+    let mut random = [0_u8; 32];
+    fill_random(&mut random).map_err(|_| GitInitError::Io)?;
+    Ok(GitInitPlan {
+        token: PlanToken::from_random_bytes(random),
+        workspace_id,
+        manifest_revision,
+        root_capability_hash,
+    })
+}
+
+pub fn apply_git_initialize(
+    workspace: &WorkspaceView,
+    plan: &GitInitPlan,
+) -> Result<(), GitInitError> {
+    let (workspace_id, manifest_revision, root_capability_hash) =
+        workspace.git_initialization_binding();
+    if workspace_id != plan.workspace_id
+        || manifest_revision != plan.manifest_revision
+        || root_capability_hash != plan.root_capability_hash
+    {
+        return Err(GitInitError::PlanStale);
+    }
+    if !workspace
+        .git_manifest_revision_is_current(plan.manifest_revision)
+        .map_err(map_git_init_storage)?
+    {
+        return Err(GitInitError::PlanStale);
+    }
+    ensure_git_initialization_facts(workspace)?;
+    ensure_git_initializable(workspace, true)?;
+    workspace
+        .initialize_git_repository()
+        .map_err(map_git_init_storage)?;
+    workspace
+        .git_repository_capability()
+        .map(|_| ())
+        .map_err(|error| match error {
+            GitRepositoryCapabilityError::NotRepository | GitRepositoryCapabilityError::Unsafe => {
+                GitInitError::Unsafe
+            }
+            GitRepositoryCapabilityError::Io => GitInitError::Io,
+        })
+}
+
+fn ensure_git_initialization_facts(workspace: &WorkspaceView) -> Result<(), GitInitError> {
+    let facts = workspace
+        .git_initialization_facts()
+        .map_err(map_git_init_storage)?;
+    if !facts.git_probe_complete() || facts.unsafe_git_marker() {
+        return Err(GitInitError::Unsafe);
+    }
+    if facts.nested_git_repository() {
+        return Err(GitInitError::NestedRepository);
+    }
+    if !facts.writable() {
+        return Err(GitInitError::ReadOnly);
+    }
+    Ok(())
+}
+
+fn ensure_git_initializable(workspace: &WorkspaceView, applying: bool) -> Result<(), GitInitError> {
+    match workspace.git_repository_capability() {
+        Ok(_) => Err(if applying {
+            GitInitError::PlanStale
+        } else {
+            GitInitError::AlreadyRepository
+        }),
+        Err(GitRepositoryCapabilityError::NotRepository) => Ok(()),
+        Err(GitRepositoryCapabilityError::Unsafe) => {
+            if workspace
+                .git_initialization_resumable()
+                .map_err(map_git_init_storage)?
+            {
+                Ok(())
+            } else {
+                Err(GitInitError::Unsafe)
+            }
+        }
+        Err(GitRepositoryCapabilityError::Io) => Err(GitInitError::Io),
+    }
+}
+
+fn map_git_init_storage(error: GitInitializeStorageError) -> GitInitError {
+    match error {
+        GitInitializeStorageError::Conflict => GitInitError::PlanStale,
+        GitInitializeStorageError::Unsafe => GitInitError::Unsafe,
+        GitInitializeStorageError::Unsupported => GitInitError::Unsupported,
+        GitInitializeStorageError::Io => GitInitError::Io,
+    }
+}
+
+fn fill_random(bytes: &mut [u8]) -> Result<(), std::io::Error> {
+    let mut filled = 0usize;
+    while filled < bytes.len() {
+        // SAFETY: the remaining slice is writable for the requested length.
+        let result = unsafe {
+            libc::getrandom(bytes[filled..].as_mut_ptr().cast(), bytes.len() - filled, 0)
+        };
+        if result > 0 {
+            filled += result as usize;
+        } else if result == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "system randomness returned no bytes",
+            ));
+        } else {
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn read_git_status(workspace: &WorkspaceView) -> Result<GitStatus, GitReadError> {
@@ -548,8 +700,10 @@ fn safe_git_label(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{WorkspaceInspection, inspect_workspace};
-    use std::{fs, process::Command};
+    use crate::storage::{
+        GitInitFault, WorkspaceInspection, inspect_workspace, set_git_init_fault,
+    };
+    use std::{fs, os::unix::fs::symlink, process::Command};
 
     struct Temp(PathBuf);
     impl Temp {
@@ -568,6 +722,10 @@ mod tests {
     fn workspace(temp: &Temp) -> Box<WorkspaceView> {
         fs::create_dir(temp.0.join("categories")).unwrap();
         fs::write(temp.0.join("rehow.yaml"), "schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Git\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n").unwrap();
+        open_workspace(temp)
+    }
+
+    fn open_workspace(temp: &Temp) -> Box<WorkspaceView> {
         let (_, inspection) = inspect_workspace(&temp.0).unwrap().into_parts();
         let WorkspaceInspection::Compatible(workspace) = inspection else {
             panic!()
@@ -723,5 +881,157 @@ mod tests {
         assert_eq!(parsed.changed(), 2);
         assert_eq!(parsed.untracked(), 1);
         assert_eq!(parsed.branch(), Some("main"));
+    }
+
+    #[test]
+    fn initializes_a_private_main_repository_without_running_git() {
+        let temp = Temp::new();
+        let workspace = workspace(&temp);
+        let plan = plan_git_initialize(&workspace).unwrap();
+        assert_eq!(plan.initial_branch(), "main");
+        apply_git_initialize(&workspace, &plan).unwrap();
+
+        assert_eq!(
+            fs::read(temp.0.join(".git/HEAD")).unwrap(),
+            b"ref: refs/heads/main\n"
+        );
+        assert_eq!(
+            fs::metadata(temp.0.join(".git"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(temp.0.join(".git/config"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert!(temp.0.join(".git/rehow-init").exists());
+        let status = read_git_status(&workspace).unwrap();
+        let GitRepositoryStatus::Ready(repository) = status.repository() else {
+            panic!()
+        };
+        assert_eq!(repository.branch(), Some("main"));
+        assert!(matches!(
+            apply_git_initialize(&workspace, &plan),
+            Err(GitInitError::PlanStale)
+        ));
+    }
+
+    #[test]
+    fn rejects_stale_plans_and_unsafe_git_residue() {
+        let replaced_session = Temp::new();
+        let first_open = workspace(&replaced_session);
+        let first_plan = plan_git_initialize(&first_open).unwrap();
+        let second_open = open_workspace(&replaced_session);
+        assert!(matches!(
+            apply_git_initialize(&second_open, &first_plan),
+            Err(GitInitError::PlanStale)
+        ));
+        assert!(!replaced_session.0.join(".git").exists());
+
+        let stale = Temp::new();
+        let stale_workspace = workspace(&stale);
+        let stale_plan = plan_git_initialize(&stale_workspace).unwrap();
+        fs::write(stale.0.join("rehow.yaml"), "changed\n").unwrap();
+        assert!(matches!(
+            apply_git_initialize(&stale_workspace, &stale_plan),
+            Err(GitInitError::PlanStale)
+        ));
+        assert!(!stale.0.join(".git").exists());
+
+        let residue = Temp::new();
+        fs::create_dir(residue.0.join(".git")).unwrap();
+        fs::set_permissions(residue.0.join(".git"), fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(residue.0.join(".git/unknown"), "do not replace").unwrap();
+        let residue_workspace = workspace(&residue);
+        assert!(matches!(
+            plan_git_initialize(&residue_workspace),
+            Err(GitInitError::Unsafe)
+        ));
+        assert_eq!(
+            fs::read_to_string(residue.0.join(".git/unknown")).unwrap(),
+            "do not replace"
+        );
+
+        let linked = Temp::new();
+        let outside = linked.0.join("outside");
+        fs::create_dir(&outside).unwrap();
+        symlink(&outside, linked.0.join(".git")).unwrap();
+        let linked_workspace = workspace(&linked);
+        assert!(matches!(
+            plan_git_initialize(&linked_workspace),
+            Err(GitInitError::Unsafe)
+        ));
+
+        let parent = Temp::new();
+        fs::create_dir(parent.0.join(".git")).unwrap();
+        let nested = Temp(parent.0.join("nested"));
+        fs::create_dir(&nested.0).unwrap();
+        let nested_workspace = workspace(&nested);
+        assert!(matches!(
+            plan_git_initialize(&nested_workspace),
+            Err(GitInitError::NestedRepository)
+        ));
+        assert!(!nested.0.join(".git").exists());
+    }
+
+    #[test]
+    fn resumes_each_canonical_interruption_without_overwriting_residue() {
+        let unpublished = Temp::new();
+        let opened = workspace(&unpublished);
+        let plan = plan_git_initialize(&opened).unwrap();
+        set_git_init_fault(GitInitFault::FileBeforePublication);
+        assert!(matches!(
+            apply_git_initialize(&opened, &plan),
+            Err(GitInitError::Unsupported)
+        ));
+        assert_eq!(fs::read_dir(unpublished.0.join(".git")).unwrap().count(), 0);
+        let resumed = plan_git_initialize(&opened).unwrap();
+        apply_git_initialize(&opened, &resumed).unwrap();
+
+        for fault in [GitInitFault::MarkerCreated, GitInitFault::DirectoriesSynced] {
+            let temp = Temp::new();
+            let opened = workspace(&temp);
+            let plan = plan_git_initialize(&opened).unwrap();
+            set_git_init_fault(fault);
+            assert!(matches!(
+                apply_git_initialize(&opened, &plan),
+                Err(GitInitError::Unsupported)
+            ));
+            assert!(temp.0.join(".git/rehow-init").exists());
+
+            let reopened = open_workspace(&temp);
+            let resumed = plan_git_initialize(&reopened).unwrap();
+            apply_git_initialize(&reopened, &resumed).unwrap();
+            assert!(temp.0.join(".git/rehow-init").exists());
+            assert!(matches!(
+                read_git_status(&reopened).unwrap().repository(),
+                GitRepositoryStatus::Ready(_)
+            ));
+        }
+
+        let temp = Temp::new();
+        let opened = workspace(&temp);
+        let plan = plan_git_initialize(&opened).unwrap();
+        set_git_init_fault(GitInitFault::FilesSynced);
+        assert!(matches!(
+            apply_git_initialize(&opened, &plan),
+            Err(GitInitError::Unsupported)
+        ));
+        let reopened = open_workspace(&temp);
+        assert!(matches!(
+            read_git_status(&reopened).unwrap().repository(),
+            GitRepositoryStatus::Ready(_)
+        ));
+        assert!(matches!(
+            plan_git_initialize(&reopened),
+            Err(GitInitError::AlreadyRepository)
+        ));
     }
 }

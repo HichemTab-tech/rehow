@@ -13,9 +13,12 @@ use rehow_core::{
         set_guide_archived, update_category_details, update_guide, update_guide_details,
     },
     domain::GuideStatus,
-    git::{GitReadError, GitRepositoryStatus, read_git_status},
+    git::{
+        GitInitError, GitInitPlan, GitReadError, GitRepositoryStatus, apply_git_initialize,
+        plan_git_initialize, read_git_status,
+    },
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
-    protocol::{AttachmentId, CategoryId, GuideId, Revision},
+    protocol::{AttachmentId, CategoryId, GuideId, PlanToken, Revision},
     search::{SearchHit, SearchStatusScope, search_workspace_in_scope},
     storage::{
         EmptyWorkspaceTarget, WorkspaceFolderFacts, WorkspaceInspection, WorkspaceView,
@@ -40,6 +43,7 @@ const WORKSPACE_INVALIDATED_EVENT: &str = "rehow://workspace-invalidated/v1";
 struct DesktopState {
     workspace: Mutex<Option<DesktopWorkspace>>,
     pending_empty: Mutex<Option<PendingWorkspace>>,
+    pending_git_init: Mutex<Option<(PlanToken, GitInitPlan)>>,
     next_watch_session: AtomicU64,
 }
 
@@ -157,6 +161,19 @@ struct GitStatusPayload {
     remotes: Vec<String>,
     remote_count: u32,
     failure: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitInitPlanPayload {
+    plan_token: PlanToken,
+    initial_branch: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitInitResultPayload {
+    initialized: bool,
 }
 
 #[derive(Serialize)]
@@ -570,6 +587,159 @@ fn empty_git_payload(kind: &'static str, version: Option<String>) -> GitStatusPa
         remote_count: 0,
         failure: None,
     }
+}
+
+#[tauri::command]
+fn git_initialize_plan_open_workspace(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<GitInitPlanPayload, NativeCommandError> {
+    let guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_ref().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let plan = plan_git_initialize(&workspace.view)
+        .map_err(|error| native_command_error(git_init_code(error), git_init_message(error)))?;
+    let payload = GitInitPlanPayload {
+        plan_token: plan.token().clone(),
+        initial_branch: plan.initial_branch(),
+    };
+    *state.pending_git_init.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Git initialization plan is unavailable".to_owned(),
+        )
+    })? = Some((payload.plan_token.clone(), plan));
+    Ok(payload)
+}
+
+#[tauri::command]
+fn git_initialize_apply_open_workspace(
+    window: tauri::Window,
+    plan_token: PlanToken,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<GitInitResultPayload, NativeCommandError> {
+    let mut guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_mut().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let mut pending = state.pending_git_init.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Git initialization plan is unavailable".to_owned(),
+        )
+    })?;
+    let plan = take_matching_git_plan(&mut pending, &plan_token).map_err(|error| match error {
+        PendingGitPlanError::Missing => native_command_error(
+            "planMissing",
+            "Create a fresh Git initialization plan and try again.".to_owned(),
+        ),
+        PendingGitPlanError::Invalid => native_command_error(
+            "planInvalid",
+            "The Git initialization plan does not match this request.".to_owned(),
+        ),
+    })?;
+    let confirmed = rfd::MessageDialog::new()
+        .set_parent(&window)
+        .set_level(rfd::MessageLevel::Info)
+        .set_title("Initialize Git?")
+        .set_description(git_init_confirmation())
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes;
+    if !confirmed {
+        return Ok(GitInitResultPayload { initialized: false });
+    }
+    apply_git_initialize(&workspace.view, &plan)
+        .map_err(|error| native_command_error(git_init_code(error), git_init_message(error)))?;
+    workspace.facts = workspace.facts.after_git_initialize();
+    Ok(GitInitResultPayload { initialized: true })
+}
+
+fn git_init_code(error: GitInitError) -> &'static str {
+    match error {
+        GitInitError::AlreadyRepository => "alreadyRepository",
+        GitInitError::PlanStale => "planStale",
+        GitInitError::ReadOnly => "readOnly",
+        GitInitError::NestedRepository => "nestedRepository",
+        GitInitError::Unsafe => "unsafeRepository",
+        GitInitError::Unsupported => "unsupportedFilesystem",
+        GitInitError::Io => "io",
+    }
+}
+
+fn git_init_message(error: GitInitError) -> String {
+    match error {
+        GitInitError::AlreadyRepository => {
+            "This Workspace already has a Git repository.".to_owned()
+        }
+        GitInitError::PlanStale => {
+            "The Workspace or Git destination changed. Create a fresh plan and try again."
+                .to_owned()
+        }
+        GitInitError::ReadOnly => {
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned()
+        }
+        GitInitError::NestedRepository => {
+            "This Workspace is already inside another Git repository. Rehow will not create a nested repository."
+                .to_owned()
+        }
+        GitInitError::Unsafe => {
+            "The .git destination is unsafe or contains unrecognized data. Existing data was not overwritten; partial Rehow metadata may remain, so reopen or inspect the Workspace before retrying."
+                .to_owned()
+        }
+        GitInitError::Unsupported => {
+            "This filesystem cannot provide the durable Git initialization Rehow requires."
+                .to_owned()
+        }
+        GitInitError::Io => {
+            "Git could not be initialized. Check Workspace access and try again.".to_owned()
+        }
+    }
+}
+
+fn git_init_confirmation() -> &'static str {
+    "Create private Git metadata for this Workspace with initial branch “main”?\n\nRehow will not commit, connect, or synchronize anything."
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingGitPlanError {
+    Missing,
+    Invalid,
+}
+
+fn take_matching_git_plan<T>(
+    pending: &mut Option<(PlanToken, T)>,
+    token: &PlanToken,
+) -> Result<T, PendingGitPlanError> {
+    let Some((expected, _)) = pending.as_ref() else {
+        return Err(PendingGitPlanError::Missing);
+    };
+    if expected != token {
+        return Err(PendingGitPlanError::Invalid);
+    }
+    Ok(pending.take().expect("checked pending Git plan").1)
 }
 
 fn search_status_scope(scope: &str) -> Option<SearchStatusScope> {
@@ -2308,6 +2478,8 @@ pub fn run() {
             save_open_guide_details,
             set_open_category_archived,
             set_open_guide_archived,
+            git_initialize_plan_open_workspace,
+            git_initialize_apply_open_workspace,
             git_status_open_workspace,
             search_open_workspace
         ])
@@ -2318,14 +2490,16 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        APPLICATION_NAME, CategoryPayload, FolderFactsPayload, GuideBodyPayload, GuidePayload,
+        APPLICATION_NAME, CategoryPayload, FolderFactsPayload, GitInitPlanPayload,
+        GitInitResultPayload, GuideBodyPayload, GuidePayload, PendingGitPlanError,
         SearchHighlightPayload, SearchHitPayload, WorkspacePayload, WorkspaceWatchEventPayload,
         attachment_removal_code, attachment_removal_message, category_create_code,
         category_create_message, category_remove_code, category_remove_message,
         category_reorder_code, category_reorder_message, category_update_code,
-        category_update_message, empty_git_payload, guide_create_code, guide_create_message,
-        guide_remove_code, guide_remove_confirmation, guide_remove_message, guide_update_code,
-        guide_update_message, native_command_error, search_status_scope,
+        category_update_message, empty_git_payload, git_init_code, git_init_confirmation,
+        git_init_message, guide_create_code, guide_create_message, guide_remove_code,
+        guide_remove_confirmation, guide_remove_message, guide_update_code, guide_update_message,
+        native_command_error, search_status_scope, take_matching_git_plan,
         workspace_initialization_message, workspace_refresh_code, workspace_refresh_message,
     };
     use rehow_core::{
@@ -2334,8 +2508,11 @@ mod tests {
             CategoryUpdateError, GuideCreateError, GuideRemoveError, GuideUpdateError,
             WorkspaceInitializationError, WorkspaceRefreshError,
         },
+        git::GitInitError,
         markdown::parse_safe_markdown,
+        protocol::PlanToken,
     };
+    use std::str::FromStr;
 
     #[test]
     fn application_name_is_stable() {
@@ -2352,6 +2529,45 @@ mod tests {
         assert_eq!(object["divergenceKnown"], false);
         assert_eq!(object["remotes"], serde_json::json!([]));
         assert!(!value.to_string().contains("path"));
+    }
+
+    #[test]
+    fn git_initialization_payload_and_errors_are_closed() {
+        let token = PlanToken::from_str(&format!("plan:v1:{}", "A".repeat(43))).unwrap();
+        let plan = serde_json::to_value(GitInitPlanPayload {
+            plan_token: token,
+            initial_branch: "main",
+        })
+        .unwrap();
+        assert_eq!(plan.as_object().unwrap().len(), 2);
+        assert_eq!(plan["initialBranch"], "main");
+        assert!(plan.get("path").is_none());
+        let result = serde_json::to_value(GitInitResultPayload { initialized: true }).unwrap();
+        assert_eq!(result.as_object().unwrap().len(), 1);
+        assert_eq!(git_init_code(GitInitError::PlanStale), "planStale");
+        assert!(git_init_message(GitInitError::Unsafe).contains("not overwritten"));
+        assert!(git_init_confirmation().contains("will not commit"));
+    }
+
+    #[test]
+    fn git_initialization_token_is_single_use_and_mismatch_does_not_consume() {
+        let expected = PlanToken::from_str(&format!("plan:v1:{}", "A".repeat(43))).unwrap();
+        let wrong = PlanToken::from_str(&format!("plan:v1:{}E", "A".repeat(42))).unwrap();
+        let mut pending = Some((expected.clone(), "retained plan"));
+        assert_eq!(
+            take_matching_git_plan(&mut pending, &wrong),
+            Err(PendingGitPlanError::Invalid)
+        );
+        assert!(pending.is_some());
+        assert_eq!(
+            take_matching_git_plan(&mut pending, &expected),
+            Ok("retained plan")
+        );
+        assert!(pending.is_none());
+        assert_eq!(
+            take_matching_git_plan(&mut pending, &expected),
+            Err(PendingGitPlanError::Missing)
+        );
     }
 
     #[test]

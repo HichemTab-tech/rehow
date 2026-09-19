@@ -28,6 +28,9 @@ pub(crate) fn set_attachment_import_source_changed_fault() {
     recovery::set_attachment_source_change_fault();
 }
 
+#[cfg(test)]
+pub(crate) use linux::{GitInitFault, set_git_init_fault};
+
 #[cfg(not(target_os = "linux"))]
 compile_error!("Rehow's confined Workspace storage currently requires Linux");
 
@@ -97,6 +100,14 @@ impl GitRepositoryCapability {
 pub(crate) enum GitRepositoryCapabilityError {
     NotRepository,
     Unsafe,
+    Io,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitInitializeStorageError {
+    Conflict,
+    Unsafe,
+    Unsupported,
     Io,
 }
 
@@ -183,6 +194,15 @@ impl WorkspaceFolderFacts {
     pub fn unsafe_git_marker(self) -> bool {
         self.unsafe_git_marker
     }
+
+    pub fn after_git_initialize(self) -> Self {
+        Self {
+            existing_git_repository: true,
+            git_probe_complete: true,
+            unsafe_git_marker: false,
+            ..self
+        }
+    }
 }
 
 pub struct WorkspaceInspectionReport {
@@ -254,6 +274,79 @@ impl WorkspaceView {
     ) -> Result<GitRepositoryCapability, GitRepositoryCapabilityError> {
         self._root.git_repository_capability()
     }
+
+    pub(crate) fn git_initialization_binding(&self) -> (String, Revision, [u8; 32]) {
+        (
+            self.manifest.workspace_id().to_string(),
+            self.manifest_revision,
+            self._root.capability_hash(),
+        )
+    }
+
+    pub(crate) fn git_initialization_facts(
+        &self,
+    ) -> Result<WorkspaceFolderFacts, GitInitializeStorageError> {
+        inspect_folder_facts(&self._root).map_err(|error| match error {
+            WorkspaceInspectError::UnsafeRoot
+            | WorkspaceInspectError::ChangedDuringRead
+            | WorkspaceInspectError::ResourceLimit => GitInitializeStorageError::Unsafe,
+            WorkspaceInspectError::NotFound
+            | WorkspaceInspectError::NotDirectory
+            | WorkspaceInspectError::PermissionDenied
+            | WorkspaceInspectError::Io => GitInitializeStorageError::Io,
+        })
+    }
+
+    pub(crate) fn git_initialization_resumable(&self) -> Result<bool, GitInitializeStorageError> {
+        let marker = git_initialization_marker(
+            self.manifest.workspace_id().to_string().as_str(),
+            self.manifest_revision,
+            self._root.root_hash(),
+        );
+        self._root.git_initialization_resumable(&marker)
+    }
+
+    pub(crate) fn git_manifest_revision_is_current(
+        &self,
+        expected: Revision,
+    ) -> Result<bool, GitInitializeStorageError> {
+        let bytes = self
+            ._root
+            .read_regular("rehow.yaml", DESCRIPTOR_LIMIT)
+            .map_err(|error| match error {
+                linux::EntryReadError::Unsafe
+                | linux::EntryReadError::TooLarge
+                | linux::EntryReadError::Changed => GitInitializeStorageError::Unsafe,
+                linux::EntryReadError::Io(_) => GitInitializeStorageError::Io,
+            })?;
+        Ok(document_revision("rehow.yaml", &bytes) == expected)
+    }
+
+    pub(crate) fn initialize_git_repository(&self) -> Result<(), GitInitializeStorageError> {
+        let workspace_id = self.manifest.workspace_id().to_string();
+        let marker = git_initialization_marker(
+            &workspace_id,
+            self.manifest_revision,
+            self._root.root_hash(),
+        );
+        self._root.initialize_git_repository(&marker)
+    }
+}
+
+fn git_initialization_marker(
+    workspace_id: &str,
+    revision: Revision,
+    root_hash: [u8; 32],
+) -> Vec<u8> {
+    let mut root = String::with_capacity(64);
+    for byte in root_hash {
+        use std::fmt::Write as _;
+        write!(&mut root, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    format!(
+        "rehow-git-init-v1\nworkspace_id={workspace_id}\nmanifest_revision={revision}\nroot={root}\n"
+    )
+    .into_bytes()
 }
 
 impl LoadedCategory {
@@ -1417,7 +1510,7 @@ fn map_io(error: std::io::Error) -> WorkspaceInspectError {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::WorkspaceInspectError;
+    use super::{GitInitializeStorageError, WorkspaceInspectError};
     use crate::protocol::Revision;
     use std::{
         ffi::{CStr, CString, OsStr},
@@ -1525,11 +1618,36 @@ mod linux {
     }
 
     #[cfg(test)]
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    pub(crate) enum GitInitFault {
+        FileBeforePublication,
+        MarkerCreated,
+        DirectoriesSynced,
+        FilesSynced,
+    }
+
+    #[cfg(test)]
     thread_local! {
         static MANAGED_FAULT: std::cell::Cell<Option<ManagedFault>> = const { std::cell::Cell::new(None) };
         static ATTACHMENT_CHANGED_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static ATTACHMENT_GROWTH_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static ATTACHMENT_STATE_CHANGED_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static GIT_INIT_FAULT: std::cell::Cell<Option<GitInitFault>> = const { std::cell::Cell::new(None) };
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_git_init_fault(fault: GitInitFault) {
+        GIT_INIT_FAULT.set(Some(fault));
+    }
+
+    #[cfg(test)]
+    fn git_init_fail(point: GitInitFault) -> Result<(), GitInitializeStorageError> {
+        if GIT_INIT_FAULT.get() == Some(point) {
+            GIT_INIT_FAULT.set(None);
+            Err(GitInitializeStorageError::Unsupported)
+        } else {
+            Ok(())
+        }
     }
 
     #[cfg(test)]
@@ -1990,6 +2108,300 @@ mod linux {
         pub(super) fn create_categories_directory(&self) -> Result<(), MutationIoError> {
             self.create_private_directory_exclusive("categories")?;
             Ok(())
+        }
+
+        pub(super) fn git_initialization_resumable(
+            &self,
+            marker: &[u8],
+        ) -> Result<bool, GitInitializeStorageError> {
+            let Some(git_dir) = self
+                .optional_private_directory(".git")
+                .map_err(map_git_init_mutation)?
+            else {
+                return Ok(false);
+            };
+            let entries = git_dir.git_init_entries(8)?;
+            if entries.is_empty() {
+                return Ok(true);
+            }
+            if !entries.iter().any(|entry| entry == "rehow-init") {
+                return Ok(false);
+            }
+            git_dir.validate_partial_git_directory(marker)?;
+            Ok(true)
+        }
+
+        pub(super) fn initialize_git_repository(
+            &self,
+            marker: &[u8],
+        ) -> Result<(), GitInitializeStorageError> {
+            const HEAD: &[u8] = b"ref: refs/heads/main\n";
+            const CONFIG: &[u8] = b"[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n";
+
+            let git_dir = match self.optional_private_directory(".git") {
+                Ok(Some(directory)) => directory,
+                Ok(None) => self
+                    .create_private_directory_exclusive(".git")
+                    .map_err(map_git_init_mutation)?,
+                Err(error) => return Err(map_git_init_mutation(error)),
+            };
+            let entries = git_dir.git_init_entries(8)?;
+            if !entries.is_empty() {
+                if !entries.iter().any(|entry| entry == "rehow-init") {
+                    return Err(GitInitializeStorageError::Conflict);
+                }
+                git_dir.validate_partial_git_directory(marker)?;
+            }
+            git_dir.create_or_verify_private_file("rehow-init", marker)?;
+            #[cfg(test)]
+            git_init_fail(GitInitFault::MarkerCreated)?;
+
+            let objects = git_dir
+                .ensure_private_directory("objects")
+                .map_err(map_git_init_mutation)?;
+            let info = objects
+                .ensure_private_directory("info")
+                .map_err(map_git_init_mutation)?;
+            let pack = objects
+                .ensure_private_directory("pack")
+                .map_err(map_git_init_mutation)?;
+            let refs = git_dir
+                .ensure_private_directory("refs")
+                .map_err(map_git_init_mutation)?;
+            let heads = refs
+                .ensure_private_directory("heads")
+                .map_err(map_git_init_mutation)?;
+            let tags = refs
+                .ensure_private_directory("tags")
+                .map_err(map_git_init_mutation)?;
+            for directory in [&info, &pack, &heads, &tags] {
+                if !directory.git_init_entries(1)?.is_empty() {
+                    return Err(GitInitializeStorageError::Unsafe);
+                }
+                directory.sync_directory()?;
+            }
+            objects.sync_directory()?;
+            refs.sync_directory()?;
+            git_dir.sync_directory()?;
+            #[cfg(test)]
+            git_init_fail(GitInitFault::DirectoriesSynced)?;
+
+            git_dir.create_or_verify_private_file("HEAD", HEAD)?;
+            git_dir.create_or_verify_private_file("config", CONFIG)?;
+            #[cfg(test)]
+            git_init_fail(GitInitFault::FilesSynced)?;
+
+            git_dir.validate_complete_git_directory(marker)?;
+            git_dir.sync_directory()?;
+            self.sync_directory()?;
+            Ok(())
+        }
+
+        fn validate_partial_git_directory(
+            &self,
+            marker: &[u8],
+        ) -> Result<(), GitInitializeStorageError> {
+            const HEAD: &[u8] = b"ref: refs/heads/main\n";
+            const CONFIG: &[u8] = b"[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n";
+            let entries = self.git_init_entries(8)?;
+            if entries.iter().any(|entry| {
+                !matches!(
+                    entry.as_str(),
+                    "rehow-init" | "HEAD" | "config" | "objects" | "refs"
+                )
+            }) {
+                return Err(GitInitializeStorageError::Unsafe);
+            }
+            self.verify_private_file("rehow-init", marker)?;
+            if entries.iter().any(|entry| entry == "HEAD") {
+                self.verify_private_file("HEAD", HEAD)?;
+            }
+            if entries.iter().any(|entry| entry == "config") {
+                self.verify_private_file("config", CONFIG)?;
+            }
+            self.validate_optional_git_tree("objects", &["info", "pack"])?;
+            self.validate_optional_git_tree("refs", &["heads", "tags"])?;
+            Ok(())
+        }
+
+        fn validate_complete_git_directory(
+            &self,
+            marker: &[u8],
+        ) -> Result<(), GitInitializeStorageError> {
+            self.validate_partial_git_directory(marker)?;
+            let entries = self.git_init_entries(8)?;
+            for required in ["rehow-init", "HEAD", "config", "objects", "refs"] {
+                if !entries.iter().any(|entry| entry == required) {
+                    return Err(GitInitializeStorageError::Unsafe);
+                }
+            }
+            for (parent, children) in [("objects", ["info", "pack"]), ("refs", ["heads", "tags"])] {
+                let directory = self
+                    .open_private_directory(parent)
+                    .map_err(map_git_init_mutation)?;
+                let actual = directory.git_init_entries(3)?;
+                if children
+                    .iter()
+                    .any(|required| !actual.iter().any(|entry| entry == required))
+                {
+                    return Err(GitInitializeStorageError::Unsafe);
+                }
+            }
+            Ok(())
+        }
+
+        fn validate_optional_git_tree(
+            &self,
+            name: &str,
+            allowed: &[&str],
+        ) -> Result<(), GitInitializeStorageError> {
+            let entries = self.git_init_entries(8)?;
+            if !entries.iter().any(|entry| entry == name) {
+                return Ok(());
+            }
+            let directory = self
+                .open_private_directory(name)
+                .map_err(map_git_init_mutation)?;
+            let children = directory.git_init_entries(allowed.len() + 1)?;
+            if children
+                .iter()
+                .any(|entry| !allowed.contains(&entry.as_str()))
+            {
+                return Err(GitInitializeStorageError::Unsafe);
+            }
+            for child in children {
+                let leaf = directory
+                    .open_private_directory(&child)
+                    .map_err(map_git_init_mutation)?;
+                if !leaf.git_init_entries(1)?.is_empty() {
+                    return Err(GitInitializeStorageError::Unsafe);
+                }
+            }
+            Ok(())
+        }
+
+        fn git_init_entries(&self, limit: usize) -> Result<Vec<String>, GitInitializeStorageError> {
+            self.entries(limit).map_err(|error| match error {
+                WorkspaceInspectError::ResourceLimit => GitInitializeStorageError::Unsafe,
+                WorkspaceInspectError::UnsafeRoot | WorkspaceInspectError::ChangedDuringRead => {
+                    GitInitializeStorageError::Unsafe
+                }
+                WorkspaceInspectError::NotFound
+                | WorkspaceInspectError::NotDirectory
+                | WorkspaceInspectError::PermissionDenied
+                | WorkspaceInspectError::Io => GitInitializeStorageError::Io,
+            })
+        }
+
+        fn create_or_verify_private_file(
+            &self,
+            name: &str,
+            expected: &[u8],
+        ) -> Result<(), GitInitializeStorageError> {
+            let original_name = name;
+            let name = component(name).map_err(|_| GitInitializeStorageError::Unsafe)?;
+            // `O_TMPFILE` keeps partial bytes unnamed. The canonical name appears
+            // only after the complete inode and its bytes are durable.
+            // SAFETY: retained directory and static dot component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    c".".as_ptr(),
+                    libc::O_WRONLY | libc::O_TMPFILE | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                    0o600,
+                )
+            };
+            if raw < 0 {
+                return match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::EOPNOTSUPP | libc::EINVAL | libc::EISDIR) => {
+                        Err(GitInitializeStorageError::Unsupported)
+                    }
+                    _ => Err(GitInitializeStorageError::Io),
+                };
+            }
+            // SAFETY: successful openat returned a newly owned descriptor.
+            let mut file = unsafe { File::from_raw_fd(raw) };
+            if unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } != 0 {
+                return Err(GitInitializeStorageError::Io);
+            }
+            file.write_all(expected)
+                .map_err(|_| GitInitializeStorageError::Io)?;
+            file.sync_all()
+                .map_err(|_| GitInitializeStorageError::Unsupported)?;
+            #[cfg(test)]
+            git_init_fail(GitInitFault::FileBeforePublication)?;
+
+            // Prefer the descriptor-only Linux publication primitive. Some
+            // kernels/filesystems require the documented procfd fallback for
+            // an `O_TMPFILE` inode owned by an unprivileged process.
+            // SAFETY: both descriptors and NUL-terminated names are valid.
+            let mut published = unsafe {
+                libc::linkat(
+                    file.as_raw_fd(),
+                    c"".as_ptr(),
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::AT_EMPTY_PATH,
+                )
+            };
+            if published != 0
+                && matches!(
+                    io::Error::last_os_error().raw_os_error(),
+                    Some(libc::EPERM | libc::EINVAL | libc::ENOENT)
+                )
+            {
+                let source = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
+                    .map_err(|_| GitInitializeStorageError::Io)?;
+                // SAFETY: source names the still-open unnamed inode; target is
+                // the retained directory and validated canonical component.
+                published = unsafe {
+                    libc::linkat(
+                        libc::AT_FDCWD,
+                        source.as_ptr(),
+                        self.descriptor.as_raw_fd(),
+                        name.as_ptr(),
+                        libc::AT_SYMLINK_FOLLOW,
+                    )
+                };
+            }
+            if published != 0 {
+                return match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::EEXIST) => self.verify_private_file(original_name, expected),
+                    Some(libc::EOPNOTSUPP | libc::EINVAL | libc::EPERM) => {
+                        Err(GitInitializeStorageError::Unsupported)
+                    }
+                    _ => Err(GitInitializeStorageError::Io),
+                };
+            }
+            self.sync_directory()
+        }
+
+        fn verify_private_file(
+            &self,
+            name: &str,
+            expected: &[u8],
+        ) -> Result<(), GitInitializeStorageError> {
+            let state =
+                self.read_regular_state(name, expected.len())
+                    .map_err(|error| match error {
+                        EntryReadError::Unsafe
+                        | EntryReadError::TooLarge
+                        | EntryReadError::Changed => GitInitializeStorageError::Unsafe,
+                        EntryReadError::Io(_) => GitInitializeStorageError::Io,
+                    })?;
+            if state.mode != 0o600 || state.bytes != expected {
+                return Err(GitInitializeStorageError::Unsafe);
+            }
+            Ok(())
+        }
+
+        fn sync_directory(&self) -> Result<(), GitInitializeStorageError> {
+            // SAFETY: retained directory descriptor is valid.
+            if unsafe { libc::fsync(self.descriptor.as_raw_fd()) } != 0 {
+                Err(GitInitializeStorageError::Unsupported)
+            } else {
+                Ok(())
+            }
         }
 
         pub(super) fn create_category_directory(
@@ -2520,6 +2932,17 @@ mod linux {
             }
         }
         Ok(())
+    }
+
+    fn map_git_init_mutation(error: MutationIoError) -> GitInitializeStorageError {
+        match error {
+            MutationIoError::Conflict => GitInitializeStorageError::Conflict,
+            MutationIoError::Unsafe | MutationIoError::TooLarge => {
+                GitInitializeStorageError::Unsafe
+            }
+            MutationIoError::Unsupported => GitInitializeStorageError::Unsupported,
+            MutationIoError::Io => GitInitializeStorageError::Io,
+        }
     }
 
     impl ManagedTarget {
