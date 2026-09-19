@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 5D3B2C sealed SSH sandbox resources are complete at `65ea5ff`. Packaged helper identity and the first product SSH invocation are the next Git gate.
+Phase 5D3B3 authenticated SSH clone is complete at `547d55f`. Authenticated SSH sync inspection is the next Git gate.
 
 ## Current task
 
-Specify Phase 5D3B3's packaged-helper and first authenticated clone discovery/fetch boundary, including local-only SSH fixtures, cancellation/output bounds, stable errors, and credential canaries.
+Specify Phase 5D3C1 so existing sync discovery/fetch can reuse the accepted sealed SSH transport resources without broadening renderer, credential, filesystem, or Git authority.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; reconcile external changes; manage Attachment inventory/import/removal; retrieve Guides through the accepted search experience; see confined Git status; initialize a direct private Git repository; connect a strictly validated remote; clone a canonical anonymous-HTTPS Git Workspace; create a native-confirmed managed-only local commit; manually inspect/apply/recover an anonymous-HTTPS fast-forward; and publish one exact, server-verified fast-forward push through the Reference Desk. Packed-branch publication, Attachment viewing/export/reveal, authenticated transports, and MCP mutation remain unimplemented; MCP remains read-only.
+In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; reconcile external changes; manage Attachment inventory/import/removal; retrieve Guides through the accepted search experience; see confined Git status; initialize a direct private Git repository; connect a strictly validated remote; clone a canonical anonymous-HTTPS or authenticated-SSH Git Workspace; create a native-confirmed managed-only local commit; manually inspect/apply/recover an anonymous-HTTPS fast-forward; and publish one exact, server-verified anonymous-HTTPS fast-forward push through the Reference Desk. Packed-branch publication, authenticated SSH sync/push, Attachment viewing/export/reveal, and MCP mutation remain unimplemented; MCP remains read-only.
 
 ## Completed work
 
@@ -119,16 +119,17 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Completed Phase 5D3B2A at signed checkpoint `7921327`: the dedicated `rehow-git-ssh` binary accepts only Git's observed upload-pack argv, reconstructs a fixed root-owned OpenSSH command under a cleared environment, and disables free-form config, prompts, passwords, key files, forwarding, proxies, local commands, control sockets, and TTYs. It is not yet callable by product network operations. Three focused adversarial/config-parser tests and the full combined gate pass with zero extra agents and no live connection.
 - Completed Phase 5D3B2B at signed checkpoint `69d3166`: native startup snapshots only optional launch-home and fixed system `known_hosts` sources after owner/type/link/mode/ancestry/size/identity checks and two identical bounded reads. Unsafe peers clear the aggregate; later rewrites cannot change retained bytes. Deterministic mutation/replacement races and the full combined gate pass with zero extra agents and no process/network operation.
 - Completed Phase 5D3B2C at signed checkpoint `65ea5ff`: a sibling proxy is captured by stable inode after owner/mode/type/link/ancestry checks; trusted agent/proxy capabilities and bounded host-key snapshots become exact `--ro-bind-fd` mounts and sealed `0400` `--ro-bind-data` files at compiled paths. A networkless Bubblewrap child proves the fixed socket/key/proxy views, no Workspace mount, and empty output. Resources remain crate-private/unreachable from product Git; the combined gate passes with zero extra agents.
+- Completed Phase 5D3B3 at signed checkpoint `547d55f`: authenticated SSH clone discovery/fetch now uses only native-held sealed agent, known-host, proxy, and root-owned SSH-client capabilities inside the existing confined pipeline. HTTPS and SSH remain closed transport variants; raw SSH output, credentials, paths, and private keys never cross renderer IPC. A disposable loopback `sshd`/agent/repository fixture proves success and wrong-host rejection, the full gate passes, and the one reused Security Reviewer verdict is PASS.
 
 ## Work in progress
 
-- Phase 5D3B2C is complete at signed checkpoint `65ea5ff`; packaged helper plus the first local-fixture-tested SSH product invocation is next.
+- Phase 5D3B3 is complete at signed checkpoint `547d55f`; Phase 5D3C1 authenticated SSH sync inspection is next.
 
 ## Remaining work
 
 - Workspace adoption/import/migration and Attachment viewing/export/reveal remain incomplete.
 - Phase 4: complete at `e17b7d1`.
-- Phase 5: read-only status, safe local initialization, metadata-only remote connection, anonymous-HTTPS clone including UI, native-confirmed recoverable managed-only commits, isolated incoming inspection, bounded ancestry, durable loose-branch fast-forward publication, pathless native sync/recovery, manual sync UI, and exact anonymous-HTTPS fast-forward push are complete; packed-branch publication and authenticated transports remain.
+- Phase 5: read-only status, safe local initialization, metadata-only remote connection, anonymous-HTTPS and authenticated-SSH clone including UI, native-confirmed recoverable managed-only commits, anonymous-HTTPS incoming inspection/sync/push, bounded ancestry, durable loose-branch fast-forward publication, pathless native recovery, and manual sync UI are complete; packed-branch publication and authenticated SSH sync/push remain.
 - Phase 6: standalone full MCP contract.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
@@ -234,19 +235,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - Phase 5D3B2A rejects unknown/duplicate flags, noncanonical ports, hostile destinations, non-upload-pack commands, unsafe paths, trailing input, and non-UTF-8 argv before process creation. Accepted values are reconstructed into one root-owned `/usr/bin/ssh` argv with fixed config/agent/known-host paths and no shell. The compiled helper remains unreachable until descriptor provenance and sandbox integration complete; specialist review remains deferred to that authority-bearing gate.
 - Phase 5D3B2B accepts only bounded one-link regular known-host files with expected user/root ownership, non-writable modes, safe ancestry, no-follow path/descriptor identity, and stable double reads. Missing is optional; any unsafe source discards all snapshots. Public status/Debug expose no path, identity, or bytes. No SSH/Git process or network authority exists yet.
 - Phase 5D3B2C prepares resources only from all-trusted launch capabilities, aggregate-bounds host keys, seals read-only memfds, and mounts exact held agent/proxy inodes and key bytes at fixed paths. Close-on-exec changes occur only in the Bubblewrap setup child; no source path or Workspace is supplied. Product operations still cannot call the crate-private builder, and packaging/network/error/canary review remains pending.
+- Phase 5D3B3 captures the exact root-owned system SSH client outside the user namespace and descriptor-mounts it beside the fixed proxy; discovery and fetch can enable only SSH or HTTPS according to a closed plan. Each setup child rewinds sealed host-key memfds before mounting, only the five exact descriptors cross exec, stderr remains bounded/private, and authentication/host-key failures map to closed errors. The isolated real-SSH fixture and the one reused Security Reviewer correction gate pass.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5D3A used exactly one reused Security Reviewer at the completed authority gate and the correction verdict is PASS.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5D3B3 used exactly one reused Security Reviewer at the completed authority gate and the correction verdict is PASS.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`65ea5ff6029418e62757e9ed8f498e60d21da3dd` — signed Phase 5D3B2C sealed SSH sandbox resources; its configured GPG signature verifies. This progress-only ledger update follows that implementation commit.
+`547d55f` — signed Phase 5D3B3 authenticated SSH clone; its configured GPG signature verifies. This progress-only ledger update follows that implementation commit.
 
 ## Tests last run and results
 
+- 2026-09-19: Phase 5D3B3 checkpoint `547d55f` passes `pnpm check`, 39 Vitest tests, the real loopback authenticated-SSH clone/wrong-host fixture, 427 core tests with 2 intentional ignores, 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 24 desktop Rust, MCP, and example targets. Strict all-Workspace/all-target/all-feature Clippy, production pnpm build, optimized Tauri no-bundle build, whitespace checks, signed-commit verification, and the single reused Security Reviewer correction gate pass. No public host or user credential was used.
 - 2026-09-19: Phase 5D3B2C checkpoint `65ea5ff` passes 3 focused proxy/resource/seal/networkless-Bubblewrap tests; 426 core tests pass with 2 intentional network/performance ignores; 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 24 desktop Rust, and MCP tests pass. Formatting, strict core/desktop all-target/all-feature Clippy, `pnpm check`, contract drift, TypeScript, Biome, production Vite build, optimized Tauri build, bootstrap validation, whitespace checks, and signed-commit verification pass. An initial sparse-file timestamp assumption was removed; device/inode/owner/type/mode/link/size plus identical double reads and same-size mutation tests remain authoritative. No public network or product SSH operation occurred.
 - 2026-09-19: Phase 5D3B2B checkpoint `69d3166` passes 2 focused host-key provenance tests, including deterministic in-place mutation/path-replacement races; 423 core tests pass with 2 intentional network/performance ignores; 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 24 desktop Rust, and MCP tests pass. Formatting, strict core/desktop all-target/all-feature Clippy, `pnpm check`, contract drift, TypeScript, Biome, production Vite build, optimized Tauri build, bootstrap validation, whitespace checks, and signed-commit verification pass. No SSH/Git process, socket connection, or network operation was performed.
 - 2026-09-19: Phase 5D3B2A checkpoint `7921327` passes 3 focused proxy grammar/command/OpenSSH-config tests; invalid standalone execution exits 255 with zero output; 421 core tests pass with 2 intentional network/performance ignores; 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 24 desktop Rust, and MCP tests pass. Formatting, strict core all-target/all-feature Clippy, `pnpm check`, contract drift, TypeScript, Biome, explicit proxy build, production Vite/Cargo build, bootstrap validation, whitespace checks, and signed-commit verification pass. The Git argv diagnostic used `/usr/bin/false` and made no network connection.
@@ -475,20 +478,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0025, `docs/task-packets/phase-5d3b2a-fixed-ssh-proxy.md`, its evidence, `crates/rehow-core/src/git/ssh_proxy.rs`, and the dedicated core binary implement the still-unreachable fixed Git SSH proxy at `7921327`.
 - ADR 0025, `docs/task-packets/phase-5d3b2b-known-hosts-provenance.md`, its evidence, the bounded core snapshot boundary, and native launch retention implement trusted host-key provenance at `69d3166`.
 - ADR 0025, `docs/task-packets/phase-5d3b2c-ssh-sandbox-resources.md`, its evidence, `crates/rehow-core/src/git/ssh_sandbox.rs`, and native sibling-proxy capture implement sealed fixed-path sandbox resources at `65ea5ff`.
+- ADR 0025, `docs/task-packets/phase-5d3b3-authenticated-ssh-clone.md`, its evidence, the SSH-aware core clone pipeline, native transport preparation, UI transport acceptance, and current-helper build/test preparation implement authenticated SSH clone at `547d55f`.
 
 ## Next recommended action
 
-Specify Phase 5D3B3 as one complete authenticated clone discovery/fetch gate. Package/locate the exact helper beside the desktop binary, pass only native-held SSH resources, reuse existing process-group cancellation/output/storage limits, classify host-key/auth/unavailable failures without raw output, and prove success/failures with an isolated loopback `sshd`/bare-repository/temporary-agent fixture. Add credential canaries and use one reused Security Reviewer only after the complete authority gate passes locally.
+Specify and implement Phase 5D3C1 as the narrow authenticated-SSH sync inspection gate. Reuse the accepted native-held resources and confined discovery/fetch path, preserve every existing cancellation/output/staging/revision bound, add no push authority, and extend the disposable loopback fixture to prove incoming inspection while active Workspace/Git state remains unchanged.
 
 ## Recommended agent role and reasoning effort
 
-Architect/Orchestrator locally with `gpt-5.6-sol`, xhigh/high judgment for authentication provenance. Run zero extra agents during routine work; use at most one reused Security Reviewer only at the completed authority gate.
+Architect/Orchestrator locally with `gpt-5.6-sol`, xhigh/high judgment for transport reuse. Run zero extra agents during routine work; use at most one reused Security Reviewer only at the completed authority gate.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read the Git sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `65ea5ff`, `69d3166`, `7921327`, and `93b19e9`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoints `547d55f`, `65ea5ff`, `69d3166`, and `7921327`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 5D3B2C as complete. Specify Phase 5D3B3's packaged-helper and local-fixture-tested SSH clone gate next; do not contact a public host, add TOFU/prompts, force, history rewrite, credential storage, scheduling, packed-branch publication, or MCP mutation.
+6. Treat Phase 5D3B3 as complete. Specify Phase 5D3C1 authenticated SSH sync inspection next; do not add SSH push yet, contact a public host, add TOFU/prompts, force, history rewrite, credential storage, scheduling, packed-branch publication, or MCP mutation.
