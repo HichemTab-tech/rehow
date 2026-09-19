@@ -2,10 +2,11 @@ pub const APPLICATION_NAME: &str = "Rehow";
 
 use rehow_core::{
     application::{
-        AttachmentImportError, AttachmentImportOutcome, CategoryCreateError, CategoryOrderRevision,
-        CategoryRemoveError, CategoryReorderError, CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT,
-        GuideCreateError, GuideEdit, GuideRemoveError, GuideUpdateError,
-        WorkspaceInitializationError, WorkspaceRefreshError, confirm_and_approve_guide_tested,
+        AttachmentImportError, AttachmentImportOutcome, AttachmentRemovalError,
+        AttachmentRemovalOutcome, CategoryCreateError, CategoryOrderRevision, CategoryRemoveError,
+        CategoryReorderError, CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError,
+        GuideEdit, GuideRemoveError, GuideUpdateError, WorkspaceInitializationError,
+        WorkspaceRefreshError, confirm_and_approve_guide_tested, confirm_and_remove_attachment,
         create_category, create_guide, initialize_workspace,
         refresh_open_workspace as refresh_workspace_view, remove_category, remove_guide,
         reorder_categories, select_and_import_attachment, set_category_archived,
@@ -13,7 +14,7 @@ use rehow_core::{
     },
     domain::GuideStatus,
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
-    protocol::{CategoryId, GuideId, Revision},
+    protocol::{AttachmentId, CategoryId, GuideId, Revision},
     search::search_workspace,
     storage::{
         EmptyWorkspaceTarget, WorkspaceFolderFacts, WorkspaceInspection, WorkspaceView,
@@ -799,6 +800,139 @@ fn attachment_import_message(error: AttachmentImportError) -> String {
         }
         AttachmentImportError::CommittedRefreshRequired { .. } => {
             "The Attachment was imported, but Rehow could not refresh it. Reopen the Workspace."
+                .to_owned()
+        }
+    }
+}
+
+#[tauri::command]
+fn remove_open_guide_attachment(
+    guide_id: String,
+    attachment_id: String,
+    expected_revision: String,
+    window: tauri::Window,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<SaveGuidePayload, NativeCommandError> {
+    if guide_id.len() > 64 || attachment_id.len() > 64 || expected_revision.len() > 96 {
+        return Err(native_command_error(
+            "invalidInput",
+            "Guide or Attachment identity is too long.".to_owned(),
+        ));
+    }
+    let guide_id = GuideId::from_str(&guide_id)
+        .map_err(|_| native_command_error("invalidGuide", "Guide ID is invalid.".to_owned()))?;
+    let attachment_id = AttachmentId::from_str(&attachment_id).map_err(|_| {
+        native_command_error("invalidAttachment", "Attachment ID is invalid.".to_owned())
+    })?;
+    let expected_revision = Revision::from_str(&expected_revision).map_err(|_| {
+        native_command_error(
+            "invalidRevision",
+            "Guide revision is invalid. Reopen the Guide and try again.".to_owned(),
+        )
+    })?;
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    fs::create_dir_all(&state_home).map_err(|_| {
+        native_command_error(
+            "stateUnavailable",
+            "Rehow could not prepare its private recovery folder.".to_owned(),
+        )
+    })?;
+    let mut guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_mut().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let outcome = confirm_and_remove_attachment(
+        &window,
+        &mut workspace.view,
+        &state_home,
+        runtime_directory.as_deref(),
+        guide_id,
+        attachment_id,
+        expected_revision,
+    )
+    .map_err(|error| {
+        native_command_error(
+            attachment_removal_code(error),
+            attachment_removal_message(error),
+        )
+    })?;
+    Ok(SaveGuidePayload {
+        workspace: WorkspacePayload::from_view(
+            &workspace.view,
+            FolderFactsPayload::from(workspace.facts),
+        ),
+        guide: guide_body_payload(&workspace.view, &guide_id)
+            .map_err(|message| native_command_error("refreshRequired", message))?,
+        changed: matches!(outcome, AttachmentRemovalOutcome::Removed { .. }),
+    })
+}
+
+fn attachment_removal_code(error: AttachmentRemovalError) -> &'static str {
+    match error {
+        AttachmentRemovalError::GuideNotFound => "notFound",
+        AttachmentRemovalError::AttachmentNotFound => "attachmentNotFound",
+        AttachmentRemovalError::RevisionConflict => "revisionConflict",
+        AttachmentRemovalError::GuideArchived => "guideArchived",
+        AttachmentRemovalError::AttachmentChanged => "attachmentChanged",
+        AttachmentRemovalError::UnsafeRoundTrip => "unsafeRoundTrip",
+        AttachmentRemovalError::Busy => "busy",
+        AttachmentRemovalError::UnsafeStorage => "unsafeStorage",
+        AttachmentRemovalError::UnsupportedFilesystem => "unsupportedFilesystem",
+        AttachmentRemovalError::ResourceLimit => "resourceLimit",
+        AttachmentRemovalError::Io => "io",
+        AttachmentRemovalError::CommittedRefreshRequired { .. } => "committedRefresh",
+    }
+}
+
+fn attachment_removal_message(error: AttachmentRemovalError) -> String {
+    match error {
+        AttachmentRemovalError::GuideNotFound => "Guide was not found.".to_owned(),
+        AttachmentRemovalError::AttachmentNotFound => {
+            "Attachment was not found. Refresh the Workspace and try again.".to_owned()
+        }
+        AttachmentRemovalError::RevisionConflict => {
+            "The Guide changed. Refresh and try again.".to_owned()
+        }
+        AttachmentRemovalError::GuideArchived => {
+            "Restore this Guide before removing an Attachment.".to_owned()
+        }
+        AttachmentRemovalError::AttachmentChanged => {
+            "The Guide or Attachment changed. Refresh and inspect it before trying again."
+                .to_owned()
+        }
+        AttachmentRemovalError::UnsafeRoundTrip => {
+            "This Guide’s formatting cannot be updated safely. Simplify its Attachment metadata first."
+                .to_owned()
+        }
+        AttachmentRemovalError::Busy => {
+            "Another Rehow writer is active. Wait a moment and try again.".to_owned()
+        }
+        AttachmentRemovalError::UnsafeStorage => {
+            "Rehow refused an unsafe Attachment or Workspace path.".to_owned()
+        }
+        AttachmentRemovalError::UnsupportedFilesystem => {
+            "This filesystem cannot provide the atomic durability Rehow requires.".to_owned()
+        }
+        AttachmentRemovalError::ResourceLimit => {
+            "Attachment removal exceeded a safe resource limit.".to_owned()
+        }
+        AttachmentRemovalError::Io => {
+            "The Attachment could not be removed. Check file access and try again.".to_owned()
+        }
+        AttachmentRemovalError::CommittedRefreshRequired { .. } => {
+            "The Attachment was removed, but Rehow could not refresh it. Reopen the Workspace."
                 .to_owned()
         }
     }
@@ -1946,6 +2080,7 @@ pub fn run() {
             read_open_guide,
             refresh_open_workspace,
             remove_open_category,
+            remove_open_guide_attachment,
             remove_open_guide,
             reorder_open_categories,
             save_open_category_details,
@@ -1963,7 +2098,8 @@ pub fn run() {
 mod tests {
     use super::{
         APPLICATION_NAME, CategoryPayload, FolderFactsPayload, GuideBodyPayload, GuidePayload,
-        WorkspacePayload, category_create_code, category_create_message, category_remove_code,
+        WorkspacePayload, attachment_removal_code, attachment_removal_message,
+        category_create_code, category_create_message, category_remove_code,
         category_remove_message, category_reorder_code, category_reorder_message,
         category_update_code, category_update_message, guide_create_code, guide_create_message,
         guide_remove_code, guide_remove_confirmation, guide_remove_message, guide_update_code,
@@ -1972,9 +2108,9 @@ mod tests {
     };
     use rehow_core::{
         application::{
-            CategoryCreateError, CategoryRemoveError, CategoryReorderError, CategoryUpdateError,
-            GuideCreateError, GuideRemoveError, GuideUpdateError, WorkspaceInitializationError,
-            WorkspaceRefreshError,
+            AttachmentRemovalError, CategoryCreateError, CategoryRemoveError, CategoryReorderError,
+            CategoryUpdateError, GuideCreateError, GuideRemoveError, GuideUpdateError,
+            WorkspaceInitializationError, WorkspaceRefreshError,
         },
         markdown::parse_safe_markdown,
     };
@@ -2215,6 +2351,25 @@ mod tests {
         assert_eq!(
             guide_create_message(GuideCreateError::Incomplete),
             "Guide creation was interrupted. Reopen the Workspace before trying again."
+        );
+    }
+
+    #[test]
+    fn attachment_removal_errors_are_stable_and_actionable() {
+        assert_eq!(
+            attachment_removal_code(AttachmentRemovalError::AttachmentChanged),
+            "attachmentChanged"
+        );
+        assert_eq!(
+            attachment_removal_code(AttachmentRemovalError::AttachmentNotFound),
+            "attachmentNotFound"
+        );
+        assert_eq!(
+            attachment_removal_message(AttachmentRemovalError::GuideArchived),
+            "Restore this Guide before removing an Attachment."
+        );
+        assert!(
+            attachment_removal_message(AttachmentRemovalError::UnsafeStorage).contains("unsafe")
         );
     }
 }

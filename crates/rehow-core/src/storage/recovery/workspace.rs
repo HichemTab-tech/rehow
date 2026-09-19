@@ -5,7 +5,8 @@ use super::{
 };
 use crate::protocol::OperationId;
 use crate::storage::linux::{
-    DirectoryCapability, HashedState, ManagedState, ManagedTarget, MutationIoError, RegularState,
+    AttachmentState, DirectoryCapability, HashedState, ManagedState, ManagedTarget,
+    MutationIoError, RegularState,
 };
 
 const TARGET_LIMIT: usize = 64 * 1024 * 1024;
@@ -147,6 +148,20 @@ fn install_streamed_object(
         return Err(WorkspaceMutationError::Unsafe);
     }
     let target = root.open_managed_target(relative_path).map_err(map_io)?;
+    install_streamed_target(&target, store, lock, object_hash, mode, temp_name)
+}
+
+fn install_streamed_target(
+    target: &ManagedTarget,
+    store: &RecoveryStore,
+    lock: &WriterLock,
+    object_hash: &[u8; 32],
+    mode: u32,
+    temp_name: &str,
+) -> Result<(), WorkspaceMutationError> {
+    if !valid_temp(temp_name) {
+        return Err(WorkspaceMutationError::Unsafe);
+    }
     let (mut source, size) = store.open_object(lock, object_hash).map_err(map_store)?;
     let intended = HashedState::Regular {
         hash: *object_hash,
@@ -199,6 +214,53 @@ fn install_streamed_object(
 
 fn is_attachment_path(path: &str) -> bool {
     path.starts_with("attachments/") && super::valid_active_path(path)
+}
+
+fn is_attachment_trash_target(target: &super::Target) -> bool {
+    is_attachment_path(&target.relative_path)
+        && matches!(target.intended, IntendedState::Trash { .. })
+}
+
+fn attachment_state_matches(
+    state: &AttachmentState,
+    revision: crate::protocol::Revision,
+    object_hash: &[u8; 32],
+    mode: u32,
+) -> bool {
+    matches!(
+        state,
+        AttachmentState::Regular {
+            object_hash: actual_hash,
+            revision: actual_revision,
+            mode: actual_mode,
+            ..
+        } if actual_hash == object_hash && actual_revision == &revision && *actual_mode == mode
+    )
+}
+
+fn attachment_expected(
+    target: &super::Target,
+) -> Result<(crate::protocol::Revision, [u8; 32], u32), WorkspaceMutationError> {
+    let ExpectedState::Existing {
+        revision,
+        object_hash,
+        mode,
+    } = target.expected
+    else {
+        return Err(WorkspaceMutationError::Conflict);
+    };
+    let IntendedState::Trash {
+        object_hash: intended_hash,
+        mode: intended_mode,
+        ..
+    } = target.intended
+    else {
+        return Err(WorkspaceMutationError::Conflict);
+    };
+    if intended_hash != object_hash || intended_mode != mode {
+        return Err(WorkspaceMutationError::Conflict);
+    }
+    Ok((revision, object_hash, mode))
 }
 
 pub(super) fn remove_object(
@@ -294,6 +356,123 @@ pub(super) fn trash_object(
     trash.sync_directory().map_err(map_io)
 }
 
+fn trash_attachment(
+    root: &DirectoryCapability,
+    store: &RecoveryStore,
+    lock: &WriterLock,
+    target_record: &super::Target,
+) -> Result<(), WorkspaceMutationError> {
+    const ATTACHMENT_LIMIT: u64 = 64 * 1024 * 1024;
+
+    let (revision, object_hash, mode) = attachment_expected(target_record)?;
+    let IntendedState::Trash { destination, .. } = &target_record.intended else {
+        return Err(WorkspaceMutationError::Conflict);
+    };
+    let (_, recovery_size) = store.open_object(lock, &object_hash).map_err(map_store)?;
+    let holding_destination =
+        attachment_holding_destination(destination, &target_record.relative_path)?;
+    let target = root
+        .open_managed_target(&target_record.relative_path)
+        .map_err(map_io)?;
+    let trash = root.prepare_trash_target(destination).map_err(map_io)?;
+    let holding = root
+        .prepare_trash_target(&holding_destination)
+        .map_err(map_io)?;
+    target.sync_directory().map_err(map_io)?;
+    trash.sync_directory().map_err(map_io)?;
+    holding.sync_directory().map_err(map_io)?;
+    let trash_state = trash
+        .attachment_state(&target_record.relative_path, ATTACHMENT_LIMIT)
+        .map_err(map_io)?;
+    if attachment_state_matches(&trash_state, revision, &object_hash, mode) {
+        if !matches!(
+            target
+                .attachment_state(&target_record.relative_path, ATTACHMENT_LIMIT)
+                .map_err(map_io)?,
+            AttachmentState::Missing
+        ) {
+            return Err(WorkspaceMutationError::Conflict);
+        }
+        target.sync_directory().map_err(map_io)?;
+        trash.sync_directory().map_err(map_io)?;
+        return Ok(());
+    }
+    if !matches!(trash_state, AttachmentState::Missing) {
+        return Err(WorkspaceMutationError::Conflict);
+    }
+    match target
+        .attachment_state(&target_record.relative_path, ATTACHMENT_LIMIT)
+        .map_err(map_io)?
+    {
+        AttachmentState::Missing => {}
+        state if attachment_state_matches(&state, revision, &object_hash, mode) => {
+            if holding.hashed_state(ATTACHMENT_LIMIT).map_err(map_io)? != HashedState::Missing {
+                return Err(WorkspaceMutationError::Conflict);
+            }
+            fail(WorkspaceFaultPoint::BeforeLiveRename)?;
+            target.move_to(&holding).map_err(map_io)?;
+            fail(WorkspaceFaultPoint::AfterLiveRenameBeforeSync)?;
+            target.sync_directory().map_err(map_io)?;
+            holding.sync_directory().map_err(map_io)?;
+        }
+        _ => return Err(WorkspaceMutationError::Conflict),
+    }
+    install_streamed_target(
+        &trash,
+        store,
+        lock,
+        &object_hash,
+        mode,
+        &target_record.temp_name,
+    )?;
+    if !matches!(
+        target
+            .attachment_state(&target_record.relative_path, ATTACHMENT_LIMIT)
+            .map_err(map_io)?,
+        AttachmentState::Missing
+    ) || !attachment_state_matches(
+        &trash
+            .attachment_state(&target_record.relative_path, ATTACHMENT_LIMIT)
+            .map_err(map_io)?,
+        revision,
+        &object_hash,
+        mode,
+    ) {
+        return Err(WorkspaceMutationError::Conflict);
+    }
+    if trash.hashed_state(ATTACHMENT_LIMIT).map_err(map_io)?
+        != (HashedState::Regular {
+            hash: object_hash,
+            size: recovery_size,
+            mode,
+        })
+    {
+        return Err(WorkspaceMutationError::Conflict);
+    }
+    target.sync_directory().map_err(map_io)?;
+    trash.sync_directory().map_err(map_io)?;
+    holding.sync_directory().map_err(map_io)
+}
+
+fn attachment_holding_destination(
+    destination: &str,
+    relative_path: &str,
+) -> Result<String, WorkspaceMutationError> {
+    let Some((parent, filename)) = destination.rsplit_once('/') else {
+        return Err(WorkspaceMutationError::Unsafe);
+    };
+    let encoded = blake3::hash(relative_path.as_bytes()).to_hex().to_string();
+    let mut held_name = format!(".rehow-held-{}", &encoded[..16]);
+    if filename == held_name {
+        held_name.push_str("-1");
+    }
+    let held = format!("{parent}/{held_name}");
+    if !super::valid_trash_path(&held) {
+        return Err(WorkspaceMutationError::Unsafe);
+    }
+    Ok(held)
+}
+
 pub(super) fn execute_new_journal(
     root: &DirectoryCapability,
     store: &RecoveryStore,
@@ -336,15 +515,57 @@ fn preflight(
         return Err(WorkspaceMutationError::Conflict);
     }
     for target in &journal.targets {
+        let streamed_attachment_trash = is_attachment_trash_target(target);
         if let ExpectedState::Existing {
             revision,
             object_hash,
-            ..
+            mode,
         } = &target.expected
         {
-            let old = store.read_object(lock, object_hash).map_err(map_store)?;
-            if super::super::document_revision(&target.relative_path, &old) != *revision {
-                return Err(WorkspaceMutationError::Conflict);
+            if streamed_attachment_trash {
+                let IntendedState::Trash {
+                    object_hash: intended_hash,
+                    mode: intended_mode,
+                    ..
+                } = &target.intended
+                else {
+                    return Err(WorkspaceMutationError::Conflict);
+                };
+                if intended_hash != object_hash || intended_mode != mode {
+                    return Err(WorkspaceMutationError::Conflict);
+                }
+                if journal.stage == JournalStage::Prepared {
+                    const ATTACHMENT_LIMIT: u64 = 64 * 1024 * 1024;
+                    let IntendedState::Trash { destination, .. } = &target.intended else {
+                        return Err(WorkspaceMutationError::Conflict);
+                    };
+                    let trash = root.open_trash_target(destination).map_err(map_io)?;
+                    if !matches!(
+                        trash
+                            .attachment_state(&target.relative_path, ATTACHMENT_LIMIT)
+                            .map_err(map_io)?,
+                        AttachmentState::Missing
+                    ) {
+                        return Err(WorkspaceMutationError::Conflict);
+                    }
+                    let holding_destination =
+                        attachment_holding_destination(destination, &target.relative_path)?;
+                    let holding = root
+                        .open_trash_target(&holding_destination)
+                        .map_err(map_io)?;
+                    if holding.hashed_state(TARGET_LIMIT as u64).map_err(map_io)?
+                        != HashedState::Missing
+                    {
+                        return Err(WorkspaceMutationError::Conflict);
+                    }
+                }
+                store.open_object(lock, object_hash).map_err(map_store)?;
+                let _ = revision;
+            } else {
+                let old = store.read_object(lock, object_hash).map_err(map_store)?;
+                if super::super::document_revision(&target.relative_path, &old) != *revision {
+                    return Err(WorkspaceMutationError::Conflict);
+                }
             }
         }
         if let IntendedState::Object { object_hash, .. }
@@ -381,6 +602,7 @@ fn continue_journal(
 
     for index in 0..journal.targets.len() {
         let target = journal.targets[index].clone();
+        let streamed_attachment_trash = is_attachment_trash_target(&target);
         let expected_object = match &target.expected {
             ExpectedState::Absent => None,
             ExpectedState::Existing {
@@ -388,11 +610,15 @@ fn continue_journal(
                 object_hash,
                 mode,
             } => {
-                let bytes = store.read_object(lock, object_hash).map_err(map_store)?;
-                if super::super::document_revision(&target.relative_path, &bytes) != *revision {
-                    return mark_conflict(store, lock, &mut journal);
+                if streamed_attachment_trash {
+                    None
+                } else {
+                    let bytes = store.read_object(lock, object_hash).map_err(map_store)?;
+                    if super::super::document_revision(&target.relative_path, &bytes) != *revision {
+                        return mark_conflict(store, lock, &mut journal);
+                    }
+                    Some((bytes, *mode))
                 }
-                Some((bytes, *mode))
             }
         };
         let expected = expected_object
@@ -517,6 +743,9 @@ fn apply_prepared_target(
             mode,
             destination,
         } => {
+            if is_attachment_trash_target(target) {
+                return trash_attachment(root, store, lock, target);
+            }
             let Some((expected, expected_mode)) = expected else {
                 return Err(WorkspaceMutationError::Conflict);
             };
@@ -535,6 +764,7 @@ fn verify_journal_applied(
     journal: &Journal,
 ) -> Result<(), WorkspaceMutationError> {
     for target in &journal.targets {
+        let streamed_attachment_trash = is_attachment_trash_target(target);
         let expected_object = match &target.expected {
             ExpectedState::Absent => None,
             ExpectedState::Existing {
@@ -542,11 +772,15 @@ fn verify_journal_applied(
                 object_hash,
                 mode,
             } => {
-                let bytes = store.read_object(lock, object_hash).map_err(map_store)?;
-                if super::super::document_revision(&target.relative_path, &bytes) != *revision {
-                    return Err(WorkspaceMutationError::Conflict);
+                if streamed_attachment_trash {
+                    None
+                } else {
+                    let bytes = store.read_object(lock, object_hash).map_err(map_store)?;
+                    if super::super::document_revision(&target.relative_path, &bytes) != *revision {
+                        return Err(WorkspaceMutationError::Conflict);
+                    }
+                    Some((bytes, *mode))
                 }
-                Some((bytes, *mode))
             }
         };
         verify_applied_target(
@@ -571,6 +805,36 @@ fn verify_applied_target(
     target: &super::Target,
     expected: Option<(&[u8], u32)>,
 ) -> Result<(), WorkspaceMutationError> {
+    if is_attachment_trash_target(target) {
+        const ATTACHMENT_LIMIT: u64 = 64 * 1024 * 1024;
+
+        let (revision, object_hash, mode) = attachment_expected(target)?;
+        let IntendedState::Trash { destination, .. } = &target.intended else {
+            return Err(WorkspaceMutationError::Conflict);
+        };
+        let active = root
+            .open_managed_target(&target.relative_path)
+            .map_err(map_io)?;
+        let trash = root.open_trash_target(destination).map_err(map_io)?;
+        if !matches!(
+            active
+                .attachment_state(&target.relative_path, ATTACHMENT_LIMIT)
+                .map_err(map_io)?,
+            AttachmentState::Missing
+        ) || !attachment_state_matches(
+            &trash
+                .attachment_state(&target.relative_path, ATTACHMENT_LIMIT)
+                .map_err(map_io)?,
+            revision,
+            &object_hash,
+            mode,
+        ) {
+            return Err(WorkspaceMutationError::Conflict);
+        }
+        active.sync_directory().map_err(map_io)?;
+        trash.sync_directory().map_err(map_io)?;
+        return Ok(());
+    }
     if let IntendedState::Trash {
         destination,
         object_hash,
@@ -801,6 +1065,10 @@ fn cleanup_committed(
         else {
             continue;
         };
+        if is_attachment_trash_target(target) {
+            verify_applied_target(root, store, lock, journal.operation_id, target, None)?;
+            continue;
+        }
         let old = store.read_object(lock, object_hash).map_err(map_store)?;
         match &target.intended {
             IntendedState::Object {
@@ -980,7 +1248,8 @@ mod tests {
     use super::*;
     use crate::storage::recovery::{OperationKind, Target};
     use std::{
-        fs,
+        fs::{self, OpenOptions},
+        io::{Seek, SeekFrom, Write},
         os::unix::fs::{PermissionsExt, symlink},
         path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},
@@ -1668,6 +1937,156 @@ mod tests {
                 .mode()
                 & 0o7777,
             0o600
+        );
+    }
+
+    #[test]
+    fn streamed_attachment_trash_replays_from_an_independent_before_image() {
+        let workspace = TestDirectory::new("streamed-attachment-trash-replay");
+        let guide_id = "0199a1d7-7b0d-7d8e-a38d-f936c5735e10";
+        let attachment_path = format!("attachments/{guide_id}/source.bin");
+        let attachment_directory = workspace.0.join(format!("attachments/{guide_id}"));
+        private_parents(&attachment_directory, &workspace.0);
+        fs::write(
+            attachment_directory.join("source.bin"),
+            b"streamed attachment",
+        )
+        .unwrap();
+        fs::set_permissions(
+            attachment_directory.join("source.bin"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let mut held_open = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(attachment_directory.join("source.bin"))
+            .unwrap();
+        let category_directory = workspace.0.join("categories/linux");
+        private_parents(&category_directory, &workspace.0);
+        fs::write(category_directory.join("guide.md"), b"old guide").unwrap();
+        fs::set_permissions(
+            category_directory.join("guide.md"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let capability = workspace.capability();
+        let state = TestDirectory::new("state");
+        let store = RecoveryStore::open(
+            &state.0,
+            "0199a19f-4d15-7ca7-a645-e75311caa710".parse().unwrap(),
+            [0x11; 32],
+            [0x22; 32],
+        )
+        .unwrap();
+        let lock = store.acquire_lock(None).unwrap();
+        let old_guide_hash = store.store_object(&lock, b"old guide").unwrap();
+        let new_guide_hash = store.store_object(&lock, b"new guide").unwrap();
+        let attachment_hash = store.store_object(&lock, b"streamed attachment").unwrap();
+        let operation_id: OperationId = "0199a1d7-7b0d-7d8e-a38d-f936c5735e42".parse().unwrap();
+        let guide_temp = ".rehow-tmp-guide-trash";
+        let InstallOutcome::Replaced(displaced) = install_object(
+            &capability,
+            "categories/linux/guide.md",
+            Some((b"old guide", 0o600)),
+            b"new guide",
+            0o600,
+            guide_temp,
+        )
+        .unwrap() else {
+            panic!("expected Guide replacement");
+        };
+        displaced.verify().unwrap();
+        let (root_device, root_inode) = capability.identity().unwrap();
+        let destination = format!(".rehow/trash/{operation_id}/{attachment_path}");
+        let journal = Journal {
+            generation: 1,
+            operation_id,
+            operation_kind: OperationKind::MultiFile,
+            workspace_id: "0199a19f-4d15-7ca7-a645-e75311caa710".parse().unwrap(),
+            root_hash: [0x11; 32],
+            root_device,
+            root_inode,
+            created_at: "2026-09-18T00:00:00Z".parse().unwrap(),
+            plan_hash: [0x36; 32],
+            targets: vec![
+                Target {
+                    relative_path: "categories/linux/guide.md".to_owned(),
+                    expected: ExpectedState::Existing {
+                        revision: crate::storage::document_revision(
+                            "categories/linux/guide.md",
+                            b"old guide",
+                        ),
+                        object_hash: old_guide_hash,
+                        mode: 0o600,
+                    },
+                    intended: IntendedState::Object {
+                        object_hash: new_guide_hash,
+                        mode: 0o600,
+                    },
+                    temp_name: guide_temp.to_owned(),
+                    step: TargetStep::Complete,
+                },
+                Target {
+                    relative_path: attachment_path.clone(),
+                    expected: ExpectedState::Existing {
+                        revision: crate::storage::document_revision(
+                            &attachment_path,
+                            b"streamed attachment",
+                        ),
+                        object_hash: attachment_hash,
+                        mode: 0o600,
+                    },
+                    intended: IntendedState::Trash {
+                        object_hash: attachment_hash,
+                        mode: 0o600,
+                        destination: destination.clone(),
+                    },
+                    temp_name: ".rehow-tmp-attachment-trash".to_owned(),
+                    step: TargetStep::Prepared,
+                },
+            ],
+            stage: JournalStage::Applying,
+            completion: false,
+        };
+        store.install_journal(&lock, &journal).unwrap();
+        WORKSPACE_FAULT.set(Some(WorkspaceFault::AfterLiveRenameBeforeSync));
+        assert_eq!(
+            resume_journal(&capability, &store, &lock, operation_id).err(),
+            Some(WorkspaceMutationError::Unsupported)
+        );
+        assert!(!workspace.0.join(&attachment_path).exists());
+        assert!(!workspace.0.join(&destination).exists());
+        let holding_destination =
+            attachment_holding_destination(&destination, &attachment_path).unwrap();
+        assert_eq!(
+            fs::read(workspace.0.join(&holding_destination)).unwrap(),
+            b"streamed attachment"
+        );
+        let resumed = resume_journal(&capability, &store, &lock, operation_id).unwrap();
+        assert_eq!(resumed.stage, JournalStage::Committed);
+        assert!(resumed.completion);
+        assert_eq!(
+            fs::read(category_directory.join("guide.md")).unwrap(),
+            b"new guide"
+        );
+        assert_eq!(
+            fs::read(workspace.0.join(&destination)).unwrap(),
+            b"streamed attachment"
+        );
+        held_open.seek(SeekFrom::Start(0)).unwrap();
+        held_open.write_all(b"externally changed!").unwrap();
+        held_open.set_len(19).unwrap();
+        held_open.sync_all().unwrap();
+        assert_eq!(
+            fs::read(workspace.0.join(&holding_destination)).unwrap(),
+            b"externally changed!"
+        );
+        let resumed = resume_journal(&capability, &store, &lock, operation_id).unwrap();
+        assert_eq!(resumed.stage, JournalStage::Committed);
+        assert_eq!(
+            fs::read(workspace.0.join(destination)).unwrap(),
+            b"streamed attachment"
         );
     }
 

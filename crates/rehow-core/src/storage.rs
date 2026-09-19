@@ -6,12 +6,13 @@
 
 pub(crate) mod recovery;
 pub(crate) use recovery::{
-    AttachmentImportPreview, AttachmentImportStorageOutcome, AttachmentSourceState,
-    CategoryCreateStorageError, CategoryCreateStorageOutcome, CategoryRemoveStorageError,
-    CategoryRemoveStorageOutcome, DocumentCreateError, DocumentCreateOutcome, DocumentMoveOutcome,
-    DocumentRemoveError, DocumentRemoveOutcome, DocumentUpdateError, DocumentUpdateOutcome,
-    MultiDocumentUpdateError, MultiDocumentUpdateOutcome, PreparedDocument,
-    WorkspaceInitializeError, WorkspaceInitializeOutcome,
+    AttachmentImportPreview, AttachmentImportStorageOutcome, AttachmentRemovalPreview,
+    AttachmentRemovalStorageOutcome, AttachmentSourceState, CategoryCreateStorageError,
+    CategoryCreateStorageOutcome, CategoryRemoveStorageError, CategoryRemoveStorageOutcome,
+    DocumentCreateError, DocumentCreateOutcome, DocumentMoveOutcome, DocumentRemoveError,
+    DocumentRemoveOutcome, DocumentUpdateError, DocumentUpdateOutcome, MultiDocumentUpdateError,
+    MultiDocumentUpdateOutcome, PreparedDocument, WorkspaceInitializeError,
+    WorkspaceInitializeOutcome,
 };
 
 #[cfg(test)]
@@ -384,6 +385,64 @@ where
         guide_id,
         expected_revision,
         filename,
+        prepare,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn preview_attachment_removal<E, F>(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_relative_path: &str,
+    expected_guide_revision: Revision,
+    attachment_relative_path: &str,
+    declared_sha256: [u8; 32],
+    declared_size: Option<u64>,
+    prepare: F,
+) -> Result<AttachmentRemovalPreview, MultiDocumentUpdateError<E>>
+where
+    F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
+{
+    recovery::preview_attachment_removal(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        guide_relative_path,
+        expected_guide_revision,
+        attachment_relative_path,
+        declared_sha256,
+        declared_size,
+        prepare,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_attachment_removal<E, F>(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_relative_path: &str,
+    expected_guide_revision: Revision,
+    operation_id: crate::protocol::OperationId,
+    created_at: crate::protocol::Timestamp,
+    approved: &AttachmentRemovalPreview,
+    prepare: F,
+) -> Result<AttachmentRemovalStorageOutcome, MultiDocumentUpdateError<E>>
+where
+    F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
+{
+    recovery::execute_attachment_removal(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        guide_relative_path,
+        expected_guide_revision,
+        operation_id,
+        created_at,
+        approved,
         prepare,
     )
 }
@@ -1276,6 +1335,7 @@ fn map_io(error: std::io::Error) -> WorkspaceInspectError {
 #[cfg(target_os = "linux")]
 mod linux {
     use super::WorkspaceInspectError;
+    use crate::protocol::Revision;
     use std::{
         ffi::{CStr, CString, OsStr},
         fs::File,
@@ -1352,6 +1412,18 @@ mod linux {
         },
     }
 
+    #[derive(Debug, Eq, PartialEq)]
+    pub(super) enum AttachmentState {
+        Missing,
+        Regular {
+            object_hash: [u8; 32],
+            sha256: [u8; 32],
+            revision: Revision,
+            size: u64,
+            mode: u32,
+        },
+    }
+
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub(super) enum MutationIoError {
         Unsafe,
@@ -1374,6 +1446,7 @@ mod linux {
         static MANAGED_FAULT: std::cell::Cell<Option<ManagedFault>> = const { std::cell::Cell::new(None) };
         static ATTACHMENT_CHANGED_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static ATTACHMENT_GROWTH_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static ATTACHMENT_STATE_CHANGED_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 
     #[cfg(test)]
@@ -1384,6 +1457,11 @@ mod linux {
     #[cfg(test)]
     pub(super) fn set_attachment_growth_fault() {
         ATTACHMENT_GROWTH_FAULT.set(true);
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_attachment_state_changed_fault() {
+        ATTACHMENT_STATE_CHANGED_FAULT.set(true);
     }
 
     #[cfg(test)]
@@ -2257,6 +2335,107 @@ mod linux {
             self.named_hashed_state(&self.name, limit)
         }
 
+        pub(super) fn attachment_state(
+            &self,
+            revision_path: &str,
+            limit: u64,
+        ) -> Result<AttachmentState, MutationIoError> {
+            use sha2::Digest;
+
+            let Some(mut file) = self.open_attachment_file(revision_path, limit)? else {
+                return Ok(AttachmentState::Missing);
+            };
+            let before = file.metadata().map_err(|_| MutationIoError::Io)?;
+            let mut object = blake3::Hasher::new();
+            let mut sha256 = sha2::Sha256::new();
+            let mut revision = blake3::Hasher::new();
+            revision.update(b"rehow-document-revision-v1\0");
+            super::hash_frame(&mut revision, revision_path.as_bytes());
+            revision.update(&before.len().to_be_bytes());
+            let mut buffer = [0_u8; 64 * 1024];
+            let mut size = 0_u64;
+            loop {
+                let read = file.read(&mut buffer).map_err(|_| MutationIoError::Io)?;
+                if read == 0 {
+                    break;
+                }
+                size = size
+                    .checked_add(read as u64)
+                    .ok_or(MutationIoError::TooLarge)?;
+                if size > limit {
+                    return Err(MutationIoError::TooLarge);
+                }
+                #[cfg(test)]
+                if ATTACHMENT_STATE_CHANGED_FAULT.replace(false) {
+                    // SAFETY: the descriptor is retained by this isolated test read.
+                    if unsafe { libc::fchmod(file.as_raw_fd(), before.mode() ^ 0o100) } != 0 {
+                        return Err(MutationIoError::Io);
+                    }
+                }
+                object.update(&buffer[..read]);
+                sha256.update(&buffer[..read]);
+                revision.update(&buffer[..read]);
+            }
+            let after = file.metadata().map_err(|_| MutationIoError::Io)?;
+            if !same_metadata(&before, &after) || size != after.len() {
+                return Err(MutationIoError::Conflict);
+            }
+            let mode = after.mode() & 0o7777;
+            if mode > 0o777 {
+                return Err(MutationIoError::Unsafe);
+            }
+            Ok(AttachmentState::Regular {
+                object_hash: *object.finalize().as_bytes(),
+                sha256: sha256.finalize().into(),
+                revision: Revision::from_digest_bytes(*revision.finalize().as_bytes()),
+                size,
+                mode,
+            })
+        }
+
+        pub(super) fn open_attachment_file(
+            &self,
+            revision_path: &str,
+            limit: u64,
+        ) -> Result<Option<File>, MutationIoError> {
+            if !revision_path.starts_with("attachments/")
+                || !super::recovery::valid_active_path(revision_path)
+            {
+                return Err(MutationIoError::Unsafe);
+            }
+            let name = component(&self.name).map_err(|_| MutationIoError::Unsafe)?;
+            // SAFETY: directory descriptor and validated component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.directory.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+                )
+            };
+            if raw < 0 {
+                return match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::ENOENT) => Ok(None),
+                    Some(libc::ELOOP) | Some(libc::ENXIO) | Some(libc::ENODEV) => {
+                        Err(MutationIoError::Unsafe)
+                    }
+                    _ => Err(MutationIoError::Io),
+                };
+            }
+            // SAFETY: successful openat returns a newly owned descriptor.
+            let file = unsafe { File::from_raw_fd(raw) };
+            let metadata = file.metadata().map_err(|_| MutationIoError::Io)?;
+            if !metadata.file_type().is_file()
+                || metadata.nlink() != 1
+                || metadata.mode() & 0o7777 > 0o777
+            {
+                return Err(MutationIoError::Unsafe);
+            }
+            if metadata.len() > limit {
+                return Err(MutationIoError::TooLarge);
+            }
+            Ok(Some(file))
+        }
+
         pub(super) fn temp_hashed_state(
             &self,
             temp_name: &str,
@@ -3034,6 +3213,76 @@ mod tests {
         assert_eq!(
             increment_attachment_count(&mut count),
             Err(WorkspaceInspectError::ResourceLimit)
+        );
+    }
+
+    #[test]
+    fn removal_attachment_reader_is_bounded_stable_and_rejects_special_files() {
+        use std::{
+            ffi::CString,
+            os::unix::{ffi::OsStrExt, fs::PermissionsExt, net::UnixListener},
+        };
+
+        let root = TestDirectory::new();
+        let guide_id: crate::protocol::GuideId =
+            "0199a1d7-7b0d-7d8e-a38d-f936c5735e10".parse().unwrap();
+        let directory = root.path().join("attachments").join(guide_id.to_string());
+        fs::create_dir_all(&directory).unwrap();
+        let capability = linux::DirectoryCapability::open_root(root.path()).unwrap();
+
+        fs::write(directory.join("exact.bin"), b"12345").unwrap();
+        let exact_path = format!("attachments/{guide_id}/exact.bin");
+        let exact = capability.open_managed_target(&exact_path).unwrap();
+        assert!(matches!(
+            exact.attachment_state(&exact_path, 5),
+            Ok(linux::AttachmentState::Regular { size: 5, .. })
+        ));
+        assert_eq!(
+            exact.attachment_state(&exact_path, 4),
+            Err(linux::MutationIoError::TooLarge)
+        );
+
+        linux::set_attachment_state_changed_fault();
+        assert_eq!(
+            exact.attachment_state(&exact_path, 5),
+            Err(linux::MutationIoError::Conflict)
+        );
+        fs::set_permissions(
+            directory.join("exact.bin"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        fs::set_permissions(
+            directory.join("exact.bin"),
+            fs::Permissions::from_mode(0o4600),
+        )
+        .unwrap();
+        assert_eq!(
+            exact.attachment_state(&exact_path, 5),
+            Err(linux::MutationIoError::Unsafe)
+        );
+
+        let fifo_path = directory.join("pipe");
+        let fifo = CString::new(fifo_path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: this creates a FIFO only in the isolated test directory.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let fifo_relative = format!("attachments/{guide_id}/pipe");
+        assert_eq!(
+            capability
+                .open_managed_target(&fifo_relative)
+                .unwrap()
+                .attachment_state(&fifo_relative, 5),
+            Err(linux::MutationIoError::Unsafe)
+        );
+
+        let _socket = UnixListener::bind(directory.join("socket")).unwrap();
+        let socket_relative = format!("attachments/{guide_id}/socket");
+        assert_eq!(
+            capability
+                .open_managed_target(&socket_relative)
+                .unwrap()
+                .attachment_state(&socket_relative, 5),
+            Err(linux::MutationIoError::Unsafe)
         );
     }
 

@@ -79,6 +79,11 @@ pub(crate) struct AttachmentImportStorageOutcome {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AttachmentRemovalStorageOutcome {
+    revision: Revision,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AttachmentSourceState {
     device: u64,
     inode: u64,
@@ -127,6 +132,30 @@ impl AttachmentImportPreview {
 
     pub(crate) fn revision(&self) -> Revision {
         self.revision
+    }
+}
+
+pub(crate) struct AttachmentRemovalPreview {
+    relative_path: String,
+    guide_revision: Revision,
+    attachment_revision: Revision,
+    object_hash: [u8; 32],
+    sha256: [u8; 32],
+    size: u64,
+    mode: u32,
+}
+
+impl AttachmentRemovalPreview {
+    pub(crate) fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+
+    pub(crate) fn guide_revision(&self) -> Revision {
+        self.guide_revision
+    }
+
+    pub(crate) fn size(&self) -> u64 {
+        self.size
     }
 }
 
@@ -247,6 +276,12 @@ impl DocumentMoveOutcome {
 }
 
 impl AttachmentImportStorageOutcome {
+    pub(crate) fn revision(self) -> Revision {
+        self.revision
+    }
+}
+
+impl AttachmentRemovalStorageOutcome {
     pub(crate) fn revision(self) -> Revision {
         self.revision
     }
@@ -933,6 +968,270 @@ where
     }
     Ok(AttachmentImportStorageOutcome {
         revision: super::document_revision(guide_relative_path, &candidate),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn preview_attachment_removal<E, F>(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    guide_relative_path: &str,
+    expected_guide_revision: Revision,
+    attachment_relative_path: &str,
+    declared_sha256: [u8; 32],
+    declared_size: Option<u64>,
+    prepare: F,
+) -> Result<AttachmentRemovalPreview, MultiDocumentUpdateError<E>>
+where
+    F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
+{
+    const ATTACHMENT_LIMIT: u64 = 64 * 1024 * 1024;
+
+    let store = store::RecoveryStore::open(
+        state_home,
+        workspace_id,
+        root.root_hash(),
+        root.capability_hash(),
+    )
+    .map_err(map_store_multi)?;
+    let _lock = store
+        .acquire_lock(runtime_directory)
+        .map_err(map_store_multi)?;
+    let guide_target = root
+        .open_managed_target(guide_relative_path)
+        .map_err(map_io_multi)?;
+    let current = match guide_target
+        .state(super::GUIDE_LIMIT)
+        .map_err(map_io_multi)?
+    {
+        super::linux::ManagedState::Missing => return Err(MultiDocumentUpdateError::Conflict),
+        super::linux::ManagedState::Regular(state) => state,
+    };
+    if super::document_revision(guide_relative_path, &current.bytes) != expected_guide_revision {
+        return Err(MultiDocumentUpdateError::Conflict);
+    }
+    let candidate = prepare(&current.bytes).map_err(MultiDocumentUpdateError::Prepare)?;
+    if candidate.as_ref() == current.bytes {
+        return Err(MultiDocumentUpdateError::InvalidPlan);
+    }
+    let attachment = root
+        .open_managed_target(attachment_relative_path)
+        .map_err(map_io_multi)?;
+    let super::linux::AttachmentState::Regular {
+        object_hash,
+        sha256,
+        revision,
+        size,
+        mode,
+    } = attachment
+        .attachment_state(attachment_relative_path, ATTACHMENT_LIMIT)
+        .map_err(map_io_multi)?
+    else {
+        return Err(MultiDocumentUpdateError::Conflict);
+    };
+    if sha256 != declared_sha256 || declared_size.is_some_and(|declared| declared != size) {
+        return Err(MultiDocumentUpdateError::Conflict);
+    }
+    Ok(AttachmentRemovalPreview {
+        relative_path: attachment_relative_path.to_owned(),
+        guide_revision: super::document_revision(guide_relative_path, &candidate),
+        attachment_revision: revision,
+        object_hash,
+        sha256,
+        size,
+        mode,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_attachment_removal<E, F>(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    guide_relative_path: &str,
+    expected_guide_revision: Revision,
+    operation_id: OperationId,
+    created_at: Timestamp,
+    approved: &AttachmentRemovalPreview,
+    prepare: F,
+) -> Result<AttachmentRemovalStorageOutcome, MultiDocumentUpdateError<E>>
+where
+    F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
+{
+    const ATTACHMENT_LIMIT: u64 = 64 * 1024 * 1024;
+
+    let store = store::RecoveryStore::open(
+        state_home,
+        workspace_id,
+        root.root_hash(),
+        root.capability_hash(),
+    )
+    .map_err(map_store_multi)?;
+    let lock = store
+        .acquire_lock(runtime_directory)
+        .map_err(map_store_multi)?;
+    let guide_target = root
+        .open_managed_target(guide_relative_path)
+        .map_err(map_io_multi)?;
+    let current = match guide_target
+        .state(super::GUIDE_LIMIT)
+        .map_err(map_io_multi)?
+    {
+        super::linux::ManagedState::Missing => return Err(MultiDocumentUpdateError::Conflict),
+        super::linux::ManagedState::Regular(state) => state,
+    };
+    if super::document_revision(guide_relative_path, &current.bytes) != expected_guide_revision {
+        return Err(MultiDocumentUpdateError::Conflict);
+    }
+    let candidate = prepare(&current.bytes).map_err(MultiDocumentUpdateError::Prepare)?;
+    if candidate.as_ref() == current.bytes
+        || super::document_revision(guide_relative_path, &candidate) != approved.guide_revision
+    {
+        return Err(MultiDocumentUpdateError::InvalidPlan);
+    }
+    let attachment = root
+        .open_managed_target(&approved.relative_path)
+        .map_err(map_io_multi)?;
+    if attachment
+        .attachment_state(&approved.relative_path, ATTACHMENT_LIMIT)
+        .map_err(map_io_multi)?
+        != (super::linux::AttachmentState::Regular {
+            object_hash: approved.object_hash,
+            sha256: approved.sha256,
+            revision: approved.attachment_revision,
+            size: approved.size,
+            mode: approved.mode,
+        })
+    {
+        return Err(MultiDocumentUpdateError::Conflict);
+    }
+    let destination = format!(".rehow/trash/{operation_id}/{}", approved.relative_path);
+    let trash_target = root
+        .prepare_trash_target(&destination)
+        .map_err(map_io_multi)?;
+    if !matches!(
+        trash_target
+            .attachment_state(&approved.relative_path, ATTACHMENT_LIMIT)
+            .map_err(map_io_multi)?,
+        super::linux::AttachmentState::Missing
+    ) {
+        return Err(MultiDocumentUpdateError::Conflict);
+    }
+    trash_target.sync_directory().map_err(map_io_multi)?;
+    let (root_device, root_inode) = root.identity().map_err(map_io_multi)?;
+    let old_guide_hash = store
+        .store_object(&lock, &current.bytes)
+        .map_err(map_store_multi)?;
+    let new_guide_hash = store
+        .store_object(&lock, &candidate)
+        .map_err(map_store_multi)?;
+    let mut source = attachment
+        .open_attachment_file(&approved.relative_path, ATTACHMENT_LIMIT)
+        .map_err(map_io_multi)?
+        .ok_or(MultiDocumentUpdateError::Conflict)?;
+    let source_state = AttachmentSourceState::capture(
+        &source
+            .metadata()
+            .map_err(|_| MultiDocumentUpdateError::Io)?,
+    );
+    let streamed = store
+        .store_streamed_object(
+            &lock,
+            &mut source,
+            ATTACHMENT_LIMIT,
+            &store::StreamedObjectExpectation {
+                source_state: &source_state,
+                object_hash: &approved.object_hash,
+                sha256: &approved.sha256,
+                size: approved.size,
+            },
+        )
+        .map_err(map_store_multi)?;
+    let mut plan = blake3::Hasher::new();
+    plan.update(b"rehow-attachment-removal-plan-v1\0");
+    hash_plan_field(&mut plan, guide_relative_path.as_bytes());
+    hash_plan_field(&mut plan, approved.relative_path.as_bytes());
+    hash_plan_field(&mut plan, expected_guide_revision.to_string().as_bytes());
+    hash_plan_field(
+        &mut plan,
+        approved.attachment_revision.to_string().as_bytes(),
+    );
+    plan.update(&old_guide_hash);
+    plan.update(&new_guide_hash);
+    plan.update(&streamed.object_hash);
+    plan.update(&approved.sha256);
+    plan.update(&approved.size.to_be_bytes());
+    plan.update(&approved.mode.to_be_bytes());
+    let journal = Journal {
+        generation: 1,
+        operation_id,
+        operation_kind: OperationKind::MultiFile,
+        workspace_id,
+        root_hash: root.root_hash(),
+        root_device,
+        root_inode,
+        created_at,
+        plan_hash: *plan.finalize().as_bytes(),
+        targets: vec![
+            Target {
+                relative_path: guide_relative_path.to_owned(),
+                expected: ExpectedState::Existing {
+                    revision: expected_guide_revision,
+                    object_hash: old_guide_hash,
+                    mode: current.mode,
+                },
+                intended: IntendedState::Object {
+                    object_hash: new_guide_hash,
+                    mode: current.mode,
+                },
+                temp_name: format!(".rehow-tmp-{operation_id}-guide"),
+                step: TargetStep::Prepared,
+            },
+            Target {
+                relative_path: approved.relative_path.clone(),
+                expected: ExpectedState::Existing {
+                    revision: approved.attachment_revision,
+                    object_hash: streamed.object_hash,
+                    mode: approved.mode,
+                },
+                intended: IntendedState::Trash {
+                    object_hash: streamed.object_hash,
+                    mode: approved.mode,
+                    destination,
+                },
+                temp_name: format!(".rehow-tmp-{operation_id}-attachment"),
+                step: TargetStep::Prepared,
+            },
+        ],
+        stage: JournalStage::Prepared,
+        completion: false,
+    };
+    let execution = workspace::execute_new_journal(root, &store, &lock, journal.clone());
+    if let Err(error) = execution {
+        let committed = store
+            .read_journal(&lock, operation_id)
+            .is_ok_and(|persisted| {
+                committed_matches(&persisted, &journal)
+                    && workspace::resume_journal(root, &store, &lock, operation_id).is_ok()
+            });
+        if !committed {
+            if streamed.created
+                && store
+                    .journal_missing(&lock, operation_id)
+                    .map_err(map_store_multi)?
+            {
+                store
+                    .remove_created_object(&lock, &streamed.object_hash)
+                    .map_err(map_store_multi)?;
+            }
+            return Err(map_workspace_multi(error));
+        }
+    }
+    Ok(AttachmentRemovalStorageOutcome {
+        revision: approved.guide_revision,
     })
 }
 

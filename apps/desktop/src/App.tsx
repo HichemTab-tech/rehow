@@ -181,9 +181,12 @@ function formatLongDate(value: string) {
 
 function formatBytes(value: number | null) {
   if (value === null) return "Size unavailable";
-  if (value < 1_024) return `${value} bytes`;
-  if (value < 1_048_576) return `${(value / 1_024).toFixed(1)} KiB`;
-  return `${(value / 1_048_576).toFixed(1)} MiB`;
+  const format = new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: value < 1_024 ? 0 : 1,
+  });
+  if (value < 1_024) return `${format.format(value)}\u00a0bytes`;
+  if (value < 1_048_576) return `${format.format(value / 1_024)}\u00a0KiB`;
+  return `${format.format(value / 1_048_576)}\u00a0MiB`;
 }
 
 export function filterGuides(guides: GuideSummary[], query: string) {
@@ -454,6 +457,7 @@ export function App() {
   const [updatingGuideStatus, setUpdatingGuideStatus] = useState(false);
   const [verifyingGuide, setVerifyingGuide] = useState(false);
   const [importingAttachment, setImportingAttachment] = useState(false);
+  const [removingAttachmentId, setRemovingAttachmentId] = useState("");
   const [removingGuide, setRemovingGuide] = useState(false);
   const [guideStatusError, setGuideStatusError] = useState("");
   const [rankedGuideIds, setRankedGuideIds] = useState<string[] | null>(null);
@@ -468,6 +472,9 @@ export function App() {
   const guideStatusButtonRef = useRef<HTMLButtonElement>(null);
   const guideVerifyButtonRef = useRef<HTMLButtonElement>(null);
   const attachmentImportButtonRef = useRef<HTMLButtonElement>(null);
+  const attachmentRemoveButtonRefs = useRef(
+    new Map<string, HTMLButtonElement>(),
+  );
   const guideRemoveButtonRef = useRef<HTMLButtonElement>(null);
   const guideStatusErrorRef = useRef<HTMLParagraphElement>(null);
   const detailTitleRef = useRef<HTMLInputElement>(null);
@@ -531,6 +538,7 @@ export function App() {
     updatingGuideStatus ||
     verifyingGuide ||
     importingAttachment ||
+    removingAttachmentId !== "" ||
     updatingCategoryStatusId !== "" ||
     reorderingCategoryId !== "" ||
     removingCategoryId !== "" ||
@@ -1384,6 +1392,7 @@ export function App() {
       updatingGuideStatus ||
       verifyingGuide ||
       importingAttachment ||
+      removingAttachmentId !== "" ||
       removingGuide ||
       editingGuide ||
       editingGuideDetails
@@ -1427,6 +1436,7 @@ export function App() {
       guideBody?.id !== selected.id ||
       verifyingGuide ||
       importingAttachment ||
+      removingAttachmentId !== "" ||
       updatingGuideStatus ||
       removingGuide ||
       editingGuide ||
@@ -1474,6 +1484,7 @@ export function App() {
       selected.status === "Archived" ||
       guideBody?.id !== selected.id ||
       importingAttachment ||
+      removingAttachmentId !== "" ||
       verifyingGuide ||
       updatingGuideStatus ||
       removingGuide ||
@@ -1509,6 +1520,56 @@ export function App() {
     }
   }
 
+  async function removeAttachment(attachmentId: string) {
+    if (
+      selected === null ||
+      selected.status === "Archived" ||
+      guideBody?.id !== selected.id ||
+      removingAttachmentId !== "" ||
+      importingAttachment ||
+      verifyingGuide ||
+      updatingGuideStatus ||
+      removingGuide ||
+      editingGuide ||
+      editingGuideDetails
+    )
+      return;
+    setRemovingAttachmentId(attachmentId);
+    setGuideStatusError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<SaveGuidePayload>(
+        "remove_open_guide_attachment",
+        {
+          guideId: selected.id,
+          attachmentId,
+          expectedRevision: guideBody.revision,
+        },
+      );
+      setWorkspace(result.workspace);
+      setGuideBody(result.guide);
+      setDraftBody(result.guide.body);
+      setAnnouncement(
+        result.changed
+          ? "Attachment removed."
+          : "Attachment removal cancelled.",
+      );
+      requestAnimationFrame(() =>
+        (result.changed
+          ? attachmentImportButtonRef.current
+          : attachmentRemoveButtonRefs.current.get(attachmentId)
+        )?.focus(),
+      );
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setGuideStatusError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => guideStatusErrorRef.current?.focus());
+    } finally {
+      setRemovingAttachmentId("");
+    }
+  }
+
   async function removeGuide() {
     if (
       selected === null ||
@@ -1517,6 +1578,7 @@ export function App() {
       updatingGuideStatus ||
       verifyingGuide ||
       importingAttachment ||
+      removingAttachmentId !== "" ||
       editingGuide ||
       editingGuideDetails
     )
@@ -2324,6 +2386,7 @@ export function App() {
                           updatingGuideStatus ||
                           verifyingGuide ||
                           importingAttachment ||
+                          removingAttachmentId !== "" ||
                           removingGuide
                         }
                       >
@@ -2339,6 +2402,7 @@ export function App() {
                           updatingGuideStatus ||
                           verifyingGuide ||
                           importingAttachment ||
+                          removingAttachmentId !== "" ||
                           removingGuide
                         }
                       >
@@ -2354,6 +2418,7 @@ export function App() {
                             guideBody?.id !== selected.id ||
                             verifyingGuide ||
                             importingAttachment ||
+                            removingAttachmentId !== "" ||
                             updatingGuideStatus ||
                             removingGuide
                           }
@@ -2370,6 +2435,7 @@ export function App() {
                           disabled={
                             guideBody?.id !== selected.id ||
                             importingAttachment ||
+                            removingAttachmentId !== "" ||
                             verifyingGuide ||
                             updatingGuideStatus ||
                             removingGuide
@@ -2390,6 +2456,7 @@ export function App() {
                           updatingGuideStatus ||
                           verifyingGuide ||
                           importingAttachment ||
+                          removingAttachmentId !== "" ||
                           removingGuide
                         }
                       >
@@ -2408,6 +2475,7 @@ export function App() {
                           updatingGuideStatus ||
                           verifyingGuide ||
                           importingAttachment ||
+                          removingAttachmentId !== "" ||
                           removingGuide
                         }
                       >
@@ -2631,12 +2699,48 @@ export function App() {
                 <ul>
                   {selected.attachments.map((attachment) => (
                     <li key={attachment.id}>
-                      <span className="attachment-title">
-                        {attachment.title}
-                      </span>
-                      <small className="attachment-size">
-                        {formatBytes(attachment.sizeBytes)}
-                      </small>
+                      <div className="attachment-info">
+                        <span className="attachment-title">
+                          {attachment.title}
+                        </span>
+                        <small className="attachment-size">
+                          {formatBytes(attachment.sizeBytes)}
+                        </small>
+                      </div>
+                      {selected.status !== "Archived" && (
+                        <button
+                          ref={(node) => {
+                            if (node) {
+                              attachmentRemoveButtonRefs.current.set(
+                                attachment.id,
+                                node,
+                              );
+                            } else {
+                              attachmentRemoveButtonRefs.current.delete(
+                                attachment.id,
+                              );
+                            }
+                          }}
+                          className="attachment-remove-button"
+                          type="button"
+                          aria-label={`Remove ${attachment.title}`}
+                          onClick={() => void removeAttachment(attachment.id)}
+                          disabled={
+                            guideBody?.id !== selected.id ||
+                            removingAttachmentId !== "" ||
+                            importingAttachment ||
+                            verifyingGuide ||
+                            updatingGuideStatus ||
+                            removingGuide ||
+                            editingGuide ||
+                            editingGuideDetails
+                          }
+                        >
+                          {removingAttachmentId === attachment.id
+                            ? "Removing…"
+                            : "Remove"}
+                        </button>
+                      )}
                     </li>
                   ))}
                 </ul>

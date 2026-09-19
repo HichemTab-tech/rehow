@@ -29,10 +29,11 @@ use crate::{
         AttachmentSourceState, CategoryCreateStorageError, CategoryRemoveStorageError,
         DocumentCreateError, DocumentRemoveError, DocumentUpdateError, DocumentUpdateRequest,
         EmptyWorkspaceTarget, MultiDocumentUpdateError, WorkspaceInitializeError,
-        WorkspaceInspectError, WorkspaceView, execute_attachment_import, execute_category_create,
-        execute_category_remove, execute_document_create, execute_document_move,
-        execute_document_remove, execute_document_update, execute_multi_document_update,
-        execute_workspace_initialize, open_initialized_workspace, preview_attachment_import,
+        WorkspaceInspectError, WorkspaceView, execute_attachment_import,
+        execute_attachment_removal, execute_category_create, execute_category_remove,
+        execute_document_create, execute_document_move, execute_document_remove,
+        execute_document_update, execute_multi_document_update, execute_workspace_initialize,
+        open_initialized_workspace, preview_attachment_import, preview_attachment_removal,
         refresh_workspace,
     },
 };
@@ -1683,6 +1684,279 @@ fn map_attachment_import_error(
         MultiDocumentUpdateError::Unsafe => AttachmentImportError::UnsafeStorage,
         MultiDocumentUpdateError::Unsupported => AttachmentImportError::UnsupportedFilesystem,
         MultiDocumentUpdateError::Io => AttachmentImportError::Io,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachmentRemovalOutcome {
+    Cancelled,
+    Removed { revision: Revision },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachmentRemovalError {
+    GuideNotFound,
+    AttachmentNotFound,
+    RevisionConflict,
+    GuideArchived,
+    AttachmentChanged,
+    UnsafeRoundTrip,
+    Busy,
+    UnsafeStorage,
+    UnsupportedFilesystem,
+    ResourceLimit,
+    Io,
+    CommittedRefreshRequired { revision: Revision },
+}
+
+pub fn confirm_and_remove_attachment<W: HasWindowHandle + HasDisplayHandle + ?Sized>(
+    parent: &W,
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_id: GuideId,
+    attachment_id: AttachmentId,
+    expected_revision: Revision,
+) -> Result<AttachmentRemovalOutcome, AttachmentRemovalError> {
+    let (category, loaded) = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides().iter().map(move |guide| (category, guide)))
+        .find(|(_, guide)| guide.guide().id() == &guide_id)
+        .ok_or(AttachmentRemovalError::GuideNotFound)?;
+    if loaded.revision() != expected_revision {
+        return Err(AttachmentRemovalError::RevisionConflict);
+    }
+    if loaded.effective_status() == crate::domain::GuideStatus::Archived {
+        return Err(AttachmentRemovalError::GuideArchived);
+    }
+    let attachment = loaded
+        .guide()
+        .attachments()
+        .unwrap_or_default()
+        .iter()
+        .find(|attachment| attachment.id() == &attachment_id)
+        .ok_or(AttachmentRemovalError::AttachmentNotFound)?;
+    let guide_title = loaded.guide().title().to_owned();
+    let category_name = category.category().name().to_owned();
+    let category_id = *category.category().id();
+    let guide_relative_path = loaded.relative_path().to_owned();
+    let attachment_title = attachment.title().to_owned();
+    let attachment_path = attachment.path().to_owned();
+    let attachment_sha256 = attachment.sha256().to_owned();
+    let declared_sha256 =
+        decode_sha256(&attachment_sha256).ok_or(AttachmentRemovalError::AttachmentChanged)?;
+    let declared_size = attachment.size_bytes();
+    let at = current_timestamp();
+    let stamp = MutationStamp::from_trusted_time(at);
+    let preview = preview_attachment_removal(
+        workspace,
+        state_home,
+        runtime_directory,
+        &guide_relative_path,
+        expected_revision,
+        &attachment_path,
+        declared_sha256,
+        declared_size,
+        |bytes| {
+            prepare_attachment_removal_candidate(
+                bytes,
+                guide_id,
+                category_id,
+                attachment_id,
+                &attachment_path,
+                &attachment_sha256,
+                declared_size,
+                &stamp,
+            )
+        },
+    )
+    .map_err(map_attachment_removal_error)?;
+    let confirmed = rfd::MessageDialog::new()
+        .set_parent(parent)
+        .set_level(rfd::MessageLevel::Warning)
+        .set_title("Remove Attachment?")
+        .set_description(format!(
+            "Guide: {}\nCategory: {}\nGuide ID: {guide_id}\nAttachment: {}\nAttachment ID: {attachment_id}\nPath: {}\nSize: {}\n\nRehow will remove this Attachment from the Guide and move its file to recoverable Workspace trash.",
+            safe_dialog_text(&guide_title),
+            safe_dialog_text(&category_name),
+            safe_dialog_text(&attachment_title),
+            preview.relative_path(),
+            display_byte_size(preview.size()),
+        ))
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes;
+    if !confirmed {
+        return Ok(AttachmentRemovalOutcome::Cancelled);
+    }
+    execute_approved_attachment_removal(
+        workspace,
+        state_home,
+        runtime_directory,
+        guide_id,
+        category_id,
+        attachment_id,
+        expected_revision,
+        &attachment_path,
+        &attachment_sha256,
+        declared_size,
+        at,
+        &preview,
+        new_operation_id(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_approved_attachment_removal(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_id: GuideId,
+    category_id: CategoryId,
+    attachment_id: AttachmentId,
+    expected_revision: Revision,
+    attachment_path: &str,
+    attachment_sha256: &str,
+    attachment_size: Option<u64>,
+    at: Timestamp,
+    preview: &crate::storage::AttachmentRemovalPreview,
+    operation_id: OperationId,
+) -> Result<AttachmentRemovalOutcome, AttachmentRemovalError> {
+    let loaded = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides())
+        .find(|guide| guide.guide().id() == &guide_id)
+        .ok_or(AttachmentRemovalError::GuideNotFound)?;
+    if loaded.revision() != expected_revision {
+        return Err(AttachmentRemovalError::RevisionConflict);
+    }
+    let guide_relative_path = loaded.relative_path().to_owned();
+    let stamp = MutationStamp::from_trusted_time(at);
+    let outcome = execute_attachment_removal(
+        workspace,
+        state_home,
+        runtime_directory,
+        &guide_relative_path,
+        expected_revision,
+        operation_id,
+        at,
+        preview,
+        |bytes| {
+            prepare_attachment_removal_candidate(
+                bytes,
+                guide_id,
+                category_id,
+                attachment_id,
+                attachment_path,
+                attachment_sha256,
+                attachment_size,
+                &stamp,
+            )
+        },
+    )
+    .map_err(map_attachment_removal_error)?;
+    if refresh_workspace(workspace).is_err()
+        || !workspace
+            .categories()
+            .iter()
+            .flat_map(|category| category.guides())
+            .any(|guide| {
+                guide.guide().id() == &guide_id
+                    && guide.revision() == outcome.revision()
+                    && !guide
+                        .guide()
+                        .attachments()
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|attachment| attachment.id() == &attachment_id)
+            })
+    {
+        return Err(AttachmentRemovalError::CommittedRefreshRequired {
+            revision: outcome.revision(),
+        });
+    }
+    Ok(AttachmentRemovalOutcome::Removed {
+        revision: outcome.revision(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_attachment_removal_candidate(
+    bytes: &[u8],
+    guide_id: GuideId,
+    category_id: CategoryId,
+    attachment_id: AttachmentId,
+    attachment_path: &str,
+    attachment_sha256: &str,
+    attachment_size: Option<u64>,
+    stamp: &MutationStamp,
+) -> Result<Box<[u8]>, PlanError> {
+    let parsed = parse_guide_source(copy_bytes(bytes)?).map_err(|_| PlanError::InvalidGuide)?;
+    let bound = bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
+    if bound.record().id() != &guide_id || bound.record().category_id() != &category_id {
+        return Err(PlanError::InvalidGuide);
+    }
+    let attachment = bound
+        .record()
+        .attachments()
+        .unwrap_or_default()
+        .iter()
+        .find(|attachment| attachment.id() == &attachment_id)
+        .ok_or(PlanError::InvalidEdit)?;
+    if attachment.path() != attachment_path
+        || attachment.sha256() != attachment_sha256
+        || attachment.size_bytes() != attachment_size
+    {
+        return Err(PlanError::InvalidEdit);
+    }
+    apply_guide_mutation(
+        &bound,
+        GuideMutation::RemoveAttachment(attachment_id),
+        stamp,
+    )
+}
+
+fn decode_sha256(value: &str) -> Option<[u8; 32]> {
+    if value.len() != 64 {
+        return None;
+    }
+    let mut decoded = [0_u8; 32];
+    let (pairs, remainder) = value.as_bytes().as_chunks::<2>();
+    if !remainder.is_empty() {
+        return None;
+    }
+    for (index, pair) in pairs.iter().enumerate() {
+        let high = (pair[0] as char).to_digit(16)? as u8;
+        let low = (pair[1] as char).to_digit(16)? as u8;
+        decoded[index] = (high << 4) | low;
+    }
+    Some(decoded)
+}
+
+fn map_attachment_removal_error(
+    error: MultiDocumentUpdateError<PlanError>,
+) -> AttachmentRemovalError {
+    match error {
+        MultiDocumentUpdateError::Prepare(PlanError::UnsafeRoundTrip) => {
+            AttachmentRemovalError::UnsafeRoundTrip
+        }
+        MultiDocumentUpdateError::Prepare(PlanError::ResourceLimit)
+        | MultiDocumentUpdateError::TooLarge => AttachmentRemovalError::ResourceLimit,
+        MultiDocumentUpdateError::Prepare(
+            PlanError::InvalidGuide
+            | PlanError::InvalidEdit
+            | PlanError::NotReady
+            | PlanError::AttachmentLimit
+            | PlanError::DuplicateAttachment,
+        )
+        | MultiDocumentUpdateError::InvalidPlan
+        | MultiDocumentUpdateError::Conflict => AttachmentRemovalError::AttachmentChanged,
+        MultiDocumentUpdateError::Busy => AttachmentRemovalError::Busy,
+        MultiDocumentUpdateError::Unsafe => AttachmentRemovalError::UnsafeStorage,
+        MultiDocumentUpdateError::Unsupported => AttachmentRemovalError::UnsupportedFilesystem,
+        MultiDocumentUpdateError::Io => AttachmentRemovalError::Io,
     }
 }
 
@@ -4188,6 +4462,262 @@ mod tests {
                 .attachments()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn attachment_removal_is_preview_bound_recoverable_and_preserves_metadata() {
+        use sha2::Digest;
+
+        let attachment_id = AttachmentId::from_str("0199a264-ef5f-73b4-a238-a71ba1509920").unwrap();
+        let content = b"remove this attachment\n";
+        let sha256 = sha2::Sha256::digest(content)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let attachment_path = format!("attachments/{GUIDE_ID}/remove.txt");
+        let guide = GUIDE.replacen(
+            "status: draft\n",
+            &format!(
+                "attachments:\n  - id: {attachment_id}\n    path: {attachment_path}\n    title: Remove me\n    sha256: {sha256}\n    size_bytes: {}\n    future_attachment: keep-until-removed\nstatus: tested\nlast_verified_at: \"2026-09-05T10:03:00Z\"\nverified_content_hash: verify:v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+                content.len()
+            ),
+            1,
+        );
+        let (workspace, state, mut view) = fixture("attachment-remove", &guide);
+        let attachment_directory = workspace.path().join(format!("attachments/{GUIDE_ID}"));
+        fs::create_dir_all(&attachment_directory).unwrap();
+        fs::set_permissions(
+            workspace.path().join("attachments"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        fs::set_permissions(&attachment_directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let attachment_file = workspace.path().join(&attachment_path);
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let category_id = CategoryId::from_str(CATEGORY_ID).unwrap();
+        let expected = revision(&view);
+        let stamp = MutationStamp::from_trusted_time(at());
+        let hostile_source = TestDirectory::new("attachment-removal-hostile-source");
+        let outside = hostile_source.path().join("outside.txt");
+        fs::write(&outside, content).unwrap();
+        symlink(&outside, &attachment_file).unwrap();
+        assert!(matches!(
+            preview_attachment_removal(
+                &view,
+                state.path(),
+                None,
+                GUIDE_PATH,
+                expected,
+                &attachment_path,
+                decode_sha256(&sha256).unwrap(),
+                Some(content.len() as u64),
+                |bytes| prepare_attachment_removal_candidate(
+                    bytes,
+                    guide_id,
+                    category_id,
+                    attachment_id,
+                    &attachment_path,
+                    &sha256,
+                    Some(content.len() as u64),
+                    &stamp,
+                ),
+            ),
+            Err(MultiDocumentUpdateError::Unsafe)
+        ));
+        fs::remove_file(&attachment_file).unwrap();
+        fs::write(&attachment_file, content).unwrap();
+        fs::set_permissions(&attachment_file, fs::Permissions::from_mode(0o600)).unwrap();
+        let hardlink = hostile_source.path().join("hardlink.txt");
+        fs::hard_link(&attachment_file, &hardlink).unwrap();
+        assert!(matches!(
+            preview_attachment_removal(
+                &view,
+                state.path(),
+                None,
+                GUIDE_PATH,
+                expected,
+                &attachment_path,
+                decode_sha256(&sha256).unwrap(),
+                Some(content.len() as u64),
+                |bytes| prepare_attachment_removal_candidate(
+                    bytes,
+                    guide_id,
+                    category_id,
+                    attachment_id,
+                    &attachment_path,
+                    &sha256,
+                    Some(content.len() as u64),
+                    &stamp,
+                ),
+            ),
+            Err(MultiDocumentUpdateError::Unsafe)
+        ));
+        fs::remove_file(&hardlink).unwrap();
+        refresh_workspace(&mut view).unwrap();
+
+        let expected = revision(&view);
+        let preview = match preview_attachment_removal(
+            &view,
+            state.path(),
+            None,
+            GUIDE_PATH,
+            expected,
+            &attachment_path,
+            decode_sha256(&sha256).unwrap(),
+            Some(content.len() as u64),
+            |bytes| {
+                prepare_attachment_removal_candidate(
+                    bytes,
+                    guide_id,
+                    category_id,
+                    attachment_id,
+                    &attachment_path,
+                    &sha256,
+                    Some(content.len() as u64),
+                    &stamp,
+                )
+            },
+        ) {
+            Ok(preview) => preview,
+            Err(_) => panic!("expected removal preview"),
+        };
+        fs::write(&attachment_file, b"changed after preview!!!!\n").unwrap();
+        assert_eq!(
+            execute_approved_attachment_removal(
+                &mut view,
+                state.path(),
+                None,
+                guide_id,
+                category_id,
+                attachment_id,
+                expected,
+                &attachment_path,
+                &sha256,
+                Some(content.len() as u64),
+                at(),
+                &preview,
+                operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e43"),
+            ),
+            Err(AttachmentRemovalError::AttachmentChanged)
+        );
+        assert!(attachment_file.is_file());
+        assert!(
+            view.categories()[0].guides()[0]
+                .guide()
+                .attachments()
+                .is_some()
+        );
+
+        fs::write(&attachment_file, content).unwrap();
+        let preview = match preview_attachment_removal(
+            &view,
+            state.path(),
+            None,
+            GUIDE_PATH,
+            expected,
+            &attachment_path,
+            decode_sha256(&sha256).unwrap(),
+            Some(content.len() as u64),
+            |bytes| {
+                prepare_attachment_removal_candidate(
+                    bytes,
+                    guide_id,
+                    category_id,
+                    attachment_id,
+                    &attachment_path,
+                    &sha256,
+                    Some(content.len() as u64),
+                    &stamp,
+                )
+            },
+        ) {
+            Ok(preview) => preview,
+            Err(_) => panic!("expected refreshed removal preview"),
+        };
+        let collision_operation = operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e45");
+        let collision = workspace.path().join(format!(
+            ".rehow/trash/{collision_operation}/{attachment_path}"
+        ));
+        fs::create_dir_all(collision.parent().unwrap()).unwrap();
+        for directory in [
+            workspace.path().join(".rehow"),
+            workspace.path().join(".rehow/trash"),
+            workspace
+                .path()
+                .join(format!(".rehow/trash/{collision_operation}")),
+            workspace
+                .path()
+                .join(format!(".rehow/trash/{collision_operation}/attachments")),
+            workspace.path().join(format!(
+                ".rehow/trash/{collision_operation}/attachments/{GUIDE_ID}"
+            )),
+        ] {
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        fs::write(&collision, b"do not replace").unwrap();
+        fs::set_permissions(&collision, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            execute_approved_attachment_removal(
+                &mut view,
+                state.path(),
+                None,
+                guide_id,
+                category_id,
+                attachment_id,
+                expected,
+                &attachment_path,
+                &sha256,
+                Some(content.len() as u64),
+                at(),
+                &preview,
+                collision_operation,
+            ),
+            Err(AttachmentRemovalError::AttachmentChanged)
+        );
+        assert_eq!(fs::read(&collision).unwrap(), b"do not replace");
+        assert!(attachment_file.is_file());
+        assert!(
+            view.categories()[0].guides()[0]
+                .guide()
+                .attachments()
+                .is_some()
+        );
+        fs::remove_file(collision).unwrap();
+        let operation_id = operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e44");
+        let removed = execute_approved_attachment_removal(
+            &mut view,
+            state.path(),
+            None,
+            guide_id,
+            category_id,
+            attachment_id,
+            expected,
+            &attachment_path,
+            &sha256,
+            Some(content.len() as u64),
+            at(),
+            &preview,
+            operation_id,
+        )
+        .unwrap();
+        assert!(matches!(removed, AttachmentRemovalOutcome::Removed { .. }));
+        assert!(!attachment_file.exists());
+        assert_eq!(
+            fs::read(
+                workspace
+                    .path()
+                    .join(format!(".rehow/trash/{operation_id}/{attachment_path}"))
+            )
+            .unwrap(),
+            content
+        );
+        let loaded = &view.categories()[0].guides()[0];
+        assert!(loaded.guide().attachments().is_none());
+        assert_eq!(loaded.guide().declared_status(), GuideStatus::Stale);
+        let updated = fs::read_to_string(workspace.path().join(GUIDE_PATH)).unwrap();
+        assert!(updated.contains("future_key: keep-me"));
+        assert!(!updated.contains("future_attachment: keep-until-removed"));
+        assert!(attachment_directory.is_dir());
     }
 
     #[test]

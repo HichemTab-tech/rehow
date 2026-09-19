@@ -901,6 +901,17 @@ h1 {
 
 .guide-attachments li {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-width: 0;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 2.25rem;
+}
+
+.attachment-info {
+  display: flex;
+  flex: 1;
   justify-content: space-between;
   gap: 1rem;
   min-width: 0;
@@ -913,6 +924,27 @@ h1 {
 .attachment-size {
   flex: none;
   color: var(--muted);
+}
+
+.attachment-remove-button {
+  border: 0;
+  border-bottom: 1px solid transparent;
+  min-height: 2.25rem;
+  padding: 0.25rem;
+  color: var(--warning);
+  background: transparent;
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.attachment-remove-button:hover:not(:disabled) {
+  border-bottom-color: currentColor;
+}
+
+.attachment-remove-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
 }
 .guide-status-button {
   color: var(--warning);

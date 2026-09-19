@@ -56,6 +56,7 @@ pub(crate) enum GuideMutation {
     ReplaceAliases(Vec<String>),
     ReplaceBody(Vec<u8>),
     AddAttachment(AttachmentInput),
+    RemoveAttachment(AttachmentId),
     MarkTested(VerificationHash),
     MarkStale,
     Archive,
@@ -89,7 +90,7 @@ pub(crate) enum MutationEffect {
     Attachments,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MutationFailureKind {
     InvalidValue,
     InvalidTransition,
@@ -101,7 +102,7 @@ pub(crate) enum MutationFailureKind {
     BindingInvariant,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MutationField {
     Name,
     Order,
@@ -413,6 +414,9 @@ pub(crate) fn plan_guide_mutation(
         GuideMutation::AddAttachment(attachment) => {
             return plan_add_attachment(bound, attachment, stamp);
         }
+        GuideMutation::RemoveAttachment(attachment_id) => {
+            return plan_remove_attachment(bound, attachment_id, stamp);
+        }
         mutation => mutation,
     };
     let record = bound.record();
@@ -580,6 +584,7 @@ pub(crate) fn plan_guide_mutation(
             lifecycle_edit = GuideLifecycleEdit::Restore(restored_status);
         }
         GuideMutation::AddAttachment(_) => unreachable!("handled before the mutation match"),
+        GuideMutation::RemoveAttachment(_) => unreachable!("handled before the mutation match"),
     }
 
     let target_field = if explicit_mark_stale || !matches!(lifecycle_edit, GuideLifecycleEdit::None)
@@ -1077,6 +1082,251 @@ fn attachment_was_appended(
                 && value.sha256() == expected.sha256
                 && value.size_bytes() == Some(expected.size_bytes)
         })
+}
+
+fn plan_remove_attachment(
+    bound: &BoundGuide,
+    attachment_id: AttachmentId,
+    stamp: &MutationStamp,
+) -> Result<MutationOutcome<BoundGuide>, MutationFailure> {
+    let record = bound.record();
+    if record.declared_status() == GuideStatus::Archived {
+        return Err(failure(
+            MutationFailureKind::InvalidTransition,
+            MutationField::Attachments,
+        ));
+    }
+    let existing = record.attachments().unwrap_or_default();
+    let index = existing
+        .iter()
+        .position(|attachment| attachment.id() == &attachment_id)
+        .ok_or_else(|| {
+            failure(
+                MutationFailureKind::InvalidValue,
+                MutationField::Attachments,
+            )
+        })?;
+    require_proven(
+        bound.parsed().yaml().round_trip_status(),
+        MutationField::Attachments,
+    )?;
+
+    let mut edits = Vec::new();
+    reserve(&mut edits, 4, MutationField::Document)?;
+    remove_attachment_entry(bound, index, existing.len(), &mut edits)?;
+    let mut effects = Vec::new();
+    reserve(&mut effects, 4, MutationField::Document)?;
+    effects.push(MutationEffect::Attachments);
+    let (expected_status, expected_archived_from) =
+        stale_guide_if_required(bound, false, &mut edits, &mut effects)?;
+    let updated_at = max(*record.updated_at(), stamp.at);
+    replace_root_value(
+        bound.parsed().yaml(),
+        bound.source_bytes(),
+        "updated_at",
+        emit_yaml_display(updated_at).map_err(|error| map_emit(error, MutationField::UpdatedAt))?,
+        MutationEffect::UpdatedAt,
+        MutationField::UpdatedAt,
+        &mut edits,
+    )?;
+    effects.push(MutationEffect::UpdatedAt);
+
+    let candidate_bytes = apply_edits(bound.source_bytes(), edits)?;
+    let parsed = parse_guide_source(candidate_bytes).map_err(map_parse)?;
+    let candidate = bind_guide(parsed).map_err(|_| candidate_mismatch(MutationField::Document))?;
+    let actual = candidate.record();
+    let expected_archived_at = record.archive().map(|archive| *archive.archived_at());
+    if actual.id() != record.id()
+        || actual.title() != record.title()
+        || actual.summary() != record.summary()
+        || actual.category_id() != record.category_id()
+        || actual.tags() != record.tags()
+        || actual.aliases() != record.aliases()
+        || actual.declared_status() != expected_status
+        || actual.created_at() != record.created_at()
+        || actual.updated_at() != &updated_at
+        || actual.body() != record.body()
+        || !same_verification(actual, record)
+        || !same_archive(actual, expected_archived_from, expected_archived_at)
+        || !same_nested_except_attachments(actual, record)
+        || !attachment_was_removed(actual, record, index)
+        || !same_unknown_root(&candidate, bound)
+        || candidate.unknown_partition().applicability()
+            != bound.unknown_partition().applicability()
+        || candidate.unknown_partition().references() != bound.unknown_partition().references()
+        || !attachment_unknowns_removed_at(&candidate, bound, index)
+    {
+        return Err(candidate_mismatch(MutationField::Document));
+    }
+    Ok(MutationOutcome::Candidate(MutationCandidate {
+        bound: candidate,
+        effects: effect_set(&effects)?,
+    }))
+}
+
+fn remove_attachment_entry(
+    bound: &BoundGuide,
+    index: usize,
+    count: usize,
+    edits: &mut Vec<Edit>,
+) -> Result<(), MutationFailure> {
+    let artifact = bound.parsed().yaml();
+    let source = bound.source_bytes();
+    if count == 1 {
+        return remove_root_entry(
+            artifact,
+            source,
+            "attachments",
+            MutationEffect::Attachments,
+            MutationField::Attachments,
+            edits,
+        );
+    }
+    let root_entry = artifact
+        .entries()
+        .iter()
+        .find(|entry| {
+            if entry.parent() != artifact.root_id() {
+                return false;
+            }
+            let ReconciledEntryKind::Mapping { key, .. } = entry.kind() else {
+                return false;
+            };
+            artifact.node(key).and_then(|node| node.decoded_scalar()) == Some("attachments")
+        })
+        .ok_or_else(|| {
+            failure(
+                MutationFailureKind::BindingInvariant,
+                MutationField::Attachments,
+            )
+        })?;
+    let ReconciledEntryKind::Mapping { value, .. } = root_entry.kind() else {
+        return Err(failure(
+            MutationFailureKind::BindingInvariant,
+            MutationField::Attachments,
+        ));
+    };
+    let sequence = artifact.node(value).ok_or_else(|| {
+        failure(
+            MutationFailureKind::BindingInvariant,
+            MutationField::Attachments,
+        )
+    })?;
+    if sequence.collection_style() != Some(CollectionPresentationStyle::Block)
+        || sequence.entries().len() != count
+    {
+        return Err(failure(
+            MutationFailureKind::PresentationUnsafe,
+            MutationField::Attachments,
+        ));
+    }
+    let entry = sequence
+        .entries()
+        .get(index)
+        .and_then(|entry_id| artifact.entry(*entry_id))
+        .ok_or_else(|| {
+            failure(
+                MutationFailureKind::BindingInvariant,
+                MutationField::Attachments,
+            )
+        })?;
+    if entry.collection_style() != CollectionPresentationStyle::Block
+        || !matches!(entry.kind(), ReconciledEntryKind::Sequence { .. })
+    {
+        return Err(failure(
+            MutationFailureKind::PresentationUnsafe,
+            MutationField::Attachments,
+        ));
+    }
+    let entry_start = entry.file_range().start().get() as usize;
+    let entry_end = entry.file_range().end().get() as usize;
+    let start = source[..entry_start]
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |offset| offset + 1);
+    if entry_start > entry_end
+        || entry_end > source.len()
+        || source[start..entry_start]
+            .iter()
+            .any(|byte| !matches!(byte, b' ' | b'\t'))
+    {
+        return Err(failure(
+            MutationFailureKind::PresentationUnsafe,
+            MutationField::Attachments,
+        ));
+    }
+    let end = if source.get(entry_end.wrapping_sub(1)) == Some(&b'\n') {
+        entry_end
+    } else {
+        source[entry_end..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(source.len(), |offset| entry_end + offset + 1)
+    };
+    if source[entry_end..end]
+        .iter()
+        .any(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+        || artifact.comments().iter().any(|comment| {
+            let range = comment.file_range();
+            let overlaps = ranges_overlap(
+                start,
+                end,
+                range.start().get() as usize,
+                range.end().get() as usize,
+            );
+            let owned = match comment.owner() {
+                CommentOwner::Entry(owner) => owner == entry.id(),
+                CommentOwner::Node(owner) => match entry.kind() {
+                    ReconciledEntryKind::Sequence { value } => owner == value,
+                    ReconciledEntryKind::Mapping { .. } => false,
+                },
+                CommentOwner::Boundary { before, after, .. } => {
+                    before == Some(entry.id()) || after == Some(entry.id())
+                }
+                CommentOwner::Ambiguous => true,
+            };
+            overlaps || owned
+        })
+    {
+        return Err(failure(
+            MutationFailureKind::CommentUnsafe,
+            MutationField::Attachments,
+        ));
+    }
+    push_edit(
+        source,
+        start,
+        end,
+        Box::<[u8]>::default(),
+        MutationEffect::Attachments,
+        MutationField::Attachments,
+        edits,
+    )
+}
+
+fn attachment_was_removed(actual: &super::Guide, previous: &super::Guide, removed: usize) -> bool {
+    let actual = actual.attachments().unwrap_or_default();
+    let previous = previous.attachments().unwrap_or_default();
+    actual.len() + 1 == previous.len()
+        && actual.iter().enumerate().all(|(index, left)| {
+            let right = &previous[if index < removed { index } else { index + 1 }];
+            left.id() == right.id()
+                && left.path() == right.path()
+                && left.title() == right.title()
+                && left.media_type() == right.media_type()
+                && left.sha256() == right.sha256()
+                && left.size_bytes() == right.size_bytes()
+        })
+}
+
+fn attachment_unknowns_removed_at(left: &BoundGuide, right: &BoundGuide, removed: usize) -> bool {
+    let left = left.unknown_partition().attachments();
+    let right = right.unknown_partition().attachments();
+    left.len() + 1 == right.len()
+        && left
+            .iter()
+            .enumerate()
+            .all(|(index, value)| value == &right[if index < removed { index } else { index + 1 }])
 }
 
 #[derive(Clone, Copy)]
@@ -2423,5 +2673,54 @@ mod tests {
             .unwrap();
         assert!(matches!(error.kind(), MutationFailureKind::InvalidValue));
         assert!(matches!(error.field(), MutationField::Title));
+    }
+
+    #[test]
+    fn attachment_removal_preserves_remaining_unknowns_and_stales_tested_guides() {
+        let first = AttachmentId::from_str("0199a264-ef5f-73b4-a238-a71ba1509898").unwrap();
+        let second = AttachmentId::from_str("0199a264-ef5f-73b4-a238-a71ba1509899").unwrap();
+        let extra = format!(
+            "attachments:\n  - id: {first}\n    path: attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/first.txt\n    title: First\n    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n    size_bytes: 5\n    future_attachment: remove-me\n  - id: {second}\n    path: attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/second.txt\n    title: Second\n    sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n    size_bytes: 6\n    future_attachment: keep-me\nlast_verified_at: 2026-09-05T10:00:00Z\nverified_content_hash: verify:v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
+        );
+        let original = guide(&guide_base("tested", &extra), "Body\n");
+        let stamp = MutationStamp::from_trusted_time(timestamp("2026-09-05T11:00:00Z"));
+        let MutationOutcome::Candidate(candidate) =
+            plan_guide_mutation(&original, GuideMutation::RemoveAttachment(first), &stamp)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "remove first Attachment: {:?}/{:?}",
+                        error.kind(),
+                        error.field()
+                    )
+                })
+        else {
+            panic!("candidate")
+        };
+        let attachments = candidate.bound().record().attachments().unwrap();
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].id(), &second);
+        assert_eq!(
+            candidate.bound().record().declared_status(),
+            GuideStatus::Stale
+        );
+        let source = core::str::from_utf8(candidate.bound().source_bytes()).unwrap();
+        assert!(!source.contains("future_attachment: remove-me"));
+        assert!(source.contains("future_attachment: keep-me"));
+        assert!(source.contains("future: {nested: [1]}"));
+
+        let MutationOutcome::Candidate(empty) = plan_guide_mutation(
+            candidate.bound(),
+            GuideMutation::RemoveAttachment(second),
+            &stamp,
+        )
+        .unwrap_or_else(|_| panic!("remove final Attachment")) else {
+            panic!("candidate")
+        };
+        assert!(empty.bound().record().attachments().is_none());
+        assert!(
+            !core::str::from_utf8(empty.bound().source_bytes())
+                .unwrap()
+                .contains("attachments:")
+        );
     }
 }
