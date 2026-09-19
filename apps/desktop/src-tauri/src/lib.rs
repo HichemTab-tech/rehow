@@ -18,21 +18,63 @@ use rehow_core::{
     search::search_workspace,
     storage::{
         EmptyWorkspaceTarget, WorkspaceFolderFacts, WorkspaceInspection, WorkspaceView,
-        inspect_workspace,
+        WorkspaceWatchSignal, WorkspaceWatcher, inspect_workspace,
     },
 };
 use serde::{Deserialize, Serialize};
-use std::{env, fs, path::PathBuf, str::FromStr, sync::Mutex};
+use std::{
+    env, fs,
+    path::PathBuf,
+    str::FromStr,
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+use tauri::Emitter;
+
+const WORKSPACE_INVALIDATED_EVENT: &str = "rehow://workspace-invalidated/v1";
 
 #[derive(Default)]
 struct DesktopState {
     workspace: Mutex<Option<DesktopWorkspace>>,
     pending_empty: Mutex<Option<PendingWorkspace>>,
+    next_watch_session: AtomicU64,
+}
+
+impl DesktopState {
+    fn next_watch_session(&self) -> u64 {
+        self.next_watch_session
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.wrapping_add(1).max(1))
+            })
+            .unwrap_or(0)
+            .wrapping_add(1)
+            .max(1)
+    }
 }
 
 struct DesktopWorkspace {
     view: Box<WorkspaceView>,
     facts: WorkspaceFolderFacts,
+    watcher: Option<WorkspaceWatcher>,
+    watch_status: WatchStatus,
+    watch_session: u64,
+}
+
+#[derive(Clone, Copy)]
+enum WatchStatus {
+    Active,
+    Degraded,
+}
+
+impl WatchStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Degraded => "degraded",
+        }
+    }
 }
 
 struct PendingWorkspace {
@@ -79,11 +121,22 @@ struct FolderFactsPayload {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkspacePayload {
+    id: String,
     name: String,
     categories: Vec<CategoryPayload>,
     guides: Vec<GuidePayload>,
     issue_count: usize,
     facts: FolderFactsPayload,
+    watch_status: &'static str,
+    watch_session: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceWatchEventPayload {
+    workspace_id: String,
+    watch_session: String,
+    kind: &'static str,
 }
 
 #[derive(Serialize)]
@@ -181,7 +234,12 @@ struct NativeCommandError {
 }
 
 impl WorkspacePayload {
-    fn from_view(view: &WorkspaceView, facts: FolderFactsPayload) -> Self {
+    fn from_view(
+        view: &WorkspaceView,
+        facts: FolderFactsPayload,
+        watch_status: WatchStatus,
+        watch_session: u64,
+    ) -> Self {
         let guide_capacity = view
             .categories()
             .iter()
@@ -239,11 +297,68 @@ impl WorkspacePayload {
             }
         }
         Self {
+            id: view.manifest().workspace_id().to_string(),
             name: view.manifest().name().to_owned(),
             categories,
             guides,
             issue_count: view.issues().len(),
             facts,
+            watch_status: watch_status.as_str(),
+            watch_session: watch_session.to_string(),
+        }
+    }
+}
+
+impl DesktopWorkspace {
+    fn new(
+        view: Box<WorkspaceView>,
+        facts: WorkspaceFolderFacts,
+        watch_session: u64,
+        app: &tauri::AppHandle,
+    ) -> Self {
+        let mut workspace = Self {
+            view,
+            facts,
+            watcher: None,
+            watch_status: WatchStatus::Degraded,
+            watch_session,
+        };
+        workspace.rebuild_watcher(app);
+        workspace
+    }
+
+    fn payload(&self) -> WorkspacePayload {
+        WorkspacePayload::from_view(
+            &self.view,
+            FolderFactsPayload::from(self.facts),
+            self.watch_status,
+            self.watch_session,
+        )
+    }
+
+    fn rebuild_watcher(&mut self, app: &tauri::AppHandle) {
+        let workspace_id = self.view.manifest().workspace_id().to_string();
+        let watch_session = self.watch_session.to_string();
+        let app = app.clone();
+        match WorkspaceWatcher::start(&self.view, move |signal| {
+            let kind = match signal {
+                WorkspaceWatchSignal::Changed => "changed",
+                WorkspaceWatchSignal::Degraded => "degraded",
+            };
+            let _ = app.emit(
+                WORKSPACE_INVALIDATED_EVENT,
+                WorkspaceWatchEventPayload {
+                    workspace_id: workspace_id.clone(),
+                    watch_session: watch_session.clone(),
+                    kind,
+                },
+            );
+        }) {
+            Ok(watcher) => {
+                self.watcher = Some(watcher);
+                self.watch_status = WatchStatus::Active;
+            }
+            Err(_) => self.watch_status = WatchStatus::Degraded,
         }
     }
 }
@@ -326,6 +441,7 @@ fn search_open_workspace(
 
 #[tauri::command]
 fn refresh_open_workspace(
+    app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<WorkspacePayload, NativeCommandError> {
     let mut guard = state.workspace.lock().map_err(|_| {
@@ -343,10 +459,8 @@ fn refresh_open_workspace(
             workspace_refresh_message(error),
         )
     })?;
-    Ok(WorkspacePayload::from_view(
-        &workspace.view,
-        FolderFactsPayload::from(workspace.facts),
-    ))
+    workspace.rebuild_watcher(&app);
+    Ok(workspace.payload())
 }
 
 fn workspace_refresh_code(error: WorkspaceRefreshError) -> &'static str {
@@ -424,10 +538,7 @@ fn save_open_guide_body(
     )
     .map_err(guide_update_message)?;
     Ok(SaveGuidePayload {
-        workspace: WorkspacePayload::from_view(
-            &workspace.view,
-            FolderFactsPayload::from(workspace.facts),
-        ),
+        workspace: workspace.payload(),
         guide: guide_body_payload(&workspace.view, &guide_id)?,
         changed: outcome.changed(),
     })
@@ -511,10 +622,7 @@ fn save_open_guide_details(
     )
     .map_err(|error| native_command_error(guide_update_code(error), guide_update_message(error)))?;
     Ok(SaveGuidePayload {
-        workspace: WorkspacePayload::from_view(
-            &workspace.view,
-            FolderFactsPayload::from(workspace.facts),
-        ),
+        workspace: workspace.payload(),
         guide: guide_body_payload(&workspace.view, &guide_id)
             .map_err(|message| native_command_error("refreshRequired", message))?,
         changed: outcome.changed(),
@@ -575,10 +683,7 @@ fn set_open_guide_archived(
     )
     .map_err(|error| native_command_error(guide_update_code(error), guide_update_message(error)))?;
     Ok(SaveGuidePayload {
-        workspace: WorkspacePayload::from_view(
-            &workspace.view,
-            FolderFactsPayload::from(workspace.facts),
-        ),
+        workspace: workspace.payload(),
         guide: guide_body_payload(&workspace.view, &guide_id)
             .map_err(|message| native_command_error("refreshRequired", message))?,
         changed: outcome.changed(),
@@ -658,10 +763,7 @@ fn approve_open_guide_tested(
     )
     .map_err(|error| native_command_error(guide_update_code(error), guide_update_message(error)))?;
     Ok(SaveGuidePayload {
-        workspace: WorkspacePayload::from_view(
-            &workspace.view,
-            FolderFactsPayload::from(workspace.facts),
-        ),
+        workspace: workspace.payload(),
         guide: guide_body_payload(&workspace.view, &guide_id)
             .map_err(|message| native_command_error("refreshRequired", message))?,
         changed: outcome.changed(),
@@ -727,10 +829,7 @@ fn import_open_guide_attachment(
         )
     })?;
     Ok(SaveGuidePayload {
-        workspace: WorkspacePayload::from_view(
-            &workspace.view,
-            FolderFactsPayload::from(workspace.facts),
-        ),
+        workspace: workspace.payload(),
         guide: guide_body_payload(&workspace.view, &guide_id)
             .map_err(|message| native_command_error("refreshRequired", message))?,
         changed: matches!(outcome, AttachmentImportOutcome::Imported { .. }),
@@ -869,10 +968,7 @@ fn remove_open_guide_attachment(
         )
     })?;
     Ok(SaveGuidePayload {
-        workspace: WorkspacePayload::from_view(
-            &workspace.view,
-            FolderFactsPayload::from(workspace.facts),
-        ),
+        workspace: workspace.payload(),
         guide: guide_body_payload(&workspace.view, &guide_id)
             .map_err(|message| native_command_error("refreshRequired", message))?,
         changed: matches!(outcome, AttachmentRemovalOutcome::Removed { .. }),
@@ -1006,10 +1102,7 @@ fn remove_open_guide(
         == rfd::MessageDialogResult::Yes;
     if !confirmed {
         return Ok(RemoveGuidePayload {
-            workspace: WorkspacePayload::from_view(
-                &workspace.view,
-                FolderFactsPayload::from(workspace.facts),
-            ),
+            workspace: workspace.payload(),
             removed: false,
         });
     }
@@ -1030,10 +1123,7 @@ fn remove_open_guide(
     )
     .map_err(|error| native_command_error(guide_remove_code(error), guide_remove_message(error)))?;
     Ok(RemoveGuidePayload {
-        workspace: WorkspacePayload::from_view(
-            &workspace.view,
-            FolderFactsPayload::from(workspace.facts),
-        ),
+        workspace: workspace.payload(),
         removed: true,
     })
 }
@@ -1195,6 +1285,7 @@ fn guide_update_code(error: GuideUpdateError) -> &'static str {
 #[tauri::command]
 fn initialize_selected_workspace(
     name: String,
+    app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<WorkspacePayload, NativeCommandError> {
     if name.len() > 1_024 {
@@ -1250,13 +1341,14 @@ fn initialize_selected_workspace(
         }
     };
     let facts = selected.facts;
-    let payload = WorkspacePayload::from_view(&view, FolderFactsPayload::from(facts));
+    let workspace = DesktopWorkspace::new(view, facts, state.next_watch_session(), &app);
+    let payload = workspace.payload();
     *state.workspace.lock().map_err(|_| {
         native_command_error(
             "sessionUnavailable",
             "Workspace session is unavailable".to_owned(),
         )
-    })? = Some(DesktopWorkspace { view, facts });
+    })? = Some(workspace);
     Ok(payload)
 }
 
@@ -1353,10 +1445,7 @@ fn create_open_category(
         native_command_error(category_create_code(error), category_create_message(error))
     })?;
     Ok(CreateCategoryPayload {
-        workspace: WorkspacePayload::from_view(
-            &workspace.view,
-            FolderFactsPayload::from(workspace.facts),
-        ),
+        workspace: workspace.payload(),
         category_id: outcome.category_id().to_string(),
     })
 }
@@ -1476,10 +1565,7 @@ fn save_open_category_details(
         native_command_error(category_update_code(error), category_update_message(error))
     })?;
     Ok(SaveCategoryPayload {
-        workspace: WorkspacePayload::from_view(
-            &workspace.view,
-            FolderFactsPayload::from(workspace.facts),
-        ),
+        workspace: workspace.payload(),
         changed: outcome.changed(),
     })
 }
@@ -1541,10 +1627,7 @@ fn set_open_category_archived(
         native_command_error(category_update_code(error), category_update_message(error))
     })?;
     Ok(SaveCategoryPayload {
-        workspace: WorkspacePayload::from_view(
-            &workspace.view,
-            FolderFactsPayload::from(workspace.facts),
-        ),
+        workspace: workspace.payload(),
         changed: outcome.changed(),
     })
 }
@@ -1625,10 +1708,7 @@ fn reorder_open_categories(
         )
     })?;
     Ok(SaveCategoryPayload {
-        workspace: WorkspacePayload::from_view(
-            &workspace.view,
-            FolderFactsPayload::from(workspace.facts),
-        ),
+        workspace: workspace.payload(),
         changed: outcome.changed(),
     })
 }
@@ -1740,10 +1820,7 @@ fn remove_open_category(
         native_command_error(category_remove_code(error), category_remove_message(error))
     })?;
     Ok(SaveCategoryPayload {
-        workspace: WorkspacePayload::from_view(
-            &workspace.view,
-            FolderFactsPayload::from(workspace.facts),
-        ),
+        workspace: workspace.payload(),
         changed: true,
     })
 }
@@ -1918,10 +1995,7 @@ fn create_open_guide(
     .map_err(|error| native_command_error(guide_create_code(error), guide_create_message(error)))?;
     let guide_id = outcome.guide_id();
     Ok(CreateGuidePayload {
-        workspace: WorkspacePayload::from_view(
-            &workspace.view,
-            FolderFactsPayload::from(workspace.facts),
-        ),
+        workspace: workspace.payload(),
         guide: guide_body_payload(&workspace.view, &guide_id)
             .map_err(|message| native_command_error("refreshRequired", message))?,
     })
@@ -1998,7 +2072,10 @@ fn cancel_selected_workspace_initialization(
 }
 
 #[tauri::command]
-fn choose_workspace(state: tauri::State<'_, DesktopState>) -> Result<OpenWorkspaceResult, String> {
+fn choose_workspace(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<OpenWorkspaceResult, String> {
     let Some(path) = rfd::FileDialog::new()
         .set_title("Open a Rehow Workspace")
         .pick_folder()
@@ -2031,15 +2108,13 @@ fn choose_workspace(state: tauri::State<'_, DesktopState>) -> Result<OpenWorkspa
             Ok(OpenWorkspaceResult::Empty { facts })
         }
         WorkspaceInspection::Compatible(view) => {
-            let payload = WorkspacePayload::from_view(&view, facts);
+            let workspace =
+                DesktopWorkspace::new(view, report_facts, state.next_watch_session(), &app);
+            let payload = workspace.payload();
             *state
                 .workspace
                 .lock()
-                .map_err(|_| "Workspace session is unavailable".to_owned())? =
-                Some(DesktopWorkspace {
-                    view,
-                    facts: report_facts,
-                });
+                .map_err(|_| "Workspace session is unavailable".to_owned())? = Some(workspace);
             Ok(OpenWorkspaceResult::Compatible { workspace: payload })
         }
         WorkspaceInspection::NewerUnsupported { version } => {
@@ -2098,13 +2173,13 @@ pub fn run() {
 mod tests {
     use super::{
         APPLICATION_NAME, CategoryPayload, FolderFactsPayload, GuideBodyPayload, GuidePayload,
-        WorkspacePayload, attachment_removal_code, attachment_removal_message,
-        category_create_code, category_create_message, category_remove_code,
-        category_remove_message, category_reorder_code, category_reorder_message,
-        category_update_code, category_update_message, guide_create_code, guide_create_message,
-        guide_remove_code, guide_remove_confirmation, guide_remove_message, guide_update_code,
-        guide_update_message, native_command_error, workspace_initialization_message,
-        workspace_refresh_code, workspace_refresh_message,
+        WorkspacePayload, WorkspaceWatchEventPayload, attachment_removal_code,
+        attachment_removal_message, category_create_code, category_create_message,
+        category_remove_code, category_remove_message, category_reorder_code,
+        category_reorder_message, category_update_code, category_update_message, guide_create_code,
+        guide_create_message, guide_remove_code, guide_remove_confirmation, guide_remove_message,
+        guide_update_code, guide_update_message, native_command_error,
+        workspace_initialization_message, workspace_refresh_code, workspace_refresh_message,
     };
     use rehow_core::{
         application::{
@@ -2123,6 +2198,7 @@ mod tests {
     #[test]
     fn payload_field_names_are_stable() {
         let payload = WorkspacePayload {
+            id: "0199a1d7-7b0d-7d8e-a38d-f936c5735e01".to_owned(),
             name: "Test".to_owned(),
             categories: vec![CategoryPayload {
                 id: "0199a1c2-d334-7d17-bd9c-f8b6ba3a5551".to_owned(),
@@ -2153,8 +2229,11 @@ mod tests {
                 git_probe_complete: true,
                 unsafe_git_marker: false,
             },
+            watch_status: "active",
+            watch_session: "7".to_owned(),
         };
         let json = serde_json::to_value(payload).unwrap();
+        assert_eq!(json["id"], "0199a1d7-7b0d-7d8e-a38d-f936c5735e01");
         assert_eq!(json["name"], "Test");
         assert_eq!(json["issueCount"], 0);
         assert_eq!(json["facts"]["writable"], true);
@@ -2171,6 +2250,21 @@ mod tests {
             "0199a1c2-d334-7d17-bd9c-f8b6ba3a5551"
         );
         assert!(json["guides"][0].get("body").is_none());
+        assert_eq!(json["watchStatus"], "active");
+        assert_eq!(json["watchSession"], "7");
+    }
+
+    #[test]
+    fn watch_event_contains_only_workspace_identity_and_health() {
+        let json = serde_json::to_value(WorkspaceWatchEventPayload {
+            workspace_id: "0199a1d7-7b0d-7d8e-a38d-f936c5735e01".to_owned(),
+            watch_session: "7".to_owned(),
+            kind: "changed",
+        })
+        .unwrap();
+        assert_eq!(json.as_object().unwrap().len(), 3);
+        assert_eq!(json["kind"], "changed");
+        assert!(json.get("path").is_none());
     }
 
     #[test]

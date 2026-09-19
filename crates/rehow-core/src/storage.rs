@@ -5,6 +5,8 @@
 //! crate-private recovery boundary and is not exposed to UI or MCP adapters.
 
 pub(crate) mod recovery;
+mod watch;
+
 pub(crate) use recovery::{
     AttachmentImportPreview, AttachmentImportStorageOutcome, AttachmentRemovalPreview,
     AttachmentRemovalStorageOutcome, AttachmentSourceState, CategoryCreateStorageError,
@@ -14,6 +16,7 @@ pub(crate) use recovery::{
     MultiDocumentUpdateOutcome, PreparedDocument, WorkspaceInitializeError,
     WorkspaceInitializeOutcome,
 };
+pub use watch::{WorkspaceWatchError, WorkspaceWatchSignal, WorkspaceWatcher};
 
 #[cfg(test)]
 pub(crate) fn set_attachment_changed_fault() {
@@ -2090,6 +2093,10 @@ mod linux {
 
         pub(super) fn capability_hash(&self) -> [u8; 32] {
             self.capability_hash
+        }
+
+        pub(super) fn watch_path(&self) -> std::path::PathBuf {
+            std::path::PathBuf::from(format!("/proc/self/fd/{}", self.descriptor.as_raw_fd()))
         }
 
         pub(super) fn duplicate(&self) -> Result<Self, io::Error> {

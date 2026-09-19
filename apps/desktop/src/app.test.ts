@@ -4,11 +4,14 @@ import { describe, expect, it } from "vitest";
 import {
   APPLICATION_NAME,
   App,
+  automaticRefreshBlocked,
   canMarkGuideTested,
   filterGuides,
   gitFactLabel,
   guideLifecycleLabel,
   hasUnsavedChanges,
+  isCurrentWorkspaceWatchEvent,
+  isWorkspaceWatchEvent,
   movedCategoryOrder,
   nativeCommandError,
   nextResultIndex,
@@ -19,6 +22,7 @@ import {
   normalizedWorkspaceName,
   rankedGuides,
   refreshedGuideId,
+  refreshResultMayApply,
   resultCountLabel,
 } from "./App";
 import { MarkdownDocument } from "./MarkdownDocument";
@@ -70,6 +74,77 @@ describe("application identity", () => {
     expect(refreshedGuideId("two", guides)).toBe("two");
     expect(refreshedGuideId("removed", guides)).toBe("one");
     expect(refreshedGuideId("removed", [])).toBe("");
+  });
+
+  it("accepts only bounded path-free native watch events", () => {
+    expect(
+      isWorkspaceWatchEvent({
+        workspaceId: "workspace-id",
+        watchSession: "7",
+        kind: "changed",
+      }),
+    ).toBe(true);
+    expect(
+      isWorkspaceWatchEvent({
+        workspaceId: "workspace-id",
+        watchSession: "7",
+        kind: "degraded",
+      }),
+    ).toBe(true);
+    expect(
+      isWorkspaceWatchEvent({
+        workspaceId: "workspace-id",
+        watchSession: "7",
+        kind: "changed",
+        path: "/private/file",
+      }),
+    ).toBe(false);
+    expect(
+      isWorkspaceWatchEvent({
+        workspaceId: "workspace-id",
+        watchSession: "7",
+        kind: "read",
+      }),
+    ).toBe(false);
+    expect(
+      isWorkspaceWatchEvent({
+        workspaceId: "x".repeat(65),
+        watchSession: "7",
+        kind: "changed",
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects stale events from another open-Workspace session", () => {
+    const event = {
+      workspaceId: "current",
+      watchSession: "7",
+      kind: "changed" as const,
+    };
+    expect(isCurrentWorkspaceWatchEvent(event, "current", "7")).toBe(true);
+    expect(isCurrentWorkspaceWatchEvent(event, "current", "8")).toBe(false);
+    expect(isCurrentWorkspaceWatchEvent(event, "previous", "7")).toBe(false);
+    expect(isCurrentWorkspaceWatchEvent(event, "", "7")).toBe(false);
+  });
+
+  it("defers automatic refresh for every dirty or busy state", () => {
+    const clean = {
+      busy: false,
+      dirtyGuide: false,
+      dirtyGuideDetails: false,
+      dirtyCategoryRename: false,
+      dirtyCategoryCreate: false,
+      dirtyGuideCreate: false,
+    };
+    expect(automaticRefreshBlocked(clean)).toBe(false);
+    for (const key of Object.keys(clean) as Array<keyof typeof clean>) {
+      expect(automaticRefreshBlocked({ ...clean, [key]: true })).toBe(true);
+    }
+  });
+
+  it("refuses a refresh result after editing begins in flight", () => {
+    expect(refreshResultMayApply(7, 7)).toBe(true);
+    expect(refreshResultMayApply(7, 8)).toBe(false);
   });
 
   it("labels Guide archive and restore states explicitly", () => {

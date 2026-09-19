@@ -9,6 +9,7 @@ publish = false
 base64 = { version = "=0.23.1", default-features = false, features = ["std"] }
 blake3 = { version = "=1.8.7", default-features = false, features = ["std", "pure"] }
 focaccia = { version = "=2.0.0", default-features = false }
+notify = { version = "=8.2.0", default-features = false }
 pulldown-cmark = { version = "=0.13.4", default-features = false }
 raw-window-handle = "=0.6.2"
 rfd = { version = "=0.17.2", default-features = true }

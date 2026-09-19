@@ -134,12 +134,12 @@ There is no generic `read_file`, `write_file`, `open_path`, or `run_command` com
 
 ### Events
 
-- `rehow://workspace-invalidated/v1` — handle, workspace epoch, monotonic catalog generation, IDs/kinds only; consumers refetch.
-- `rehow://workspace-health/v1` — handle/epoch/generation plus root unavailable, watch degraded, or recovery code.
+- `rehow://workspace-invalidated/v1` — implemented receive-only desktop event containing only Workspace ID, native watch-session generation, and `changed`/`degraded`; consumers invoke the argument-free canonical refresh.
+- `rehow://workspace-health/v1` — planned richer root-unavailable/recovery health event; it does not yet exist.
 - `rehow://index-progress/v1` — handle/epoch, index generation, counts/status suitable for a polite live region.
 - `rehow://git-invalidated/v1` — handle/epoch and Git-state generation/token invalidation.
 
-Events are advisory; snapshots carry the same epoch/generations. A gap, older generation, or epoch change forces a fresh snapshot. Every action verifies current state.
+Events are advisory. A stale Workspace/watch-session pair is ignored; every accepted event still forces a fresh canonical snapshot, and every action verifies current state.
 
 ## Workspace storage
 
@@ -163,7 +163,7 @@ Before any migration, create a timestamped snapshot under `.rehow/backups/` with
 
 ### External changes and concurrency
 
-`notify` events are coalesced and followed by targeted stat/read validation; polling/manual refresh remains available for unreliable filesystems. Revisions use normalized path plus exact bytes, not timestamps. Cooperating desktop/MCP writers serialize and compare revisions; uncooperative same-user writers cannot be locked universally, so the exchange/recovery protocol preserves displaced bytes and surfaces races. An open dirty editor whose revision changes enters conflict state.
+Exact-pinned `notify` events are coalesced but carry no path or content across the core boundary. Core watches only retained descriptor-backed managed directories; every hint invokes the same complete descriptor-confined canonical refresh and revision-driven index reconciliation. Dirty forms defer automatic application, window refocus recovers common background event loss, and manual refresh remains available for unreliable filesystems or degraded watches. Revisions use normalized path plus exact bytes, not timestamps. Cooperating desktop/MCP writers serialize and compare revisions; uncooperative same-user writers cannot be locked universally, so the exchange/recovery protocol preserves displaced bytes and surfaces races. An open dirty editor whose revision changes enters conflict state.
 
 ## Search/index design
 
@@ -217,7 +217,7 @@ Recent Workspace paths, window state, theme preference, and opt-in sync schedule
 ## Dependency and platform policy
 
 - Pin major versions and commit lockfiles. Review generated shadcn source.
-- Use the user-approved host toolchain—Node 26.2.0 and pnpm 11.20.0—for bootstrap development/CI, with React 19, Vite 8, Vitest 5, Tailwind 4, and Tauri 2 major lines; exact dependency versions are captured by manifests and lockfiles.
+- Use the user-approved installed host toolchain—currently Node 26.2.0 and pnpm 11.3.0—without installing or switching it, with React 19, Vite 8, Vitest 5, Tailwind 4, and Tauri 2 major lines; exact dependency versions are captured by manifests and lockfiles.
 - Use Rust stable pinned in `rust-toolchain.toml` once the oldest supported Tauri/plugin floor is validated.
 - Linux uses WebKitGTK 4.1. Avoid essential UI that depends on bleeding-edge CSS or WebGL. Test oldest supported distro plus GNOME/KDE/wlroots Wayland and X11.
 - Normal decorated/resizable windows only in v1; Wayland does not provide reliable global window coordinates or all always-on-top/effect behavior.

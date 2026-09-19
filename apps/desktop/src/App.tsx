@@ -1,5 +1,5 @@
 import type { SafeMarkdownDocument } from "@rehow/contracts";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { MarkdownDocument } from "./MarkdownDocument";
 
 export const APPLICATION_NAME = "Rehow";
@@ -38,6 +38,7 @@ type FolderFacts = {
 };
 
 type WorkspacePayload = {
+  id: string;
   name: string;
   categories: Array<{
     id: string;
@@ -50,7 +51,66 @@ type WorkspacePayload = {
   guides: GuideSummary[];
   issueCount: number;
   facts: FolderFacts;
+  watchStatus: "active" | "degraded";
+  watchSession: string;
 };
+
+type WorkspaceWatchEventPayload = {
+  workspaceId: string;
+  watchSession: string;
+  kind: "changed" | "degraded";
+};
+
+const WORKSPACE_INVALIDATED_EVENT = "rehow://workspace-invalidated/v1";
+
+export function isWorkspaceWatchEvent(
+  value: unknown,
+): value is WorkspaceWatchEventPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as {
+    workspaceId?: unknown;
+    watchSession?: unknown;
+    kind?: unknown;
+  };
+  return (
+    Object.keys(candidate).length === 3 &&
+    typeof candidate.workspaceId === "string" &&
+    candidate.workspaceId.length <= 64 &&
+    typeof candidate.watchSession === "string" &&
+    /^[1-9][0-9]{0,19}$/.test(candidate.watchSession) &&
+    (candidate.kind === "changed" || candidate.kind === "degraded")
+  );
+}
+
+export function automaticRefreshBlocked(states: {
+  busy: boolean;
+  dirtyGuide: boolean;
+  dirtyGuideDetails: boolean;
+  dirtyCategoryRename: boolean;
+  dirtyCategoryCreate: boolean;
+  dirtyGuideCreate: boolean;
+}) {
+  return Object.values(states).some(Boolean);
+}
+
+export function isCurrentWorkspaceWatchEvent(
+  event: WorkspaceWatchEventPayload,
+  workspaceId: string,
+  watchSession: string,
+) {
+  return (
+    workspaceId !== "" &&
+    event.workspaceId === workspaceId &&
+    event.watchSession === watchSession
+  );
+}
+
+export function refreshResultMayApply(
+  startedEditGeneration: number,
+  currentEditGeneration: number,
+) {
+  return startedEditGeneration === currentEditGeneration;
+}
 
 type OpenWorkspaceResult =
   | { kind: "cancelled" }
@@ -408,6 +468,11 @@ export function App() {
   const [announcement, setAnnouncement] = useState("");
   const [openingWorkspace, setOpeningWorkspace] = useState(false);
   const [refreshingWorkspace, setRefreshingWorkspace] = useState(false);
+  const [externalChangeWorkspaceId, setExternalChangeWorkspaceId] =
+    useState("");
+  const [watchDegradedWorkspaceId, setWatchDegradedWorkspaceId] = useState("");
+  const [workspaceEventsUnavailable, setWorkspaceEventsUnavailable] =
+    useState(false);
   const [pendingWorkspace, setPendingWorkspace] = useState<FolderFacts | null>(
     null,
   );
@@ -498,6 +563,9 @@ export function App() {
   const guideCreateButtonRef = useRef<HTMLButtonElement>(null);
   const guideTitleRef = useRef<HTMLInputElement>(null);
   const guideCreateErrorRef = useRef<HTMLParagraphElement>(null);
+  const workspaceIdRef = useRef("");
+  const workspaceSessionRef = useRef("");
+  const editGenerationRef = useRef(0);
   const guides = workspace?.guides ?? [];
   const visibleGuides = useMemo(
     () => rankedGuides(guides, query, rankedGuideIds),
@@ -529,6 +597,8 @@ export function App() {
   const dirtyCategoryCreate =
     creatingCategory &&
     (categoryName.trim() !== "" || categorySummary.trim() !== "");
+  const dirtyGuideCreate =
+    creatingGuide && (guideTitle.trim() !== "" || guideSummary.trim() !== "");
   const workspaceOperationBusy =
     savingGuide ||
     savingNewGuide ||
@@ -544,6 +614,29 @@ export function App() {
     removingCategoryId !== "" ||
     removingGuide ||
     refreshingWorkspace;
+  const autoRefreshBlocked = automaticRefreshBlocked({
+    busy: workspaceOperationBusy || openingWorkspace,
+    dirtyGuide,
+    dirtyGuideDetails,
+    dirtyCategoryRename,
+    dirtyCategoryCreate,
+    dirtyGuideCreate,
+  });
+  const externalChangePending =
+    workspace !== null && externalChangeWorkspaceId === workspace.id;
+  const watchDegraded =
+    workspace !== null &&
+    (workspaceEventsUnavailable ||
+      workspace.watchStatus === "degraded" ||
+      watchDegradedWorkspaceId === workspace.id);
+  workspaceIdRef.current = workspace?.id ?? "";
+  workspaceSessionRef.current = workspace?.watchSession ?? "";
+  function noteDraftChange() {
+    editGenerationRef.current += 1;
+  }
+  const refreshWorkspaceFromEffect = useEffectEvent(() => {
+    void refreshWorkspace(true);
+  });
 
   useEffect(() => {
     const theme = initialParameter("theme");
@@ -561,6 +654,73 @@ export function App() {
     window.addEventListener("hashchange", revealGuideTarget);
     return () => window.removeEventListener("hashchange", revealGuideTarget);
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<unknown>(WORKSPACE_INVALIDATED_EVENT, ({ payload }) => {
+          if (
+            !active ||
+            !isWorkspaceWatchEvent(payload) ||
+            !isCurrentWorkspaceWatchEvent(
+              payload,
+              workspaceIdRef.current,
+              workspaceSessionRef.current,
+            )
+          )
+            return;
+          if (payload.kind === "degraded") {
+            setWatchDegradedWorkspaceId(payload.workspaceId);
+          }
+          setExternalChangeWorkspaceId(payload.workspaceId);
+        }),
+      )
+      .then((removeListener) => {
+        if (active) unlisten = removeListener;
+        else removeListener();
+      })
+      .catch(() => {
+        if (active) setWorkspaceEventsUnavailable(true);
+      });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let blurred = false;
+    function markBlurred() {
+      blurred = true;
+    }
+    function reconcileOnRefocus() {
+      const workspaceId = workspaceIdRef.current;
+      if (!blurred || workspaceId === "") return;
+      blurred = false;
+      setExternalChangeWorkspaceId(workspaceId);
+    }
+    window.addEventListener("blur", markBlurred);
+    window.addEventListener("focus", reconcileOnRefocus);
+    return () => {
+      window.removeEventListener("blur", markBlurred);
+      window.removeEventListener("focus", reconcileOnRefocus);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!externalChangePending) return;
+    if (autoRefreshBlocked) {
+      if (!workspaceOperationBusy) {
+        setAnnouncement(
+          "Files changed outside Rehow. Finish or discard your edits, then refresh.",
+        );
+      }
+      return;
+    }
+    refreshWorkspaceFromEffect();
+  }, [autoRefreshBlocked, externalChangePending, workspaceOperationBusy]);
 
   useEffect(() => {
     function handleShortcut(event: KeyboardEvent) {
@@ -698,10 +858,9 @@ export function App() {
     ) {
       return false;
     }
-    const dirtyNewGuide =
-      creatingGuide && (guideTitle.trim() !== "" || guideSummary.trim() !== "");
     return (
-      !dirtyNewGuide || window.confirm("Discard this unfinished Guide draft?")
+      !dirtyGuideCreate ||
+      window.confirm("Discard this unfinished Guide draft?")
     );
   }
 
@@ -751,6 +910,8 @@ export function App() {
       const { invoke } = await import("@tauri-apps/api/core");
       const result = await invoke<OpenWorkspaceResult>("choose_workspace");
       if (result.kind !== "cancelled") {
+        setExternalChangeWorkspaceId("");
+        setWatchDegradedWorkspaceId("");
         setCreatingCategory(false);
         setCategoryName("");
         setCategorySummary("");
@@ -814,15 +975,30 @@ export function App() {
     }
   }
 
-  async function refreshWorkspace() {
-    if (workspace === null || refreshingWorkspace || !confirmDiscard()) return;
+  async function refreshWorkspace(automatic = false) {
+    if (workspace === null || refreshingWorkspace) return;
+    if (automatic ? autoRefreshBlocked : !confirmDiscard()) return;
     const previousSelectedId = selectedId;
     const previousSelectedTitle = selected?.title ?? "The selected Guide";
+    const startedEditGeneration = editGenerationRef.current;
+    setExternalChangeWorkspaceId("");
     setRefreshingWorkspace(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const refreshed = await invoke<WorkspacePayload>(
         "refresh_open_workspace",
+      );
+      if (
+        !refreshResultMayApply(startedEditGeneration, editGenerationRef.current)
+      ) {
+        setExternalChangeWorkspaceId(workspace.id);
+        setAnnouncement(
+          "Workspace files changed, but edits made during refresh were kept. Refresh again when ready.",
+        );
+        return;
+      }
+      setWatchDegradedWorkspaceId(
+        refreshed.watchStatus === "degraded" ? refreshed.id : "",
       );
       const selectedRemoved =
         previousSelectedId !== "" &&
@@ -844,23 +1020,26 @@ export function App() {
       if (selectedRemoved) {
         setReaderOpen(false);
         setAnnouncement(
-          `${previousSelectedTitle} was removed or is unavailable. Workspace refreshed with ${resultCountLabel(refreshed.guides.length)}.`,
+          `${previousSelectedTitle} was removed or is unavailable. Workspace ${automatic ? "updated automatically" : "refreshed"} with ${resultCountLabel(refreshed.guides.length)}.`,
         );
-        requestAnimationFrame(() => searchRef.current?.focus());
+        if (!automatic) requestAnimationFrame(() => searchRef.current?.focus());
       } else {
         const issueMessage =
           refreshed.issueCount === 0
             ? "No issues found."
             : `${refreshed.issueCount} item${refreshed.issueCount === 1 ? "" : "s"} need attention.`;
         setAnnouncement(
-          `Workspace refreshed with ${resultCountLabel(refreshed.guides.length)}. ${issueMessage}`,
+          `Workspace ${automatic ? "updated automatically" : "refreshed"} with ${resultCountLabel(refreshed.guides.length)}. ${issueMessage}`,
         );
-        requestAnimationFrame(() => workspaceRefreshRef.current?.focus());
+        if (!automatic) {
+          requestAnimationFrame(() => workspaceRefreshRef.current?.focus());
+        }
       }
     } catch (error) {
       const failure = nativeCommandError(error);
       setAnnouncement(failure.message);
-      requestAnimationFrame(() => workspaceRefreshRef.current?.focus());
+      if (automatic) setWatchDegradedWorkspaceId(workspace.id);
+      else requestAnimationFrame(() => workspaceRefreshRef.current?.focus());
     } finally {
       setRefreshingWorkspace(false);
     }
@@ -879,6 +1058,10 @@ export function App() {
         { name },
       );
       setWorkspace(created);
+      setExternalChangeWorkspaceId("");
+      setWatchDegradedWorkspaceId(
+        created.watchStatus === "degraded" ? created.id : "",
+      );
       setPendingWorkspace(null);
       setSelectedId("");
       setQuery("");
@@ -1653,6 +1836,18 @@ export function App() {
             : (workspace?.name ?? "Open Workspace")}
           <Icon name="chevron" />
         </button>
+        {workspace !== null && externalChangePending && autoRefreshBlocked ? (
+          <span className="workspace-health" role="status">
+            Files changed on disk
+          </span>
+        ) : workspace !== null && watchDegraded ? (
+          <span
+            className="workspace-health workspace-health-warning"
+            role="status"
+          >
+            Auto-refresh unavailable
+          </span>
+        ) : null}
         <div className="toolbar-actions">
           <button
             ref={workspaceRefreshRef}
@@ -1667,7 +1862,11 @@ export function App() {
                 ? "Open a Workspace to refresh"
                 : refreshingWorkspace
                   ? "Refreshing Workspace…"
-                  : "Refresh Workspace"
+                  : externalChangePending && autoRefreshBlocked
+                    ? "Files changed on disk; refresh when ready"
+                    : watchDegraded
+                      ? "Auto-refresh unavailable; refresh Workspace manually"
+                      : "Refresh Workspace"
             }
             disabled={
               workspace === null || workspaceOperationBusy || openingWorkspace
@@ -1782,6 +1981,7 @@ export function App() {
                 }
                 value={categoryName}
                 onChange={(event) => {
+                  noteDraftChange();
                   setCategoryName(event.target.value);
                   setCategoryError("");
                 }}
@@ -1799,6 +1999,7 @@ export function App() {
                 }
                 value={categorySummary}
                 onChange={(event) => {
+                  noteDraftChange();
                   setCategorySummary(event.target.value);
                   setCategoryError("");
                 }}
@@ -1866,6 +2067,7 @@ export function App() {
                   }
                   value={categoryRenameValue}
                   onChange={(event) => {
+                    noteDraftChange();
                     setCategoryRenameValue(event.target.value);
                     setCategoryRenameError("");
                   }}
@@ -1887,6 +2089,7 @@ export function App() {
                   }
                   value={categoryRenameSummary}
                   onChange={(event) => {
+                    noteDraftChange();
                     setCategoryRenameSummary(event.target.value);
                     setCategoryRenameError("");
                   }}
@@ -2145,6 +2348,7 @@ export function App() {
                 }
                 value={guideTitle}
                 onChange={(event) => {
+                  noteDraftChange();
                   setGuideTitle(event.target.value);
                   setGuideCreateError("");
                 }}
@@ -2162,6 +2366,7 @@ export function App() {
                 }
                 value={guideSummary}
                 onChange={(event) => {
+                  noteDraftChange();
                   setGuideSummary(event.target.value);
                   setGuideCreateError("");
                 }}
@@ -2177,6 +2382,7 @@ export function App() {
                 }
                 value={guideCategoryId}
                 onChange={(event) => {
+                  noteDraftChange();
                   setGuideCategoryId(event.target.value);
                   setGuideCreateError("");
                 }}
@@ -2519,6 +2725,7 @@ export function App() {
                     }
                     value={detailTitle}
                     onChange={(event) => {
+                      noteDraftChange();
                       setDetailTitle(event.target.value);
                       setGuideDetailsError("");
                     }}
@@ -2539,6 +2746,7 @@ export function App() {
                     }
                     value={detailSummary}
                     onChange={(event) => {
+                      noteDraftChange();
                       setDetailSummary(event.target.value);
                       setGuideDetailsError("");
                     }}
@@ -2557,6 +2765,7 @@ export function App() {
                     }
                     value={detailCategoryId}
                     onChange={(event) => {
+                      noteDraftChange();
                       setDetailCategoryId(event.target.value);
                       setGuideDetailsError("");
                     }}
@@ -2596,6 +2805,7 @@ export function App() {
                     }
                     value={detailTags}
                     onChange={(event) => {
+                      noteDraftChange();
                       setDetailTags(event.target.value);
                       setGuideDetailsError("");
                     }}
@@ -2619,6 +2829,7 @@ export function App() {
                     }
                     value={detailAliases}
                     onChange={(event) => {
+                      noteDraftChange();
                       setDetailAliases(event.target.value);
                       setGuideDetailsError("");
                     }}
@@ -2785,7 +2996,10 @@ export function App() {
                     aria-describedby="guide-markdown-help"
                     maxLength={2_097_152}
                     value={draftBody}
-                    onChange={(event) => setDraftBody(event.target.value)}
+                    onChange={(event) => {
+                      noteDraftChange();
+                      setDraftBody(event.target.value);
+                    }}
                   />
                   {saveError !== "" && (
                     <p

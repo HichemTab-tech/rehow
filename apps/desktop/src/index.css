@@ -179,6 +179,18 @@ textarea:focus-visible,
   height: 14px;
   color: var(--muted);
 }
+.workspace-health {
+  min-width: 0;
+  margin-left: 8px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-health-warning {
+  color: var(--warning);
+}
 .workspace-dot,
 .sync-indicator {
   width: 7px;
@@ -1410,6 +1422,9 @@ h1 {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .workspace-health {
+    display: none;
   }
   .toolbar-actions .button-primary {
     padding: 0 9px;
