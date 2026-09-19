@@ -24,13 +24,16 @@ use crate::{
     },
 };
 use std::{
+    env,
+    ffi::CString,
     fmt,
     fs::{self, File},
     io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     os::{
         fd::{AsRawFd, FromRawFd},
         unix::{
-            fs::{MetadataExt, PermissionsExt},
+            ffi::OsStrExt,
+            fs::{FileTypeExt, MetadataExt, PermissionsExt},
             process::CommandExt,
         },
     },
@@ -74,6 +77,7 @@ const MAX_COMMIT_STAGING_FILES: usize = 60_000;
 const MAX_COMMIT_STAGING_BYTES: u64 = 3 * 1024 * 1024 * 1024;
 const COMMIT_PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 const COMMIT_PLAN_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+const MAX_SSH_AGENT_PATH_BYTES: usize = 4_096;
 #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
 const MAX_CLONE_TREE_LISTING_BYTES: usize = 32 * 1024 * 1024;
 #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
@@ -138,6 +142,158 @@ fn active_git_commit_deadline_reached() -> bool {
             .get()
             .is_some_and(|deadline| Instant::now() >= deadline)
     })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitSshAgentStatus {
+    NotConfigured,
+    Trusted,
+    Unsafe,
+}
+
+pub struct GitSshAgentProvenance {
+    status: GitSshAgentStatus,
+    _socket: Option<File>,
+}
+
+impl GitSshAgentProvenance {
+    pub fn status(&self) -> GitSshAgentStatus {
+        self.status
+    }
+}
+
+impl fmt::Debug for GitSshAgentProvenance {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitSshAgentProvenance")
+            .field("status", &self.status)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Captures the launch-inherited SSH agent as an inode-held, path-redacted
+/// capability. An unsafe value never prevents Rehow from starting; it simply
+/// keeps authenticated SSH unavailable.
+pub fn capture_git_ssh_agent_provenance() -> GitSshAgentProvenance {
+    let path = env::var_os("SSH_AUTH_SOCK");
+    capture_git_ssh_agent_provenance_from(path.as_deref())
+}
+
+fn capture_git_ssh_agent_provenance_from(path: Option<&std::ffi::OsStr>) -> GitSshAgentProvenance {
+    let Some(path) = path else {
+        return GitSshAgentProvenance {
+            status: GitSshAgentStatus::NotConfigured,
+            _socket: None,
+        };
+    };
+    match inspect_ssh_agent_path(Path::new(path)) {
+        Some(socket) => GitSshAgentProvenance {
+            status: GitSshAgentStatus::Trusted,
+            _socket: Some(socket),
+        },
+        None => GitSshAgentProvenance {
+            status: GitSshAgentStatus::Unsafe,
+            _socket: None,
+        },
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct SshAgentFileIdentity {
+    device: u64,
+    inode: u64,
+    owner: u32,
+    mode: u32,
+    links: u64,
+}
+
+fn ssh_agent_file_identity(metadata: &fs::Metadata) -> SshAgentFileIdentity {
+    SshAgentFileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        owner: metadata.uid(),
+        mode: metadata.mode(),
+        links: metadata.nlink(),
+    }
+}
+
+fn inspect_ssh_agent_path(path: &Path) -> Option<File> {
+    if !path.is_absolute()
+        || path.as_os_str().as_bytes().is_empty()
+        || path.as_os_str().as_bytes().len() > MAX_SSH_AGENT_PATH_BYTES
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+    {
+        return None;
+    }
+    let effective_user = unsafe { libc::geteuid() };
+    let before_parents = inspect_ssh_agent_parents(path.parent()?, effective_user)?;
+    let before = fs::symlink_metadata(path).ok()?;
+    if !ssh_agent_socket_metadata_safe(&before, effective_user) {
+        return None;
+    }
+    let path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: `path` is NUL-terminated, O_PATH holds the selected inode without
+    // reading it, O_NOFOLLOW rejects a final symlink, and ownership/type checks
+    // are repeated against the resulting descriptor below.
+    let descriptor = unsafe {
+        libc::open(
+            path.as_ptr(),
+            libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return None;
+    }
+    // SAFETY: `descriptor` is newly owned after a successful `open` call.
+    let socket = unsafe { File::from_raw_fd(descriptor) };
+    let held = socket.metadata().ok()?;
+    let after =
+        fs::symlink_metadata(Path::new(std::ffi::OsStr::from_bytes(path.as_bytes()))).ok()?;
+    let after_parents = inspect_ssh_agent_parents(
+        Path::new(std::ffi::OsStr::from_bytes(path.as_bytes())).parent()?,
+        effective_user,
+    )?;
+    if !ssh_agent_socket_metadata_safe(&held, effective_user)
+        || ssh_agent_file_identity(&before) != ssh_agent_file_identity(&held)
+        || ssh_agent_file_identity(&after) != ssh_agent_file_identity(&held)
+        || before_parents != after_parents
+    {
+        return None;
+    }
+    Some(socket)
+}
+
+fn inspect_ssh_agent_parents(
+    start: &Path,
+    effective_user: u32,
+) -> Option<Vec<SshAgentFileIdentity>> {
+    let mut identities = Vec::new();
+    let mut current = Some(start);
+    while let Some(path) = current {
+        let metadata = fs::symlink_metadata(path).ok()?;
+        let mode = metadata.permissions().mode();
+        let owner_safe = metadata.uid() == effective_user && mode & 0o022 == 0;
+        let root_safe =
+            metadata.uid() == 0 && (mode & 0o022 == 0 || (mode & 0o1000 != 0 && mode & 0o002 != 0));
+        if metadata.file_type().is_symlink() || !metadata.is_dir() || (!owner_safe && !root_safe) {
+            return None;
+        }
+        identities.push(ssh_agent_file_identity(&metadata));
+        current = path.parent();
+    }
+    Some(identities)
+}
+
+fn ssh_agent_socket_metadata_safe(metadata: &fs::Metadata, effective_user: u32) -> bool {
+    metadata.file_type().is_socket()
+        && metadata.uid() == effective_user
+        && metadata.nlink() == 1
+        && metadata.permissions().mode() & 0o022 == 0
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -11248,7 +11404,10 @@ mod tests {
     };
     use std::{
         fs,
-        os::unix::fs::{PermissionsExt, symlink},
+        os::unix::{
+            fs::{PermissionsExt, symlink},
+            net::UnixListener,
+        },
         process::Command,
     };
 
@@ -11270,6 +11429,81 @@ mod tests {
         fs::create_dir(temp.0.join("categories")).unwrap();
         fs::write(temp.0.join("rehow.yaml"), "schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Git\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n").unwrap();
         open_workspace(temp)
+    }
+
+    #[test]
+    fn ssh_agent_provenance_holds_only_a_private_socket_inode_and_redacts_debug() {
+        let temp = Temp::new();
+        fs::set_permissions(&temp.0, fs::Permissions::from_mode(0o700)).unwrap();
+        let socket_path = temp.0.join("agent.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let provenance = capture_git_ssh_agent_provenance_from(Some(socket_path.as_os_str()));
+        assert_eq!(provenance.status(), GitSshAgentStatus::Trusted);
+        let debug = format!("{provenance:?}");
+        assert!(debug.contains("Trusted"));
+        assert!(!debug.contains("agent.sock"));
+        assert!(!debug.contains(temp.0.to_str().unwrap()));
+
+        let held = provenance._socket.as_ref().unwrap().metadata().unwrap();
+        drop(listener);
+        fs::remove_file(&socket_path).unwrap();
+        let replacement = UnixListener::bind(&socket_path).unwrap();
+        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let replacement_metadata = fs::symlink_metadata(&socket_path).unwrap();
+        assert_ne!(
+            (held.dev(), held.ino()),
+            (replacement_metadata.dev(), replacement_metadata.ino())
+        );
+        assert_eq!(
+            provenance
+                ._socket
+                .as_ref()
+                .unwrap()
+                .metadata()
+                .unwrap()
+                .ino(),
+            held.ino()
+        );
+        drop(replacement);
+    }
+
+    #[test]
+    fn ssh_agent_provenance_fails_closed_for_hostile_path_forms() {
+        assert_eq!(
+            capture_git_ssh_agent_provenance_from(None).status(),
+            GitSshAgentStatus::NotConfigured
+        );
+        assert_eq!(
+            capture_git_ssh_agent_provenance_from(Some(std::ffi::OsStr::new("relative.sock")))
+                .status(),
+            GitSshAgentStatus::Unsafe
+        );
+
+        let temp = Temp::new();
+        fs::set_permissions(&temp.0, fs::Permissions::from_mode(0o700)).unwrap();
+        let regular = temp.0.join("regular");
+        fs::write(&regular, b"not a socket").unwrap();
+        assert!(inspect_ssh_agent_path(&regular).is_none());
+
+        let socket_path = temp.0.join("agent.sock");
+        let _listener = UnixListener::bind(&socket_path).unwrap();
+        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let linked = temp.0.join("linked.sock");
+        symlink(&socket_path, &linked).unwrap();
+        assert!(inspect_ssh_agent_path(&linked).is_none());
+        assert!(inspect_ssh_agent_path(&temp.0.join("child/../agent.sock")).is_none());
+
+        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o660)).unwrap();
+        assert!(inspect_ssh_agent_path(&socket_path).is_none());
+        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let oversized = PathBuf::from(format!("/{}", "a".repeat(MAX_SSH_AGENT_PATH_BYTES)));
+        assert!(inspect_ssh_agent_path(&oversized).is_none());
+
+        fs::set_permissions(&temp.0, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(inspect_ssh_agent_path(&socket_path).is_none());
     }
 
     fn open_workspace(temp: &Temp) -> Box<WorkspaceView> {

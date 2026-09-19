@@ -20,9 +20,9 @@ use rehow_core::{
         GitSyncClassification, GitSyncError, apply_git_clone_repository_finalization,
         apply_git_clone_validation, apply_git_commit, apply_git_initialize, apply_git_push,
         apply_git_remote_connect, apply_git_sync_fast_forward, apply_git_sync_inspection,
-        cancel_git_commit_plan, classify_git_sync_ancestry, git_commit_recovery_required,
-        git_sync_recovery_required, plan_git_clone, plan_git_commit, plan_git_initialize,
-        plan_git_remote_connect, plan_git_sync, read_git_status,
+        cancel_git_commit_plan, capture_git_ssh_agent_provenance, classify_git_sync_ancestry,
+        git_commit_recovery_required, git_sync_recovery_required, plan_git_clone, plan_git_commit,
+        plan_git_initialize, plan_git_remote_connect, plan_git_sync, read_git_status,
         resume_pending_git_commit_publication, resume_pending_git_sync_publication,
     },
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -48,8 +48,8 @@ use tauri::{Emitter, Manager};
 const WORKSPACE_INVALIDATED_EVENT: &str = "rehow://workspace-invalidated/v1";
 const GIT_COMMIT_MESSAGE_INPUT_BYTES: usize = 800;
 
-#[derive(Default)]
 struct DesktopState {
+    _ssh_agent_provenance: rehow_core::git::GitSshAgentProvenance,
     workspace: Mutex<Option<DesktopWorkspace>>,
     pending_empty: Mutex<Option<PendingWorkspace>>,
     pending_git_init: Mutex<Option<(PlanToken, GitInitPlan)>>,
@@ -58,6 +58,22 @@ struct DesktopState {
     git_clone: Mutex<GitCloneLifecycle>,
     git_sync: Mutex<GitSyncLifecycle>,
     next_watch_session: AtomicU64,
+}
+
+impl Default for DesktopState {
+    fn default() -> Self {
+        Self {
+            _ssh_agent_provenance: capture_git_ssh_agent_provenance(),
+            workspace: Mutex::default(),
+            pending_empty: Mutex::default(),
+            pending_git_init: Mutex::default(),
+            pending_git_remote: Mutex::default(),
+            git_commit: Mutex::default(),
+            git_clone: Mutex::default(),
+            git_sync: Mutex::default(),
+            next_watch_session: AtomicU64::default(),
+        }
+    }
 }
 
 #[derive(Default)]

@@ -65,11 +65,17 @@ The Git child sees a synthetic config-free repository containing only read-only 
 
 Authenticated HTTPS and SSH reuse one audited transport broker across clone, sync, and push. The broker implements ADR 0023's boundary rather than enabling normal Git configuration wholesale:
 
+#### 5D3B1 — launch SSH-agent capability
+
+The native process now reads `SSH_AUTH_SOCK` exactly once while constructing application state. Missing input is `notConfigured`; malformed or unsafe input is `unsafe`; neither blocks normal application startup. A trusted candidate must be an absolute bounded Unix socket owned by the effective user, have exactly one link and no group/world write permission, and sit beneath a complete non-symlink ancestry that is either private/current-user-owned, non-writable/root-owned, or a root-owned sticky shared directory such as `/tmp`. Rehow checks the socket and ancestry before and after an `O_PATH | O_NOFOLLOW` capture and retains only that close-on-exec inode capability. Public status and `Debug` expose no path, descriptor, inode, or environment value.
+
+This accepted provenance primitive performs no connect, network, SSH/Git process, key read, user-config read, IPC, or filesystem mutation. Holding the capability does not yet authorize authenticated transport. The fixed SSH proxy, host-key source, descriptor handoff, credential canaries, and operation integration remain later 5D3B gates.
+
 - SSH accepts only the launch-inherited, owner-safe Unix `SSH_AUTH_SOCK`; a compiled fixed-grammar proxy invokes root-owned `/usr/bin/ssh` with a synthetic home, no user config, strict host verification, batch mode, fixed timeouts, and bounded owner-safe `known_hosts` plus system host keys. It never reads private-key files or accepts proxy/local commands.
 - HTTPS reconstructs only an accepted helper from root-owned system or owner-safe user Git config read with includes disabled. Executables must be root-owned absolute binaries in `/usr/bin` or `/usr/lib/git-core` with no free-form arguments, except the exact root-owned `gh auth git-credential` argv. Shell, relative, owner-writable, URL-scoped executable, proxy, header, askpass, and repository overrides are refused.
 - A compiled credential proxy forwards Git's credential protocol without exposing secret fields to Rehow plans, renderer IPC, errors, `Debug`, logs, evidence, or storage. Credential and SSH processes receive no Workspace or repository mount. Stable results distinguish authentication-required, host-key, unavailable, timeout, remote-changed, and rejected-non-fast-forward outcomes without returning raw Git output.
 
-5D3B is not accepted until credential canaries prove that secrets cannot reach IPC/log/error surfaces or untrusted repositories and hostile configuration cannot select an executable. Scheduled or start-time sync remains opt-in and cannot precede acceptance of the same gates used by manual sync.
+Authenticated 5D3B transport is not accepted until credential canaries prove that secrets cannot reach IPC/log/error surfaces or untrusted repositories and hostile configuration cannot select an executable. Scheduled or start-time sync remains opt-in and cannot precede acceptance of the same gates used by manual sync.
 
 ## Consequences
 
