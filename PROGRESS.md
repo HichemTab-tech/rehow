@@ -1,19 +1,19 @@
 # Rehow Progress
 
-Last updated: 2026-09-18
+Last updated: 2026-09-19
 State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 3Q — native Attachment import accepted; next is recoverable Attachment removal.
+Phase 3R — native recoverable Attachment removal accepted; next is the disposable indexed-search/performance slice.
 
 ## Current task
 
-Specify the next narrow slice: recoverable Attachment removal with exact Guide revision, native confirmation, and no broad filesystem authority.
+Specify and implement a disposable in-memory search index with measured 5,000-Guide production-build budgets, preserving the accepted ranking contract.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; manually refresh external changes; validate managed Attachment files; and import a native-selected Attachment through a confined, recoverable file-plus-metadata operation. Attachment removal/opening and MCP mutation remain unimplemented; MCP remains read-only.
+In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; manually refresh external changes; validate, import, and recoverably remove managed Attachments through confined native flows. Attachment viewing/export/reveal and MCP mutation remain unimplemented; MCP remains read-only.
 
 ## Completed work
 
@@ -82,10 +82,11 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Added explicit tested approval at signed checkpoint `b599396`: the core owns mandatory native confirmation, exact-revision approval, readiness checks, a versioned verification hash, effective-stale drift behavior, cross-language fixed vectors, atomic metadata updates, and the Reference Desk action. MCP cannot assert tested.
 - Added managed Attachment inventory at signed checkpoint `843cc51`: descriptor-confined streaming SHA-256 correlation validates declared/actual paths, hashes, optional sizes, symlinks, hardlinks, special files, stability, count/file/aggregate limits, and orphan/missing/mismatch diagnostics without loading Attachment bytes into the retained view.
 - Added native Attachment import at signed checkpoint `2469a9a`: renderer IPC supplies only Guide ID/revision; native selection and exact effect-bound confirmation precede a bounded stable-descriptor stream; collision-safe `0600` content and Guide metadata commit through one recoverable journal; duplicate/changed/unsafe sources fail closed; tested Guides become stale and unknown metadata is preserved.
+- Added native recoverable Attachment removal at signed checkpoint `f614e08`: ID-only IPC and exact native confirmation bind the Guide candidate and Attachment state; metadata and bytes change through one journal; an independently streamed recovery object and held-inode isolation keep canonical trash exact even when another process retains a writable descriptor; tested Guides become stale and unknown metadata remains preserved.
 
 ## Work in progress
 
-- Native Attachment import is committed at signed checkpoint `2469a9a`. The next batch is recoverable Attachment removal; external opening, rename, MIME preview, and MCP mutation remain deferred.
+- Native Attachment removal is committed at signed checkpoint `f614e08`. The next batch is disposable indexed search plus production-budget evidence; Attachment viewing/export/reveal, external watching, and MCP mutation remain deferred.
 
 ## Remaining work
 
@@ -103,6 +104,7 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Design and accessibility findings
 
+- 2026-09-19: Attachment removal adds one named semantic action to each existing Attachment row, with specific accessible naming, visible focus, busy/error/live feedback, cancellation focus restoration, and post-success focus on Add Attachment. The current upstream guideline review passed; no new screenshot gate was required for this bounded list action.
 - 2026-09-18: Mark Tested uses a named semantic control with busy/error/live feedback, mandatory native confirmation, visible focus, and post-success focus restoration. Fresh current-guideline static review found no issue; native dialog and screenshot smoke coverage remain in the combined manual UI gate.
 - 2026-09-18: Workspace refresh adds a labeled icon button with tooltip, visible focus, disabled/busy states, polite result/error announcements, dirty-form confirmation, selection fallback, and narrow-toolbar compatibility. The current upstream guideline review found no issue.
 - 2026-09-18: Guide deletion uses a named desktop action, a mandatory native warning dialog, busy/error/live states, cancellation focus restoration, and post-delete focus on search. Current-guideline static review found no issue; native dialog smoke verification remains for the later manual UI gate.
@@ -166,19 +168,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - The `b599396` tested path exposes no public headless transition: the core requires an actual native window parent and owns the confirmation before invoking its private exact-revision mutation. It computes `verify:v1` from exact body bytes plus verification-relevant canonical metadata, treats mismatched or future hashes as effectively stale, preserves unknown metadata, and writes the verification pair atomically. Independent Security Reviewer/xhigh passed after cross-language fixed-vector evidence; no blocker/high/medium finding remains.
 - The `843cc51` inventory follows only retained descriptors, streams an already-locked pure-Rust SHA-256 implementation, enforces 10,000 declared/actual candidate and diagnostic caps plus 64 MiB/4 GiB byte caps, and refuses unstable/symlink/hardlink/special candidates. Security review found and closed metadata-exhaustion, oversized-aggregate, and growth-race issues; final verdict is PASS.
 - The `2469a9a` import boundary keeps source paths out of IPC, binds confirmation to the exact Guide/candidate/destination/source identity and hashes, revalidates under the writer lock, streams with fixed memory, and journals Attachment creation before Guide metadata. The initial review's confused-deputy, source-change, and orphan-object findings were corrected; Security Reviewer/xhigh re-review is PASS with no blocker/high/medium finding.
+- The `f614e08` removal boundary keeps paths out of renderer IPC, binds native confirmation to stable IDs plus exact candidate/path/hash/size/mode/revisions, streams a durable content-addressed before-image, and moves the original inode to an operation-bound held-source path before materializing canonical trash. Symlink, hardlink, special-mode/type, drift, collision, and interrupted replay cases fail closed or recover without losing approved bytes. Security Reviewer/xhigh re-review is PASS with no blocker/high/medium finding.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 3Q used one mandatory Security Reviewer/xhigh and it is complete.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 3R reused one mandatory Security Reviewer/xhigh and it is complete.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`2469a9a` — signed and verified native Attachment import. This progress-only ledger update follows that feature commit.
+`f614e08` — signed and verified native recoverable Attachment removal. This progress-only ledger update follows that feature commit.
 
 ## Tests last run and results
 
+- 2026-09-19: native Attachment removal checkpoint at `f614e08`: Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, all-feature Workspace tests, and whitespace checks pass after the final recovery correction. Counts include 293 core library tests, 12 desktop Rust tests, and 1 MCP test; the previously completed feature gate also passed 21 Vitest tests, `pnpm check/test/build`, optimized Tauri no-bundle build, bootstrap validation, and contract drift. Adversarial evidence covers exact effect binding, symlink/hardlink/FIFO/socket/special-mode/limit refusal, in-stream mutation, external drift, trash collision, unknown preservation, tested-to-stale, interruption replay, and held-open-inode writes. Security Reviewer/xhigh final verdict: PASS with no blocker/high/medium finding.
 - 2026-09-18: native Attachment import checkpoint at `2469a9a`: `pnpm check/test/build`, Cargo formatting, all-target/all-feature Workspace Clippy with warnings denied, all-feature core tests, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 289 core library tests, 11 desktop Rust tests, and 21 Vitest tests. Focused evidence covers collision/duplicate handling, exact confirmation binding, source changes before/during copy, symlink/hardlink/special/oversize refusal, tested-to-stale and unknown preservation, and two-target replay. Security Reviewer/xhigh final verdict: PASS.
 - 2026-09-18: Attachment inventory checkpoint at `843cc51`: `pnpm check/test/test:integration/build`, Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, all-feature Workspace tests, optimized Tauri no-bundle build, bootstrap validation, contract drift, and whitespace checks pass. Counts include 284 core library tests, 11 desktop Rust tests, and 21 Vitest tests. Adversarial evidence covers missing/orphan/hash/size mismatches, invalid hierarchy/filenames, symlinks, hardlinks, FIFO/socket candidates, exact/one-over count/file/aggregate limits, oversized accounting, and changed-during-read retention. Security Reviewer/xhigh final verdict: PASS.
 - 2026-09-18: native tested approval checkpoint at `b599396`: `pnpm check/test/test:integration/build`, Cargo formatting, locked all-target/all-feature Workspace Clippy with warnings denied, all-feature Workspace tests, optimized Tauri no-bundle build, bootstrap validation, contract drift, whitespace checks, and zero-byte MCP EOF smoke pass. Counts include 278 core library tests, 11 desktop Rust tests, 21 Vitest tests, all protocol/error/unknown-YAML/public-API suites, and three independently generated JavaScript/Rust hash vectors. Security Reviewer/xhigh reports no blocker/high/medium finding. The Tauri `.app` suffix warning remains informational.
@@ -334,20 +338,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0015, `docs/task-packets/phase-3o-native-tested-approval.md`, the core verification module/private approval path, native/UI control, and JavaScript compatibility vectors implement explicit tested approval at `b599396`.
 - `docs/task-packets/phase-3p-attachment-inventory.md`, the streamed Attachment scanner/correlator, bounded diagnostics, SHA-256 dependency edge, and recovery-retention tests implement managed inventory at `843cc51`.
 - ADR 0016, `docs/task-packets/phase-3q-native-attachment-import.md`, the streamed source/recovery boundary, Attachment metadata mutation, native command/dialogs, Reference Desk action/list, and adversarial tests implement native Attachment import at `2469a9a`.
+- ADR 0017, `docs/task-packets/phase-3r-native-attachment-removal.md`, the exact removal planner/application/native/UI path, independent streamed recovery object, held-inode isolation, canonical trash replay, and adversarial tests implement recoverable Attachment removal at `f614e08`.
 
 ## Next recommended action
 
-Implement recoverable Attachment removal: select by stable Attachment ID, bind native confirmation to Guide/Attachment/path/revision, remove metadata and move exact confined bytes to operation-bound trash in one recoverable operation. Do not implement external opening or MCP mutation.
+Implement the disposable indexed-search slice: retain the accepted ranking semantics, rebuild safely from loaded canonical content, update on refresh/mutation, handle malformed Guides without blocking, and record production-build latency/RSS evidence for 5,000 Guides. Do not add a canonical database.
 
 ## Recommended agent role and reasoning effort
 
-Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents during routine implementation; use one Security Reviewer/xhigh only at the final removal boundary.
+Orchestrator — `gpt-5.6-sol`, high. Run zero extra agents during routine implementation; use one independent Reviewer/high only when the indexed-search boundary is ready.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read the Attachment sections of `docs/content-model.md`, `docs/architecture.md`, ADRs 0004/0009/0014/0016, and the threat model.
+2. Read the search sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and the existing `crates/rehow-core/src/search.rs` ranking tests.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `2469a9a`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `f614e08`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Resume with recoverable Attachment removal. Bind stable Attachment ID/path/hash plus exact Guide revision; use operation-bound trash and never recursively delete or expose arbitrary paths.
+6. Resume with a disposable in-memory index and benchmark harness. Preserve exact accepted ranking and ensure deleting the index loses no Workspace content.
