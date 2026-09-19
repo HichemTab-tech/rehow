@@ -5,11 +5,11 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 5B3 in progress — incoming tree validation and pathless destination planning are complete; next is isolated fetch/content validation.
+Phase 5B3 in progress — anonymous HTTPS discovery, bounded private fetch, and canonical content validation are complete; native apply orchestration, authenticated transports, and final materialization remain.
 
 ## Current task
 
-Implement Phase 5B3B's native-confirmed, config-free isolated fetch, credential provenance, streamed blob/content validation, cancellation, and marker-bound interruption behavior without checkout or Workspace-content writes.
+Implement the next narrow Phase 5B3B slice: native-confirmed anonymous-HTTPS clone orchestration and cancellation over the accepted private staging pipeline, without destination materialization.
 
 ## Overall status
 
@@ -192,19 +192,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - The `33d90fa` remote connector performs no network or credential-helper operation. It accepts only a strict remote name and canonical secret-free HTTPS/SSH location, parses config with root-owned Git under a cleared environment, and binds exact before/candidate bytes to a one-use native-confirmed plan. The initial review's destructive rollback race was removed: exchanged before-images are moved with no-replace semantics to an inert random `.git` backup and revalidated by bytes and identity. The final Security Reviewer verdict is PASS; the documented low residual is that retained backups may accumulate and may preserve legacy secret-bearing config bytes until identity-safe pruning is designed.
 - ADR 0023 freezes clone into a pure tree envelope, isolated confirmed fetch/content validation, and journaled materialization/ref-CAS pipeline. Checkpoint `3a71e48` implements only the crate-private pure envelope, rejects executable/symlink/gitlink/unknown/Git-active paths, reuses Workspace resource limits, redacts path/OID/hash state, and grants no new filesystem, process, network, credential, or renderer authority. The one Phase 5B3 Security Reviewer is deferred to the first authority-bearing fetch/materialization checkpoint.
 - Checkpoint `1c555f5` adds only pathless read-only destination planning. The selected path, URL, directory identities, and hashes remain native-held and redacted; no confirmation, process, network, credential, marker, Git metadata, or Workspace write occurs. The pending plan is invalidated on every selection lifecycle change.
+- Checkpoint `b14c0f0` adds the crate-private anonymous-HTTPS clone pipeline: config-free Bubblewrap discovery, shallow filtered pack-only fetch, hard file and aggregate staging limits, exact commit/tree/blob verification, independently recomputed Git object IDs, a private no-replace validation mirror, and canonical issue-free Workspace validation. Cancellation kills the process group; close-on-exec descriptors are enabled only for the exact child. The selected destination remains empty. The single Security Reviewer passed the corrected boundary with no blocker/high/medium finding.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5B2 used exactly one Security Reviewer/xhigh at its acceptance boundary and it is complete.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5B3B2 used exactly one Security Reviewer/xhigh and it is complete.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`1c555f5` — signed and verified Phase 5B3B1 clone destination planning. This progress-only ledger update follows that feature commit.
+`b14c0f0` — signed and verified Phase 5B3B2 isolated clone fetch/content validation. This progress-only ledger update follows that feature commit.
 
 ## Tests last run and results
 
+- 2026-09-19: Phase 5B3B2 checkpoint at `b14c0f0`: full locked all-feature core gate passes 339 tests with 2 intentional ignores, plus 18 error-contract, 13 protocol, public-API/trybuild, and 11 unknown-YAML tests. Focused clone coverage passes 20/20 with one explicit network smoke ignore; the public GitHub HTTPS smoke was run explicitly and passes. Core formatting and locked all-target/all-feature Clippy with warnings denied, bootstrap validation, whitespace checks, signed-commit verification, and the single Security Reviewer correction gate pass.
 - 2026-09-19: Phase 5B3B1 checkpoint at `1c555f5`: 327 core tests pass with 1 intentional production-performance ignore, plus 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, and 20 desktop Rust tests. Formatting and locked all-target/all-feature Clippy for core/desktop pass with warnings denied; bootstrap and whitespace checks pass.
 - 2026-09-19: Phase 5B3A checkpoint at `3a71e48`: 6 focused clone-tree tests pass, including an isolated real Git `ls-tree` snapshot and exact/one-over envelopes. The full core gate passes 325 tests with 1 intentional production-performance ignore, plus 18 error-contract, 13 protocol, public-API/trybuild, and 11 unknown-YAML tests. Core all-target/all-feature locked Clippy denies warnings; formatting, bootstrap (23 ADRs), and whitespace checks pass.
 - 2026-09-19: Phase 5B2 Git remote checkpoint at `33d90fa`: the final full gate passed `pnpm check`, 32 Vitest tests, 320 core tests (319 pass and 1 intentional production-performance ignore), 18 error-contract, 13 protocol, 1 public-API/trybuild, 11 unknown-YAML, 19 desktop Rust, and 1 MCP test. Cargo formatting, locked all-Workspace/all-target/all-feature Clippy with warnings denied, production web build, optimized Tauri build, bootstrap, contract drift, and whitespace checks pass. Security Reviewer/xhigh final verdict: PASS with no blocker/high/medium finding.
@@ -380,20 +382,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0022's remote-connection delta, `docs/task-packets/phase-5b2-git-remote-connect.md`, `docs/evidence/phase-5b2-git-remote-connect.md`, the confined core config mutation, single-use native plan/apply commands, and compact remote form implement Phase 5B2 at `33d90fa`.
 - ADR 0023, `docs/task-packets/phase-5b3a-clone-tree-envelope.md`, `docs/evidence/phase-5b3a-clone-tree-envelope.md`, the crate-private tree parser/effect hash, and the storage path-classification bridge implement Phase 5B3A at `3a71e48`.
 - `docs/task-packets/phase-5b3b1-clone-destination-plan.md`, its evidence, core destination snapshot/plan, and the pathless native plan command implement Phase 5B3B1 at `1c555f5`.
+- `docs/task-packets/phase-5b3b2-isolated-fetch-validation.md`, the ADR 0023 correction, private staging store, confined Git subprocess pipeline, canonical validation mirror, and adversarial tests implement anonymous HTTPS validation at `b14c0f0`.
 
 ## Next recommended action
 
-Implement the Phase 5B3B packet from ADR 0023: native destination/confirmation plan, exact resumable clone marker, config-free Bubblewrap fetch without checkout, fixed SSH-agent and audited HTTPS-helper provenance, streamed blob/content validation, and cancellation. Keep Workspace materialization/ref installation in 5B3C.
+Connect the accepted anonymous-HTTPS staging pipeline to one native-confirmed, single-use apply command with cancellation and structured content-free stage errors. Do not materialize the selected destination yet; authenticated HTTPS/SSH provenance and 5B3C remain separate slices.
 
 ## Recommended agent role and reasoning effort
 
-Orchestrator — `gpt-5.6-sol`, high locally for Phase 5B3B implementation under accepted ADR 0023. Run zero extra agents during routine work and one Security Reviewer only when the authority-bearing clone checkpoint is ready.
+Orchestrator — `gpt-5.6-sol`, high locally for the narrow native clone apply adapter. Run zero extra agents during routine work; reuse one reviewer only at the next meaningful security checkpoint.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read the Git sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `1c555f5`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `b14c0f0`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Resume Phase 5B3B from ADR 0023. Add no checkout or Workspace-content mutation; first bind the unchanged native destination and marker, then connect only the isolated fetch/credential/blob-validation authority described there.
+6. Resume Phase 5B3B from ADR 0023 by connecting only native confirmation, single-use anonymous-HTTPS apply, cancellation, and structured stage errors to the accepted crate-private pipeline. Add no checkout, destination materialization, SSH, or credential helper yet.
