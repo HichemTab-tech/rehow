@@ -14,6 +14,10 @@ import {
   hasUnsavedChanges,
   highlightedExcerptSegments,
   isCurrentWorkspaceWatchEvent,
+  isGitCloneApplyResultPayload,
+  isGitCloneCancelResultPayload,
+  isGitCloneCompleteResultPayload,
+  isGitClonePlanPayload,
   isGitInitPlanPayload,
   isGitInitResultPayload,
   isGitRemotePlanPayload,
@@ -25,6 +29,7 @@ import {
   nativeCommandError,
   nextResultIndex,
   normalizedCategoryDetails,
+  normalizedCloneUrl,
   normalizedGuideDetails,
   normalizedGuideMetadata,
   normalizedGuideTerms,
@@ -143,6 +148,92 @@ describe("application identity", () => {
       "ssh://git@example.invalid/a.git",
     );
     expect(normalizedRemoteUrl("   ")).toBeNull();
+  });
+
+  it("accepts only closed path-free Git clone lifecycle payloads", () => {
+    const plan = {
+      planToken: `plan:v1:${"A".repeat(43)}`,
+      transport: "https" as const,
+      host: "example.invalid",
+    };
+    expect(isGitClonePlanPayload(plan)).toBe(true);
+    expect(
+      isGitClonePlanPayload({ ...plan, remoteUrl: "https://secret" }),
+    ).toBe(false);
+    expect(
+      isGitCloneApplyResultPayload({ validated: true, stage: "validated" }),
+    ).toBe(true);
+    expect(
+      isGitCloneApplyResultPayload({ validated: false, stage: "validated" }),
+    ).toBe(false);
+    expect(isGitCloneCancelResultPayload({ cancellationRequested: true })).toBe(
+      true,
+    );
+    expect(
+      isGitCloneCancelResultPayload({
+        cancellationRequested: true,
+        path: "/tmp/workspace",
+      }),
+    ).toBe(false);
+    expect(isGitCloneCompleteResultPayload({ kind: "declined" })).toBe(true);
+    const workspace = {
+      id: "workspace-id",
+      name: "Personal",
+      categories: [],
+      guides: [],
+      issueCount: 0,
+      facts: {
+        writable: true,
+        existingGitRepository: true,
+        nestedGitRepository: false,
+        gitProbeComplete: true,
+        unsafeGitMarker: false,
+      },
+      watchStatus: "active",
+      watchSession: "1",
+    };
+    expect(
+      isGitCloneCompleteResultPayload({ kind: "completed", workspace }),
+    ).toBe(true);
+    expect(
+      isGitCloneCompleteResultPayload({ kind: "completed", workspace: {} }),
+    ).toBe(false);
+    expect(
+      isGitCloneCompleteResultPayload({
+        kind: "completed",
+        workspace: { ...workspace, name: "x".repeat(201) },
+      }),
+    ).toBe(false);
+    expect(
+      isGitCloneCompleteResultPayload({
+        kind: "completed",
+        workspace: { ...workspace, issueCount: 10_001 },
+      }),
+    ).toBe(false);
+    expect(
+      isGitCloneCompleteResultPayload({
+        kind: "completed",
+        workspace,
+        path: "/tmp/workspace",
+      }),
+    ).toBe(false);
+  });
+
+  it("normalizes only anonymous canonical HTTPS clone URLs", () => {
+    expect(normalizedCloneUrl(" https://example.invalid/team/rehow.git ")).toBe(
+      "https://example.invalid/team/rehow.git",
+    );
+    expect(
+      normalizedCloneUrl("ssh://git@example.invalid/team/rehow.git"),
+    ).toBeNull();
+    expect(
+      normalizedCloneUrl("https://user@example.invalid/rehow.git"),
+    ).toBeNull();
+    expect(
+      normalizedCloneUrl("https://example.invalid/rehow.git?token=x"),
+    ).toBeNull();
+    expect(normalizedCloneUrl("https://Example.invalid/rehow.git")).toBeNull();
+    expect(normalizedCloneUrl("https://example.invalid/")).toBeNull();
   });
 
   it("detects exact Guide editor dirty state", () => {
@@ -360,6 +451,7 @@ describe("application shell semantics", () => {
     expect(markup).toContain('aria-live="polite"');
     expect(markup).toContain('aria-controls="workspace-navigation"');
     expect(markup).toContain("Open Workspace");
+    expect(markup).toContain("Choose a Rehow Workspace");
     expect(markup).toContain("No Workspace open");
     expect(markup).toContain('aria-label="Refresh Workspace"');
     expect(markup).toContain('translate="no"');

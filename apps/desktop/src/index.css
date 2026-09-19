@@ -831,6 +831,21 @@ kbd {
   width: min(100%, 320px);
   gap: 9px;
 }
+.workspace-onboarding-options {
+  display: grid;
+  width: min(100%, 340px);
+  gap: 16px;
+}
+.workspace-onboarding-alternative {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--divider);
+  font-size: 11px;
+}
 .workspace-setup label {
   color: var(--text);
   font-size: 11px;
@@ -848,6 +863,12 @@ kbd {
 .workspace-setup input:focus-visible {
   border-color: var(--focus);
 }
+.workspace-setup-help {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
+  text-wrap: pretty;
+}
 .workspace-setup-error {
   margin: 0;
   padding: 8px 10px;
@@ -860,6 +881,38 @@ kbd {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+.workspace-clone-progress,
+.workspace-clone-ready {
+  display: grid;
+  width: min(100%, 340px);
+  gap: 9px;
+  overflow-wrap: anywhere;
+}
+.workspace-clone-progress progress {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--accent);
+}
+.workspace-clone-progress strong,
+.workspace-clone-ready strong {
+  color: var(--text);
+  font-size: 13px;
+}
+.workspace-clone-progress > span,
+.workspace-clone-ready > span {
+  font-size: 11px;
+  line-height: 16px;
+}
+.workspace-clone-progress > .button {
+  justify-self: end;
+}
+.workspace-clone-kicker {
+  color: var(--accent-strong);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .reader-pane {

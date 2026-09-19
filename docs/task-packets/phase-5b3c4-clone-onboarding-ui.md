@@ -1,0 +1,16 @@
+# Task Packet: Clone onboarding UI
+
+- **Objective:** Expose the accepted native anonymous-HTTPS clone lifecycle in the empty-folder onboarding screen and hand a completed Workspace to the existing Reference Desk shell.
+- **Required reasoning level:** High; this is a renderer state-machine and security-boundary integration.
+- **Prerequisites:** Signed native completion checkpoint `a8c2b3f`, ADR 0023, and the current Reference Desk design direction.
+- **Allowed files or subsystem:** `apps/desktop/src/App.tsx`, `apps/desktop/src/index.css`, `apps/desktop/src/app.test.ts`, clone-status corrections in `docs/architecture.md` and ADR 0023, this packet, phase evidence, and `PROGRESS.md`.
+- **Relevant specifications and ADRs:** `docs/product-spec.md`, `docs/design-direction.md`, `docs/threat-model.md`, `docs/testing-strategy.md`, and `docs/adr/0023-safe-clone-pipeline.md`.
+- **Exact required behavior:** After a writable empty folder is selected, offer Create and Clone without losing the native selection. Clone accepts one bounded anonymous HTTPS URL, validates closed path-free command payloads, invokes plan then native-confirmed validation, exposes cancellation while validation runs, shows a validated/no-destination-write state, invokes separately native-confirmed completion, preserves the validated retry state after decline/failure, and installs the returned Workspace on success. Announce every transition and restore useful focus.
+- **Important states and edge cases:** Entry validation, native validation decline, active cancellation request, cancellation race, validation error, validated state, completion decline, completion error/retry, completion success, selection cancellation, and commands returning malformed payloads.
+- **Security constraints:** Renderer receives no paths, selected-folder handles, remote URL echo, Git output, credentials, or clone internals. Reject credentials/query/fragment/non-HTTPS input before IPC. Native confirmation remains authoritative. Do not claim the destination changed before completion succeeds. Do not expose cancellation once native finalization begins.
+- **Tests to add or update:** Closed clone plan/apply/cancel/completion payload guards; bounded anonymous-HTTPS input normalization; initial onboarding semantics; TypeScript and production-build checks.
+- **Commands to run:** Focused desktop Vitest; desktop typecheck; desktop production build; Biome check on touched files; `git diff --check`; one current-guideline review and one design review at checkpoint.
+- **Explicit non-goals:** SSH, credential helpers, authentication UI, clone progress percentages, retry/resume across app restart, commit/pull/push/sync, staging cleanup, MCP, or native/core changes.
+- **Definition of done:** The renderer completes the accepted native clone lifecycle without gaining filesystem or credential authority; focused/full relevant checks and design review pass; evidence and progress reflect actual state; a signed checkpoint exists.
+- **Expected commit boundary:** One React clone-onboarding implementation commit, followed by a truthful progress ledger commit if required.
+- **Conditions requiring escalation:** Any need to change native/core semantics, expose a path or URL after planning, add a dependency, support credentials/SSH, or make completion cancellable after writes begin.

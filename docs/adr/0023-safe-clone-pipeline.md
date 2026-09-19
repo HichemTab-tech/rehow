@@ -1,6 +1,6 @@
 # ADR 0023: Safe clone pipeline
 
-- Status: Accepted; Phase 5B3A, anonymous-HTTPS validation, journaled portable-content materialization, and core Git object/ref finalization implemented; native completion wiring and authenticated transports pending
+- Status: Accepted; anonymous-HTTPS native and renderer pipeline implemented; authenticated transports pending
 - Date: 2026-09-19
 
 ## Context
@@ -62,7 +62,9 @@ The renderer receives only stage, transport, host, bounded progress counts, and 
 
 The accepted 5B3C1 slice implements the portable-content half of this gate. It re-reads every staging file through no-follow private descriptors, independently rechecks its Git blob ID, stores exact bytes as recovery objects, and publishes the complete accepted tree through one `GitMaterialize` journal. Decoded clone journals permit only expected-absent `0600` object creation. The journal is durable before the proven `0700` Category/Attachment directory skeleton is created. An exact `.git/rehow-clone` marker and empty private scaffold bind the operation ID, destination, and clone-tree plan hash. A crash during scaffold construction may complete only missing canonical directories after a mutation-free preflight proves the exact marker and rejects every foreign or unsafe entry; a missing marker is never recreated. Interrupted journal application resumes only after the persisted intent matches and its current inventory contains no foreign entries. Final descriptor-confined inventory and Git blob-ID checks cover every accepted file, including `.gitignore`, and the canonical scanner must reproduce the validated Workspace fingerprint with no issues. Git object transfer, config, `HEAD`, branch, and remote-tracking refs remain the separate 5B3C2 finalization gate, so this slice is not exposed as completed clone success.
 
-The accepted core 5B3C2 slice copies only bounded, paired, stable pack/index files from the retained staging capability; builds a fresh operation-scoped staging index; and installs exact shallow, config, local-ref, remote-ref, and `HEAD` metadata with no-replace-or-verify semantics. Confined status must report the expected clean zero-divergence branch and upstream. Exact portable inventory is rechecked immediately before and after the completion seal so ignored concurrent residue cannot be mistaken for success. The native validated-session completion command remains the next gate.
+The accepted core 5B3C2 slice copies only bounded, paired, stable pack/index files from the retained staging capability; builds a fresh operation-scoped staging index; and installs exact shallow, config, local-ref, remote-ref, and `HEAD` metadata with no-replace-or-verify semantics. Confined status must report the expected clean zero-divergence branch and upstream. Exact portable inventory is rechecked immediately before and after the completion seal so ignored concurrent residue cannot be mistaken for success.
+
+The accepted native 5B3C3 slice consumes only the opaque retained validation after a second native confirmation, restores the exact validated retry authority after decline or failure, and installs the completed issue-free Workspace as the active watched session. Finalization cannot be cancelled after writes begin. The accepted renderer 5B3C4 slice exposes the lifecycle only after native empty-folder selection: bounded anonymous-HTTPS entry, native-confirmed validation, cancellation while validation is active, a clear validated/no-write state, explicit native-confirmed completion, and completed Workspace handoff. Renderer payloads remain path-free, URL-free after planning, closed, and bounded.
 
 ## Consequences
 

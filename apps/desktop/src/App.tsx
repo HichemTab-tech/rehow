@@ -93,6 +93,33 @@ type GitRemoteResultPayload = {
   connected: boolean;
 };
 
+type GitClonePlanPayload = {
+  planToken: string;
+  transport: "https" | "ssh";
+  host: string;
+};
+
+type GitCloneApplyResultPayload =
+  | { validated: false; stage: "declined" }
+  | { validated: true; stage: "validated" };
+
+type GitCloneCancelResultPayload = {
+  cancellationRequested: boolean;
+};
+
+type GitCloneCompleteResultPayload =
+  | { kind: "declined" }
+  | { kind: "completed"; workspace: WorkspacePayload };
+
+type GitCloneStage =
+  | "idle"
+  | "entry"
+  | "validating"
+  | "cancelling"
+  | "validated"
+  | "recovery"
+  | "completing";
+
 type WorkspaceWatchEventPayload = {
   workspaceId: string;
   watchSession: string;
@@ -717,6 +744,164 @@ export function isGitRemoteResultPayload(
   );
 }
 
+export function isGitClonePlanPayload(
+  value: unknown,
+): value is GitClonePlanPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const plan = value as Partial<GitClonePlanPayload> & Record<string, unknown>;
+  return (
+    Object.keys(plan).length === 3 &&
+    typeof plan.planToken === "string" &&
+    /^plan:v1:[A-Za-z0-9_-]{43}$/.test(plan.planToken) &&
+    (plan.transport === "https" || plan.transport === "ssh") &&
+    typeof plan.host === "string" &&
+    plan.host.length >= 1 &&
+    plan.host.length <= 253
+  );
+}
+
+export function isGitCloneApplyResultPayload(
+  value: unknown,
+): value is GitCloneApplyResultPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as Partial<GitCloneApplyResultPayload> &
+    Record<string, unknown>;
+  if (Object.keys(result).length !== 2) return false;
+  return (
+    (result.validated === false && result.stage === "declined") ||
+    (result.validated === true && result.stage === "validated")
+  );
+}
+
+export function isGitCloneCancelResultPayload(
+  value: unknown,
+): value is GitCloneCancelResultPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as Partial<GitCloneCancelResultPayload> &
+    Record<string, unknown>;
+  return (
+    Object.keys(result).length === 1 &&
+    typeof result.cancellationRequested === "boolean"
+  );
+}
+
+function isBoundedText(value: unknown, minimum: number, maximum: number) {
+  if (
+    typeof value !== "string" ||
+    value.length < minimum ||
+    value.length > maximum * 2
+  )
+    return false;
+  const length = Array.from(value).length;
+  return length >= minimum && length <= maximum;
+}
+
+function isWorkspacePayload(value: unknown): value is WorkspacePayload {
+  if (typeof value !== "object" || value === null) return false;
+  const workspace = value as Partial<WorkspacePayload> &
+    Record<string, unknown>;
+  if (
+    Object.keys(workspace).length !== 8 ||
+    !isBoundedText(workspace.id, 1, 64) ||
+    !isBoundedText(workspace.name, 1, 200) ||
+    !Array.isArray(workspace.categories) ||
+    workspace.categories.length > 10_000 ||
+    !Array.isArray(workspace.guides) ||
+    workspace.guides.length > 10_000 ||
+    !Number.isSafeInteger(workspace.issueCount) ||
+    (workspace.issueCount as number) < 0 ||
+    (workspace.issueCount as number) > 10_000 ||
+    (workspace.watchStatus !== "active" &&
+      workspace.watchStatus !== "degraded") ||
+    typeof workspace.watchSession !== "string" ||
+    !/^[1-9][0-9]{0,19}$/.test(workspace.watchSession)
+  )
+    return false;
+  if (typeof workspace.facts !== "object" || workspace.facts === null)
+    return false;
+  const facts = workspace.facts as FolderFacts & Record<string, unknown>;
+  if (
+    Object.keys(facts).length !== 5 ||
+    ![
+      facts.writable,
+      facts.existingGitRepository,
+      facts.nestedGitRepository,
+      facts.gitProbeComplete,
+      facts.unsafeGitMarker,
+    ].every((fact) => typeof fact === "boolean")
+  )
+    return false;
+  const categoriesValid = workspace.categories.every((value) => {
+    if (typeof value !== "object" || value === null) return false;
+    const category = value as WorkspacePayload["categories"][number] &
+      Record<string, unknown>;
+    return (
+      Object.keys(category).length === 6 &&
+      isBoundedText(category.id, 1, 64) &&
+      isBoundedText(category.name, 1, 200) &&
+      (category.summary === null || isBoundedText(category.summary, 1, 500)) &&
+      (category.status === "active" || category.status === "archived") &&
+      isBoundedText(category.revision, 1, 128) &&
+      Number.isSafeInteger(category.guideCount) &&
+      category.guideCount >= 0 &&
+      category.guideCount <= 10_000
+    );
+  });
+  const guidesValid = workspace.guides.every((value) => {
+    if (typeof value !== "object" || value === null) return false;
+    const guide = value as GuideSummary & Record<string, unknown>;
+    return (
+      Object.keys(guide).length === 11 &&
+      isBoundedText(guide.id, 1, 64) &&
+      isBoundedText(guide.title, 1, 200) &&
+      isBoundedText(guide.summary, 1, 500) &&
+      isBoundedText(guide.categoryId, 1, 64) &&
+      isBoundedText(guide.category, 1, 200) &&
+      ["Tested", "Draft", "Stale", "Archived"].includes(guide.status) &&
+      isBoundedText(guide.updatedAt, 1, 64) &&
+      Array.isArray(guide.tags) &&
+      guide.tags.length <= 64 &&
+      guide.tags.every((tag) => isBoundedText(tag, 1, 64)) &&
+      Array.isArray(guide.aliases) &&
+      guide.aliases.length <= 64 &&
+      guide.aliases.every((alias) => isBoundedText(alias, 1, 200)) &&
+      Array.isArray(guide.attachments) &&
+      guide.attachments.length <= 10_000 &&
+      guide.attachments.every((value) => {
+        if (typeof value !== "object" || value === null) return false;
+        const attachment = value as GuideSummary["attachments"][number] &
+          Record<string, unknown>;
+        return (
+          Object.keys(attachment).length === 3 &&
+          isBoundedText(attachment.id, 1, 64) &&
+          isBoundedText(attachment.title, 1, 200) &&
+          (attachment.sizeBytes === null ||
+            (Number.isSafeInteger(attachment.sizeBytes) &&
+              attachment.sizeBytes >= 0))
+        );
+      }) &&
+      isBoundedText(guide.matches, 0, 20_000)
+    );
+  });
+  return categoriesValid && guidesValid;
+}
+
+export function isGitCloneCompleteResultPayload(
+  value: unknown,
+): value is GitCloneCompleteResultPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as {
+    kind?: unknown;
+    workspace?: unknown;
+  };
+  if (result.kind === "declined") return Object.keys(result).length === 1;
+  return (
+    result.kind === "completed" &&
+    Object.keys(result).length === 2 &&
+    isWorkspacePayload(result.workspace)
+  );
+}
+
 export function normalizedRemoteName(value: string) {
   const normalized = value.trim();
   return /^[a-z0-9][a-z0-9._-]{0,63}$/.test(normalized) &&
@@ -731,6 +916,33 @@ export function normalizedRemoteUrl(value: string) {
   return normalized.length >= 1 && normalized.length <= 2048
     ? normalized
     : null;
+}
+
+export function normalizedCloneUrl(value: string) {
+  const normalized = value.trim();
+  if (
+    normalized.length < 1 ||
+    normalized.length > 2048 ||
+    !/^[\x21-\x7e]+$/.test(normalized) ||
+    normalized.includes("\\") ||
+    normalized.includes("%") ||
+    normalized.includes("#") ||
+    normalized.includes("?")
+  )
+    return null;
+  try {
+    const parsed = new URL(normalized);
+    return parsed.protocol === "https:" &&
+      parsed.username === "" &&
+      parsed.password === "" &&
+      parsed.hostname !== "" &&
+      parsed.pathname !== "/" &&
+      parsed.toString() === normalized
+      ? normalized
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function folderFactSuffix(facts: FolderFacts) {
@@ -846,6 +1058,9 @@ export function App() {
   const [workspaceName, setWorkspaceName] = useState("");
   const [initializingWorkspace, setInitializingWorkspace] = useState(false);
   const [workspaceSetupError, setWorkspaceSetupError] = useState("");
+  const [gitCloneStage, setGitCloneStage] = useState<GitCloneStage>("idle");
+  const [gitCloneUrl, setGitCloneUrl] = useState("");
+  const [gitCloneHost, setGitCloneHost] = useState("");
   const [creatingCategory, setCreatingCategory] = useState(false);
   const [categoryName, setCategoryName] = useState("");
   const [categorySummary, setCategorySummary] = useState("");
@@ -922,6 +1137,9 @@ export function App() {
   const saveErrorRef = useRef<HTMLParagraphElement>(null);
   const workspaceNameRef = useRef<HTMLInputElement>(null);
   const workspaceSetupErrorRef = useRef<HTMLParagraphElement>(null);
+  const gitCloneUrlRef = useRef<HTMLInputElement>(null);
+  const gitCloneCompleteRef = useRef<HTMLButtonElement>(null);
+  const gitCloneValidationGenerationRef = useRef(0);
   const categoryCreateButtonRef = useRef<HTMLButtonElement>(null);
   const categoryNameRef = useRef<HTMLInputElement>(null);
   const categoryErrorRef = useRef<HTMLParagraphElement>(null);
@@ -1001,8 +1219,14 @@ export function App() {
     removingCategoryId !== "" ||
     removingGuide ||
     refreshingWorkspace;
+  const gitCloneOperationBusy =
+    gitCloneStage === "validating" ||
+    gitCloneStage === "cancelling" ||
+    gitCloneStage === "completing";
+  const gitCloneRequiresResolution =
+    gitCloneStage === "validated" || gitCloneStage === "recovery";
   const autoRefreshBlocked = automaticRefreshBlocked({
-    busy: workspaceOperationBusy || openingWorkspace,
+    busy: workspaceOperationBusy || openingWorkspace || gitCloneOperationBusy,
     dirtyGuide,
     dirtyGuideDetails,
     dirtyCategoryRename,
@@ -1388,14 +1612,44 @@ export function App() {
       .focus();
   }
 
+  function resetGitCloneUi(stage: GitCloneStage = "idle") {
+    setGitCloneStage(stage);
+    setGitCloneUrl("");
+    setGitCloneHost("");
+  }
+
+  function installClonedWorkspace(completed: WorkspacePayload) {
+    setWorkspace(completed);
+    setGitStatus(null);
+    setPendingWorkspace(null);
+    setSelectedId(completed.guides[0]?.id ?? "");
+    setReaderOpen(false);
+    setQuery("");
+    setExternalChangeWorkspaceId("");
+    setWatchDegradedWorkspaceId(
+      completed.watchStatus === "degraded" ? completed.id : "",
+    );
+    resetGitCloneUi();
+    setAnnouncement(
+      `${completed.name} was cloned and opened with ${resultCountLabel(completed.guides.length)}.`,
+    );
+    requestAnimationFrame(() => searchRef.current?.focus());
+  }
+
   async function openWorkspace() {
-    if (!confirmDiscard()) return;
+    if (
+      gitCloneOperationBusy ||
+      gitCloneRequiresResolution ||
+      !confirmDiscard()
+    )
+      return;
     setWorkspaceSetupError("");
     setOpeningWorkspace(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const result = await invoke<OpenWorkspaceResult>("choose_workspace");
       if (result.kind !== "cancelled") {
+        resetGitCloneUi();
         setGitInitError("");
         setExternalChangeWorkspaceId("");
         setWatchDegradedWorkspaceId("");
@@ -1432,7 +1686,7 @@ export function App() {
         setSelectedId("");
         setReaderOpen(false);
         setAnnouncement(
-          `Empty folder selected. Name the new Workspace to create it. ${folderFactSuffix(result.facts)}`,
+          `Empty folder selected. Create a new Workspace or clone an existing one. ${folderFactSuffix(result.facts)}`,
         );
         requestAnimationFrame(() => workspaceNameRef.current?.focus());
       } else if (result.kind !== "cancelled") {
@@ -1568,6 +1822,176 @@ export function App() {
     }
   }
 
+  function beginGitClone() {
+    if (pendingWorkspace?.writable !== true || initializingWorkspace) return;
+    setWorkspaceSetupError("");
+    setGitCloneStage("entry");
+    setGitCloneHost("");
+    setAnnouncement(
+      "Enter an anonymous HTTPS repository URL to validate a Git Workspace.",
+    );
+    requestAnimationFrame(() => gitCloneUrlRef.current?.focus());
+  }
+
+  function returnToWorkspaceCreation() {
+    if (gitCloneOperationBusy) return;
+    resetGitCloneUi();
+    setWorkspaceSetupError("");
+    setAnnouncement("Create a new Workspace in the selected empty folder.");
+    requestAnimationFrame(() => workspaceNameRef.current?.focus());
+  }
+
+  async function validateGitClone(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (pendingWorkspace?.writable !== true || gitCloneOperationBusy) return;
+    const remoteUrl = normalizedCloneUrl(gitCloneUrl);
+    if (remoteUrl === null) {
+      setWorkspaceSetupError(
+        "Enter a canonical anonymous HTTPS repository URL without credentials, query text, or a fragment.",
+      );
+      requestAnimationFrame(() => workspaceSetupErrorRef.current?.focus());
+      return;
+    }
+    setGitCloneUrl(remoteUrl);
+    setGitCloneHost("");
+    setWorkspaceSetupError("");
+    setGitCloneStage("validating");
+    const validationGeneration = ++gitCloneValidationGenerationRef.current;
+    setAnnouncement(
+      "Waiting for confirmation to validate the Git Workspace. The selected folder will not change.",
+    );
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const plan = await invoke<unknown>("git_clone_plan_selected_workspace", {
+        remoteUrl,
+      });
+      if (!isGitClonePlanPayload(plan) || plan.transport !== "https")
+        throw new Error("invalid Git clone plan");
+      setGitCloneHost(plan.host);
+      const result = await invoke<unknown>(
+        "git_clone_apply_selected_workspace",
+        {
+          planToken: plan.planToken,
+        },
+      );
+      if (validationGeneration !== gitCloneValidationGenerationRef.current)
+        return;
+      gitCloneValidationGenerationRef.current += 1;
+      if (!isGitCloneApplyResultPayload(result)) {
+        setGitCloneStage("recovery");
+        setWorkspaceSetupError(
+          "Rehow could not confirm the validation state. Complete the clone to reconcile it, or cancel this Workspace setup.",
+        );
+        setAnnouncement(
+          "Git Workspace validation needs reconciliation before another setup action.",
+        );
+        requestAnimationFrame(() => gitCloneCompleteRef.current?.focus());
+        return;
+      }
+      if (!result.validated) {
+        setGitCloneStage("entry");
+        setAnnouncement(
+          "Git Workspace validation was declined. The selected folder was not changed.",
+        );
+        requestAnimationFrame(() => gitCloneUrlRef.current?.focus());
+        return;
+      }
+      setGitCloneStage("validated");
+      setAnnouncement(
+        `Git Workspace from ${plan.host} was validated. Complete the clone to write it to the selected folder.`,
+      );
+      requestAnimationFrame(() => gitCloneCompleteRef.current?.focus());
+    } catch (error) {
+      if (validationGeneration !== gitCloneValidationGenerationRef.current)
+        return;
+      gitCloneValidationGenerationRef.current += 1;
+      const failure = nativeCommandError(error);
+      setGitCloneStage("entry");
+      setWorkspaceSetupError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => workspaceSetupErrorRef.current?.focus());
+    }
+  }
+
+  async function cancelGitCloneValidation() {
+    if (gitCloneStage !== "validating") return;
+    const validationGeneration = gitCloneValidationGenerationRef.current;
+    setGitCloneStage("cancelling");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<unknown>("git_clone_cancel_active");
+      if (!isGitCloneCancelResultPayload(result))
+        throw new Error("invalid Git clone cancellation result");
+      if (validationGeneration !== gitCloneValidationGenerationRef.current)
+        return;
+      if (result.cancellationRequested) {
+        setAnnouncement("Cancelling Git Workspace validation…");
+      } else {
+        setGitCloneStage("validating");
+        setAnnouncement("Validation is finishing; wait for the result.");
+      }
+    } catch (error) {
+      if (validationGeneration !== gitCloneValidationGenerationRef.current)
+        return;
+      const failure = nativeCommandError(error);
+      setGitCloneStage("validating");
+      setWorkspaceSetupError(failure.message);
+      setAnnouncement(failure.message);
+    }
+  }
+
+  async function completeGitClone() {
+    if (gitCloneStage !== "validated" && gitCloneStage !== "recovery") return;
+    const retryStage = gitCloneStage;
+    setGitCloneStage("completing");
+    setWorkspaceSetupError("");
+    setAnnouncement(
+      "Waiting for confirmation to complete the validated Git clone.",
+    );
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<unknown>(
+        "git_clone_complete_selected_workspace",
+      );
+      if (!isGitCloneCompleteResultPayload(result)) {
+        try {
+          const refreshed = await invoke<unknown>("refresh_open_workspace");
+          if (isWorkspacePayload(refreshed)) {
+            installClonedWorkspace(refreshed);
+            return;
+          }
+        } catch {
+          // A missing active Workspace means native completion did not publish
+          // a state the renderer can safely adopt.
+        }
+        setGitCloneStage("recovery");
+        setWorkspaceSetupError(
+          "Rehow could not reconcile clone completion. Retry completion or cancel setup; the selected folder will not be overwritten.",
+        );
+        setAnnouncement(
+          "Git clone completion needs reconciliation before another setup action.",
+        );
+        requestAnimationFrame(() => gitCloneCompleteRef.current?.focus());
+        return;
+      }
+      if (result.kind === "declined") {
+        setGitCloneStage(retryStage);
+        setAnnouncement(
+          "Git clone completion was declined. The validated Workspace is ready when you are.",
+        );
+        requestAnimationFrame(() => gitCloneCompleteRef.current?.focus());
+        return;
+      }
+      installClonedWorkspace(result.workspace);
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setGitCloneStage(retryStage);
+      setWorkspaceSetupError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => workspaceSetupErrorRef.current?.focus());
+    }
+  }
+
   async function initializeGit() {
     if (
       workspace === null ||
@@ -1688,7 +2112,7 @@ export function App() {
   }
 
   async function cancelWorkspaceSetup() {
-    if (initializingWorkspace) return;
+    if (initializingWorkspace || gitCloneOperationBusy) return;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("cancel_selected_workspace_initialization");
@@ -1699,7 +2123,8 @@ export function App() {
     setPendingWorkspace(null);
     setWorkspaceName("");
     setWorkspaceSetupError("");
-    setAnnouncement("Workspace creation cancelled.");
+    resetGitCloneUi();
+    setAnnouncement("Workspace setup cancelled.");
     requestAnimationFrame(() => searchRef.current?.focus());
   }
 
@@ -2435,12 +2860,22 @@ export function App() {
           className="workspace-switcher"
           type="button"
           onClick={openWorkspace}
-          disabled={openingWorkspace}
+          disabled={
+            openingWorkspace ||
+            gitCloneOperationBusy ||
+            gitCloneRequiresResolution
+          }
         >
           <span className="workspace-dot" aria-hidden="true" />
-          {openingWorkspace
-            ? "Opening…"
-            : (workspace?.name ?? "Open Workspace")}
+          {gitCloneOperationBusy
+            ? "Clone in progress…"
+            : gitCloneRequiresResolution
+              ? gitCloneStage === "recovery"
+                ? "Clone needs attention"
+                : "Clone ready"
+              : openingWorkspace
+                ? "Opening…"
+                : (workspace?.name ?? "Open Workspace")}
           <Icon name="chevron" />
         </button>
         {workspace !== null && externalChangePending && autoRefreshBlocked ? (
@@ -3085,7 +3520,9 @@ export function App() {
               <Icon name={pendingWorkspace === null ? "search" : "folder"} />
               <h2>
                 {pendingWorkspace !== null
-                  ? "Create This Workspace"
+                  ? gitCloneStage === "idle"
+                    ? "Create This Workspace"
+                    : "Clone a Git Workspace"
                   : workspace === null
                     ? "Open a Workspace"
                     : guides.length === 0 && query.trim() === ""
@@ -3097,7 +3534,16 @@ export function App() {
               <p>
                 {pendingWorkspace !== null
                   ? pendingWorkspace.writable
-                    ? "The selected folder is empty. Give the Workspace a name to initialize it."
+                    ? gitCloneStage === "idle"
+                      ? "The selected folder is empty. Create a new Workspace or clone an existing one."
+                      : gitCloneStage === "entry"
+                        ? "Enter an anonymous HTTPS repository URL. Rehow validates it privately before changing the selected folder."
+                        : gitCloneStage === "validating" ||
+                            gitCloneStage === "cancelling"
+                          ? "Rehow is validating the remote Workspace in private staging. The selected folder remains unchanged."
+                          : gitCloneStage === "recovery"
+                            ? "Native clone state needs reconciliation before Rehow can safely continue."
+                            : "Validation passed. Complete the clone to write the exact validated Workspace and Git metadata."
                     : "The selected folder is read-only. Choose a writable empty folder."
                   : workspace === null
                     ? "Choose a Rehow Workspace to load its Guides securely."
@@ -3119,55 +3565,190 @@ export function App() {
                 </p>
               )}
               {pendingWorkspace?.writable ? (
-                <form
-                  className="workspace-setup"
-                  aria-busy={initializingWorkspace}
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void createWorkspace();
-                  }}
-                >
-                  <label htmlFor="workspace-name">Workspace Name</label>
-                  <input
-                    ref={workspaceNameRef}
-                    id="workspace-name"
-                    name="workspace-name"
-                    type="text"
-                    autoComplete="off"
-                    maxLength={200}
-                    aria-invalid={workspaceSetupError !== ""}
-                    aria-describedby={
-                      workspaceSetupError !== ""
-                        ? "workspace-setup-error"
-                        : undefined
-                    }
-                    value={workspaceName}
-                    onChange={(event) => {
-                      setWorkspaceName(event.target.value);
-                      setWorkspaceSetupError("");
-                    }}
-                  />
-                  <div className="workspace-setup-actions">
+                gitCloneStage === "idle" ? (
+                  <div className="workspace-onboarding-options">
+                    <form
+                      className="workspace-setup"
+                      aria-busy={initializingWorkspace}
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void createWorkspace();
+                      }}
+                    >
+                      <label htmlFor="workspace-name">Workspace Name</label>
+                      <input
+                        ref={workspaceNameRef}
+                        id="workspace-name"
+                        name="workspace-name"
+                        type="text"
+                        autoComplete="off"
+                        maxLength={200}
+                        aria-invalid={workspaceSetupError !== ""}
+                        aria-describedby={
+                          workspaceSetupError !== ""
+                            ? "workspace-setup-error"
+                            : undefined
+                        }
+                        value={workspaceName}
+                        onChange={(event) => {
+                          setWorkspaceName(event.target.value);
+                          setWorkspaceSetupError("");
+                        }}
+                      />
+                      <div className="workspace-setup-actions">
+                        <button
+                          className="button"
+                          type="button"
+                          disabled={initializingWorkspace}
+                          onClick={() => void cancelWorkspaceSetup()}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          className="button button-primary"
+                          type="submit"
+                          disabled={
+                            initializingWorkspace ||
+                            normalizedWorkspaceName(workspaceName) === null
+                          }
+                        >
+                          {initializingWorkspace
+                            ? "Creating…"
+                            : "Create Workspace"}
+                        </button>
+                      </div>
+                    </form>
+                    <div className="workspace-onboarding-alternative">
+                      <span>Already use Rehow with Git?</span>
+                      <button
+                        className="button"
+                        type="button"
+                        disabled={initializingWorkspace}
+                        onClick={beginGitClone}
+                      >
+                        Clone Git Workspace
+                      </button>
+                    </div>
+                  </div>
+                ) : gitCloneStage === "entry" ? (
+                  <form
+                    className="workspace-setup"
+                    onSubmit={(event) => void validateGitClone(event)}
+                  >
+                    <label htmlFor="git-clone-url">HTTPS Repository URL</label>
+                    <input
+                      ref={gitCloneUrlRef}
+                      id="git-clone-url"
+                      name="git-clone-url"
+                      type="url"
+                      inputMode="url"
+                      autoComplete="off"
+                      spellCheck={false}
+                      maxLength={2048}
+                      placeholder="https://github.com/you/rehow-workspace.git…"
+                      aria-invalid={workspaceSetupError !== ""}
+                      aria-describedby={
+                        workspaceSetupError !== ""
+                          ? "workspace-setup-error"
+                          : "git-clone-help"
+                      }
+                      value={gitCloneUrl}
+                      onChange={(event) => {
+                        setGitCloneUrl(event.target.value);
+                        setWorkspaceSetupError("");
+                      }}
+                    />
+                    <span id="git-clone-help" className="workspace-setup-help">
+                      Anonymous HTTPS only. Do not paste credentials or access
+                      tokens.
+                    </span>
+                    <div className="workspace-setup-actions">
+                      <button
+                        className="button"
+                        type="button"
+                        onClick={returnToWorkspaceCreation}
+                      >
+                        Back
+                      </button>
+                      <button className="button button-primary" type="submit">
+                        Validate Workspace
+                      </button>
+                    </div>
+                  </form>
+                ) : gitCloneStage === "validating" ||
+                  gitCloneStage === "cancelling" ? (
+                  <div
+                    className="workspace-clone-progress"
+                    role="status"
+                    aria-live="polite"
+                    aria-busy="true"
+                  >
+                    <progress aria-label="Git Workspace validation in progress" />
+                    <strong>
+                      {gitCloneStage === "cancelling"
+                        ? "Cancelling Validation…"
+                        : "Validating Workspace…"}
+                    </strong>
+                    <span>
+                      {gitCloneHost === ""
+                        ? "Preparing the native validation request."
+                        : `Checking the bounded Workspace from ${gitCloneHost}.`}
+                    </span>
                     <button
                       className="button"
                       type="button"
-                      disabled={initializingWorkspace}
-                      onClick={() => void cancelWorkspaceSetup()}
+                      disabled={gitCloneStage === "cancelling"}
+                      onClick={() => void cancelGitCloneValidation()}
                     >
-                      Cancel
-                    </button>
-                    <button
-                      className="button button-primary"
-                      type="submit"
-                      disabled={
-                        initializingWorkspace ||
-                        normalizedWorkspaceName(workspaceName) === null
-                      }
-                    >
-                      {initializingWorkspace ? "Creating…" : "Create Workspace"}
+                      {gitCloneStage === "cancelling"
+                        ? "Cancelling…"
+                        : "Cancel Validation"}
                     </button>
                   </div>
-                </form>
+                ) : (
+                  <div className="workspace-clone-ready" aria-live="polite">
+                    <span className="workspace-clone-kicker">
+                      {gitCloneStage === "recovery"
+                        ? "State Reconciliation"
+                        : "Validation Complete"}
+                    </span>
+                    <strong>
+                      {gitCloneStage === "recovery"
+                        ? "Clone Needs Attention"
+                        : gitCloneHost === ""
+                          ? "Git Workspace Ready"
+                          : `${gitCloneHost} is ready`}
+                    </strong>
+                    <span>
+                      {gitCloneStage === "recovery"
+                        ? "Retry completion to reconcile native state, or cancel this Workspace setup."
+                        : "The selected folder has not changed. Completion uses a separate native confirmation."}
+                    </span>
+                    <div className="workspace-setup-actions">
+                      <button
+                        className="button"
+                        type="button"
+                        disabled={gitCloneStage === "completing"}
+                        onClick={() => void cancelWorkspaceSetup()}
+                      >
+                        Cancel Clone
+                      </button>
+                      <button
+                        ref={gitCloneCompleteRef}
+                        className="button button-primary"
+                        type="button"
+                        disabled={gitCloneStage === "completing"}
+                        onClick={() => void completeGitClone()}
+                      >
+                        {gitCloneStage === "completing"
+                          ? "Completing Clone…"
+                          : gitCloneStage === "recovery"
+                            ? "Reconcile Clone"
+                            : "Complete Clone"}
+                      </button>
+                    </div>
+                  </div>
+                )
               ) : workspace === null ? (
                 <button
                   className="button"
