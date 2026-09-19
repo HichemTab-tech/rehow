@@ -1,7 +1,7 @@
 use super::{ContentHash, Journal, JournalCodecError, MAX_JOURNAL_BYTES};
 use crate::protocol::{OperationId, WorkspaceId};
 use std::{
-    ffi::{CString, OsStr},
+    ffi::{CStr, CString, OsStr},
     fs::File,
     io::{self, Read, Seek, SeekFrom, Write},
     os::{
@@ -53,6 +53,136 @@ pub(super) struct StreamedObjectExpectation<'a> {
     pub(super) object_hash: &'a ContentHash,
     pub(super) sha256: &'a [u8; 32],
     pub(super) size: u64,
+}
+
+pub(super) struct CloneStaging {
+    _stage: OwnedFd,
+    _git: OwnedFd,
+    validation: Directory,
+    stage_path: String,
+    git_path: String,
+    validation_path: String,
+}
+
+impl CloneStaging {
+    pub(super) fn create(
+        state_home: &Path,
+        stage_name: &str,
+        provenance: &[u8],
+        git_config: &[u8],
+    ) -> Result<Self, StoreError> {
+        if stage_name.len() != 64
+            || !stage_name
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || provenance.len() > 16 * 1024
+            || git_config.len() > 16 * 1024
+        {
+            return Err(StoreError::Unsafe);
+        }
+        let state_home = Directory::open_base(state_home)?;
+        let state_rehow = state_home.ensure("rehow")?;
+        let clone_staging = state_rehow.ensure("clone-staging")?;
+        let stage = clone_staging.ensure_new(stage_name)?;
+        stage.write_new_file("provenance", provenance)?;
+        let git = stage.ensure_new("repo.git")?;
+        let validation = stage.ensure_new("validation")?;
+        git.write_new_file("HEAD", b"ref: refs/rehow/clone/head\n")?;
+        git.write_new_file("config", git_config)?;
+        let objects = git.ensure_new("objects")?;
+        let object_info = objects.ensure_new("info")?;
+        let object_pack = objects.ensure_new("pack")?;
+        let refs = git.ensure_new("refs")?;
+        let rehow = refs.ensure_new("rehow")?;
+        let clone = rehow.ensure_new("clone")?;
+        let heads = refs.ensure_new("heads")?;
+        let tags = refs.ensure_new("tags")?;
+        for directory in [
+            &object_info,
+            &object_pack,
+            &clone,
+            &heads,
+            &tags,
+            &objects,
+            &rehow,
+            &refs,
+            &git,
+            &validation,
+            &stage,
+        ] {
+            directory.sync()?;
+        }
+        clone_staging.sync()?;
+        state_rehow.sync()?;
+        state_home.sync()?;
+
+        let stage_descriptor = stage.cloexec_duplicate()?;
+        let git_descriptor = git.cloexec_duplicate()?;
+        let stage_path = format!("/proc/self/fd/{}", stage_descriptor.as_raw_fd());
+        let git_path = format!("/proc/self/fd/{}", git_descriptor.as_raw_fd());
+        let validation_path = format!("/proc/self/fd/{}", validation.descriptor.as_raw_fd());
+        Ok(Self {
+            _stage: stage_descriptor,
+            _git: git_descriptor,
+            validation,
+            stage_path,
+            git_path,
+            validation_path,
+        })
+    }
+
+    pub(super) fn git_path(&self) -> &str {
+        &self.git_path
+    }
+
+    pub(super) fn git_descriptor(&self) -> i32 {
+        self._git.as_raw_fd()
+    }
+
+    pub(super) fn stage_path(&self) -> &str {
+        &self.stage_path
+    }
+
+    pub(super) fn validation_path(&self) -> &str {
+        &self.validation_path
+    }
+
+    pub(super) fn write_validation_file(
+        &self,
+        relative_path: &str,
+        bytes: &[u8],
+    ) -> Result<(), StoreError> {
+        if bytes.len() > MAX_OBJECT_BYTES
+            || (relative_path != ".gitignore" && !super::valid_active_path(relative_path))
+        {
+            return Err(StoreError::Unsafe);
+        }
+        let mut parts = relative_path.split('/').peekable();
+        let mut directory = self.validation.duplicate()?;
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                directory.write_new_file(part, bytes)?;
+            } else {
+                directory = directory.ensure(part)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn finish_validation_tree(&self) -> Result<(), StoreError> {
+        let categories = self.validation.ensure("categories")?;
+        categories.sync()?;
+        self.validation.sync()
+    }
+
+    pub(super) fn verify_git_size_limit(&self, limit: u64) -> Result<(), StoreError> {
+        let git = Directory {
+            descriptor: self._git.try_clone().map_err(|_| StoreError::Io)?,
+        };
+        let mut entries = 0usize;
+        let _ = git.bounded_tree_bytes(limit, &mut entries)?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -482,7 +612,128 @@ struct Directory {
     descriptor: OwnedFd,
 }
 
+struct DirectoryStream(*mut libc::DIR);
+
+impl Drop for DirectoryStream {
+    fn drop(&mut self) {
+        // SAFETY: this guard uniquely owns the live stream.
+        unsafe { libc::closedir(self.0) };
+    }
+}
+
 impl Directory {
+    fn bounded_tree_bytes(&self, limit: u64, entries: &mut usize) -> Result<u64, StoreError> {
+        // SAFETY: openat on `.` creates an independent no-follow directory description.
+        let raw = unsafe {
+            libc::openat(
+                self.descriptor.as_raw_fd(),
+                c".".as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if raw < 0 {
+            return Err(StoreError::Io);
+        }
+        // SAFETY: fdopendir consumes the duplicated directory descriptor on success.
+        let stream = unsafe { libc::fdopendir(raw) };
+        if stream.is_null() {
+            // SAFETY: fdopendir failed and did not consume the descriptor.
+            unsafe { libc::close(raw) };
+            return Err(StoreError::Io);
+        }
+        let stream = DirectoryStream(stream);
+        let mut total = 0u64;
+        loop {
+            // SAFETY: Linux exposes the calling thread's errno slot; clearing it
+            // distinguishes readdir EOF from an I/O failure.
+            unsafe { *libc::__errno_location() = 0 };
+            // SAFETY: stream remains valid until closed below.
+            let entry = unsafe { libc::readdir(stream.0) };
+            if entry.is_null() {
+                // SAFETY: this reads the same thread-local errno slot.
+                if unsafe { *libc::__errno_location() } != 0 {
+                    return Err(StoreError::Io);
+                }
+                break;
+            }
+            // SAFETY: readdir returns a NUL-terminated d_name within the live entry.
+            let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+            if name.to_bytes() == b"." || name.to_bytes() == b".." {
+                continue;
+            }
+            *entries = entries.checked_add(1).ok_or(StoreError::TooLarge)?;
+            if *entries > 100_000 {
+                return Err(StoreError::TooLarge);
+            }
+            let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: descriptors, entry name, and output storage are valid.
+            if unsafe {
+                libc::fstatat(
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    status.as_mut_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            } != 0
+            {
+                return Err(StoreError::Io);
+            }
+            // SAFETY: successful fstatat initialized the complete structure.
+            let status = unsafe { status.assume_init() };
+            if status.st_uid != unsafe { libc::geteuid() } {
+                return Err(StoreError::Unsafe);
+            }
+            match status.st_mode & libc::S_IFMT {
+                libc::S_IFREG if status.st_nlink == 1 && status.st_size >= 0 => {
+                    total = total
+                        .checked_add(status.st_size as u64)
+                        .ok_or(StoreError::TooLarge)?;
+                }
+                libc::S_IFDIR => {
+                    // SAFETY: name and parent descriptor are valid; no symlink is followed.
+                    let child = unsafe {
+                        libc::openat(
+                            self.descriptor.as_raw_fd(),
+                            name.as_ptr(),
+                            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                        )
+                    };
+                    if child < 0 {
+                        return Err(StoreError::Unsafe);
+                    }
+                    // SAFETY: successful openat returned a newly owned descriptor.
+                    let child = Self {
+                        descriptor: unsafe { OwnedFd::from_raw_fd(child) },
+                    };
+                    total = total
+                        .checked_add(
+                            child.bounded_tree_bytes(limit.saturating_sub(total), entries)?,
+                        )
+                        .ok_or(StoreError::TooLarge)?;
+                }
+                _ => {
+                    return Err(StoreError::Unsafe);
+                }
+            }
+            if total > limit {
+                return Err(StoreError::TooLarge);
+            }
+        }
+        Ok(total)
+    }
+
+    fn duplicate(&self) -> Result<Self, StoreError> {
+        // SAFETY: F_DUPFD_CLOEXEC duplicates the valid descriptor.
+        let raw = unsafe { libc::fcntl(self.descriptor.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+        if raw < 0 {
+            return Err(StoreError::Io);
+        }
+        // SAFETY: successful fcntl returns a newly owned descriptor.
+        let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
+        validate_directory(&descriptor, true)?;
+        Ok(Self { descriptor })
+    }
+
     fn open_base(path: &Path) -> Result<Self, StoreError> {
         let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| StoreError::Unsafe)?;
         // SAFETY: path is a valid NUL-terminated byte string for this call.
@@ -534,6 +785,62 @@ impl Directory {
         validate_directory(&descriptor, true)?;
         self.sync()?;
         Ok(Self { descriptor })
+    }
+
+    fn ensure_new(&self, name: &str) -> Result<Self, StoreError> {
+        let name = component(name)?;
+        // SAFETY: parent descriptor and component are valid.
+        if unsafe { libc::mkdirat(self.descriptor.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+            return match io::Error::last_os_error().raw_os_error() {
+                Some(libc::EEXIST) => Err(StoreError::Conflict),
+                _ => Err(StoreError::Io),
+            };
+        }
+        // SAFETY: parent descriptor and newly created component are valid.
+        let raw = unsafe {
+            libc::openat(
+                self.descriptor.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if raw < 0 {
+            return Err(map_open_error(io::Error::last_os_error()));
+        }
+        // SAFETY: successful openat returns a newly owned descriptor.
+        let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
+        // SAFETY: descriptor is valid and owned.
+        if unsafe { libc::fchmod(descriptor.as_raw_fd(), 0o700) } != 0 {
+            return Err(StoreError::Io);
+        }
+        validate_directory(&descriptor, true)?;
+        self.sync()?;
+        Ok(Self { descriptor })
+    }
+
+    fn write_new_file(&self, name: &str, bytes: &[u8]) -> Result<(), StoreError> {
+        let temp_name = temp_name("clone");
+        let mut temp = TempEntry::create(self, &temp_name)?;
+        temp.file.write_all(bytes).map_err(|_| StoreError::Io)?;
+        temp.file.sync_all().map_err(|_| StoreError::Unsupported)?;
+        validate_file_descriptor(&temp.file, 0o600, Some(bytes.len() as u64))?;
+        rename_no_replace(self, &temp_name, name)?;
+        temp.installed = true;
+        self.sync()?;
+        let installed = self.open_file(name, libc::O_RDONLY)?;
+        validate_file(&installed, 0o600, Some(bytes.len() as u64))
+    }
+
+    fn cloexec_duplicate(&self) -> Result<OwnedFd, StoreError> {
+        // SAFETY: F_DUPFD_CLOEXEC duplicates the valid directory descriptor.
+        let raw = unsafe { libc::fcntl(self.descriptor.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+        if raw < 0 {
+            return Err(StoreError::Io);
+        }
+        // SAFETY: successful F_DUPFD returns a newly owned descriptor.
+        let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
+        validate_directory(&descriptor, true)?;
+        Ok(descriptor)
     }
 
     fn open_file(&self, name: &str, access: i32) -> Result<OwnedFd, StoreError> {

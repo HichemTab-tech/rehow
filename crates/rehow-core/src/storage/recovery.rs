@@ -16,6 +16,82 @@ use unicode_normalization::UnicodeNormalization;
 mod store;
 mod workspace;
 
+pub(crate) struct GitCloneStaging {
+    inner: store::CloneStaging,
+}
+
+impl GitCloneStaging {
+    pub(crate) fn git_path(&self) -> &str {
+        self.inner.git_path()
+    }
+
+    pub(crate) fn git_descriptor(&self) -> i32 {
+        self.inner.git_descriptor()
+    }
+
+    pub(crate) fn stage_path(&self) -> &str {
+        self.inner.stage_path()
+    }
+
+    pub(crate) fn validation_path(&self) -> &str {
+        self.inner.validation_path()
+    }
+
+    pub(crate) fn write_validation_file(
+        &self,
+        relative_path: &str,
+        bytes: &[u8],
+    ) -> Result<(), GitCloneStagingError> {
+        self.inner
+            .write_validation_file(relative_path, bytes)
+            .map_err(map_clone_staging_error)
+    }
+
+    pub(crate) fn finish_validation_tree(&self) -> Result<(), GitCloneStagingError> {
+        self.inner
+            .finish_validation_tree()
+            .map_err(map_clone_staging_error)
+    }
+
+    pub(crate) fn verify_git_size_limit(&self, limit: u64) -> Result<(), GitCloneStagingError> {
+        self.inner
+            .verify_git_size_limit(limit)
+            .map_err(map_clone_staging_error)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitCloneStagingError {
+    Conflict,
+    Unsafe,
+    Unsupported,
+    TooLarge,
+    Io,
+}
+
+pub(crate) fn create_git_clone_staging(
+    state_home: &Path,
+    stage_name: &str,
+    provenance: &[u8],
+    git_config: &[u8],
+) -> Result<GitCloneStaging, GitCloneStagingError> {
+    store::CloneStaging::create(state_home, stage_name, provenance, git_config)
+        .map(|inner| GitCloneStaging { inner })
+        .map_err(map_clone_staging_error)
+}
+
+fn map_clone_staging_error(error: store::StoreError) -> GitCloneStagingError {
+    match error {
+        store::StoreError::Conflict | store::StoreError::Busy => GitCloneStagingError::Conflict,
+        store::StoreError::Unsafe | store::StoreError::Corrupt => GitCloneStagingError::Unsafe,
+        store::StoreError::Unsupported => GitCloneStagingError::Unsupported,
+        store::StoreError::TooLarge => GitCloneStagingError::TooLarge,
+        store::StoreError::Io => GitCloneStagingError::Io,
+        #[cfg(test)]
+        store::StoreError::Injected => GitCloneStagingError::Io,
+    }
+}
+
 #[cfg(test)]
 pub(super) fn set_attachment_source_change_fault() {
     store::set_source_change_fault();

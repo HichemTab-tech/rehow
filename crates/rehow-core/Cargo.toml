@@ -16,6 +16,7 @@ rfd = { version = "=0.17.2", default-features = true }
 rowan = "=0.16.1"
 saphyr-parser = "=0.0.12"
 serde = { version = "=1.0.229", features = ["derive"] }
+sha1 = { version = "=0.10.6", default-features = false }
 sha2 = { version = "=0.10.9", default-features = false }
 time = { version = "=0.3.55", default-features = false, features = ["std", "formatting", "parsing"] }
 ts-rs = "=12.0.1"

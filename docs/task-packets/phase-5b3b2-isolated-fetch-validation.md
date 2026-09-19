@@ -1,0 +1,17 @@
+# Task Packet: Isolated clone fetch and content validation
+
+- **Objective:** Fetch one advertised anonymous-HTTPS commit into private Rehow state, stream its bounded tree into a private mirror, and accept it only when the canonical Workspace loader reports an issue-free compatible Workspace while the selected destination remains empty.
+- **Required reasoning level:** xhigh because this introduces network, subprocess, hostile-Git, and filesystem authority.
+- **Prerequisites:** ADR 0023, Phase 5B3A tree envelope, and Phase 5B3B1 destination-bound plan are accepted.
+- **Allowed files or subsystem:** `crates/rehow-core/src/git.rs`, `crates/rehow-core/src/storage.rs`, `crates/rehow-core/src/storage/recovery.rs`, `crates/rehow-core/src/storage/recovery/store.rs`, ADR 0023, this packet, and `PROGRESS.md` only.
+- **Relevant specifications and ADRs:** `docs/threat-model.md`, `docs/testing-strategy.md`, `docs/adr/0023-safe-clone-pipeline.md`.
+- **Exact required behavior:** Discover exact symbolic HEAD; create a random no-replace `0700` XDG stage with secret-free provenance; shallow/filter/cap a pack-only fetch of the advertised OID; require the exact ref to name a commit and a bounded canonical tree; stream each exact blob via one config-free `cat-file --batch` child, recompute its Git object ID, and write it into `0600` no-replace mirror files; accept only an issue-free `WorkspaceInspection::Compatible` result. Keep the selected destination unchanged.
+- **Important states and edge cases:** Pre-cancel, timeout, capped output, unavailable Git/Bubblewrap, changed destination, duplicate stage, malformed advertisement/tree/blob/Workspace, newer schema, scan issues, and interrupted private staging.
+- **Security constraints:** Root-owned Git/Bubblewrap paths; cleared environment; no shell, checkout, worktree bind, hook, helper, prompt, proxy, alternate refs, submodule, or arbitrary protocol; hard child file-size and descriptor-confined aggregate staging caps; close-on-exec descriptors except the exact pre-exec capability; no URL/path/OID/content in errors or debug; descriptor-relative no-follow private writes; no cleanup by name.
+- **Tests to add or update:** Exact command/parser/tree/stage tests; isolated real-Git valid and malformed snapshots; destination-emptiness assertions; explicit ignored public-network smoke test.
+- **Commands to run:** Focused clone tests during work; then `cargo fmt --all --check`, locked all-target/all-feature core Clippy, full locked core tests, bootstrap validation, and `git diff --check` once at checkpoint.
+- **Required reviews and artifacts:** One Security Reviewer at the combined authority-bearing Phase 5B3B checkpoint, not for each internal edit.
+- **Explicit non-goals:** SSH, credential helpers, renderer/native apply exposure, destination materialization, branch/ref/config installation, staging cleanup, commit, pull, or sync.
+- **Definition of done:** Focused and checkpoint gates pass; malformed content fails closed; destination remains empty; ADR/progress match the implementation; one coherent signed commit exists.
+- **Expected commit boundary:** Anonymous HTTPS discovery/fetch, private staging, streamed canonical content validation, tests, and their ADR/task packet. Orchestrator owns the commit.
+- **Conditions requiring escalation:** Need for new credential handling, broad host filesystem access, destructive cleanup, an unresolved confinement weakness, or a failure outside these files.

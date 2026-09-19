@@ -4,17 +4,21 @@ use crate::{
     protocol::{PlanToken, Revision},
     storage::{
         ATTACHMENT_BYTES_LIMIT, ATTACHMENT_COUNT_LIMIT, CATEGORY_LIMIT, CloneDestinationSnapshot,
-        EmptyWorkspaceTarget, GUIDE_COUNT_LIMIT, GitConfigStorageError, GitInitializeStorageError,
-        GitMaterializationPathKind, GitRepositoryCapabilityError, MANAGED_BYTES_LIMIT,
-        WorkspaceView, classify_git_materialization_path,
+        EmptyWorkspaceTarget, GUIDE_COUNT_LIMIT, GitCloneStaging, GitCloneStagingError,
+        GitConfigStorageError, GitInitializeStorageError, GitMaterializationPathKind,
+        GitRepositoryCapabilityError, MANAGED_BYTES_LIMIT, WorkspaceInspection, WorkspaceView,
+        classify_git_materialization_path, create_git_clone_staging, inspect_workspace,
     },
 };
 use std::{
     fmt, fs,
-    io::{Read, Seek, SeekFrom, Write},
+    io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::fs::{MetadataExt, PermissionsExt},
+        unix::{
+            fs::{MetadataExt, PermissionsExt},
+            process::CommandExt,
+        },
     },
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -28,6 +32,12 @@ use std::{
 
 const OUTPUT_LIMIT: usize = 1024 * 1024;
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(2);
+const CLONE_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
+const CLONE_FETCH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const CLONE_LOCAL_READ_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const CLONE_DISCOVERY_OUTPUT_LIMIT: usize = 64 * 1024;
+const CLONE_BATCH_HEADER_LIMIT: usize = 160;
+const CLONE_STAGING_FILE_LIMIT: u64 = 7 * 1024 * 1024 * 1024;
 const MAX_REMOTES: usize = 32;
 const MAX_REMOTE_NAME_BYTES: usize = 64;
 const MAX_REMOTE_URL_BYTES: usize = 2048;
@@ -260,6 +270,7 @@ pub struct GitClonePlan {
     transport: GitRemoteTransport,
     host: String,
     destination: CloneDestinationSnapshot,
+    staging_id: [u8; 32],
 }
 
 impl fmt::Debug for GitClonePlan {
@@ -271,6 +282,7 @@ impl fmt::Debug for GitClonePlan {
             .field("transport", &self.transport)
             .field("host", &self.host)
             .field("destination", &"<redacted>")
+            .field("staging_id", &"<redacted>")
             .finish()
     }
 }
@@ -314,12 +326,15 @@ pub fn plan_git_clone(
     validate_clone_destination_facts(snapshot)?;
     let mut random = [0_u8; 32];
     fill_random(&mut random).map_err(|_| GitCloneError::Io)?;
+    let mut staging_id = [0_u8; 32];
+    fill_random(&mut staging_id).map_err(|_| GitCloneError::Io)?;
     Ok(GitClonePlan {
         token: PlanToken::from_random_bytes(random),
         remote_url: url.canonical,
         transport: url.transport,
         host: url.host,
         destination: snapshot,
+        staging_id,
     })
 }
 
@@ -369,6 +384,995 @@ fn map_clone_inspection(error: crate::storage::WorkspaceInspectError) -> GitClon
         | crate::storage::WorkspaceInspectError::PermissionDenied
         | crate::storage::WorkspaceInspectError::Io => GitCloneError::Io,
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
+pub(crate) enum GitCloneStageError {
+    DestinationChanged,
+    Conflict,
+    Unsafe,
+    Unsupported,
+    ResourceLimit,
+    Io,
+}
+
+#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
+pub(crate) fn prepare_git_clone_staging(
+    destination: &EmptyWorkspaceTarget,
+    plan: &GitClonePlan,
+    remote_head: &GitRemoteHead,
+    state_home: &Path,
+) -> Result<GitCloneStaging, GitCloneStageError> {
+    revalidate_git_clone_plan(destination, plan).map_err(|error| match error {
+        GitCloneError::DestinationChanged => GitCloneStageError::DestinationChanged,
+        GitCloneError::ReadOnly
+        | GitCloneError::NestedRepository
+        | GitCloneError::Unsafe
+        | GitCloneError::InvalidUrl => GitCloneStageError::Unsafe,
+        GitCloneError::Io => GitCloneStageError::Io,
+    })?;
+    let stage_name = hex_lower(&plan.staging_id);
+    let provenance = clone_stage_provenance(plan, remote_head);
+    let config: &[u8] = match remote_head.object_format {
+        GitObjectFormat::Sha1 => {
+            b"[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n"
+        }
+        GitObjectFormat::Sha256 => {
+            b"[core]\n\trepositoryformatversion = 1\n\tfilemode = true\n\tbare = true\n[extensions]\n\tobjectformat = sha256\n"
+        }
+    };
+    create_git_clone_staging(state_home, &stage_name, provenance.as_bytes(), config).map_err(
+        |error| match error {
+            GitCloneStagingError::Conflict => GitCloneStageError::Conflict,
+            GitCloneStagingError::Unsafe => GitCloneStageError::Unsafe,
+            GitCloneStagingError::Unsupported => GitCloneStageError::Unsupported,
+            GitCloneStagingError::TooLarge => GitCloneStageError::ResourceLimit,
+            GitCloneStagingError::Io => GitCloneStageError::Io,
+        },
+    )
+}
+
+fn clone_stage_provenance(plan: &GitClonePlan, remote_head: &GitRemoteHead) -> String {
+    let mut url_hasher = blake3::Hasher::new();
+    url_hasher.update(b"rehow:clone-url:v1\0");
+    hash_clone_field(&mut url_hasher, plan.remote_url.as_bytes());
+    let url_hash = *url_hasher.finalize().as_bytes();
+    let object_format = match remote_head.object_format {
+        GitObjectFormat::Sha1 => "sha1",
+        GitObjectFormat::Sha256 => "sha256",
+    };
+    format!(
+        "rehow-clone-stage-v1\ndestination_root={}\ndestination_device={}\ndestination_inode={}\ndestination_capability={}\nurl_hash={}\nobject_format={object_format}\nbranch_ref={}\nobject_id={}\nstage=prepared\n",
+        hex_lower(&plan.destination.root_hash()),
+        plan.destination.device(),
+        plan.destination.inode(),
+        hex_lower(&plan.destination.capability_hash()),
+        hex_lower(&url_hash),
+        remote_head.branch_ref,
+        remote_head.object_id,
+    )
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    output
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
+pub(crate) enum GitCloneDiscoveryError {
+    UnsupportedTransport,
+    GitUnavailable,
+    SandboxUnavailable,
+    Cancelled,
+    Timeout,
+    OutputLimit,
+    RemoteUnavailable,
+    InvalidAdvertisement,
+    Io,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
+pub(crate) struct GitRemoteHead {
+    branch_ref: String,
+    object_id: String,
+    object_format: GitObjectFormat,
+}
+
+impl fmt::Debug for GitRemoteHead {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitRemoteHead")
+            .field("branch_ref", &"<redacted>")
+            .field("object_id", &"<redacted>")
+            .field("object_format", &self.object_format)
+            .finish()
+    }
+}
+
+impl GitRemoteHead {
+    #[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
+    pub(crate) fn branch_ref(&self) -> &str {
+        &self.branch_ref
+    }
+
+    #[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
+    pub(crate) fn object_id(&self) -> &str {
+        &self.object_id
+    }
+
+    #[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
+    pub(crate) fn object_format(&self) -> GitObjectFormat {
+        self.object_format
+    }
+}
+
+#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
+pub(crate) fn discover_git_clone_remote_head(
+    plan: &GitClonePlan,
+    cancelled: &AtomicBool,
+) -> Result<GitRemoteHead, GitCloneDiscoveryError> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(GitCloneDiscoveryError::Cancelled);
+    }
+    if plan.transport != GitRemoteTransport::Https {
+        return Err(GitCloneDiscoveryError::UnsupportedTransport);
+    }
+    let executable =
+        trusted_executable("/usr/bin/git").ok_or(GitCloneDiscoveryError::GitUnavailable)?;
+    let sandbox =
+        trusted_executable("/usr/bin/bwrap").ok_or(GitCloneDiscoveryError::SandboxUnavailable)?;
+    let command = clone_discovery_command(&executable, &sandbox, &plan.remote_url);
+    let output = run_clone_command(
+        command,
+        cancelled,
+        CLONE_DISCOVERY_TIMEOUT,
+        CLONE_DISCOVERY_OUTPUT_LIMIT,
+    )?;
+    parse_git_remote_head(&output.stdout)
+}
+
+#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
+pub(crate) fn fetch_git_clone_remote(
+    plan: &GitClonePlan,
+    remote_head: &GitRemoteHead,
+    staging: &GitCloneStaging,
+    cancelled: &AtomicBool,
+) -> Result<(), GitCloneDiscoveryError> {
+    if plan.transport != GitRemoteTransport::Https {
+        return Err(GitCloneDiscoveryError::UnsupportedTransport);
+    }
+    let executable =
+        trusted_executable("/usr/bin/git").ok_or(GitCloneDiscoveryError::GitUnavailable)?;
+    let sandbox =
+        trusted_executable("/usr/bin/bwrap").ok_or(GitCloneDiscoveryError::SandboxUnavailable)?;
+    let command = clone_fetch_command(
+        &executable,
+        &sandbox,
+        staging.git_path(),
+        staging.git_descriptor(),
+        &plan.remote_url,
+        &remote_head.object_id,
+    );
+    let output = run_clone_command(
+        command,
+        cancelled,
+        CLONE_FETCH_TIMEOUT,
+        CLONE_DISCOVERY_OUTPUT_LIMIT,
+    )?;
+    if !output.stdout.is_empty() {
+        return Err(GitCloneDiscoveryError::InvalidAdvertisement);
+    }
+    staging
+        .verify_git_size_limit(CLONE_STAGING_FILE_LIMIT)
+        .map_err(|error| match error {
+            GitCloneStagingError::TooLarge => GitCloneDiscoveryError::OutputLimit,
+            GitCloneStagingError::Conflict
+            | GitCloneStagingError::Unsafe
+            | GitCloneStagingError::Unsupported
+            | GitCloneStagingError::Io => GitCloneDiscoveryError::Io,
+        })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
+pub(crate) enum GitCloneInspectError {
+    Cancelled,
+    Timeout,
+    OutputLimit,
+    GitUnavailable,
+    SandboxUnavailable,
+    InvalidRepository,
+    RefMismatch,
+    Tree(GitCloneTreeError),
+    Io,
+}
+
+#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
+pub(crate) fn inspect_fetched_git_clone_tree(
+    staging: &GitCloneStaging,
+    remote_head: &GitRemoteHead,
+    cancelled: &AtomicBool,
+) -> Result<GitCloneTree, GitCloneInspectError> {
+    let executable =
+        trusted_executable("/usr/bin/git").ok_or(GitCloneInspectError::GitUnavailable)?;
+    let sandbox =
+        trusted_executable("/usr/bin/bwrap").ok_or(GitCloneInspectError::SandboxUnavailable)?;
+    let ref_output = run_clone_command(
+        clone_read_command(
+            &executable,
+            &sandbox,
+            staging.git_path(),
+            staging.git_descriptor(),
+            &["show-ref", "--verify", "--hash", "refs/rehow/clone/head"],
+        ),
+        cancelled,
+        CLONE_LOCAL_READ_TIMEOUT,
+        128,
+    )
+    .map_err(map_clone_inspect_process)?;
+    let expected_ref = format!("{}\n", remote_head.object_id);
+    if ref_output.stdout != expected_ref.as_bytes() {
+        return Err(GitCloneInspectError::RefMismatch);
+    }
+    let type_output = run_clone_command(
+        clone_read_command(
+            &executable,
+            &sandbox,
+            staging.git_path(),
+            staging.git_descriptor(),
+            &["cat-file", "-t", remote_head.object_id()],
+        ),
+        cancelled,
+        CLONE_LOCAL_READ_TIMEOUT,
+        16,
+    )
+    .map_err(map_clone_inspect_process)?;
+    if type_output.stdout != b"commit\n" {
+        return Err(GitCloneInspectError::InvalidRepository);
+    }
+    let tree_output = run_clone_command(
+        clone_read_command(
+            &executable,
+            &sandbox,
+            staging.git_path(),
+            staging.git_descriptor(),
+            &[
+                "ls-tree",
+                "-r",
+                "-l",
+                "-z",
+                "--full-tree",
+                remote_head.object_id(),
+            ],
+        ),
+        cancelled,
+        CLONE_LOCAL_READ_TIMEOUT,
+        MAX_CLONE_TREE_LISTING_BYTES,
+    )
+    .map_err(map_clone_inspect_process)?;
+    validate_git_clone_tree(remote_head.object_id(), &tree_output.stdout)
+        .map_err(GitCloneInspectError::Tree)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code, reason = "connected by the Phase 5B3B clone apply gate")]
+pub(crate) enum GitCloneContentError {
+    Cancelled,
+    Timeout,
+    OutputLimit,
+    GitUnavailable,
+    SandboxUnavailable,
+    InvalidRepository,
+    BlobMismatch,
+    InvalidWorkspace,
+    WorkspaceIssues,
+    Conflict,
+    Unsafe,
+    Unsupported,
+    ResourceLimit,
+    Io,
+}
+
+#[allow(dead_code, reason = "connected by the Phase 5B3B clone apply gate")]
+pub(crate) struct ValidatedGitClone {
+    tree: GitCloneTree,
+    workspace: Box<WorkspaceView>,
+}
+
+impl fmt::Debug for ValidatedGitClone {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ValidatedGitClone")
+            .field("tree", &self.tree)
+            .field("workspace", &"<validated>")
+            .finish()
+    }
+}
+
+impl ValidatedGitClone {
+    #[allow(dead_code, reason = "connected by the Phase 5B3B clone apply gate")]
+    pub(crate) fn tree(&self) -> &GitCloneTree {
+        &self.tree
+    }
+
+    #[allow(dead_code, reason = "connected by the Phase 5B3B clone apply gate")]
+    pub(crate) fn workspace(&self) -> &WorkspaceView {
+        &self.workspace
+    }
+}
+
+/// Streams the already bounded tree into a private mirror and validates it
+/// through the canonical Workspace loader. The selected destination remains
+/// unopened by the child and unchanged by this operation.
+#[allow(dead_code, reason = "connected by the Phase 5B3B clone apply gate")]
+pub(crate) fn validate_fetched_git_clone(
+    staging: &GitCloneStaging,
+    tree: GitCloneTree,
+    cancelled: &AtomicBool,
+) -> Result<ValidatedGitClone, GitCloneContentError> {
+    let executable =
+        trusted_executable("/usr/bin/git").ok_or(GitCloneContentError::GitUnavailable)?;
+    let sandbox =
+        trusted_executable("/usr/bin/bwrap").ok_or(GitCloneContentError::SandboxUnavailable)?;
+    stream_clone_tree(
+        clone_batch_read_command(
+            &executable,
+            &sandbox,
+            staging.git_path(),
+            staging.git_descriptor(),
+        ),
+        staging,
+        &tree,
+        cancelled,
+    )?;
+    staging
+        .finish_validation_tree()
+        .map_err(map_clone_staging_content_error)?;
+    let inspection = inspect_workspace(Path::new(staging.validation_path()))
+        .map_err(|_| GitCloneContentError::InvalidWorkspace)?;
+    let (_, classification) = inspection.into_parts();
+    let WorkspaceInspection::Compatible(workspace) = classification else {
+        return Err(GitCloneContentError::InvalidWorkspace);
+    };
+    if !workspace.issues().is_empty() {
+        return Err(GitCloneContentError::WorkspaceIssues);
+    }
+    Ok(ValidatedGitClone { tree, workspace })
+}
+
+fn map_clone_staging_content_error(error: GitCloneStagingError) -> GitCloneContentError {
+    match error {
+        GitCloneStagingError::Conflict => GitCloneContentError::Conflict,
+        GitCloneStagingError::Unsafe => GitCloneContentError::Unsafe,
+        GitCloneStagingError::Unsupported => GitCloneContentError::Unsupported,
+        GitCloneStagingError::TooLarge => GitCloneContentError::ResourceLimit,
+        GitCloneStagingError::Io => GitCloneContentError::Io,
+    }
+}
+
+fn stream_clone_tree(
+    mut command: Command,
+    staging: &GitCloneStaging,
+    tree: &GitCloneTree,
+    cancelled: &AtomicBool,
+) -> Result<(), GitCloneContentError> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(GitCloneContentError::Cancelled);
+    }
+    let mut child = command.spawn().map_err(|_| GitCloneContentError::Io)?;
+    let stdin = child.stdin.take().ok_or(GitCloneContentError::Io)?;
+    let stdout = child.stdout.take().ok_or(GitCloneContentError::Io)?;
+    let stderr = child.stderr.take().ok_or(GitCloneContentError::Io)?;
+    let exceeded = Arc::new(AtomicBool::new(false));
+    let stderr_reader =
+        read_capped_with_limit(stderr, Arc::clone(&exceeded), CLONE_DISCOVERY_OUTPUT_LIMIT);
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let started = Instant::now();
+    let mut worker_result = None;
+    let mut process_status = None;
+    let mut terminal_error = None;
+
+    thread::scope(|scope| {
+        scope.spawn(move || {
+            let result = stream_clone_blobs(stdin, stdout, staging, tree, cancelled);
+            let _ = sender.send(result);
+        });
+        loop {
+            if worker_result.is_none() {
+                match receiver.try_recv() {
+                    Ok(result) => worker_result = Some(result),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        terminal_error = Some(GitCloneContentError::Io);
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                }
+            }
+            if process_status.is_none() {
+                match child.try_wait() {
+                    Ok(Some(status)) => process_status = Some(status),
+                    Ok(None) => {}
+                    Err(_) => terminal_error = Some(GitCloneContentError::Io),
+                }
+            }
+            if worker_result.is_some() && process_status.is_some() {
+                break;
+            }
+            if terminal_error.is_none() {
+                terminal_error = if cancelled.load(Ordering::Relaxed) {
+                    Some(GitCloneContentError::Cancelled)
+                } else if exceeded.load(Ordering::Relaxed) {
+                    Some(GitCloneContentError::OutputLimit)
+                } else if started.elapsed() >= CLONE_LOCAL_READ_TIMEOUT {
+                    Some(GitCloneContentError::Timeout)
+                } else {
+                    None
+                };
+            }
+            if terminal_error.is_some() {
+                terminate_child(&mut child);
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+    });
+    let _ = stderr_reader.join().map_err(|_| GitCloneContentError::Io)?;
+    if let Some(error) = terminal_error {
+        return Err(error);
+    }
+    let result = worker_result.ok_or(GitCloneContentError::Io)?;
+    result?;
+    if process_status.is_some_and(|status| status.success()) {
+        Ok(())
+    } else {
+        Err(GitCloneContentError::InvalidRepository)
+    }
+}
+
+fn stream_clone_blobs(
+    stdin: std::process::ChildStdin,
+    stdout: std::process::ChildStdout,
+    staging: &GitCloneStaging,
+    tree: &GitCloneTree,
+    cancelled: &AtomicBool,
+) -> Result<(), GitCloneContentError> {
+    let mut writer = BufWriter::new(stdin);
+    let mut reader = BufReader::new(stdout);
+    for entry in tree.entries() {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(GitCloneContentError::Cancelled);
+        }
+        writer
+            .write_all(entry.object_id().as_bytes())
+            .and_then(|_| writer.write_all(b"\n"))
+            .and_then(|_| writer.flush())
+            .map_err(|_| GitCloneContentError::Io)?;
+        let header = read_clone_batch_header(&mut reader)?;
+        let expected = format!("{} blob {}\n", entry.object_id(), entry.size());
+        if header != expected.as_bytes() {
+            return Err(GitCloneContentError::BlobMismatch);
+        }
+        let size =
+            usize::try_from(entry.size()).map_err(|_| GitCloneContentError::ResourceLimit)?;
+        let mut bytes = vec![0_u8; size];
+        reader
+            .read_exact(&mut bytes)
+            .map_err(|_| GitCloneContentError::BlobMismatch)?;
+        let mut terminator = [0_u8; 1];
+        reader
+            .read_exact(&mut terminator)
+            .map_err(|_| GitCloneContentError::BlobMismatch)?;
+        if terminator != *b"\n" {
+            return Err(GitCloneContentError::BlobMismatch);
+        }
+        if !git_blob_object_id_matches(tree.object_format(), &bytes, entry.object_id()) {
+            return Err(GitCloneContentError::BlobMismatch);
+        }
+        staging
+            .write_validation_file(entry.relative_path(), &bytes)
+            .map_err(map_clone_staging_content_error)?;
+    }
+    drop(writer);
+    let mut unexpected = [0_u8; 1];
+    if reader
+        .read(&mut unexpected)
+        .map_err(|_| GitCloneContentError::Io)?
+        != 0
+    {
+        return Err(GitCloneContentError::BlobMismatch);
+    }
+    Ok(())
+}
+
+fn git_blob_object_id_matches(format: GitObjectFormat, bytes: &[u8], expected: &str) -> bool {
+    use sha1::Digest as _;
+
+    let header = format!("blob {}\0", bytes.len());
+    let actual = match format {
+        GitObjectFormat::Sha1 => {
+            let mut digest = sha1::Sha1::new();
+            digest.update(header.as_bytes());
+            digest.update(bytes);
+            hex_lower(&digest.finalize())
+        }
+        GitObjectFormat::Sha256 => {
+            let mut digest = sha2::Sha256::new();
+            digest.update(header.as_bytes());
+            digest.update(bytes);
+            hex_lower(&digest.finalize())
+        }
+    };
+    actual == expected
+}
+
+fn read_clone_batch_header(reader: &mut impl Read) -> Result<Vec<u8>, GitCloneContentError> {
+    let mut header = Vec::with_capacity(96);
+    while header.len() < CLONE_BATCH_HEADER_LIMIT {
+        let mut byte = [0_u8; 1];
+        reader
+            .read_exact(&mut byte)
+            .map_err(|_| GitCloneContentError::BlobMismatch)?;
+        header.push(byte[0]);
+        if byte[0] == b'\n' {
+            return Ok(header);
+        }
+    }
+    Err(GitCloneContentError::BlobMismatch)
+}
+
+fn map_clone_inspect_process(error: GitCloneDiscoveryError) -> GitCloneInspectError {
+    match error {
+        GitCloneDiscoveryError::Cancelled => GitCloneInspectError::Cancelled,
+        GitCloneDiscoveryError::Timeout => GitCloneInspectError::Timeout,
+        GitCloneDiscoveryError::OutputLimit => GitCloneInspectError::OutputLimit,
+        GitCloneDiscoveryError::GitUnavailable => GitCloneInspectError::GitUnavailable,
+        GitCloneDiscoveryError::SandboxUnavailable => GitCloneInspectError::SandboxUnavailable,
+        GitCloneDiscoveryError::RemoteUnavailable
+        | GitCloneDiscoveryError::InvalidAdvertisement
+        | GitCloneDiscoveryError::UnsupportedTransport => GitCloneInspectError::InvalidRepository,
+        GitCloneDiscoveryError::Io => GitCloneInspectError::Io,
+    }
+}
+
+fn run_clone_command(
+    mut command: Command,
+    cancelled: &AtomicBool,
+    timeout: Duration,
+    output_limit: usize,
+) -> Result<ProcessOutput, GitCloneDiscoveryError> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(GitCloneDiscoveryError::Cancelled);
+    }
+    let mut child = command.spawn().map_err(|_| GitCloneDiscoveryError::Io)?;
+    let exceeded = Arc::new(AtomicBool::new(false));
+    let stdout = child.stdout.take().ok_or(GitCloneDiscoveryError::Io)?;
+    let stderr = child.stderr.take().ok_or(GitCloneDiscoveryError::Io)?;
+    let stdout_reader = read_capped_with_limit(stdout, Arc::clone(&exceeded), output_limit);
+    let stderr_reader = read_capped_with_limit(stderr, Arc::clone(&exceeded), output_limit);
+    let started = Instant::now();
+    let status = loop {
+        let error = if cancelled.load(Ordering::Relaxed) {
+            Some(GitCloneDiscoveryError::Cancelled)
+        } else if exceeded.load(Ordering::Relaxed) {
+            Some(GitCloneDiscoveryError::OutputLimit)
+        } else if started.elapsed() >= timeout {
+            Some(GitCloneDiscoveryError::Timeout)
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            terminate_child(&mut child);
+            break Err(error);
+        }
+        match child.try_wait().map_err(|_| GitCloneDiscoveryError::Io)? {
+            Some(status) => break Ok(status),
+            None => thread::sleep(Duration::from_millis(2)),
+        }
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| GitCloneDiscoveryError::Io)?;
+    let _ = stderr_reader
+        .join()
+        .map_err(|_| GitCloneDiscoveryError::Io)?;
+    let status = status?;
+    if !status.success() {
+        return Err(GitCloneDiscoveryError::RemoteUnavailable);
+    }
+    Ok(ProcessOutput { stdout })
+}
+
+#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
+fn clone_discovery_command(executable: &Path, sandbox: &Path, remote_url: &str) -> Command {
+    let mut command = Command::new(sandbox);
+    command
+        .env_clear()
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", "/home/rehow")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "false")
+        .env("SSH_ASKPASS", "false")
+        .env("GIT_PAGER", "cat")
+        .env("GIT_EDITOR", "false")
+        .args([
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-all",
+            "--share-net",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib",
+            "/lib64",
+            "--ro-bind",
+            "/etc",
+            "/etc",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--dir",
+            "/home",
+            "--dir",
+            "/home/rehow",
+            "--dir",
+            "/run",
+            "--dir",
+            "/run/systemd",
+            "--ro-bind-try",
+            "/run/systemd/resolve",
+            "/run/systemd/resolve",
+            "--chdir",
+            "/tmp",
+            "--",
+        ])
+        .arg(executable)
+        .args([
+            "--no-pager",
+            "--literal-pathspecs",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "credential.interactive=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.alternateRefsCommand=",
+            "-c",
+            "http.followRedirects=false",
+            "-c",
+            "http.proxy=",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.https.allow=always",
+            "-c",
+            "protocol.ssh.allow=never",
+            "ls-remote",
+            "--symref",
+            "--exit-code",
+        ])
+        .arg(remote_url)
+        .arg("HEAD")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.process_group(0);
+    command
+}
+
+#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
+fn clone_fetch_command(
+    executable: &Path,
+    sandbox: &Path,
+    staging_git_path: &str,
+    staging_git_descriptor: i32,
+    remote_url: &str,
+    object_id: &str,
+) -> Command {
+    let refspec = format!("{object_id}:refs/rehow/clone/head");
+    let mut command = Command::new(sandbox);
+    command
+        .env_clear()
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", "/home/rehow")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "false")
+        .env("SSH_ASKPASS", "false")
+        .env("GIT_PAGER", "cat")
+        .env("GIT_EDITOR", "false")
+        .args([
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-all",
+            "--share-net",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib",
+            "/lib64",
+            "--ro-bind",
+            "/etc",
+            "/etc",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--dir",
+            "/home",
+            "--dir",
+            "/home/rehow",
+            "--dir",
+            "/run",
+            "--dir",
+            "/run/systemd",
+            "--ro-bind-try",
+            "/run/systemd/resolve",
+            "/run/systemd/resolve",
+            "--bind",
+            staging_git_path,
+            "/repo.git",
+            "--chdir",
+            "/tmp",
+            "--",
+        ])
+        .arg(executable)
+        .args([
+            "--no-pager",
+            "--literal-pathspecs",
+            "--git-dir=/repo.git",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "credential.interactive=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.alternateRefsCommand=",
+            "-c",
+            "fetch.fsckObjects=true",
+            "-c",
+            "transfer.fsckObjects=true",
+            "-c",
+            "fetch.unpackLimit=1",
+            "-c",
+            "transfer.unpackLimit=1",
+            "-c",
+            "pack.writeReverseIndex=false",
+            "-c",
+            "fetch.writeCommitGraph=false",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
+            "-c",
+            "submodule.recurse=false",
+            "-c",
+            "http.followRedirects=false",
+            "-c",
+            "http.proxy=",
+            "-c",
+            "protocol.version=2",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.https.allow=always",
+            "-c",
+            "protocol.ssh.allow=never",
+            "fetch",
+            "--quiet",
+            "--depth=1",
+            "--filter=blob:limit=67108865",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--no-recurse-submodules",
+            "--no-auto-maintenance",
+            "--no-show-forced-updates",
+        ])
+        .arg(remote_url)
+        .arg(refspec)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.process_group(0);
+    configure_clone_child(
+        &mut command,
+        staging_git_descriptor,
+        Some(CLONE_STAGING_FILE_LIMIT),
+    );
+    command
+}
+
+fn clone_read_command(
+    executable: &Path,
+    sandbox: &Path,
+    staging_git_path: &str,
+    staging_git_descriptor: i32,
+    git_arguments: &[&str],
+) -> Command {
+    let mut command = Command::new(sandbox);
+    command
+        .env_clear()
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_PAGER", "cat")
+        .env("GIT_EDITOR", "false")
+        .args([
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-all",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib",
+            "/lib64",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--ro-bind",
+            staging_git_path,
+            "/repo.git",
+            "--chdir",
+            "/tmp",
+            "--",
+        ])
+        .arg(executable)
+        .args([
+            "--no-pager",
+            "--literal-pathspecs",
+            "--git-dir=/repo.git",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.alternateRefsCommand=",
+            "-c",
+            "diff.external=",
+            "-c",
+            "protocol.allow=never",
+        ])
+        .args(git_arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.process_group(0);
+    configure_clone_child(&mut command, staging_git_descriptor, None);
+    command
+}
+
+fn clone_batch_read_command(
+    executable: &Path,
+    sandbox: &Path,
+    staging_git_path: &str,
+    staging_git_descriptor: i32,
+) -> Command {
+    let mut command = clone_read_command(
+        executable,
+        sandbox,
+        staging_git_path,
+        staging_git_descriptor,
+        &["cat-file", "--batch"],
+    );
+    command.stdin(Stdio::piped());
+    command
+}
+
+fn configure_clone_child(command: &mut Command, descriptor: i32, file_limit: Option<u64>) {
+    // SAFETY: this closure runs after fork and before exec. It only updates the
+    // selected child descriptor flag and an inherited resource limit.
+    unsafe {
+        command.pre_exec(move || {
+            let flags = libc::fcntl(descriptor, libc::F_GETFD);
+            if flags < 0 || libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if let Some(file_limit) = file_limit {
+                let limit = libc::rlimit {
+                    rlim_cur: file_limit,
+                    rlim_max: file_limit,
+                };
+                if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+}
+
+#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
+fn parse_git_remote_head(bytes: &[u8]) -> Result<GitRemoteHead, GitCloneDiscoveryError> {
+    if bytes.is_empty() || bytes.len() > CLONE_DISCOVERY_OUTPUT_LIMIT || !bytes.ends_with(b"\n") {
+        return Err(GitCloneDiscoveryError::InvalidAdvertisement);
+    }
+    let text =
+        std::str::from_utf8(bytes).map_err(|_| GitCloneDiscoveryError::InvalidAdvertisement)?;
+    let mut lines = text.strip_suffix('\n').unwrap_or(text).split('\n');
+    let symbolic = lines
+        .next()
+        .ok_or(GitCloneDiscoveryError::InvalidAdvertisement)?;
+    let direct = lines
+        .next()
+        .ok_or(GitCloneDiscoveryError::InvalidAdvertisement)?;
+    if lines.next().is_some() {
+        return Err(GitCloneDiscoveryError::InvalidAdvertisement);
+    }
+    let branch_ref = symbolic
+        .strip_prefix("ref: ")
+        .and_then(|line| line.strip_suffix("\tHEAD"))
+        .ok_or(GitCloneDiscoveryError::InvalidAdvertisement)?;
+    if !branch_ref.starts_with("refs/heads/") || !valid_ref_name(branch_ref) {
+        return Err(GitCloneDiscoveryError::InvalidAdvertisement);
+    }
+    let object_id = direct
+        .strip_suffix("\tHEAD")
+        .ok_or(GitCloneDiscoveryError::InvalidAdvertisement)?;
+    let object_format =
+        validate_object_id(object_id).ok_or(GitCloneDiscoveryError::InvalidAdvertisement)?;
+    Ok(GitRemoteHead {
+        branch_ref: branch_ref.to_owned(),
+        object_id: object_id.to_owned(),
+        object_format,
+    })
+}
+
+#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
+fn terminate_child(child: &mut std::process::Child) {
+    if let Ok(process_group) = i32::try_from(child.id()) {
+        // SAFETY: the child was placed in a fresh process group whose id is
+        // the child's pid; a negative id targets only that group.
+        unsafe {
+            libc::kill(-process_group, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1357,8 +2361,16 @@ fn run_git(
 }
 
 fn read_capped<R: Read + Send + 'static>(
+    reader: R,
+    exceeded: Arc<AtomicBool>,
+) -> thread::JoinHandle<Vec<u8>> {
+    read_capped_with_limit(reader, exceeded, OUTPUT_LIMIT)
+}
+
+fn read_capped_with_limit<R: Read + Send + 'static>(
     mut reader: R,
     exceeded: Arc<AtomicBool>,
+    limit: usize,
 ) -> thread::JoinHandle<Vec<u8>> {
     thread::spawn(move || {
         let mut retained = Vec::new();
@@ -1367,7 +2379,7 @@ fn read_capped<R: Read + Send + 'static>(
             if count == 0 {
                 break;
             }
-            if retained.len().saturating_add(count) > OUTPUT_LIMIT {
+            if retained.len().saturating_add(count) > limit {
                 exceeded.store(true, Ordering::Relaxed);
             } else {
                 retained.extend_from_slice(&buffer[..count]);
@@ -1963,6 +2975,550 @@ mod tests {
             plan_git_clone(&nested, "git@example.com:team/rehow.git"),
             Err(GitCloneError::NestedRepository)
         ));
+    }
+
+    #[test]
+    fn clone_remote_head_parser_is_exact_bounded_and_redacted() {
+        let sha1 = "0123456789abcdef0123456789abcdef01234567";
+        let parsed =
+            parse_git_remote_head(format!("ref: refs/heads/main\tHEAD\n{sha1}\tHEAD\n").as_bytes())
+                .unwrap();
+        assert_eq!(parsed.branch_ref(), "refs/heads/main");
+        assert_eq!(parsed.object_id(), sha1);
+        assert_eq!(parsed.object_format(), GitObjectFormat::Sha1);
+        let debug = format!("{parsed:?}");
+        assert!(!debug.contains("refs/heads/main"));
+        assert!(!debug.contains(sha1));
+
+        let sha256 = "a".repeat(64);
+        assert_eq!(
+            parse_git_remote_head(
+                format!("ref: refs/heads/team/rehow\tHEAD\n{sha256}\tHEAD\n").as_bytes()
+            )
+            .unwrap()
+            .object_format(),
+            GitObjectFormat::Sha256
+        );
+
+        for hostile in [
+            String::new(),
+            format!("ref: refs/tags/main\tHEAD\n{sha1}\tHEAD\n"),
+            format!("ref: refs/heads/../main\tHEAD\n{sha1}\tHEAD\n"),
+            format!("ref: refs/heads/main\tHEAD\n{}\tHEAD\n", "A".repeat(40)),
+            format!("ref: refs/heads/main\tHEAD\n{sha1}\tOTHER\n"),
+            format!("ref: refs/heads/main\tHEAD\n{sha1}\tHEAD"),
+            format!("ref: refs/heads/main\tHEAD\n{sha1}\tHEAD\nextra\n"),
+        ] {
+            assert_eq!(
+                parse_git_remote_head(hostile.as_bytes()),
+                Err(GitCloneDiscoveryError::InvalidAdvertisement),
+                "{hostile:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn clone_blob_ids_and_batch_headers_are_exact() {
+        assert!(git_blob_object_id_matches(
+            GitObjectFormat::Sha1,
+            b"",
+            "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+        ));
+        assert!(!git_blob_object_id_matches(
+            GitObjectFormat::Sha1,
+            b"changed",
+            "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+        ));
+        let mut valid = std::io::Cursor::new(b"abc blob 3\nbody\n");
+        assert_eq!(
+            read_clone_batch_header(&mut valid).unwrap(),
+            b"abc blob 3\n"
+        );
+        let mut unterminated = std::io::Cursor::new(vec![b'x'; CLONE_BATCH_HEADER_LIMIT]);
+        assert_eq!(
+            read_clone_batch_header(&mut unterminated),
+            Err(GitCloneContentError::BlobMismatch)
+        );
+    }
+
+    #[test]
+    fn clone_runner_cancels_process_groups_and_caps_output() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut slow = Command::new("/usr/bin/sh");
+        slow.args(["-c", "sleep 30 & wait"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        slow.process_group(0);
+        let trigger = Arc::clone(&cancelled);
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            trigger.store(true, Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        assert_eq!(
+            run_clone_command(slow, &cancelled, Duration::from_secs(2), 1024)
+                .err()
+                .unwrap(),
+            GitCloneDiscoveryError::Cancelled
+        );
+        canceller.join().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        let mut noisy = Command::new("/usr/bin/head");
+        noisy
+            .args(["-c", "8192", "/dev/zero"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        noisy.process_group(0);
+        assert_eq!(
+            run_clone_command(noisy, &AtomicBool::new(false), Duration::from_secs(2), 1024)
+                .err()
+                .unwrap(),
+            GitCloneDiscoveryError::OutputLimit
+        );
+    }
+
+    #[test]
+    fn clone_discovery_command_is_config_free_checkout_free_and_url_explicit() {
+        let url = "https://example.invalid/team/rehow.git";
+        let command =
+            clone_discovery_command(Path::new("/usr/bin/git"), Path::new("/usr/bin/bwrap"), url);
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        for required in [
+            "--unshare-all",
+            "--share-net",
+            "credential.helper=",
+            "credential.interactive=false",
+            "core.hooksPath=/dev/null",
+            "http.followRedirects=false",
+            "protocol.allow=never",
+            "protocol.https.allow=always",
+            "protocol.ssh.allow=never",
+            "ls-remote",
+            "--symref",
+            "--exit-code",
+            url,
+            "HEAD",
+        ] {
+            assert!(
+                arguments.iter().any(|argument| argument == required),
+                "{required}"
+            );
+        }
+        for forbidden in ["clone", "checkout", "fetch", "--upload-pack", "--exec"] {
+            assert!(!arguments.iter().any(|argument| argument == forbidden));
+        }
+        let environment = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(environment["GIT_CONFIG_NOSYSTEM"].as_deref(), Some("1"));
+        assert_eq!(
+            environment["GIT_CONFIG_GLOBAL"].as_deref(),
+            Some("/dev/null")
+        );
+        assert_eq!(environment["GIT_TERMINAL_PROMPT"].as_deref(), Some("0"));
+        assert_eq!(environment["HOME"].as_deref(), Some("/home/rehow"));
+
+        let fetch = clone_fetch_command(
+            Path::new("/usr/bin/git"),
+            Path::new("/usr/bin/bwrap"),
+            "/proc/self/fd/99",
+            99,
+            url,
+            "0123456789abcdef0123456789abcdef01234567",
+        );
+        let fetch_arguments = fetch
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        for required in [
+            "--bind",
+            "/proc/self/fd/99",
+            "/repo.git",
+            "--git-dir=/repo.git",
+            "fetch.fsckObjects=true",
+            "transfer.fsckObjects=true",
+            "fetch.unpackLimit=1",
+            "transfer.unpackLimit=1",
+            "pack.writeReverseIndex=false",
+            "fetch.writeCommitGraph=false",
+            "submodule.recurse=false",
+            "fetch",
+            "--depth=1",
+            "--filter=blob:limit=67108865",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--no-recurse-submodules",
+            "--no-auto-maintenance",
+            url,
+            "0123456789abcdef0123456789abcdef01234567:refs/rehow/clone/head",
+        ] {
+            assert!(
+                fetch_arguments.iter().any(|argument| argument == required),
+                "{required}"
+            );
+        }
+        for forbidden in ["clone", "checkout", "pull", "submodule"] {
+            assert!(!fetch_arguments.iter().any(|argument| argument == forbidden));
+        }
+    }
+
+    #[test]
+    fn clone_discovery_refuses_ssh_and_precancel_before_spawning() {
+        let temp = Temp::new();
+        let target = empty_target(&temp);
+        let https = plan_git_clone(&target, "https://example.invalid/team/rehow.git").unwrap();
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(
+            discover_git_clone_remote_head(&https, &cancelled),
+            Err(GitCloneDiscoveryError::Cancelled)
+        );
+        let ssh = plan_git_clone(&target, "git@example.invalid:team/rehow.git").unwrap();
+        assert_eq!(
+            discover_git_clone_remote_head(&ssh, &AtomicBool::new(false)),
+            Err(GitCloneDiscoveryError::UnsupportedTransport)
+        );
+    }
+
+    #[test]
+    fn clone_staging_is_private_provenance_bound_and_leaves_destination_empty() {
+        let destination = Temp::new();
+        let state = Temp::new();
+        let target = empty_target(&destination);
+        let url = "https://example.invalid/team/rehow.git";
+        let plan = plan_git_clone(&target, url).unwrap();
+        let head = parse_git_remote_head(
+            b"ref: refs/heads/main\tHEAD\n0123456789abcdef0123456789abcdef01234567\tHEAD\n",
+        )
+        .unwrap();
+        let staging = prepare_git_clone_staging(&target, &plan, &head, &state.0).unwrap();
+        assert!(destination.0.read_dir().unwrap().next().is_none());
+        let git_path = Path::new(staging.git_path());
+        assert_eq!(
+            fs::metadata(git_path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::read(git_path.join("config")).unwrap(),
+            b"[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n"
+        );
+        let stage_root = Path::new(staging.stage_path());
+        let provenance = fs::read_to_string(stage_root.join("provenance")).unwrap();
+        assert!(provenance.starts_with("rehow-clone-stage-v1\n"));
+        assert!(provenance.contains("object_format=sha1\n"));
+        assert!(provenance.contains("branch_ref=refs/heads/main\n"));
+        assert!(!provenance.contains(url));
+        let token = serde_json::to_string(plan.token()).unwrap();
+        assert!(!provenance.contains(token.trim_matches('"')));
+        assert_eq!(
+            prepare_git_clone_staging(&target, &plan, &head, &state.0)
+                .err()
+                .unwrap(),
+            GitCloneStageError::Conflict
+        );
+    }
+
+    #[test]
+    fn clone_staging_size_scan_rejects_limits_and_unsafe_entries() {
+        let destination = Temp::new();
+        let state = Temp::new();
+        let target = empty_target(&destination);
+        let plan = plan_git_clone(&target, "https://example.invalid/team/rehow.git").unwrap();
+        let head = parse_git_remote_head(
+            b"ref: refs/heads/main\tHEAD\n0123456789abcdef0123456789abcdef01234567\tHEAD\n",
+        )
+        .unwrap();
+        let staging = prepare_git_clone_staging(&target, &plan, &head, &state.0).unwrap();
+        assert_eq!(
+            staging.verify_git_size_limit(1),
+            Err(GitCloneStagingError::TooLarge)
+        );
+        symlink("/tmp", Path::new(staging.git_path()).join("unsafe-link")).unwrap();
+        assert_eq!(
+            staging.verify_git_size_limit(u64::MAX),
+            Err(GitCloneStagingError::Unsafe)
+        );
+    }
+
+    #[test]
+    fn clone_staging_refuses_changed_destination_before_state_creation() {
+        let destination = Temp::new();
+        let state = Temp::new();
+        let target = empty_target(&destination);
+        let plan = plan_git_clone(&target, "https://example.invalid/team/rehow.git").unwrap();
+        let head = parse_git_remote_head(
+            format!("ref: refs/heads/main\tHEAD\n{}\tHEAD\n", "a".repeat(64)).as_bytes(),
+        )
+        .unwrap();
+        fs::write(destination.0.join("external"), b"preserve").unwrap();
+        assert_eq!(
+            prepare_git_clone_staging(&target, &plan, &head, &state.0)
+                .err()
+                .unwrap(),
+            GitCloneStageError::DestinationChanged
+        );
+        assert!(state.0.read_dir().unwrap().next().is_none());
+        assert_eq!(
+            fs::read(destination.0.join("external")).unwrap(),
+            b"preserve"
+        );
+    }
+
+    fn commit_clone_fixture(source: &Temp, manifest: &[u8]) -> String {
+        fs::write(source.0.join("rehow.yaml"), manifest).unwrap();
+        assert!(
+            Command::new("/usr/bin/git")
+                .env_clear()
+                .env("LANG", "C")
+                .env("LC_ALL", "C")
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .args(["init", "--quiet", "--template="])
+                .arg(&source.0)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let run = |arguments: &[&str]| {
+            Command::new("/usr/bin/git")
+                .env_clear()
+                .env("LANG", "C")
+                .env("LC_ALL", "C")
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .args(["-C", source.0.to_str().unwrap()])
+                .args(arguments)
+                .output()
+                .unwrap()
+        };
+        assert!(run(&["add", "--all", "--"]).status.success());
+        let tree = run(&["write-tree"]);
+        assert!(tree.status.success());
+        let tree_id = std::str::from_utf8(&tree.stdout).unwrap().trim();
+        let commit = Command::new("/usr/bin/git")
+            .env_clear()
+            .env("LANG", "C")
+            .env("LC_ALL", "C")
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "Rehow Test")
+            .env("GIT_AUTHOR_EMAIL", "test@rehow.invalid")
+            .env("GIT_COMMITTER_NAME", "Rehow Test")
+            .env("GIT_COMMITTER_EMAIL", "test@rehow.invalid")
+            .args(["-C", source.0.to_str().unwrap(), "commit-tree", tree_id])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(commit.status.success());
+        std::str::from_utf8(&commit.stdout)
+            .unwrap()
+            .trim()
+            .to_owned()
+    }
+
+    fn stage_clone_fixture(
+        destination: &Temp,
+        state: &Temp,
+        source: &Temp,
+        commit_id: &str,
+    ) -> (GitRemoteHead, GitCloneStaging) {
+        let target = empty_target(destination);
+        let plan = plan_git_clone(&target, "https://example.invalid/team/rehow.git").unwrap();
+        let head = parse_git_remote_head(
+            format!("ref: refs/heads/main\tHEAD\n{commit_id}\tHEAD\n").as_bytes(),
+        )
+        .unwrap();
+        let staging = prepare_git_clone_staging(&target, &plan, &head, &state.0).unwrap();
+        let mut fetch = Command::new("/usr/bin/git");
+        fetch
+            .env_clear()
+            .env("LANG", "C")
+            .env("LC_ALL", "C")
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args([
+                "--no-pager",
+                "--literal-pathspecs",
+                &format!("--git-dir={}", staging.git_path()),
+                "-c",
+                "protocol.file.allow=always",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--no-write-fetch-head",
+            ])
+            .arg(source.0.to_str().unwrap())
+            .arg(format!("{commit_id}:refs/rehow/clone/head"));
+        configure_clone_child(&mut fetch, staging.git_descriptor(), None);
+        assert!(fetch.status().unwrap().success());
+        (head, staging)
+    }
+
+    #[test]
+    fn clone_content_streams_and_validates_in_private_staging() {
+        let destination = Temp::new();
+        let state = Temp::new();
+        let source = Temp::new();
+        let manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Cloned\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n";
+        let commit_id = commit_clone_fixture(&source, manifest);
+        let (head, staging) = stage_clone_fixture(&destination, &state, &source, &commit_id);
+        let cancelled = AtomicBool::new(false);
+        let tree = inspect_fetched_git_clone_tree(&staging, &head, &cancelled).unwrap();
+        let validated = validate_fetched_git_clone(&staging, tree, &cancelled).unwrap();
+
+        assert_eq!(validated.workspace().manifest().name(), "Cloned");
+        assert_eq!(validated.tree().commit_id(), commit_id);
+        assert!(validated.workspace().issues().is_empty());
+        assert!(destination.0.read_dir().unwrap().next().is_none());
+    }
+
+    #[test]
+    fn clone_content_rejects_malformed_workspace_without_touching_destination() {
+        let destination = Temp::new();
+        let state = Temp::new();
+        let source = Temp::new();
+        let commit_id = commit_clone_fixture(&source, b"schema_version: nope\n");
+        let (head, staging) = stage_clone_fixture(&destination, &state, &source, &commit_id);
+        let cancelled = AtomicBool::new(false);
+        let tree = inspect_fetched_git_clone_tree(&staging, &head, &cancelled).unwrap();
+
+        assert_eq!(
+            validate_fetched_git_clone(&staging, tree, &cancelled).unwrap_err(),
+            GitCloneContentError::InvalidWorkspace
+        );
+        assert!(destination.0.read_dir().unwrap().next().is_none());
+    }
+
+    #[test]
+    fn clone_content_rejects_workspace_scan_issues() {
+        let destination = Temp::new();
+        let state = Temp::new();
+        let source = Temp::new();
+        let attachment = source
+            .0
+            .join("attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/orphan.txt");
+        fs::create_dir_all(attachment.parent().unwrap()).unwrap();
+        fs::write(&attachment, b"orphan").unwrap();
+        let manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Cloned\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n";
+        let commit_id = commit_clone_fixture(&source, manifest);
+        let (head, staging) = stage_clone_fixture(&destination, &state, &source, &commit_id);
+        let cancelled = AtomicBool::new(false);
+        let tree = inspect_fetched_git_clone_tree(&staging, &head, &cancelled).unwrap();
+
+        assert_eq!(
+            validate_fetched_git_clone(&staging, tree, &cancelled).unwrap_err(),
+            GitCloneContentError::WorkspaceIssues
+        );
+        assert!(destination.0.read_dir().unwrap().next().is_none());
+    }
+
+    #[test]
+    fn clone_inspection_requires_head_to_be_an_exact_commit() {
+        let source = Temp::new();
+        let commit_id = commit_clone_fixture(
+            &source,
+            b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Types\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n",
+        );
+        let git_output = |arguments: &[&str]| {
+            Command::new("/usr/bin/git")
+                .env_clear()
+                .env("LANG", "C")
+                .env("LC_ALL", "C")
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .args(["-C", source.0.to_str().unwrap()])
+                .args(arguments)
+                .output()
+                .unwrap()
+        };
+        let tree = git_output(&["rev-parse", &format!("{commit_id}^{{tree}}")]);
+        assert!(tree.status.success());
+        let tree_id = std::str::from_utf8(&tree.stdout).unwrap().trim().to_owned();
+        let tag = Command::new("/usr/bin/git")
+            .env_clear()
+            .env("LANG", "C")
+            .env("LC_ALL", "C")
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_COMMITTER_NAME", "Rehow Test")
+            .env("GIT_COMMITTER_EMAIL", "test@rehow.invalid")
+            .args([
+                "-C",
+                source.0.to_str().unwrap(),
+                "tag",
+                "-a",
+                "snapshot",
+                "-m",
+                "snapshot",
+                &commit_id,
+            ])
+            .status()
+            .unwrap();
+        assert!(tag.success());
+        let tag = git_output(&["rev-parse", "refs/tags/snapshot"]);
+        assert!(tag.status.success());
+        let tag_id = std::str::from_utf8(&tag.stdout).unwrap().trim().to_owned();
+
+        for object_id in [tree_id, tag_id] {
+            let destination = Temp::new();
+            let state = Temp::new();
+            let (head, staging) = stage_clone_fixture(&destination, &state, &source, &object_id);
+            assert_eq!(
+                inspect_fetched_git_clone_tree(&staging, &head, &AtomicBool::new(false)),
+                Err(GitCloneInspectError::InvalidRepository)
+            );
+            assert!(destination.0.read_dir().unwrap().next().is_none());
+        }
+    }
+
+    #[test]
+    #[ignore = "explicit public-network clone sandbox smoke test"]
+    fn clone_public_https_fetch_stays_in_private_staging() {
+        let destination = Temp::new();
+        let state = Temp::new();
+        let target = empty_target(&destination);
+        let plan = plan_git_clone(&target, "https://github.com/octocat/Hello-World.git").unwrap();
+        let cancelled = AtomicBool::new(false);
+        let head = discover_git_clone_remote_head(&plan, &cancelled).unwrap();
+        let staging = prepare_git_clone_staging(&target, &plan, &head, &state.0).unwrap();
+        fetch_git_clone_remote(&plan, &head, &staging, &cancelled).unwrap();
+        assert!(destination.0.read_dir().unwrap().next().is_none());
+        assert_eq!(
+            fs::read_to_string(Path::new(staging.git_path()).join("refs/rehow/clone/head"))
+                .unwrap(),
+            format!("{}\n", head.object_id())
+        );
+        assert!(!Path::new(staging.git_path()).join("index").exists());
+        assert_eq!(
+            inspect_fetched_git_clone_tree(&staging, &head, &cancelled),
+            Err(GitCloneInspectError::Tree(GitCloneTreeError::UnsafePath))
+        );
+        assert!(destination.0.read_dir().unwrap().next().is_none());
     }
 
     #[test]

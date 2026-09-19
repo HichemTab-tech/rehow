@@ -12,9 +12,9 @@ pub(crate) use recovery::{
     AttachmentRemovalStorageOutcome, AttachmentSourceState, CategoryCreateStorageError,
     CategoryCreateStorageOutcome, CategoryRemoveStorageError, CategoryRemoveStorageOutcome,
     DocumentCreateError, DocumentCreateOutcome, DocumentMoveOutcome, DocumentRemoveError,
-    DocumentRemoveOutcome, DocumentUpdateError, DocumentUpdateOutcome, MultiDocumentUpdateError,
-    MultiDocumentUpdateOutcome, PreparedDocument, WorkspaceInitializeError,
-    WorkspaceInitializeOutcome,
+    DocumentRemoveOutcome, DocumentUpdateError, DocumentUpdateOutcome, GitCloneStaging,
+    GitCloneStagingError, MultiDocumentUpdateError, MultiDocumentUpdateOutcome, PreparedDocument,
+    WorkspaceInitializeError, WorkspaceInitializeOutcome, create_git_clone_staging,
 };
 pub use watch::{WorkspaceWatchError, WorkspaceWatchSignal, WorkspaceWatcher};
 
