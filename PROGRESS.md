@@ -5,11 +5,11 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 5D3C2 authenticated SSH push is complete at `fd5532d`. Authenticated HTTPS credential-helper provenance is the next Git gate.
+Phase 5D3D1 authenticated HTTPS credential-helper provenance is complete at `41a2549`. A fixed credential-protocol proxy and sealed helper invocation are the next Git gate.
 
 ## Current task
 
-Specify the narrow Phase 5D3D authenticated-HTTPS helper-provenance gate without invoking credentials, adding renderer authority, or trusting repository configuration.
+Specify Phase 5D3D2 so a fixed proxy can invoke only the retained helper capability with bounded credential-protocol fields, no Workspace mount, no secret disclosure, and no network operation.
 
 ## Overall status
 
@@ -122,16 +122,17 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Completed Phase 5D3B3 at signed checkpoint `547d55f`: authenticated SSH clone discovery/fetch now uses only native-held sealed agent, known-host, proxy, and root-owned SSH-client capabilities inside the existing confined pipeline. HTTPS and SSH remain closed transport variants; raw SSH output, credentials, paths, and private keys never cross renderer IPC. A disposable loopback `sshd`/agent/repository fixture proves success and wrong-host rejection, the full gate passes, and the one reused Security Reviewer verdict is PASS.
 - Completed Phase 5D3C1 at signed checkpoint `cfc2d1a`: sync discovery, initial fetch, complete Workspace validation, bounded history deepening, and ancestry classification reuse the same sealed SSH authority. Missing authority and authentication/host-key failures are closed; renderer IPC receives no new choice or secret. A real loopback fixture proves success, wrong-host refusal, and unchanged active manifest/HEAD/index/config. The full gate and one reused Security Reviewer pass.
 - Completed Phase 5D3C2 at signed checkpoint `fd5532d`: the fixed proxy admits only exact upload-pack or receive-pack service grammar, and confirmed local-ahead publication reuses the sealed SSH authority for preflight, one normal full-OID-to-full-branch push, and exact postflight verification. A disposable loopback bare repository proves wrong-host refusal leaves the remote unchanged and successful publication advances it to exactly the validated commit. The full gate and one reused Security Reviewer pass.
+- Completed Phase 5D3D1 at signed checkpoint `41a2549`: native launch stably snapshots only fixed global Git config sources with includes disabled, applies helper reset semantics, rejects scoped/multiple/shell/argument/path ambiguity, and retains one approved root-owned helper inode. It invokes no helper, credential protocol, network, or renderer/MCP authority. Five adversarial core tests, native retention coverage, the full gate, and the one reused Security Reviewer correction recheck pass. Parent-directory link count was removed from provenance identity to eliminate unrelated-sibling test flakes while target files still require one link.
 
 ## Work in progress
 
-- Phase 5D3C2 is complete at signed checkpoint `fd5532d`; Phase 5D3D authenticated HTTPS credential-helper provenance is next.
+- Phase 5D3D1 is complete at signed checkpoint `41a2549`; Phase 5D3D2 fixed credential proxy and sealed helper invocation is next.
 
 ## Remaining work
 
 - Workspace adoption/import/migration and Attachment viewing/export/reveal remain incomplete.
 - Phase 4: complete at `e17b7d1`.
-- Phase 5: read-only status, safe local initialization, metadata-only remote connection, anonymous-HTTPS and authenticated-SSH clone/sync/push including UI, native-confirmed recoverable managed-only commits, bounded ancestry, durable loose-branch fast-forward publication, and pathless native recovery are complete; packed-branch publication and authenticated HTTPS remain.
+- Phase 5: read-only status, safe local initialization, metadata-only remote connection, anonymous-HTTPS and authenticated-SSH clone/sync/push including UI, native-confirmed recoverable managed-only commits, bounded ancestry, durable loose-branch fast-forward publication, pathless native recovery, and HTTPS helper provenance are complete; helper invocation, authenticated HTTPS operations, and packed-branch publication remain.
 - Phase 6: standalone full MCP contract.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
@@ -240,19 +241,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - Phase 5D3B3 captures the exact root-owned system SSH client outside the user namespace and descriptor-mounts it beside the fixed proxy; discovery and fetch can enable only SSH or HTTPS according to a closed plan. Each setup child rewinds sealed host-key memfds before mounting, only the five exact descriptors cross exec, stderr remains bounded/private, and authentication/host-key failures map to closed errors. The isolated real-SSH fixture and the one reused Security Reviewer correction gate pass.
 - Phase 5D3C1 passes the same opaque resources only to sync remote discovery/fetch/history children selected by a core-validated SSH upstream. Active Workspace/repository authority is never mounted into those network children; the existing validated classification remains the only apply authority. The loopback fixture, closed native errors, full gate, and one reused Security Reviewer pass with no blocker/high/medium finding.
 - Phase 5D3C2 extends the fixed proxy only to exact receive-pack grammar and gives push the same sealed launch authority after native confirmation. The child receives one internal normal refspec, read-only local objects, synthetic metadata, and no Workspace or caller-selected Git controls. Wrong-host and successful loopback publication tests, the full gate, and the one reused Security Reviewer pass.
+- Phase 5D3D1 reads only stable bounded global-config snapshots through root-owned Git with includes disabled and retains only one fixed-directory root-owned helper inode. Empty values reset prior helpers; scoped, multiple, shell, argument-bearing, relative, unsafe, malformed, oversized, amplifying, or raced inputs fail closed. The reviewer-found empty-scope spelling is covered and the final reused Security Reviewer verdict is PASS.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5D3C2 used exactly one reused Security Reviewer at the completed authority gate and the verdict is PASS.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5D3D1 used exactly one reused Security Reviewer at the completed authority gate and the final verdict is PASS.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`fd5532d` — signed Phase 5D3C2 authenticated SSH push; its configured GPG signature verifies. This progress-only ledger update follows that implementation commit.
+`41a2549` — signed Phase 5D3D1 authenticated HTTPS credential-helper provenance; its configured GPG signature verifies. This progress-only ledger update follows that implementation commit.
 
 ## Tests last run and results
 
+- 2026-09-20: Phase 5D3D1 checkpoint `41a2549` passes 5 focused credential-provenance tests, native launch-retention coverage, `pnpm check`, 39 Vitest tests, 432 core tests with 2 intentional ignores, 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 25 desktop Rust, MCP, and example targets. Strict all-Workspace Clippy, production build, optimized Tauri no-bundle build, Cargo formatting, bootstrap/whitespace checks, signed-commit verification, and the one reused Security Reviewer correction recheck pass.
 - 2026-09-20: Phase 5D3C2 checkpoint `fd5532d` passes focused proxy/push/real-loopback SSH tests, `pnpm check`, 39 Vitest tests, 427 core tests with 2 intentional ignores, 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 24 desktop Rust, MCP, and example targets. Strict all-Workspace Clippy, production build, optimized Tauri no-bundle build, Cargo formatting, bootstrap/whitespace checks, signed-commit verification, and the one reused Security Reviewer pass. One unrelated provenance test failed once under a parallel test/build run, then passed five focused repetitions and the clean sequential full suite.
 - 2026-09-20: Phase 5D3C1 checkpoint `cfc2d1a` passes `pnpm check`, 39 Vitest tests, the real loopback authenticated-SSH clone/sync/wrong-host fixture, 427 core tests with 2 intentional ignores, 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 24 desktop Rust, MCP, and example targets. Strict all-Workspace Clippy, production pnpm build, optimized Tauri no-bundle build, bootstrap/whitespace checks, signed-commit verification, and the one reused Security Reviewer gate pass.
 - 2026-09-19: Phase 5D3B3 checkpoint `547d55f` passes `pnpm check`, 39 Vitest tests, the real loopback authenticated-SSH clone/wrong-host fixture, 427 core tests with 2 intentional ignores, 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 24 desktop Rust, MCP, and example targets. Strict all-Workspace/all-target/all-feature Clippy, production pnpm build, optimized Tauri no-bundle build, whitespace checks, signed-commit verification, and the single reused Security Reviewer correction gate pass. No public host or user credential was used.
@@ -487,20 +490,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0025, `docs/task-packets/phase-5d3b3-authenticated-ssh-clone.md`, its evidence, the SSH-aware core clone pipeline, native transport preparation, UI transport acceptance, and current-helper build/test preparation implement authenticated SSH clone at `547d55f`.
 - ADR 0025, `docs/task-packets/phase-5d3c1-authenticated-ssh-sync-inspection.md`, its evidence, the SSH-aware sync inspection/classification pipeline, native resource selection, and closed error mapping implement authenticated SSH sync inspection at `cfc2d1a`.
 - ADR 0025, `docs/task-packets/phase-5d3c2-authenticated-ssh-push.md`, its evidence, fixed receive-pack proxy grammar, SSH-aware exact push boundary, native resource selection, and loopback publication fixture implement authenticated SSH push at `fd5532d`.
+- ADR 0025, `docs/task-packets/phase-5d3d1-https-credential-provenance.md`, its evidence, `git/https_credentials.rs`, and native launch retention implement non-invoking authenticated-HTTPS helper provenance at `41a2549`.
 
 ## Next recommended action
 
-Specify Phase 5D3D1 as a read-only authenticated-HTTPS credential-helper provenance gate. Accept only the already documented root-owned system helpers or exact `gh auth git-credential` form from trusted non-repository configuration with includes disabled; do not invoke a helper, access credentials, or add network/renderer authority yet.
+Specify Phase 5D3D2 as a fixed credential-protocol proxy and sealed helper-resource gate. Mount only the retained executable inode in a Workspace-free/networkless sandbox; accept only Git's bounded `get`/`store`/`erase` protocol fields required by the later broker; keep usernames/passwords out of plans, errors, `Debug`, logs, evidence, and IPC. Do not connect to a remote yet.
 
 ## Recommended agent role and reasoning effort
 
-Architect/Orchestrator locally with `gpt-5.6-sol`, xhigh/high judgment for credential provenance. Run zero extra agents during routine work; use at most one reused Security Reviewer only at the completed authority gate.
+Architect/Orchestrator locally with `gpt-5.6-sol`, xhigh/high judgment for credential protocol and process confinement. Run zero extra agents during routine work; use at most one reused Security Reviewer only at the completed authority gate.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read the Git sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `fd5532d`, `cfc2d1a`, `547d55f`, and `65ea5ff`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoints `41a2549`, `fd5532d`, `cfc2d1a`, and `547d55f`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 5D3C2 as complete. Specify Phase 5D3D1 HTTPS helper provenance next; do not invoke credentials or contact a public host, add prompts, force, history rewrite, arbitrary refspecs, credential storage, scheduling, packed-branch publication, or MCP mutation.
+6. Treat Phase 5D3D1 as complete. Specify Phase 5D3D2 fixed credential proxy/resources next; do not contact a remote, expose or persist credentials, mount a Workspace, add prompts, force/history rewrite/arbitrary refspecs, scheduling, packed-branch publication, or MCP mutation.
