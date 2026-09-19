@@ -5,11 +5,11 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 5C manual commit architecture is accepted. Phase 5C1 read-only candidate planning/construction is in progress; synchronization and authenticated clone transports remain separate gates.
+Phase 5C1 read-only manual-commit planning and candidate construction is complete at signed checkpoint `4ffc4f8`. Phase 5C2 append-only publication is next; synchronization and authenticated clone transports remain separate gates.
 
 ## Current task
 
-Continue Phase 5C1 from signed prior-snapshot checkpoint `91763a0`: construct and independently verify the candidate managed blobs/tree/commit in private staging. It must not change active repository or Workspace bytes.
+Begin Phase 5C2: publish only a still-current confirmed candidate through append-only object installation and recoverable private-index/direct-ref compare-and-swap. Active mutation must remain absent until the Phase 5C2 packet is precise.
 
 ## Overall status
 
@@ -102,10 +102,11 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Added descriptor-confined Phase 5C1 repository preflight at signed checkpoint `2d6391e`: exact stable Git metadata/marker/branch-lock snapshots; local-only bounded identity/object-format parsing; networkless synthetic-config SHA-1/SHA-256 tree reads; opaque-path tree parsing; independent parent/tree/blob/commit type-and-size closure proof; current managed revision/Attachment hash verification; and file/directory ownership-collision refusal. It does not bind the worktree into the tree/object sandbox or mutate active Git/Workspace bytes.
 - Added owner-private Phase 5C1 commit staging at signed checkpoint `79afdee`: exclusive 64-hex operation directories, copied-index and synthetic-repository scaffolding, descriptor-retained validation mirror, exact private modes, per-operation entry and aggregate byte bounds, eight-operation quota, hostile-entry refusal, durable directory syncs, and retained crash evidence. It does not mutate active Git or Workspace bytes.
 - Added copied-index and prior-snapshot proof at signed checkpoint `91763a0`: config-free private `write-tree` must equal the direct `HEAD` root tree; prior managed blobs stream through a networkless, replacement-disabled object view into a confined mirror and must form an issue-free compatible Workspace with the same stable Workspace ID. Malformed/partial/replaced history and dirty indexes fail closed; active Git and Workspace bytes remain unchanged.
+- Completed Phase 5C1 at signed checkpoint `4ffc4f8`: the opaque public plan binds fresh repository/Workspace state, managed effects, unrelated-status count, private candidate tree/unsigned commit, and a deterministic staging snapshot. Candidate blobs/trees/commits are independently verified for SHA-1/SHA-256; unrelated `HEAD` leaves are preserved; cache-tree extensions are stripped before index equality proof; preserved objects are streamed and independently rehashed; cancellation quarantines rather than deletes. No active Workspace, object, index, ref, reflog, or configuration byte is changed. The single reused Security Reviewer passed the correction delta.
 
 ## Work in progress
 
-- Phase 5C1 is in progress at `91763a0`. Repository snapshots, branch/index syntax and semantic equality, tree/object closure, current/prior managed inventories, ownership collision checks, and private staging/quota enforcement are complete. Candidate construction, status summary, plan binding, and race revalidation remain. Active Git mutation remains deferred to 5C2.
+- Phase 5C1 is complete at `4ffc4f8`. Phase 5C2 has not started; no active Git publication authority exists yet.
 
 ## Remaining work
 
@@ -113,7 +114,7 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Phase 2: native shell and safe Workspace onboarding/import/migration.
 - Phase 3: Category/Guide/Attachment lifecycle and edit conflicts.
 - Phase 4: complete at `e17b7d1`.
-- Phase 5: read-only status, safe local initialization, metadata-only remote connection, and anonymous-HTTPS clone including UI are complete; manual commit architecture is accepted but unimplemented; authenticated clone and synchronization remain.
+- Phase 5: read-only status, safe local initialization, metadata-only remote connection, anonymous-HTTPS clone including UI, and read-only manual-commit candidate planning are complete; confirmed publication, authenticated clone, and synchronization remain.
 - Phase 6: standalone full MCP contract.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
@@ -216,10 +217,11 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Latest verified commit
 
-`91763a0` — signed and verified Phase 5C1 copied-index and prior-snapshot validation. This progress-only ledger update follows that implementation commit.
+`4ffc4f85cf52758a485c75c290648a7cd797e766` — signed and verified Phase 5C1 safe Git commit-plan construction. This progress-only ledger update follows that implementation commit.
 
 ## Tests last run and results
 
+- 2026-09-19: Phase 5C1 checkpoint `4ffc4f8`: 31 focused commit/staging tests pass; the full locked all-feature core gate passes 381 unit tests with 2 intentional ignores plus 18 error-contract, 13 protocol, 1 public-API/trybuild, and 11 unknown-YAML tests. Locked all-target/all-feature core Clippy denies warnings; Cargo formatting, bootstrap validation, whitespace, signature verification, and the single Security Reviewer correction recheck pass.
 - 2026-09-19: Phase 5C1 copied-index/prior-snapshot checkpoint at `91763a0`: 22 focused commit tests pass, including SHA-1/SHA-256, unborn/parented, semantically dirty copied index, valid/malformed/replaced prior Workspace identity, and ignored Git replace refs. Locked all-target/all-feature core Clippy denies warnings; Cargo formatting, whitespace, and signed-commit verification pass.
 - 2026-09-19: Phase 5C1 private-staging checkpoint at `79afdee`: 3 focused commit-staging tests pass; locked all-target/all-feature core Clippy denies warnings; Cargo formatting, whitespace, and signed-commit verification pass. No active repository or Workspace mutation was exercised.
 - 2026-09-19: Phase 5C1 repository-preflight checkpoint at `2d6391e`: 15 focused commit tests pass, covering SHA-1/SHA-256, every specified operation marker, nested branch lock, ambiguous identity, unsafe metadata, opaque tree modes/paths, stable object closure, managed drift/executable refusal, and unrelated tree collisions. Locked all-target/all-feature core Clippy denies warnings; Cargo formatting, bootstrap, whitespace, and signed-commit verification pass.
@@ -416,21 +418,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `crates/rehow-core/src/git.rs` contains the bounded Phase 5C1 message/identity/branch/index preflight accepted at `c45eab2`; it remains private until the complete plan boundary is ready.
 - `crates/rehow-core/src/git.rs` and `storage.rs` add the read-only descriptor/sandbox/tree/object/current-inventory preflight at `2d6391e`; the public commit plan remains absent until the rest of Phase 5C1 is complete.
 - `crates/rehow-core/src/storage/recovery.rs` and `storage/recovery/store.rs` add private bounded commit staging at `79afdee`; no active repository path is writable through this boundary.
-- `crates/rehow-core/src/git.rs` adds private index/root-tree equality and prior managed Workspace reconstruction at `91763a0`; candidate object creation remains next.
+- `crates/rehow-core/src/git.rs`, `storage/recovery.rs`, `storage/recovery/store.rs`, and `docs/evidence/phase-5c-git-commit-decision.md` complete the read-only candidate plan, verified private object construction, staging snapshot/quarantine, and security evidence at `4ffc4f8`.
 
 ## Next recommended action
 
-Continue Phase 5C1 by constructing exact current managed blobs, preserving unrelated `HEAD` entries, and creating/verifying the candidate tree and unsigned commit inside private staging. Do not install objects or write the active index/ref/reflogs.
+Define the narrow Phase 5C2 publication packet, then implement append-only object installation and recoverable private-index/direct-ref compare-and-swap. Do not add native/UI confirmation until the core apply boundary passes.
 
 ## Recommended agent role and reasoning effort
 
-Architect — `gpt-5.6-sol`, xhigh locally for the Phase 5C1 core security boundary. Run zero extra agents during routine implementation; use at most one reused Security Reviewer/xhigh at the completed implementation checkpoint.
+Architect — `gpt-5.6-sol`, xhigh locally for the Phase 5C2 core security boundary. Run zero extra agents during routine implementation; use at most one reused Security Reviewer/xhigh at the completed implementation checkpoint.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read the Git sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `91763a0`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `4ffc4f8`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Implement only Phase 5C1 from `docs/task-packets/phase-5c1-git-commit-plan.md`; active object/index/ref/reflog mutation belongs to later Phase 5C2.
+6. Treat Phase 5C1 as complete. Specify Phase 5C2 before implementing active object/index/direct-ref publication; native/UI authority remains later.
