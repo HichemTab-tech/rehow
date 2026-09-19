@@ -48,6 +48,7 @@ const OUTPUT_LIMIT: usize = 1024 * 1024;
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(2);
 const CLONE_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 const CLONE_FETCH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const PUSH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CLONE_LOCAL_READ_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CLONE_DISCOVERY_OUTPUT_LIMIT: usize = 64 * 1024;
 const SYNC_HISTORY_LIMIT: usize = 4_096;
@@ -332,6 +333,17 @@ pub struct GitSyncPublicationOutcome {
     )]
     operation_id: OperationId,
     changed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GitPushOutcome {
+    pushed: bool,
+}
+
+impl GitPushOutcome {
+    pub fn pushed(self) -> bool {
+        self.pushed
+    }
 }
 
 impl fmt::Debug for GitSyncPublicationOutcome {
@@ -886,6 +898,7 @@ pub(crate) enum GitCloneDiscoveryError {
     Timeout,
     OutputLimit,
     RemoteUnavailable,
+    RemoteRefMissing,
     InvalidAdvertisement,
     Io,
 }
@@ -963,7 +976,7 @@ fn discover_git_sync_remote_head(
     }
     let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
     let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
-    let output = run_clone_command(
+    let output = run_clone_command_with_missing_ref(
         sync_discovery_command(&executable, &sandbox, &plan.remote_url, &plan.remote_ref),
         cancelled,
         CLONE_DISCOVERY_TIMEOUT,
@@ -1412,6 +1425,10 @@ impl GitSyncClassification {
         self.inspection.plan.host()
     }
 
+    pub fn remote_branch(&self) -> &str {
+        self.inspection.plan.remote_branch()
+    }
+
     pub fn ancestry(&self) -> GitSyncAncestry {
         self.ancestry
     }
@@ -1483,6 +1500,8 @@ pub enum GitSyncError {
     GitUnavailable,
     SandboxUnavailable,
     RemoteUnavailable,
+    RemoteChanged,
+    RemoteStateUncertain,
     InvalidRepository,
     InvalidWorkspace,
     StagingConflict,
@@ -1811,6 +1830,108 @@ pub fn apply_git_sync_fast_forward(
             changed: true,
         },
     ))
+}
+
+/// Publishes exactly the local commit from a validated `localAhead`
+/// classification to its exact configured upstream. The remote is checked
+/// immediately before and after an ordinary (never forced) push.
+pub fn apply_git_push(
+    workspace: &WorkspaceView,
+    classification: GitSyncClassification,
+) -> Result<GitPushOutcome, GitSyncError> {
+    let not_cancelled = AtomicBool::new(false);
+    apply_git_push_with(
+        workspace,
+        classification,
+        |plan| discover_git_sync_remote_head(plan, &not_cancelled),
+        execute_exact_git_push,
+    )
+}
+
+fn apply_git_push_with<D, P>(
+    workspace: &WorkspaceView,
+    classification: GitSyncClassification,
+    mut discover: D,
+    publish: P,
+) -> Result<GitPushOutcome, GitSyncError>
+where
+    D: FnMut(&GitSyncPlan) -> Result<GitRemoteHead, GitSyncError>,
+    P: FnOnce(&WorkspaceView, &GitSyncPlan, &str) -> Result<(), GitSyncError>,
+{
+    if classification.ancestry != GitSyncAncestry::LocalAhead {
+        return Err(GitSyncError::Unsupported);
+    }
+    let inspection = &classification.inspection;
+    let plan = &inspection.plan;
+    if plan.transport != GitRemoteTransport::Https {
+        return Err(GitSyncError::UnsupportedTransport);
+    }
+    revalidate_git_sync_plan(workspace, plan)?;
+    let expected_remote = inspection.remote_head.object_id();
+    let local_commit = plan
+        .preflight
+        .branch
+        .expected_object_id
+        .as_deref()
+        .ok_or(GitSyncError::Unsupported)?;
+    let before = discover(plan)?;
+    if before.object_id() != expected_remote {
+        return Err(GitSyncError::RemoteChanged);
+    }
+    revalidate_git_sync_plan(workspace, plan)?;
+
+    let push_result = publish(workspace, plan, local_commit);
+
+    // A failed or timed-out client may still have been acknowledged by the
+    // server. The exact postflight state is therefore authoritative.
+    match discover(plan) {
+        Ok(after) if after.object_id() == local_commit => Ok(GitPushOutcome { pushed: true }),
+        Ok(after) if after.object_id() != expected_remote => Err(GitSyncError::RemoteChanged),
+        Ok(_) => match push_result {
+            Ok(()) => Err(GitSyncError::RemoteUnavailable),
+            Err(error) => Err(error),
+        },
+        Err(GitSyncError::RemoteChanged) => Err(GitSyncError::RemoteChanged),
+        Err(_) => Err(GitSyncError::RemoteStateUncertain),
+    }
+}
+
+fn execute_exact_git_push(
+    workspace: &WorkspaceView,
+    plan: &GitSyncPlan,
+    local_commit: &str,
+) -> Result<(), GitSyncError> {
+    let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
+    let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
+    let capability = workspace
+        .git_repository_capability()
+        .map_err(map_git_capability_to_sync)?;
+    if capability
+        .git_directory_identity()
+        .map_err(map_git_snapshot_to_sync)?
+        != plan.preflight.git_identity
+    {
+        return Err(GitSyncError::PlanStale);
+    }
+    let (command, mut synthetic_config) = git_push_command(
+        &executable,
+        &sandbox,
+        &capability,
+        plan.preflight.object_format,
+        &plan.remote_url,
+        local_commit,
+        &plan.remote_ref,
+    )?;
+    let push_result = run_clone_command(
+        command,
+        &AtomicBool::new(false),
+        PUSH_TIMEOUT,
+        CLONE_DISCOVERY_OUTPUT_LIMIT,
+    )
+    .map(|_| ())
+    .map_err(map_clone_discovery_to_sync);
+    let _ = synthetic_config.seek(SeekFrom::Start(0));
+    push_result
 }
 
 #[allow(
@@ -3315,7 +3436,9 @@ fn map_clone_apply_discovery(error: GitCloneDiscoveryError) -> GitCloneApplyErro
         GitCloneDiscoveryError::Cancelled => GitCloneApplyError::Cancelled,
         GitCloneDiscoveryError::Timeout => GitCloneApplyError::Timeout,
         GitCloneDiscoveryError::OutputLimit => GitCloneApplyError::ResourceLimit,
-        GitCloneDiscoveryError::RemoteUnavailable => GitCloneApplyError::RemoteUnavailable,
+        GitCloneDiscoveryError::RemoteUnavailable | GitCloneDiscoveryError::RemoteRefMissing => {
+            GitCloneApplyError::RemoteUnavailable
+        }
         GitCloneDiscoveryError::InvalidAdvertisement => GitCloneApplyError::InvalidRepository,
         GitCloneDiscoveryError::Io => GitCloneApplyError::Io,
     }
@@ -3625,6 +3748,7 @@ fn map_clone_inspect_process(error: GitCloneDiscoveryError) -> GitCloneInspectEr
         GitCloneDiscoveryError::GitUnavailable => GitCloneInspectError::GitUnavailable,
         GitCloneDiscoveryError::SandboxUnavailable => GitCloneInspectError::SandboxUnavailable,
         GitCloneDiscoveryError::RemoteUnavailable
+        | GitCloneDiscoveryError::RemoteRefMissing
         | GitCloneDiscoveryError::InvalidAdvertisement
         | GitCloneDiscoveryError::UnsupportedTransport => GitCloneInspectError::InvalidRepository,
         GitCloneDiscoveryError::Io => GitCloneInspectError::Io,
@@ -3632,10 +3756,29 @@ fn map_clone_inspect_process(error: GitCloneDiscoveryError) -> GitCloneInspectEr
 }
 
 fn run_clone_command(
+    command: Command,
+    cancelled: &AtomicBool,
+    timeout: Duration,
+    output_limit: usize,
+) -> Result<ProcessOutput, GitCloneDiscoveryError> {
+    run_clone_command_inner(command, cancelled, timeout, output_limit, false)
+}
+
+fn run_clone_command_with_missing_ref(
+    command: Command,
+    cancelled: &AtomicBool,
+    timeout: Duration,
+    output_limit: usize,
+) -> Result<ProcessOutput, GitCloneDiscoveryError> {
+    run_clone_command_inner(command, cancelled, timeout, output_limit, true)
+}
+
+fn run_clone_command_inner(
     mut command: Command,
     cancelled: &AtomicBool,
     timeout: Duration,
     output_limit: usize,
+    classify_missing_ref: bool,
 ) -> Result<ProcessOutput, GitCloneDiscoveryError> {
     if cancelled.load(Ordering::Relaxed) {
         return Err(GitCloneDiscoveryError::Cancelled);
@@ -3675,6 +3818,9 @@ fn run_clone_command(
     let status = status?;
     if exceeded.load(Ordering::Relaxed) {
         return Err(GitCloneDiscoveryError::OutputLimit);
+    }
+    if classify_missing_ref && status.code() == Some(2) {
+        return Err(GitCloneDiscoveryError::RemoteRefMissing);
     }
     if !status.success() {
         return Err(GitCloneDiscoveryError::RemoteUnavailable);
@@ -3790,6 +3936,157 @@ fn remote_discovery_command(
         .stderr(Stdio::piped());
     command.process_group(0);
     command
+}
+
+fn git_push_command(
+    executable: &Path,
+    sandbox: &Path,
+    repository: &crate::storage::GitRepositoryCapability,
+    object_format: GitObjectFormat,
+    remote_url: &str,
+    local_commit: &str,
+    remote_ref: &str,
+) -> Result<(Command, File), GitSyncError> {
+    if validate_object_id(local_commit) != Some(object_format)
+        || !remote_ref.starts_with("refs/heads/")
+        || !valid_ref_name(remote_ref)
+    {
+        return Err(GitSyncError::InvalidConfiguration);
+    }
+    let config = create_git_format_config(object_format).map_err(map_git_read_to_sync)?;
+    let config_descriptor = config.as_raw_fd();
+    let config_descriptor_text = config_descriptor.to_string();
+    let refspec = format!("{local_commit}:{remote_ref}");
+    let mut command = Command::new(sandbox);
+    command
+        .env_clear()
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", "/home/rehow")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_PAGER", "cat")
+        .env("GIT_EDITOR", "false")
+        .env("GIT_ASKPASS", "false")
+        .env("SSH_ASKPASS", "false")
+        .args([
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-all",
+            "--share-net",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib",
+            "/lib64",
+            "--ro-bind",
+            "/etc",
+            "/etc",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/repo.git",
+            "--ro-bind",
+        ])
+        .arg(repository.objects_path())
+        .arg("/repo.git/objects")
+        .args(["--dir", "/repo.git/refs", "--dir", "/repo.git/refs/heads"])
+        .args(["--ro-bind"])
+        .arg(repository.head_path())
+        .arg("/repo.git/HEAD")
+        .args([
+            "--file",
+            &config_descriptor_text,
+            "/repo.git/config",
+            "--tmpfs",
+            "/repo.git/objects/info",
+            "--tmpfs",
+            "/tmp",
+            "--dir",
+            "/home",
+            "--dir",
+            "/home/rehow",
+            "--dir",
+            "/run",
+            "--dir",
+            "/run/systemd",
+            "--ro-bind-try",
+            "/run/systemd/resolve",
+            "/run/systemd/resolve",
+            "--chdir",
+            "/tmp",
+            "--setenv",
+            "GIT_DIR",
+            "/repo.git",
+        ]);
+    for (source, destination) in [(repository.shallow_path(), "/repo.git/shallow")] {
+        if let Some(source) = source {
+            command.args(["--ro-bind"]).arg(source).arg(destination);
+        }
+    }
+    command
+        .args(["--"])
+        .arg(executable)
+        .args([
+            "--no-pager",
+            "--literal-pathspecs",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "credential.interactive=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.alternateRefsCommand=",
+            "-c",
+            "http.followRedirects=false",
+            "-c",
+            "http.proxy=",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.https.allow=always",
+            "-c",
+            "protocol.ssh.allow=never",
+            "push",
+            "--porcelain",
+            "--no-verify",
+            "--no-follow-tags",
+            "--recurse-submodules=no",
+            "--",
+        ])
+        .arg(remote_url)
+        .arg(refspec)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.process_group(0);
+    // SAFETY: only the sealed synthetic-config descriptor is exposed to the
+    // fixed Bubblewrap file copy.
+    unsafe {
+        command.pre_exec(move || {
+            let flags = libc::fcntl(config_descriptor, libc::F_GETFD);
+            if flags < 0
+                || libc::fcntl(config_descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok((command, config))
 }
 
 #[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
@@ -10652,6 +10949,7 @@ fn map_clone_discovery_to_sync(error: GitCloneDiscoveryError) -> GitSyncError {
         GitCloneDiscoveryError::Timeout => GitSyncError::Timeout,
         GitCloneDiscoveryError::OutputLimit => GitSyncError::ResourceLimit,
         GitCloneDiscoveryError::RemoteUnavailable => GitSyncError::RemoteUnavailable,
+        GitCloneDiscoveryError::RemoteRefMissing => GitSyncError::RemoteChanged,
         GitCloneDiscoveryError::InvalidAdvertisement => GitSyncError::InvalidRepository,
         GitCloneDiscoveryError::Io => GitSyncError::Io,
     }
@@ -13395,6 +13693,38 @@ mod tests {
                 .unwrap(),
             GitCloneDiscoveryError::OutputLimit
         );
+
+        let exit_two = || {
+            let mut command = Command::new("/usr/bin/sh");
+            command
+                .args(["-c", "exit 2"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            command
+        };
+        assert_eq!(
+            run_clone_command_with_missing_ref(
+                exit_two(),
+                &AtomicBool::new(false),
+                Duration::from_secs(2),
+                1024,
+            )
+            .err()
+            .unwrap(),
+            GitCloneDiscoveryError::RemoteRefMissing
+        );
+        assert_eq!(
+            run_clone_command(
+                exit_two(),
+                &AtomicBool::new(false),
+                Duration::from_secs(2),
+                1024,
+            )
+            .err()
+            .unwrap(),
+            GitCloneDiscoveryError::RemoteUnavailable
+        );
     }
 
     #[test]
@@ -13541,6 +13871,97 @@ mod tests {
                 .iter()
                 .any(|argument| argument == "--depth=1")
         );
+    }
+
+    #[test]
+    fn push_command_is_exact_config_free_read_only_and_never_forced() {
+        let temp = Temp::new();
+        let workspace = configured_sync_workspace(&temp);
+        let capability = workspace.git_repository_capability().unwrap();
+        let local_commit = fixture_git_stdout(&temp, &["rev-parse", "HEAD"]);
+        let local_commit = local_commit.trim();
+        let remote_url = "https://example.invalid/team/rehow.git";
+        let remote_ref = "refs/heads/main";
+        let (command, _config) = git_push_command(
+            Path::new("/usr/bin/git"),
+            Path::new("/usr/bin/bwrap"),
+            &capability,
+            GitObjectFormat::Sha1,
+            remote_url,
+            local_commit,
+            remote_ref,
+        )
+        .unwrap();
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        for required in [
+            "--unshare-all",
+            "--share-net",
+            "--ro-bind",
+            "/repo.git/objects",
+            "/repo.git/refs",
+            "/repo.git/HEAD",
+            "credential.helper=",
+            "credential.interactive=false",
+            "core.hooksPath=/dev/null",
+            "http.followRedirects=false",
+            "http.proxy=",
+            "protocol.allow=never",
+            "protocol.https.allow=always",
+            "protocol.ssh.allow=never",
+            "push",
+            "--porcelain",
+            "--no-verify",
+            "--no-follow-tags",
+            "--recurse-submodules=no",
+            remote_url,
+            &format!("{local_commit}:{remote_ref}"),
+        ] {
+            assert!(
+                arguments.iter().any(|argument| argument == required),
+                "missing {required}"
+            );
+        }
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument == capability.refs_path())
+        );
+        assert!(!arguments.iter().any(|argument| {
+            capability
+                .packed_refs_path()
+                .is_some_and(|packed| argument == packed)
+        }));
+        for forbidden in [
+            "--force",
+            "--force-with-lease",
+            "--mirror",
+            "--delete",
+            "--tags",
+            "--follow-tags",
+            "--set-upstream",
+            "--atomic",
+        ] {
+            assert!(!arguments.iter().any(|argument| argument == forbidden));
+        }
+        let environment = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(environment["GIT_CONFIG_NOSYSTEM"].as_deref(), Some("1"));
+        assert_eq!(
+            environment["GIT_CONFIG_GLOBAL"].as_deref(),
+            Some("/dev/null")
+        );
+        assert_eq!(environment["GIT_TERMINAL_PROMPT"].as_deref(), Some("0"));
+        assert_eq!(environment["GIT_OPTIONAL_LOCKS"].as_deref(), Some("0"));
     }
 
     #[test]
@@ -14576,6 +14997,173 @@ mod tests {
         assert_eq!(
             revalidate_git_sync_plan(&open_workspace(&temp), &plan),
             Err(GitSyncError::PlanStale)
+        );
+    }
+
+    #[test]
+    fn push_refuses_anything_except_a_validated_local_ahead_authority() {
+        let (_temp, _state, workspace, classification, _remote_head) =
+            clean_sync_publication_fixture("Remote");
+        assert_eq!(
+            apply_git_push(&workspace, classification),
+            Err(GitSyncError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn push_binds_remote_preflight_and_requires_an_exact_postflight() {
+        let (_temp, _state, workspace, mut classification, expected_remote) =
+            clean_sync_publication_fixture("Remote");
+        classification.ancestry = GitSyncAncestry::LocalAhead;
+        let local_commit = classification
+            .inspection
+            .plan
+            .preflight
+            .branch
+            .expected_object_id
+            .clone()
+            .unwrap();
+        let remote_ref = classification.inspection.plan.remote_ref.clone();
+        let calls = std::cell::Cell::new(0_u8);
+        let published = std::cell::Cell::new(false);
+        let outcome = apply_git_push_with(
+            &workspace,
+            classification,
+            |_| {
+                let object_id = if calls.replace(calls.get() + 1) == 0 {
+                    expected_remote.clone()
+                } else {
+                    local_commit.clone()
+                };
+                Ok(GitRemoteHead {
+                    branch_ref: remote_ref.clone(),
+                    object_id,
+                    object_format: GitObjectFormat::Sha1,
+                })
+            },
+            |_, _, exact_local| {
+                assert_eq!(exact_local, local_commit);
+                published.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(outcome.pushed());
+        assert!(published.get());
+        assert_eq!(calls.get(), 2);
+
+        let (_temp, _state, workspace, mut classification, expected_remote) =
+            clean_sync_publication_fixture("Remote");
+        classification.ancestry = GitSyncAncestry::LocalAhead;
+        let changed_remote = "f".repeat(40);
+        let published = std::cell::Cell::new(false);
+        assert_eq!(
+            apply_git_push_with(
+                &workspace,
+                classification,
+                |_| {
+                    Ok(GitRemoteHead {
+                        branch_ref: "refs/heads/main".to_owned(),
+                        object_id: changed_remote.clone(),
+                        object_format: GitObjectFormat::Sha1,
+                    })
+                },
+                |_, _, _| {
+                    published.set(true);
+                    Ok(())
+                },
+            ),
+            Err(GitSyncError::RemoteChanged)
+        );
+        assert_ne!(changed_remote, expected_remote);
+        assert!(!published.get());
+
+        let (_temp, _state, workspace, mut classification, _expected_remote) =
+            clean_sync_publication_fixture("Remote");
+        classification.ancestry = GitSyncAncestry::LocalAhead;
+        let published = std::cell::Cell::new(false);
+        assert_eq!(
+            apply_git_push_with(
+                &workspace,
+                classification,
+                |_| Err(GitSyncError::RemoteChanged),
+                |_, _, _| {
+                    published.set(true);
+                    Ok(())
+                },
+            ),
+            Err(GitSyncError::RemoteChanged)
+        );
+        assert!(!published.get());
+    }
+
+    #[test]
+    fn push_reports_ambiguous_postflight_without_claiming_failure_or_success() {
+        let (_temp, _state, workspace, mut classification, expected_remote) =
+            clean_sync_publication_fixture("Remote");
+        classification.ancestry = GitSyncAncestry::LocalAhead;
+        let calls = std::cell::Cell::new(0_u8);
+        assert_eq!(
+            apply_git_push_with(
+                &workspace,
+                classification,
+                |_| {
+                    if calls.replace(calls.get() + 1) == 0 {
+                        Ok(GitRemoteHead {
+                            branch_ref: "refs/heads/main".to_owned(),
+                            object_id: expected_remote.clone(),
+                            object_format: GitObjectFormat::Sha1,
+                        })
+                    } else {
+                        Err(GitSyncError::RemoteUnavailable)
+                    }
+                },
+                |_, _, _| Err(GitSyncError::Timeout),
+            ),
+            Err(GitSyncError::RemoteStateUncertain)
+        );
+
+        let (_temp, _state, workspace, mut classification, expected_remote) =
+            clean_sync_publication_fixture("Remote");
+        classification.ancestry = GitSyncAncestry::LocalAhead;
+        assert_eq!(
+            apply_git_push_with(
+                &workspace,
+                classification,
+                |_| {
+                    Ok(GitRemoteHead {
+                        branch_ref: "refs/heads/main".to_owned(),
+                        object_id: expected_remote.clone(),
+                        object_format: GitObjectFormat::Sha1,
+                    })
+                },
+                |_, _, _| Err(GitSyncError::RemoteUnavailable),
+            ),
+            Err(GitSyncError::RemoteUnavailable)
+        );
+
+        let (_temp, _state, workspace, mut classification, expected_remote) =
+            clean_sync_publication_fixture("Remote");
+        classification.ancestry = GitSyncAncestry::LocalAhead;
+        let calls = std::cell::Cell::new(0_u8);
+        assert_eq!(
+            apply_git_push_with(
+                &workspace,
+                classification,
+                |_| {
+                    if calls.replace(calls.get() + 1) == 0 {
+                        Ok(GitRemoteHead {
+                            branch_ref: "refs/heads/main".to_owned(),
+                            object_id: expected_remote.clone(),
+                            object_format: GitObjectFormat::Sha1,
+                        })
+                    } else {
+                        Err(GitSyncError::RemoteChanged)
+                    }
+                },
+                |_, _, _| Ok(()),
+            ),
+            Err(GitSyncError::RemoteChanged)
         );
     }
 

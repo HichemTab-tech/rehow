@@ -8,6 +8,7 @@ import {
   canMarkGuideTested,
   filterGuides,
   focusGitCommitReview,
+  focusGitSyncAction,
   gitFactLabel,
   gitStatusLabel,
   gitSyncPresentation,
@@ -26,6 +27,7 @@ import {
   isGitCommitResultPayload,
   isGitInitPlanPayload,
   isGitInitResultPayload,
+  isGitPushResultPayload,
   isGitRemotePlanPayload,
   isGitRemoteResultPayload,
   isGitStatusPayload,
@@ -50,6 +52,8 @@ import {
   rankedGuides,
   refreshedGuideId,
   refreshResultMayApply,
+  requestGitPush,
+  requestGitStatus,
   resultCountLabel,
   searchStatePath,
 } from "./App";
@@ -278,10 +282,18 @@ describe("application identity", () => {
     ).toBe(false);
     expect(isGitSyncApplyResultPayload({ kind: "declined" })).toBe(true);
     expect(isGitSyncRecoveryResultPayload({ kind: "declined" })).toBe(true);
+    expect(isGitPushResultPayload({ kind: "declined" })).toBe(true);
+    expect(isGitPushResultPayload({ kind: "completed", pushed: true })).toBe(
+      true,
+    );
+    expect(isGitPushResultPayload({ kind: "completed", pushed: false })).toBe(
+      false,
+    );
 
     expect(gitSyncPresentation(inspection)).toMatchObject({
       title: "Fast-Forward Available",
       canApply: true,
+      canPush: false,
     });
     expect(
       gitSyncPresentation({ ...inspection, workspaceMatchesRemote: true })
@@ -290,15 +302,16 @@ describe("application identity", () => {
     expect(
       gitSyncPresentation({ ...inspection, localChanges: true }),
     ).toMatchObject({ title: "Commit Local Changes First", canApply: false });
-    for (const [ancestry, title] of [
+    for (const [ancestry, title, canPush] of [
       ["upToDate", "Already Up to Date"],
-      ["localAhead", "Local Branch Is Ahead"],
+      ["localAhead", "Local Branch Is Ahead", true],
       ["diverged", "Branches Have Diverged"],
       ["historyLimit", "History Needs Review"],
     ] as const) {
       expect(gitSyncPresentation({ ...inspection, ancestry })).toMatchObject({
         title,
         canApply: false,
+        canPush: canPush ?? false,
       });
     }
 
@@ -333,6 +346,62 @@ describe("application identity", () => {
         objectId: "a".repeat(40),
       }),
     ).toBe(false);
+  });
+
+  it("invokes exact push and status commands and restores focus after rendering", async () => {
+    const status = {
+      kind: "ready",
+      version: "2.55.0",
+      branch: "main",
+      detached: false,
+      upstream: "origin/main",
+      divergenceKnown: true,
+      ahead: 0,
+      behind: 0,
+      changed: 0,
+      untracked: 0,
+      conflicts: 0,
+      remotes: ["origin"],
+      remoteCount: 1,
+      failure: null,
+    };
+    const calls: Array<[string, Record<string, unknown> | undefined]> = [];
+    const invoke = async (
+      command: string,
+      arguments_?: Record<string, unknown>,
+    ) => {
+      calls.push([command, arguments_]);
+      return command === "git_push_apply_open_workspace"
+        ? { kind: "completed", pushed: true }
+        : status;
+    };
+    const token = `plan:v1:${"A".repeat(43)}`;
+    await expect(requestGitPush(token, invoke)).resolves.toEqual({
+      kind: "completed",
+      pushed: true,
+    });
+    await expect(requestGitStatus(invoke)).resolves.toEqual(status);
+    expect(calls).toEqual([
+      ["git_push_apply_open_workspace", { planToken: token }],
+      ["git_status_open_workspace", undefined],
+    ]);
+    await expect(
+      requestGitPush(token, async () => ({ kind: "completed", pushed: false })),
+    ).rejects.toThrow("invalid Git push result");
+
+    let rendered = false;
+    let focused = false;
+    let deferred: (() => void) | undefined;
+    focusGitSyncAction(
+      () => (rendered ? { focus: () => (focused = true) } : null),
+      (callback) => {
+        deferred = callback;
+      },
+    );
+    expect(focused).toBe(false);
+    rendered = true;
+    deferred?.();
+    expect(focused).toBe(true);
   });
 
   it("accepts only closed path-free Git clone lifecycle payloads", () => {

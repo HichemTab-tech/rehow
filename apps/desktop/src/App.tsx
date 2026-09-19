@@ -154,6 +154,15 @@ type GitSyncApplyResultPayload =
   | { kind: "declined" }
   | { kind: "completed"; workspace: WorkspacePayload; changed: boolean };
 
+type GitPushResultPayload =
+  | { kind: "declined" }
+  | { kind: "completed"; pushed: boolean };
+
+type NativeInvoker = (
+  command: string,
+  arguments_?: Record<string, unknown>,
+) => Promise<unknown>;
+
 type GitSyncStage =
   | "idle"
   | "inspecting"
@@ -964,6 +973,46 @@ export function isGitSyncApplyResultPayload(
 
 export const isGitSyncRecoveryResultPayload = isGitSyncApplyResultPayload;
 
+export function isGitPushResultPayload(
+  value: unknown,
+): value is GitPushResultPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as { kind?: unknown; pushed?: unknown };
+  if (result.kind === "declined") return Object.keys(result).length === 1;
+  return (
+    result.kind === "completed" &&
+    Object.keys(result).length === 2 &&
+    result.pushed === true
+  );
+}
+
+export async function requestGitPush(
+  planToken: string,
+  invoke: NativeInvoker,
+): Promise<GitPushResultPayload> {
+  const result = await invoke("git_push_apply_open_workspace", { planToken });
+  if (!isGitPushResultPayload(result))
+    throw new Error("invalid Git push result");
+  return result;
+}
+
+export async function requestGitStatus(
+  invoke: NativeInvoker,
+): Promise<GitStatusPayload> {
+  const status = await invoke("git_status_open_workspace");
+  if (!isGitStatusPayload(status))
+    throw new Error("invalid Git status payload");
+  return status;
+}
+
+export function focusGitSyncAction(
+  target: () => { focus(): void } | null,
+  schedule: (callback: () => void) => unknown = (callback) =>
+    requestAnimationFrame(callback),
+) {
+  schedule(() => target()?.focus());
+}
+
 export function isGitClonePlanPayload(
   value: unknown,
 ): value is GitClonePlanPayload {
@@ -1164,13 +1213,16 @@ export function gitSyncPresentation(inspection: GitSyncInspectionPayload) {
       title: "Already Up to Date",
       detail: "The local branch already matches the validated upstream commit.",
       canApply: false,
+      canPush: false,
     };
   }
   if (inspection.ancestry === "localAhead") {
     return {
       title: "Local Branch Is Ahead",
-      detail: "Nothing was changed. Push is not available in Rehow yet.",
+      detail:
+        "Push the reviewed local commit with an exact, normal fast-forward update. Local uncommitted changes are not included.",
       canApply: false,
+      canPush: true,
     };
   }
   if (inspection.ancestry === "diverged") {
@@ -1179,6 +1231,7 @@ export function gitSyncPresentation(inspection: GitSyncInspectionPayload) {
       detail:
         "Rehow will not merge automatically. Resolve the histories with Git, then inspect again.",
       canApply: false,
+      canPush: false,
     };
   }
   if (inspection.ancestry === "historyLimit") {
@@ -1187,6 +1240,7 @@ export function gitSyncPresentation(inspection: GitSyncInspectionPayload) {
       detail:
         "Rehow could not prove the relationship within its safety limit. Review the repository with Git.",
       canApply: false,
+      canPush: false,
     };
   }
   if (inspection.localChanges) {
@@ -1195,6 +1249,7 @@ export function gitSyncPresentation(inspection: GitSyncInspectionPayload) {
       detail:
         "A fast-forward is available, but Rehow will not overwrite local changes. Commit them, then inspect again.",
       canApply: false,
+      canPush: false,
     };
   }
   return {
@@ -1203,6 +1258,7 @@ export function gitSyncPresentation(inspection: GitSyncInspectionPayload) {
       ? "Workspace content already matches. Apply the validated Git metadata update."
       : "Apply the validated upstream Workspace and Git metadata update.",
     canApply: true,
+    canPush: false,
   };
 }
 
@@ -1838,10 +1894,10 @@ export function App() {
     let active = true;
     setGitStatus(null);
     import("@tauri-apps/api/core")
-      .then(({ invoke }) => invoke<unknown>("git_status_open_workspace"))
+      .then(({ invoke }) =>
+        requestGitStatus((command, arguments_) => invoke(command, arguments_)),
+      )
       .then((status) => {
-        if (!isGitStatusPayload(status))
-          throw new Error("invalid Git status payload");
         if (active) setGitStatus(status);
       })
       .catch(() => {
@@ -2762,6 +2818,68 @@ export function App() {
           ? "Workspace fast-forward applied successfully."
           : "Git sync completed with no Workspace changes.",
       );
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setSyncStage("idle");
+      setSyncInspection(null);
+      setSyncError(failure.message);
+      setGitStatus(null);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => syncErrorRef.current?.focus());
+    }
+  }
+
+  async function applyGitPush() {
+    if (
+      workspace === null ||
+      syncInspection === null ||
+      syncOperationBusy ||
+      !gitSyncPresentation(syncInspection).canPush
+    )
+      return;
+    setSyncStage("applying");
+    setSyncError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const nativeInvoke: NativeInvoker = (command, arguments_) =>
+        invoke(command, arguments_);
+      const result = await requestGitPush(
+        syncInspection.planToken,
+        nativeInvoke,
+      );
+      if (result.kind === "declined") {
+        resetGitSyncUi();
+        setAnnouncement("Git push cancelled.");
+        focusGitSyncAction(() => syncButtonRef.current);
+        return;
+      }
+      resetGitSyncUi();
+      setGitStatus(null);
+      try {
+        setGitStatus(await requestGitStatus(nativeInvoke));
+        setAnnouncement("Reviewed commit pushed successfully.");
+      } catch {
+        setGitStatus({
+          kind: "failed",
+          version: null,
+          branch: null,
+          detached: false,
+          upstream: null,
+          divergenceKnown: false,
+          ahead: 0,
+          behind: 0,
+          changed: 0,
+          untracked: 0,
+          conflicts: 0,
+          remotes: [],
+          remoteCount: 0,
+          failure: "Git status unavailable",
+        });
+        setAnnouncement(
+          "The commit was pushed, but Git status could not be refreshed.",
+        );
+      }
+      focusGitSyncAction(() => syncButtonRef.current ?? searchRef.current);
     } catch (error) {
       const failure = nativeCommandError(error);
       setSyncStage("idle");
@@ -5079,7 +5197,11 @@ export function App() {
             ) : null}
             <div className="git-sync-actions">
               <button
-                ref={syncPresentation?.canApply ? undefined : syncPrimaryRef}
+                ref={
+                  syncPresentation?.canApply || syncPresentation?.canPush
+                    ? undefined
+                    : syncPrimaryRef
+                }
                 type="button"
                 className="button"
                 disabled={
@@ -5106,6 +5228,17 @@ export function App() {
                   {syncStage === "applying"
                     ? "Applying…"
                     : "Apply Fast-Forward"}
+                </button>
+              ) : null}
+              {syncPresentation?.canPush ? (
+                <button
+                  ref={syncPrimaryRef}
+                  type="button"
+                  className="button button-primary"
+                  disabled={syncOperationBusy}
+                  onClick={() => void applyGitPush()}
+                >
+                  {syncStage === "applying" ? "Pushing…" : "Push Commit"}
                 </button>
               ) : null}
             </div>

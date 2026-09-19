@@ -1,6 +1,6 @@
 # ADR 0025: Safe Git synchronization
 
-- Status: Partially Accepted — safe fetch, ancestry, durable fast-forward publication, and native lifecycle implemented; UI and push pending
+- Status: Partially Accepted — manual anonymous-HTTPS synchronization and exact fast-forward push implemented; authenticated transports pending
 - Date: 2026-09-19
 
 ## Context
@@ -39,8 +39,6 @@ Recovery accepts only the exact before/before, candidate-index/before-ref, or ca
 
 Packed-only current branches are deliberately refused by this gate. Publishing a loose shadow without a separately accepted packed-ref compatibility policy would leave Rehow's strict single-representation parser unable to reopen the result. SHA-1 and SHA-256 object widths use the same validation path; the complete SHA-256 sync fixture remains a later portability case. The boundary stays crate-private until the native lifecycle and recovery presentation are specified.
 
-### Pending gates
-
 ### 5D2C — native sync lifecycle
 
 The native adapter owns one `active` / `classified` / `applying` lifecycle and never exposes the classification authority. Its pathless inspection command plans, fetches, validates, and classifies against the retained open Workspace. IPC returns only a single-use token, bounded remote labels, closed ancestry, local-change state, and portable-snapshot equality; refs, OIDs, paths, URLs, output, credentials, and staging authority remain native-only. Cancellation revokes both an active inspection and any successful result that races with cancellation.
@@ -55,9 +53,23 @@ The status bar exposes manual Sync only for a writable ready repository with an 
 
 Recovery remains one generic user action without adding a recovery-kind disclosure. The UI calls pathless sync recovery first; only the stable `recoveryNotRequired` result falls through to commit recovery, so the correct native confirmation is shown. All other errors stop. Renderer input/output still contains no URL, ref, OID, path, Git output, credential, content, or staging authority.
 
-5D3 may push only an exact reviewed local commit from the expected remote OID using an explicit refspec and native confirmation. Non-fast-forward, changed remote, auth, host-key, and transport failures are preserved and reported. No force option exists.
+### 5D3A — exact fast-forward push
 
-Authenticated HTTPS/SSH requires the separately audited credential/agent provenance described by ADR 0023. Scheduled or start-time sync remains opt-in and cannot precede acceptance of the same gates used by manual sync.
+Push consumes the same opaque, validated `localAhead` classification used by manual sync. The authority binds the exact local branch commit, the exact advertised upstream commit, configured remote, branch/ref, repository snapshots, object format, managed inventory, Workspace fingerprint, and root/Git identities. The renderer supplies only the single-use plan token; it never supplies a URL, ref, object ID, path, refspec, or credential choice.
+
+Immediately before publication, core repeats the complete local binding and performs a fresh exact-ref discovery. A changed or missing upstream is `remoteChanged`, not a best-effort push. After native confirmation names only the bounded remote, branch, transport, and host, Git receives the internally constructed `<exact-local-oid>:<exact-upstream-ref>` refspec. Rehow uses an ordinary push with no force, force-with-lease, deletion, wildcard, mirror, tag-following, upstream-setting, atomic multi-ref, or option passthrough. A race after discovery can therefore only be rejected by the server or accepted as a genuine server-verified fast-forward; it cannot discard remote history. Success is accepted only after a second exact-ref discovery returns the planned local commit.
+
+The Git child sees a synthetic config-free repository containing only read-only validated objects/refs and an explicit canonical URL. Repository/worktree/user/system/includes configuration, hooks, aliases, filters, submodules, maintenance, proxy selection, redirects, askpass, prompts, and credential helpers are disabled. The first accepted transport is anonymous canonical HTTPS. Output is bounded and never crosses the core/native boundary. Decline consumes the authority without network publication; once confirmed publication begins it is not presented as cancellable because the remote may have accepted before local cancellation is observed.
+
+### 5D3B — trusted authentication provenance
+
+Authenticated HTTPS and SSH reuse one audited transport broker across clone, sync, and push. The broker implements ADR 0023's boundary rather than enabling normal Git configuration wholesale:
+
+- SSH accepts only the launch-inherited, owner-safe Unix `SSH_AUTH_SOCK`; a compiled fixed-grammar proxy invokes root-owned `/usr/bin/ssh` with a synthetic home, no user config, strict host verification, batch mode, fixed timeouts, and bounded owner-safe `known_hosts` plus system host keys. It never reads private-key files or accepts proxy/local commands.
+- HTTPS reconstructs only an accepted helper from root-owned system or owner-safe user Git config read with includes disabled. Executables must be root-owned absolute binaries in `/usr/bin` or `/usr/lib/git-core` with no free-form arguments, except the exact root-owned `gh auth git-credential` argv. Shell, relative, owner-writable, URL-scoped executable, proxy, header, askpass, and repository overrides are refused.
+- A compiled credential proxy forwards Git's credential protocol without exposing secret fields to Rehow plans, renderer IPC, errors, `Debug`, logs, evidence, or storage. Credential and SSH processes receive no Workspace or repository mount. Stable results distinguish authentication-required, host-key, unavailable, timeout, remote-changed, and rejected-non-fast-forward outcomes without returning raw Git output.
+
+5D3B is not accepted until credential canaries prove that secrets cannot reach IPC/log/error surfaces or untrusted repositories and hostile configuration cannot select an executable. Scheduled or start-time sync remains opt-in and cannot precede acceptance of the same gates used by manual sync.
 
 ## Consequences
 
@@ -66,3 +78,4 @@ Authenticated HTTPS/SSH requires the separately audited credential/agent provena
 - Private staging is retained as exact evidence/input for the next gate; identity-safe retention/pruning remains required.
 - Portable fast-forward publication is interruption-recoverable and callable only through the accepted pathless native lifecycle and bounded Reference Desk presentation.
 - Unsupported authentication degrades to an actionable unavailable state rather than a token prompt.
+- Exact publication deliberately prefers a normal server-enforced fast-forward over force-with-lease; a post-preflight race may reject safely but cannot lose remote history.
