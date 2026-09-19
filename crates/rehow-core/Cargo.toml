@@ -9,6 +9,10 @@ publish = false
 name = "rehow-git-ssh"
 path = "src/bin/rehow-git-ssh.rs"
 
+[[bin]]
+name = "rehow-git-credential"
+path = "src/bin/rehow-git-credential.rs"
+
 [dependencies]
 base64 = { version = "=0.23.1", default-features = false, features = ["std"] }
 blake3 = { version = "=1.8.7", default-features = false, features = ["std", "pure"] }

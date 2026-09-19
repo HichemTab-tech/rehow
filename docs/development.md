@@ -53,6 +53,8 @@ After scaffolding, use root scripts documented in `AGENTS.md`. Never point a dev
 
 `.codex/config.toml` enables bounded project subagents. `.codex/agents/*.toml` are standalone project-scoped configurations following current official Codex syntax; every file sets `name`, `description`, `developer_instructions`, `model = "gpt-5.6-sol"`, and the role's effort. Do not modify `~/.codex` for this project. Run `python3 scripts/check_bootstrap.py` after changing durable planning or project-agent configuration.
 
+`scripts/prepare-git-ssh-helper.sh dev|release` prepares both fixed Git subprocess siblings, `rehow-git-ssh` and `rehow-git-credential`, with one-link executable files beside the desktop binary. The historical script name is retained to avoid unnecessary command churn; it does not install or configure user credentials.
+
 The vendored `.codex/skills/web-design-guidelines` skill is used for design reviews. Before each review, it requires fetching the current upstream guideline file; the repository copy describes that procedure.
 
 ## Native development

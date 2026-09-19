@@ -17,9 +17,11 @@ case "$profile" in
     ;;
 esac
 
-cargo build -p rehow-core --bin rehow-git-ssh --locked "${cargo_args[@]}"
-temporary="$(mktemp "$output_dir/.rehow-git-ssh.XXXXXX")"
-trap 'rm -f "$temporary"' EXIT
-install -m 0755 "$output_dir/rehow-git-ssh" "$temporary"
-mv -f "$temporary" "$output_dir/rehow-git-ssh"
-trap - EXIT
+cargo build -p rehow-core --bin rehow-git-ssh --bin rehow-git-credential --locked "${cargo_args[@]}"
+for helper in rehow-git-ssh rehow-git-credential; do
+  temporary="$(mktemp "$output_dir/.${helper}.XXXXXX")"
+  trap 'rm -f "$temporary"' EXIT
+  install -m 0755 "$output_dir/$helper" "$temporary"
+  mv -f "$temporary" "$output_dir/$helper"
+  trap - EXIT
+done

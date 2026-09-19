@@ -32,6 +32,8 @@ Prefer user-level installation when the package format supports it without weake
 
 Package metadata must declare the exact WebKitGTK 4.1, GTK, SSL, and other runtime libraries produced by the Tauri bundler/build baseline. Linux Git operations require root-owned `/usr/bin/git` and `/usr/bin/bwrap`; authenticated SSH clone, sync, and push additionally require root-owned `/usr/bin/ssh` plus a safe launch-inherited agent and trusted `known_hosts`. Missing tools or trust keep Rehow content usable and produce closed Git-unavailable guidance. Development-only packages are in `docs/development.md`. Do not tell users to install a permanently running Node server for the desktop application.
 
+Desktop packaging must place the fixed `rehow-git-ssh` and `rehow-git-credential` binaries beside the application executable as non-writable one-link executables. Rehow does not install, enable, or alter a user's credential helper; it may use only an already configured helper that passes the documented provenance gate.
+
 ## Wayland behavior
 
 - Do not depend on global window coordinates, programmatic placement, always-on-top, shadows, blur, or compositor effects; support differs on Wayland.

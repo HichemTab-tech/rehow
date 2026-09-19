@@ -1,5 +1,10 @@
 //! Confined Git discovery/status and separately gated repository operations.
 
+mod credential_proxy;
+#[allow(
+    dead_code,
+    reason = "sealed HTTPS credentials connect to product Git commands in the next gate"
+)]
 mod https_credentials;
 mod ssh_proxy;
 #[allow(
@@ -8,8 +13,11 @@ mod ssh_proxy;
 )]
 mod ssh_sandbox;
 
+pub use credential_proxy::run_git_credential_proxy;
 pub use https_credentials::{
-    GitHttpsCredentialProvenance, GitHttpsCredentialStatus, capture_git_https_credential_provenance,
+    GitHttpsCredentialProvenance, GitHttpsCredentialProxyProvenance, GitHttpsCredentialProxyStatus,
+    GitHttpsCredentialResourceError, GitHttpsCredentialResources, GitHttpsCredentialStatus,
+    capture_git_https_credential_provenance, capture_git_https_credential_proxy_provenance,
 };
 pub use ssh_proxy::run_git_ssh_proxy;
 pub use ssh_sandbox::{
@@ -5279,15 +5287,19 @@ fn parse_git_sync_remote_ref(
 
 #[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
 fn terminate_child(child: &mut std::process::Child) {
-    if let Ok(process_group) = i32::try_from(child.id()) {
-        // SAFETY: the child was placed in a fresh process group whose id is
-        // the child's pid; a negative id targets only that group.
+    kill_process_group(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn kill_process_group(child_id: u32) {
+    if let Ok(process_group) = i32::try_from(child_id) {
+        // SAFETY: confined children are placed in fresh process groups whose
+        // id is the child's pid; a negative id targets only that group.
         unsafe {
             libc::kill(-process_group, libc::SIGKILL);
         }
     }
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -7025,28 +7037,41 @@ fn run_bounded_git_command_with_input(
     let stdout_reader = read_capped_with_limit(stdout, Arc::clone(&exceeded), stdout_limit);
     let stderr_reader = read_capped_with_limit(stderr, Arc::clone(&exceeded), stderr_limit);
     let started = Instant::now();
-    let status = loop {
+    let mut status = None;
+    loop {
         if exceeded.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
-            break Err(GitReadError::OutputLimit);
+            terminate_child(&mut child);
+            return Err(GitReadError::OutputLimit);
         }
         if started.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            break Err(GitReadError::Timeout);
+            terminate_child(&mut child);
+            return Err(GitReadError::Timeout);
         }
-        match child.try_wait().map_err(|_| GitReadError::Spawn)? {
-            Some(status) => break Ok(status),
-            None => thread::sleep(Duration::from_millis(2)),
+        if status.is_none()
+            && let Some(exit_status) = child.try_wait().map_err(|_| GitReadError::Spawn)?
+        {
+            // A helper can exit after forking descendants that retain the
+            // stdio pipes. Close that avenue before joining reader threads.
+            kill_process_group(child.id());
+            status = Some(exit_status);
         }
-    };
+        if status.is_some()
+            && stdout_reader.is_finished()
+            && stderr_reader.is_finished()
+            && input_writer
+                .as_ref()
+                .is_none_or(thread::JoinHandle::is_finished)
+        {
+            break;
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
     let stdout = stdout_reader.join().map_err(|_| GitReadError::Spawn)?;
     let _ = stderr_reader.join().map_err(|_| GitReadError::Spawn)?;
     if let Some(writer) = input_writer {
         let _ = writer.join().map_err(|_| GitReadError::Spawn)?;
     }
-    let status = status?;
+    let status = status.ok_or(GitReadError::Spawn)?;
     if exceeded.load(Ordering::Relaxed) {
         return Err(GitReadError::OutputLimit);
     }
@@ -17853,6 +17878,33 @@ mod tests {
                 .unwrap(),
             GitReadError::OutputLimit
         );
+    }
+
+    #[test]
+    fn bounded_runner_kills_exited_child_descendants_holding_pipes() {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "/usr/bin/sleep 30 & exit 0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // SAFETY: this test command has no other threads between fork and exec;
+        // the child only creates its own process group.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setpgid(0, 0) == 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            });
+        }
+
+        let started = Instant::now();
+        let output = run_bounded_git_command(command, Duration::from_secs(2), 1024).unwrap();
+
+        assert!(output.stdout.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

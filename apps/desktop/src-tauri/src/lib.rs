@@ -21,11 +21,11 @@ use rehow_core::{
         GitSyncError, apply_git_clone_repository_finalization, apply_git_clone_validation_with_ssh,
         apply_git_commit, apply_git_initialize, apply_git_push_with_ssh, apply_git_remote_connect,
         apply_git_sync_fast_forward, apply_git_sync_inspection_with_ssh, cancel_git_commit_plan,
-        capture_git_https_credential_provenance, capture_git_ssh_agent_provenance,
-        capture_git_ssh_host_keys_provenance, capture_git_ssh_proxy_provenance,
-        classify_git_sync_ancestry_with_ssh, git_commit_recovery_required,
-        git_sync_recovery_required, plan_git_clone, plan_git_commit, plan_git_initialize,
-        plan_git_remote_connect, plan_git_sync, read_git_status,
+        capture_git_https_credential_provenance, capture_git_https_credential_proxy_provenance,
+        capture_git_ssh_agent_provenance, capture_git_ssh_host_keys_provenance,
+        capture_git_ssh_proxy_provenance, classify_git_sync_ancestry_with_ssh,
+        git_commit_recovery_required, git_sync_recovery_required, plan_git_clone, plan_git_commit,
+        plan_git_initialize, plan_git_remote_connect, plan_git_sync, read_git_status,
         resume_pending_git_commit_publication, resume_pending_git_sync_publication,
     },
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -53,6 +53,7 @@ const GIT_COMMIT_MESSAGE_INPUT_BYTES: usize = 800;
 
 struct DesktopState {
     _https_credential_provenance: rehow_core::git::GitHttpsCredentialProvenance,
+    _https_credential_proxy_provenance: rehow_core::git::GitHttpsCredentialProxyProvenance,
     ssh_agent_provenance: rehow_core::git::GitSshAgentProvenance,
     ssh_host_keys_provenance: rehow_core::git::GitSshHostKeysProvenance,
     ssh_proxy_provenance: rehow_core::git::GitSshProxyProvenance,
@@ -70,6 +71,7 @@ impl Default for DesktopState {
     fn default() -> Self {
         Self {
             _https_credential_provenance: capture_git_https_credential_provenance(),
+            _https_credential_proxy_provenance: capture_git_https_credential_proxy_provenance(),
             ssh_agent_provenance: capture_git_ssh_agent_provenance(),
             ssh_host_keys_provenance: capture_git_ssh_host_keys_provenance(),
             ssh_proxy_provenance: capture_git_ssh_proxy_provenance(),
@@ -4804,8 +4806,9 @@ mod tests {
         },
         git::{
             GitCloneApplyError, GitCloneError, GitCloneMaterializeError, GitCloneValidation,
-            GitCommitPlanError, GitHttpsCredentialStatus, GitInitError, GitRemoteError,
-            GitRemoteTransport, GitSshTransportError, GitSyncAncestry, GitSyncError,
+            GitCommitPlanError, GitHttpsCredentialProxyStatus, GitHttpsCredentialStatus,
+            GitInitError, GitRemoteError, GitRemoteTransport, GitSshTransportError,
+            GitSyncAncestry, GitSyncError,
         },
         markdown::parse_safe_markdown,
         protocol::PlanToken,
@@ -4835,6 +4838,13 @@ mod tests {
         let debug = format!("{:?}", state._https_credential_provenance);
         assert!(!debug.contains('/'));
         assert!(!debug.contains("helper ="));
+        assert!(matches!(
+            state._https_credential_proxy_provenance.status(),
+            GitHttpsCredentialProxyStatus::NotConfigured
+                | GitHttpsCredentialProxyStatus::Trusted
+                | GitHttpsCredentialProxyStatus::Unsafe
+        ));
+        assert!(!format!("{:?}", state._https_credential_proxy_provenance).contains('/'));
     }
 
     #[test]

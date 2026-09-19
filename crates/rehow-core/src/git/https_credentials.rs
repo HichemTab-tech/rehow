@@ -1,3 +1,4 @@
+use super::credential_proxy::{SANDBOX_CREDENTIAL_HELPER, SANDBOX_CREDENTIAL_PROXY};
 use super::{
     CLONE_DISCOVERY_OUTPUT_LIMIT, PROCESS_TIMEOUT, inspect_ssh_agent_parents,
     run_bounded_git_command_with_input, safe_provenance_path,
@@ -9,8 +10,11 @@ use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
     os::{
-        fd::FromRawFd,
-        unix::{ffi::OsStrExt, fs::MetadataExt, fs::OpenOptionsExt, fs::PermissionsExt},
+        fd::{AsRawFd, FromRawFd, RawFd},
+        unix::{
+            ffi::OsStrExt, fs::MetadataExt, fs::OpenOptionsExt, fs::PermissionsExt,
+            process::CommandExt,
+        },
     },
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -34,7 +38,7 @@ pub enum GitHttpsCredentialStatus {
 
 pub struct GitHttpsCredentialProvenance {
     status: GitHttpsCredentialStatus,
-    _helper: Option<CredentialHelperCapability>,
+    helper: Option<CredentialHelperCapability>,
 }
 
 impl GitHttpsCredentialProvenance {
@@ -52,12 +56,186 @@ impl fmt::Debug for GitHttpsCredentialProvenance {
     }
 }
 
-struct CredentialHelperCapability {
-    _kind: CredentialHelperKind,
-    _executable: File,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitHttpsCredentialProxyStatus {
+    NotConfigured,
+    Trusted,
+    Unsafe,
 }
 
-#[derive(Clone, Copy)]
+pub struct GitHttpsCredentialProxyProvenance {
+    status: GitHttpsCredentialProxyStatus,
+    executable: Option<File>,
+}
+
+impl GitHttpsCredentialProxyProvenance {
+    pub fn status(&self) -> GitHttpsCredentialProxyStatus {
+        self.status
+    }
+}
+
+impl fmt::Debug for GitHttpsCredentialProxyProvenance {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitHttpsCredentialProxyProvenance")
+            .field("status", &self.status)
+            .finish_non_exhaustive()
+    }
+}
+
+pub fn capture_git_https_credential_proxy_provenance() -> GitHttpsCredentialProxyProvenance {
+    let candidate = env::current_exe().ok().and_then(|executable| {
+        executable
+            .parent()
+            .map(|parent| parent.join("rehow-git-credential"))
+    });
+    capture_credential_proxy_from(candidate.as_deref())
+}
+
+fn capture_credential_proxy_from(candidate: Option<&Path>) -> GitHttpsCredentialProxyProvenance {
+    let Some(candidate) = candidate else {
+        return GitHttpsCredentialProxyProvenance {
+            status: GitHttpsCredentialProxyStatus::NotConfigured,
+            executable: None,
+        };
+    };
+    let effective_user = unsafe { libc::geteuid() };
+    let expected_owner = match fs::symlink_metadata(candidate) {
+        Ok(metadata) if metadata.uid() == 0 || metadata.uid() == effective_user => metadata.uid(),
+        Ok(_) => {
+            return GitHttpsCredentialProxyProvenance {
+                status: GitHttpsCredentialProxyStatus::Unsafe,
+                executable: None,
+            };
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return GitHttpsCredentialProxyProvenance {
+                status: GitHttpsCredentialProxyStatus::NotConfigured,
+                executable: None,
+            };
+        }
+        Err(_) => {
+            return GitHttpsCredentialProxyProvenance {
+                status: GitHttpsCredentialProxyStatus::Unsafe,
+                executable: None,
+            };
+        }
+    };
+    match capture_helper_executable_result(candidate, expected_owner, effective_user) {
+        FileCapture::Missing => GitHttpsCredentialProxyProvenance {
+            status: GitHttpsCredentialProxyStatus::NotConfigured,
+            executable: None,
+        },
+        FileCapture::Trusted(executable) => GitHttpsCredentialProxyProvenance {
+            status: GitHttpsCredentialProxyStatus::Trusted,
+            executable: Some(executable),
+        },
+        FileCapture::Unsafe => GitHttpsCredentialProxyProvenance {
+            status: GitHttpsCredentialProxyStatus::Unsafe,
+            executable: None,
+        },
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitHttpsCredentialResourceError {
+    CredentialsUnavailable,
+    ProxyUnavailable,
+    Io,
+}
+
+/// Opaque launch-held authority for one fixed credential helper invocation.
+/// It exposes no source path, helper identity, descriptor, or credential data.
+pub struct GitHttpsCredentialResources {
+    kind: CredentialHelperKind,
+    helper: File,
+    proxy: File,
+}
+
+impl fmt::Debug for GitHttpsCredentialResources {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitHttpsCredentialResources")
+            .field("authority", &"<redacted>")
+            .finish()
+    }
+}
+
+impl GitHttpsCredentialResources {
+    pub fn prepare(
+        credentials: &GitHttpsCredentialProvenance,
+        proxy: &GitHttpsCredentialProxyProvenance,
+    ) -> Result<Self, GitHttpsCredentialResourceError> {
+        if credentials.status != GitHttpsCredentialStatus::Trusted {
+            return Err(GitHttpsCredentialResourceError::CredentialsUnavailable);
+        }
+        if proxy.status != GitHttpsCredentialProxyStatus::Trusted {
+            return Err(GitHttpsCredentialResourceError::ProxyUnavailable);
+        }
+        let helper = credentials
+            .helper
+            .as_ref()
+            .ok_or(GitHttpsCredentialResourceError::CredentialsUnavailable)?;
+        Ok(Self {
+            kind: helper.kind,
+            helper: helper
+                .executable
+                .try_clone()
+                .map_err(|_| GitHttpsCredentialResourceError::Io)?,
+            proxy: proxy
+                .executable
+                .as_ref()
+                .ok_or(GitHttpsCredentialResourceError::ProxyUnavailable)?
+                .try_clone()
+                .map_err(|_| GitHttpsCredentialResourceError::Io)?,
+        })
+    }
+
+    pub(crate) fn helper_kind_env(&self) -> &'static str {
+        match self.kind {
+            CredentialHelperKind::Direct => "direct",
+            CredentialHelperKind::GithubCli => "githubCli",
+        }
+    }
+
+    pub(crate) fn add_bubblewrap_mounts(&self, command: &mut Command) {
+        let proxy_fd = self.proxy.as_raw_fd();
+        let helper_fd = self.helper.as_raw_fd();
+        command
+            .args(["--dir", "/home/rehow/bin", "--ro-bind-fd"])
+            .arg(proxy_fd.to_string())
+            .arg(SANDBOX_CREDENTIAL_PROXY)
+            .args(["--ro-bind-fd"])
+            .arg(helper_fd.to_string())
+            .arg(SANDBOX_CREDENTIAL_HELPER);
+        unsafe {
+            command.pre_exec(move || {
+                for descriptor in [proxy_fd, helper_fd] {
+                    clear_close_on_exec(descriptor)?;
+                }
+                Ok(())
+            });
+        }
+    }
+}
+
+fn clear_close_on_exec(descriptor: RawFd) -> std::io::Result<()> {
+    let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
+    if flags < 0
+        || unsafe { libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } != 0
+    {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+struct CredentialHelperCapability {
+    kind: CredentialHelperKind,
+    executable: File,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum CredentialHelperKind {
     Direct,
     GithubCli,
@@ -152,7 +330,7 @@ pub fn capture_git_https_credential_provenance() -> GitHttpsCredentialProvenance
 fn unavailable(status: GitHttpsCredentialStatus) -> GitHttpsCredentialProvenance {
     GitHttpsCredentialProvenance {
         status,
-        _helper: None,
+        helper: None,
     }
 }
 
@@ -215,7 +393,7 @@ fn capture_from_sources(
     ) {
         Some(helper) => GitHttpsCredentialProvenance {
             status: GitHttpsCredentialStatus::Trusted,
-            _helper: Some(helper),
+            helper: Some(helper),
         },
         None => unavailable(GitHttpsCredentialStatus::Unsafe),
     }
@@ -376,8 +554,8 @@ fn resolve_helper(
     let gh_value = format!("!{} auth git-credential", gh_path.to_str()?);
     if value == gh_value {
         return Some(CredentialHelperCapability {
-            _kind: CredentialHelperKind::GithubCli,
-            _executable: capture_helper_executable(gh_path, helper_owner, effective_user)?,
+            kind: CredentialHelperKind::GithubCli,
+            executable: capture_helper_executable(gh_path, helper_owner, effective_user)?,
         });
     }
     if value.is_empty()
@@ -401,8 +579,8 @@ fn resolve_helper(
             return None;
         }
         return Some(CredentialHelperCapability {
-            _kind: CredentialHelperKind::Direct,
-            _executable: capture_helper_executable(configured, helper_owner, effective_user)?,
+            kind: CredentialHelperKind::Direct,
+            executable: capture_helper_executable(configured, helper_owner, effective_user)?,
         });
     }
     if value.contains('/')
@@ -418,8 +596,8 @@ fn resolve_helper(
             FileCapture::Missing => {}
             FileCapture::Trusted(executable) => {
                 return Some(CredentialHelperCapability {
-                    _kind: CredentialHelperKind::Direct,
-                    _executable: executable,
+                    kind: CredentialHelperKind::Direct,
+                    executable,
                 });
             }
             FileCapture::Unsafe => return None,
@@ -518,7 +696,7 @@ fn helper_metadata_safe(metadata: &fs::Metadata, expected_owner: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::{fs, os::unix::fs::PermissionsExt, process::Stdio};
 
     struct Temp(PathBuf);
 
@@ -898,6 +1076,103 @@ mod tests {
             )
             .status(),
             GitHttpsCredentialStatus::Unsafe
+        );
+    }
+
+    #[test]
+    fn proxy_capture_and_resources_are_redacted_fixed_and_networkless() {
+        let proxy = capture_credential_proxy_from(Some(Path::new("/usr/bin/true")));
+        assert_eq!(proxy.status(), GitHttpsCredentialProxyStatus::Trusted);
+        assert!(!format!("{proxy:?}").contains("/usr/bin/true"));
+        let uid = unsafe { libc::geteuid() };
+        let helper = match capture_helper_executable_result(Path::new("/usr/bin/true"), 0, uid) {
+            FileCapture::Trusted(helper) => helper,
+            FileCapture::Missing | FileCapture::Unsafe => panic!("system helper unavailable"),
+        };
+        let credentials = GitHttpsCredentialProvenance {
+            status: GitHttpsCredentialStatus::Trusted,
+            helper: Some(CredentialHelperCapability {
+                kind: CredentialHelperKind::Direct,
+                executable: helper,
+            }),
+        };
+        let resources = GitHttpsCredentialResources::prepare(&credentials, &proxy).unwrap();
+        assert_eq!(resources.helper_kind_env(), "direct");
+        assert_eq!(
+            format!("{resources:?}"),
+            "GitHttpsCredentialResources { authority: \"<redacted>\" }"
+        );
+
+        let mut command = Command::new("/usr/bin/bwrap");
+        command.args([
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-all",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib",
+            "/lib64",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--dir",
+            "/home",
+            "--dir",
+            "/home/rehow",
+        ]);
+        resources.add_bubblewrap_mounts(&mut command);
+        command
+            .args([
+                "--",
+                "/usr/bin/test",
+                "-x",
+                SANDBOX_CREDENTIAL_PROXY,
+                "-a",
+                "-x",
+                SANDBOX_CREDENTIAL_HELPER,
+                "-a",
+                "!",
+                "-e",
+                "/workspace",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+
+        let missing = capture_credential_proxy_from(None);
+        assert!(matches!(
+            GitHttpsCredentialResources::prepare(&credentials, &missing),
+            Err(GitHttpsCredentialResourceError::ProxyUnavailable)
+        ));
+        let unavailable = unavailable(GitHttpsCredentialStatus::NotConfigured);
+        assert!(matches!(
+            GitHttpsCredentialResources::prepare(&unavailable, &proxy),
+            Err(GitHttpsCredentialResourceError::CredentialsUnavailable)
+        ));
+
+        let temp = Temp::new();
+        let unsafe_proxy = temp.0.join("rehow-git-credential");
+        fs::copy("/usr/bin/true", &unsafe_proxy).unwrap();
+        fs::set_permissions(&unsafe_proxy, fs::Permissions::from_mode(0o722)).unwrap();
+        assert_eq!(
+            capture_credential_proxy_from(Some(&unsafe_proxy)).status(),
+            GitHttpsCredentialProxyStatus::Unsafe
         );
     }
 }
