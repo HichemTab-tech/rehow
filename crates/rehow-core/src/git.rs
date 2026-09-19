@@ -37,7 +37,7 @@ use std::{
         fd::{AsRawFd, FromRawFd},
         unix::{
             ffi::OsStrExt,
-            fs::{FileTypeExt, MetadataExt, PermissionsExt},
+            fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
             process::CommandExt,
         },
     },
@@ -82,6 +82,7 @@ const MAX_COMMIT_STAGING_BYTES: u64 = 3 * 1024 * 1024 * 1024;
 const COMMIT_PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 const COMMIT_PLAN_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const MAX_SSH_AGENT_PATH_BYTES: usize = 4_096;
+const MAX_KNOWN_HOSTS_BYTES: u64 = 1024 * 1024;
 #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
 const MAX_CLONE_TREE_LISTING_BYTES: usize = 32 * 1024 * 1024;
 #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
@@ -92,6 +93,13 @@ const MAX_CLONE_TREE_ENTRIES: usize =
 thread_local! {
     static POST_CHECK_ALTERNATES: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
     static CLONE_PRESEAL_PAUSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static KNOWN_HOSTS_RACE: std::cell::RefCell<Option<KnownHostsRace>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+enum KnownHostsRace {
+    Rewrite(PathBuf, Vec<u8>),
+    Replace(PathBuf, Vec<u8>),
 }
 
 thread_local! {
@@ -160,6 +168,38 @@ pub struct GitSshAgentProvenance {
     _socket: Option<File>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitSshHostKeysStatus {
+    NotConfigured,
+    Trusted,
+    Unsafe,
+}
+
+pub struct GitSshHostKeysProvenance {
+    status: GitSshHostKeysStatus,
+    _sources: Vec<Vec<u8>>,
+}
+
+impl GitSshHostKeysProvenance {
+    pub fn status(&self) -> GitSshHostKeysStatus {
+        self.status
+    }
+
+    pub fn source_count(&self) -> usize {
+        self._sources.len()
+    }
+}
+
+impl fmt::Debug for GitSshHostKeysProvenance {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitSshHostKeysProvenance")
+            .field("status", &self.status)
+            .field("source_count", &self.source_count())
+            .finish_non_exhaustive()
+    }
+}
+
 impl GitSshAgentProvenance {
     pub fn status(&self) -> GitSshAgentStatus {
         self.status
@@ -181,6 +221,231 @@ impl fmt::Debug for GitSshAgentProvenance {
 pub fn capture_git_ssh_agent_provenance() -> GitSshAgentProvenance {
     let path = env::var_os("SSH_AUTH_SOCK");
     capture_git_ssh_agent_provenance_from(path.as_deref())
+}
+
+/// Captures bounded stable snapshots of owner-safe user and root-owned system
+/// known-host files. Host-key data is public trust material, but paths and file
+/// identities remain native-only and are never included in `Debug`.
+pub fn capture_git_ssh_host_keys_provenance() -> GitSshHostKeysProvenance {
+    let home = env::var_os("HOME");
+    let system_paths = [
+        Path::new("/etc/ssh/ssh_known_hosts"),
+        Path::new("/etc/ssh/ssh_known_hosts2"),
+    ];
+    capture_git_ssh_host_keys_from(home.as_deref(), &system_paths)
+}
+
+#[derive(Clone, Copy)]
+enum KnownHostsOwner {
+    EffectiveUser,
+    Root,
+}
+
+enum KnownHostsCapture {
+    Missing,
+    Trusted(Vec<u8>),
+    Unsafe,
+}
+
+fn capture_git_ssh_host_keys_from(
+    home: Option<&std::ffi::OsStr>,
+    system_paths: &[&Path],
+) -> GitSshHostKeysProvenance {
+    let effective_user = unsafe { libc::geteuid() };
+    let mut sources = Vec::new();
+    let mut unsafe_source = false;
+    if let Some(home) = home {
+        let home = Path::new(home);
+        if safe_provenance_path(home) {
+            match capture_known_hosts_file(
+                &home.join(".ssh/known_hosts"),
+                KnownHostsOwner::EffectiveUser,
+                effective_user,
+            ) {
+                KnownHostsCapture::Missing => {}
+                KnownHostsCapture::Trusted(bytes) => sources.push(bytes),
+                KnownHostsCapture::Unsafe => unsafe_source = true,
+            }
+        } else {
+            unsafe_source = true;
+        }
+    }
+    for path in system_paths {
+        match capture_known_hosts_file(path, KnownHostsOwner::Root, effective_user) {
+            KnownHostsCapture::Missing => {}
+            KnownHostsCapture::Trusted(bytes) => sources.push(bytes),
+            KnownHostsCapture::Unsafe => unsafe_source = true,
+        }
+    }
+    let status = if unsafe_source {
+        GitSshHostKeysStatus::Unsafe
+    } else if sources.is_empty() {
+        GitSshHostKeysStatus::NotConfigured
+    } else {
+        GitSshHostKeysStatus::Trusted
+    };
+    if status != GitSshHostKeysStatus::Trusted {
+        sources.clear();
+    }
+    GitSshHostKeysProvenance {
+        status,
+        _sources: sources,
+    }
+}
+
+fn capture_known_hosts_file(
+    path: &Path,
+    owner: KnownHostsOwner,
+    effective_user: u32,
+) -> KnownHostsCapture {
+    if !safe_provenance_path(path) {
+        return KnownHostsCapture::Unsafe;
+    }
+    let before = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return KnownHostsCapture::Missing,
+        Err(_) => return KnownHostsCapture::Unsafe,
+    };
+    let before_parents = match inspect_ssh_agent_parents(path.parent().unwrap(), effective_user) {
+        Some(parents) => parents,
+        None => return KnownHostsCapture::Unsafe,
+    };
+    if !known_hosts_metadata_safe(&before, owner, effective_user) {
+        return KnownHostsCapture::Unsafe;
+    }
+    let mut file = match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(_) => return KnownHostsCapture::Unsafe,
+    };
+    let held_before = match file.metadata() {
+        Ok(metadata) if known_hosts_metadata_safe(&metadata, owner, effective_user) => metadata,
+        _ => return KnownHostsCapture::Unsafe,
+    };
+    if known_hosts_file_identity(&before) != known_hosts_file_identity(&held_before) {
+        return KnownHostsCapture::Unsafe;
+    }
+    let first = match read_bounded_known_hosts(&mut file) {
+        Some(bytes) => bytes,
+        None => return KnownHostsCapture::Unsafe,
+    };
+    #[cfg(test)]
+    apply_known_hosts_race();
+    if file.seek(SeekFrom::Start(0)).is_err() {
+        return KnownHostsCapture::Unsafe;
+    }
+    let second = match read_bounded_known_hosts(&mut file) {
+        Some(bytes) => bytes,
+        None => return KnownHostsCapture::Unsafe,
+    };
+    let held_after = match file.metadata() {
+        Ok(metadata) => metadata,
+        Err(_) => return KnownHostsCapture::Unsafe,
+    };
+    let after = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => return KnownHostsCapture::Unsafe,
+    };
+    let after_parents = match inspect_ssh_agent_parents(path.parent().unwrap(), effective_user) {
+        Some(parents) => parents,
+        None => return KnownHostsCapture::Unsafe,
+    };
+    if first != second
+        || known_hosts_file_identity(&before) != known_hosts_file_identity(&held_after)
+        || known_hosts_file_identity(&after) != known_hosts_file_identity(&held_after)
+        || before_parents != after_parents
+    {
+        return KnownHostsCapture::Unsafe;
+    }
+    KnownHostsCapture::Trusted(first)
+}
+
+#[cfg(test)]
+fn apply_known_hosts_race() {
+    KNOWN_HOSTS_RACE.with(|race| {
+        if let Some(race) = race.borrow_mut().take() {
+            match race {
+                KnownHostsRace::Rewrite(path, bytes) => fs::write(path, bytes).unwrap(),
+                KnownHostsRace::Replace(path, bytes) => {
+                    fs::remove_file(&path).unwrap();
+                    fs::write(path, bytes).unwrap();
+                }
+            }
+        }
+    });
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct KnownHostsFileIdentity {
+    device: u64,
+    inode: u64,
+    owner: u32,
+    mode: u32,
+    links: u64,
+    size: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+fn known_hosts_file_identity(metadata: &fs::Metadata) -> KnownHostsFileIdentity {
+    KnownHostsFileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        owner: metadata.uid(),
+        mode: metadata.mode(),
+        links: metadata.nlink(),
+        size: metadata.size(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        changed_seconds: metadata.ctime(),
+        changed_nanoseconds: metadata.ctime_nsec(),
+    }
+}
+
+fn known_hosts_metadata_safe(
+    metadata: &fs::Metadata,
+    owner: KnownHostsOwner,
+    effective_user: u32,
+) -> bool {
+    let expected_owner = match owner {
+        KnownHostsOwner::EffectiveUser => effective_user,
+        KnownHostsOwner::Root => 0,
+    };
+    metadata.is_file()
+        && !metadata.file_type().is_symlink()
+        && metadata.uid() == expected_owner
+        && metadata.nlink() == 1
+        && metadata.permissions().mode() & 0o022 == 0
+        && metadata.size() <= MAX_KNOWN_HOSTS_BYTES
+}
+
+fn read_bounded_known_hosts(file: &mut File) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    file.take(MAX_KNOWN_HOSTS_BYTES.checked_add(1)?)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if u64::try_from(bytes.len()).ok()? > MAX_KNOWN_HOSTS_BYTES {
+        None
+    } else {
+        Some(bytes)
+    }
+}
+
+fn safe_provenance_path(path: &Path) -> bool {
+    path.is_absolute()
+        && !path.as_os_str().as_bytes().is_empty()
+        && path.as_os_str().as_bytes().len() <= MAX_SSH_AGENT_PATH_BYTES
+        && !path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
 }
 
 fn capture_git_ssh_agent_provenance_from(path: Option<&std::ffi::OsStr>) -> GitSshAgentProvenance {
@@ -222,16 +487,7 @@ fn ssh_agent_file_identity(metadata: &fs::Metadata) -> SshAgentFileIdentity {
 }
 
 fn inspect_ssh_agent_path(path: &Path) -> Option<File> {
-    if !path.is_absolute()
-        || path.as_os_str().as_bytes().is_empty()
-        || path.as_os_str().as_bytes().len() > MAX_SSH_AGENT_PATH_BYTES
-        || path.components().any(|component| {
-            matches!(
-                component,
-                std::path::Component::CurDir | std::path::Component::ParentDir
-            )
-        })
-    {
+    if !safe_provenance_path(path) {
         return None;
     }
     let effective_user = unsafe { libc::geteuid() };
@@ -11508,6 +11764,131 @@ mod tests {
 
         fs::set_permissions(&temp.0, fs::Permissions::from_mode(0o777)).unwrap();
         assert!(inspect_ssh_agent_path(&socket_path).is_none());
+    }
+
+    #[test]
+    fn known_hosts_provenance_snapshots_stable_bounded_bytes_and_redacts_debug() {
+        let home = Temp::new();
+        fs::set_permissions(&home.0, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::create_dir(home.0.join(".ssh")).unwrap();
+        fs::set_permissions(home.0.join(".ssh"), fs::Permissions::from_mode(0o700)).unwrap();
+        let known_hosts = home.0.join(".ssh/known_hosts");
+        let initial = b"example.invalid ssh-ed25519 AAAAC3Nza\x80\n";
+        fs::write(&known_hosts, initial).unwrap();
+        fs::set_permissions(&known_hosts, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let provenance = capture_git_ssh_host_keys_from(Some(home.0.as_os_str()), &[]);
+        assert_eq!(provenance.status(), GitSshHostKeysStatus::Trusted);
+        assert_eq!(provenance.source_count(), 1);
+        assert_eq!(provenance._sources[0], initial);
+        let debug = format!("{provenance:?}");
+        assert!(debug.contains("Trusted"));
+        assert!(!debug.contains("example.invalid"));
+        assert!(!debug.contains(home.0.to_str().unwrap()));
+
+        fs::write(&known_hosts, b"replacement\n").unwrap();
+        assert_eq!(provenance._sources[0], initial);
+
+        let exact = home.0.join(".ssh/exact");
+        let file = File::create(&exact).unwrap();
+        file.set_len(MAX_KNOWN_HOSTS_BYTES).unwrap();
+        drop(file);
+        fs::set_permissions(&exact, fs::Permissions::from_mode(0o600)).unwrap();
+        let exact_metadata = fs::symlink_metadata(&exact).unwrap();
+        assert!(known_hosts_metadata_safe(
+            &exact_metadata,
+            KnownHostsOwner::EffectiveUser,
+            unsafe { libc::geteuid() }
+        ));
+        assert!(
+            inspect_ssh_agent_parents(exact.parent().unwrap(), unsafe { libc::geteuid() })
+                .is_some()
+        );
+        assert!(matches!(
+            capture_known_hosts_file(
+                &exact,
+                KnownHostsOwner::EffectiveUser,
+                unsafe { libc::geteuid() }
+            ),
+            KnownHostsCapture::Trusted(bytes) if bytes.len() as u64 == MAX_KNOWN_HOSTS_BYTES
+        ));
+        let oversized = home.0.join(".ssh/oversized");
+        let file = File::create(&oversized).unwrap();
+        file.set_len(MAX_KNOWN_HOSTS_BYTES + 1).unwrap();
+        drop(file);
+        fs::set_permissions(&oversized, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            capture_known_hosts_file(&oversized, KnownHostsOwner::EffectiveUser, unsafe {
+                libc::geteuid()
+            }),
+            KnownHostsCapture::Unsafe
+        ));
+    }
+
+    #[test]
+    fn known_hosts_provenance_refuses_unsafe_sources_and_discards_trusted_peers() {
+        assert_eq!(
+            capture_git_ssh_host_keys_from(None, &[]).status(),
+            GitSshHostKeysStatus::NotConfigured
+        );
+        assert_eq!(
+            capture_git_ssh_host_keys_from(Some(std::ffi::OsStr::new("relative")), &[]).status(),
+            GitSshHostKeysStatus::Unsafe
+        );
+
+        let home = Temp::new();
+        fs::set_permissions(&home.0, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::create_dir(home.0.join(".ssh")).unwrap();
+        fs::set_permissions(home.0.join(".ssh"), fs::Permissions::from_mode(0o700)).unwrap();
+        let known_hosts = home.0.join(".ssh/known_hosts");
+        fs::write(&known_hosts, b"trusted\n").unwrap();
+        fs::set_permissions(&known_hosts, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let unsafe_system = home.0.join("unsafe-system");
+        symlink(&known_hosts, &unsafe_system).unwrap();
+        let provenance =
+            capture_git_ssh_host_keys_from(Some(home.0.as_os_str()), &[unsafe_system.as_path()]);
+        assert_eq!(provenance.status(), GitSshHostKeysStatus::Unsafe);
+        assert_eq!(provenance.source_count(), 0);
+
+        KNOWN_HOSTS_RACE.with(|race| {
+            *race.borrow_mut() = Some(KnownHostsRace::Rewrite(
+                known_hosts.clone(),
+                b"changed during read\n".to_vec(),
+            ));
+        });
+        assert_eq!(
+            capture_git_ssh_host_keys_from(Some(home.0.as_os_str()), &[]).status(),
+            GitSshHostKeysStatus::Unsafe
+        );
+        fs::write(&known_hosts, b"trusted again\n").unwrap();
+        KNOWN_HOSTS_RACE.with(|race| {
+            *race.borrow_mut() = Some(KnownHostsRace::Replace(
+                known_hosts.clone(),
+                b"replaced during read\n".to_vec(),
+            ));
+        });
+        assert_eq!(
+            capture_git_ssh_host_keys_from(Some(home.0.as_os_str()), &[]).status(),
+            GitSshHostKeysStatus::Unsafe
+        );
+        fs::set_permissions(&known_hosts, fs::Permissions::from_mode(0o600)).unwrap();
+
+        fs::remove_file(&known_hosts).unwrap();
+        fs::write(&known_hosts, b"linked\n").unwrap();
+        fs::set_permissions(&known_hosts, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::hard_link(&known_hosts, home.0.join(".ssh/second-link")).unwrap();
+        assert_eq!(
+            capture_git_ssh_host_keys_from(Some(home.0.as_os_str()), &[]).status(),
+            GitSshHostKeysStatus::Unsafe
+        );
+
+        fs::remove_file(home.0.join(".ssh/second-link")).unwrap();
+        fs::set_permissions(&known_hosts, fs::Permissions::from_mode(0o622)).unwrap();
+        assert_eq!(
+            capture_git_ssh_host_keys_from(Some(home.0.as_os_str()), &[]).status(),
+            GitSshHostKeysStatus::Unsafe
+        );
     }
 
     fn open_workspace(temp: &Temp) -> Box<WorkspaceView> {
