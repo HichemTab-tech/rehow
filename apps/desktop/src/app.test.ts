@@ -16,6 +16,8 @@ import {
   isCurrentWorkspaceWatchEvent,
   isGitInitPlanPayload,
   isGitInitResultPayload,
+  isGitRemotePlanPayload,
+  isGitRemoteResultPayload,
   isGitStatusPayload,
   isSearchHitPayload,
   isWorkspaceWatchEvent,
@@ -26,6 +28,8 @@ import {
   normalizedGuideDetails,
   normalizedGuideMetadata,
   normalizedGuideTerms,
+  normalizedRemoteName,
+  normalizedRemoteUrl,
   normalizedWorkspaceName,
   rankedGuides,
   refreshedGuideId,
@@ -114,6 +118,31 @@ describe("application identity", () => {
     expect(
       isGitInitResultPayload({ initialized: true, repositoryPath: "/tmp" }),
     ).toBe(false);
+  });
+
+  it("accepts only closed URL-free Git remote payloads and normalizes inputs", () => {
+    const plan = {
+      planToken: `plan:v1:${"A".repeat(43)}`,
+      remoteName: "origin",
+      transport: "ssh" as const,
+      host: "example.invalid",
+    };
+    expect(isGitRemotePlanPayload(plan)).toBe(true);
+    expect(isGitRemotePlanPayload({ ...plan, url: "ssh://secret" })).toBe(
+      false,
+    );
+    expect(isGitRemotePlanPayload({ ...plan, transport: "file" })).toBe(false);
+    expect(isGitRemoteResultPayload({ connected: true })).toBe(true);
+    expect(isGitRemoteResultPayload({ connected: true, path: "/tmp" })).toBe(
+      false,
+    );
+    expect(normalizedRemoteName(" origin ")).toBe("origin");
+    expect(normalizedRemoteName("Origin")).toBeNull();
+    expect(normalizedRemoteName("a..b")).toBeNull();
+    expect(normalizedRemoteUrl(" ssh://git@example.invalid/a.git ")).toBe(
+      "ssh://git@example.invalid/a.git",
+    );
+    expect(normalizedRemoteUrl("   ")).toBeNull();
   });
 
   it("detects exact Guide editor dirty state", () => {

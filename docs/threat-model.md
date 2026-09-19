@@ -1,7 +1,7 @@
 # Threat Model
 
 Status: bootstrap baseline; security review required at named gates
-Last updated: 2026-09-05
+Last updated: 2026-09-19
 
 ## Scope and assets
 
@@ -60,6 +60,7 @@ Out of scope as a hard boundary: protection against a fully compromised same-use
 | Hostile filename | control chars, invalid UTF-8, option-like names | Managed UTF-8 policy; filename normalization; IDs; pathspec `--`; escaped display | Filename corpus on temp FS |
 | Credential leakage | remote URL token appears in UI/log | Redact userinfo/query; no env dump/raw stderr; protocol error mapping; output caps | Secret-canary tests across logs/results |
 | Credential capture | app asks for token/key | Use normal agent/helper; terminal prompting disabled; report auth required | UI/MCP copy review; tests |
+| Remote-config execution or secret injection | URL embeds token; repository selects helper/proxy/SSH command | Phase 5B2 accepts only canonical secret-free HTTPS/SSH forms; Git parses held config with includes disabled and name-only output; connect performs no network; future network runs config-free and accepts credentials only from separately audited user/system provenance | URL/name corpus, URL-free response/error/Debug tests, config preservation/recovery suite, per-network-operation security gate |
 | MCP prompt injection | Guide says “call delete/read ~/.ssh” | Treat content as data; no ambient paths/shell; structured fields; read-only default; plan tokens | End-to-end hostile Guide tests |
 | MCP broad/destructive misuse | stale/replayed delete/reorder | Per-root startup capability; effect-bound token; server-launched fixed native approval child over private inherited pipes; no client confirmation flag | Replay/substitution/expiry/helper-provenance/pipe/concurrency tests |
 | False tested status | AI/client claims it tested content | All managed creates draft; renderer/MCP cannot supply status/time/hash; native dialog for exact ID/revision; core readiness/hash/timestamp; hash mismatch → effective stale; relevant edit → stale | State-machine, canonical-vector, mismatch, readiness, revision, and approval-bypass tests |
@@ -79,8 +80,9 @@ Phasing:
 
 1. Detect executable and repository facts with noninteractive, bounded, machine-readable read operations.
 2. Add safe status/remotes/divergence/conflict reporting.
-3. Design commit creation to avoid hooks and clean filters. Consider audited libgit2 or filter-free plumbing/update-ref with expected OID rather than porcelain `git add`/`commit` if containment cannot be proven.
-4. Add isolated fetch/validated materialization/push only with native approval, protocol allowlist/state plan, credentials from explicitly trusted system/user provenance outside repository config, and no arbitrary refspec.
+3. Configure a remote without network access by losslessly appending one validated section under an exact before-image CAS, conventional `config.lock`, atomic exchange, and same-request/native-confirmed recovery. Repository config is data only and cannot choose execution.
+4. Design commit creation to avoid hooks and clean filters. Consider audited libgit2 or filter-free plumbing/update-ref with expected OID rather than porcelain `git add`/`commit` if containment cannot be proven.
+5. Add isolated fetch/validated materialization/push only with native approval, protocol allowlist/state plan, credentials from explicitly trusted system/user provenance outside repository config, and no arbitrary refspec.
 
 If a required Git mutation cannot be made without repository-controlled code execution or ambiguous history effects, that feature remains blocked and the user is directed to normal Git tooling. Product requirements do not justify weakening the host boundary.
 

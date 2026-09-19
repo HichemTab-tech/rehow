@@ -14,8 +14,9 @@ use rehow_core::{
     },
     domain::GuideStatus,
     git::{
-        GitInitError, GitInitPlan, GitReadError, GitRepositoryStatus, apply_git_initialize,
-        plan_git_initialize, read_git_status,
+        GitInitError, GitInitPlan, GitReadError, GitRemoteError, GitRemotePlan,
+        GitRepositoryStatus, apply_git_initialize, apply_git_remote_connect, plan_git_initialize,
+        plan_git_remote_connect, read_git_status,
     },
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
     protocol::{AttachmentId, CategoryId, GuideId, PlanToken, Revision},
@@ -44,6 +45,7 @@ struct DesktopState {
     workspace: Mutex<Option<DesktopWorkspace>>,
     pending_empty: Mutex<Option<PendingWorkspace>>,
     pending_git_init: Mutex<Option<(PlanToken, GitInitPlan)>>,
+    pending_git_remote: Mutex<Option<(PlanToken, GitRemotePlan)>>,
     next_watch_session: AtomicU64,
 }
 
@@ -174,6 +176,21 @@ struct GitInitPlanPayload {
 #[serde(rename_all = "camelCase")]
 struct GitInitResultPayload {
     initialized: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitRemotePlanPayload {
+    plan_token: PlanToken,
+    remote_name: String,
+    transport: &'static str,
+    host: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitRemoteResultPayload {
+    connected: bool,
 }
 
 #[derive(Serialize)]
@@ -721,6 +738,175 @@ fn git_init_message(error: GitInitError) -> String {
 
 fn git_init_confirmation() -> &'static str {
     "Create private Git metadata for this Workspace with initial branch “main”?\n\nRehow will not commit, connect, or synchronize anything."
+}
+
+#[tauri::command]
+fn git_remote_plan_open_workspace(
+    remote_name: String,
+    remote_url: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<GitRemotePlanPayload, NativeCommandError> {
+    let guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_ref().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let plan = plan_git_remote_connect(&workspace.view, &remote_name, &remote_url)
+        .map_err(|error| native_command_error(git_remote_code(error), git_remote_message(error)))?;
+    let payload = GitRemotePlanPayload {
+        plan_token: plan.token().clone(),
+        remote_name: plan.remote_name().to_owned(),
+        transport: plan.transport().as_str(),
+        host: plan.host().to_owned(),
+    };
+    *state.pending_git_remote.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Git remote plan is unavailable".to_owned(),
+        )
+    })? = Some((payload.plan_token.clone(), plan));
+    Ok(payload)
+}
+
+#[tauri::command]
+fn git_remote_apply_open_workspace(
+    window: tauri::Window,
+    plan_token: PlanToken,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<GitRemoteResultPayload, NativeCommandError> {
+    let guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_ref().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let mut pending = state.pending_git_remote.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Git remote plan is unavailable".to_owned(),
+        )
+    })?;
+    let plan = take_matching_git_plan(&mut pending, &plan_token).map_err(|error| match error {
+        PendingGitPlanError::Missing => native_command_error(
+            "planMissing",
+            "Create a fresh Git remote plan and try again.".to_owned(),
+        ),
+        PendingGitPlanError::Invalid => native_command_error(
+            "planInvalid",
+            "The Git remote plan does not match this request.".to_owned(),
+        ),
+    })?;
+    let confirmed = rfd::MessageDialog::new()
+        .set_parent(&window)
+        .set_level(rfd::MessageLevel::Info)
+        .set_title("Connect Git remote?")
+        .set_description(git_remote_confirmation(&plan))
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes;
+    if !confirmed {
+        return Ok(GitRemoteResultPayload { connected: false });
+    }
+    apply_git_remote_connect(&workspace.view, &plan)
+        .map_err(|error| native_command_error(git_remote_code(error), git_remote_message(error)))?;
+    Ok(GitRemoteResultPayload { connected: true })
+}
+
+fn git_remote_code(error: GitRemoteError) -> &'static str {
+    match error {
+        GitRemoteError::InvalidName => "invalidRemoteName",
+        GitRemoteError::InvalidUrl => "invalidRemoteUrl",
+        GitRemoteError::NotRepository => "notRepository",
+        GitRemoteError::DuplicateRemote => "duplicateRemote",
+        GitRemoteError::MalformedConfig => "malformedConfig",
+        GitRemoteError::RecoveryRequired => "recoveryRequired",
+        GitRemoteError::PlanStale => "planStale",
+        GitRemoteError::Unsafe => "unsafeRepository",
+        GitRemoteError::TooLarge => "configTooLarge",
+        GitRemoteError::Unsupported => "unsupportedFilesystem",
+        GitRemoteError::GitUnavailable => "gitUnavailable",
+        GitRemoteError::Io => "io",
+    }
+}
+
+fn git_remote_message(error: GitRemoteError) -> String {
+    match error {
+        GitRemoteError::InvalidName => {
+            "Use a lowercase remote name containing letters, numbers, dots, dashes, or underscores."
+                .to_owned()
+        }
+        GitRemoteError::InvalidUrl => {
+            "Use a secret-free HTTPS or SSH repository address without a password, token, query, fragment, space, or encoded path."
+                .to_owned()
+        }
+        GitRemoteError::NotRepository => "Initialize Git before connecting a remote.".to_owned(),
+        GitRemoteError::DuplicateRemote => {
+            "A remote with that name already exists. Rehow did not change it.".to_owned()
+        }
+        GitRemoteError::MalformedConfig => {
+            "Git config is malformed. Rehow preserved it unchanged.".to_owned()
+        }
+        GitRemoteError::RecoveryRequired => {
+            "Git config has an unrelated lock or interrupted change. Retry the exact same remote request, or inspect .git/config.lock before continuing."
+                .to_owned()
+        }
+        GitRemoteError::PlanStale => {
+            "Git config or the Workspace changed. Review it and create a fresh plan.".to_owned()
+        }
+        GitRemoteError::Unsafe => {
+            "Git config is not a safe owner-controlled regular file. Rehow left it unchanged."
+                .to_owned()
+        }
+        GitRemoteError::TooLarge => {
+            "Git config exceeds Rehow’s safe processing limit.".to_owned()
+        }
+        GitRemoteError::Unsupported => {
+            "This system cannot provide the durable atomic Git config update Rehow requires."
+                .to_owned()
+        }
+        GitRemoteError::GitUnavailable => {
+            "The trusted system Git executable is unavailable.".to_owned()
+        }
+        GitRemoteError::Io => {
+            "Git config could not be read or updated. Check access and try again.".to_owned()
+        }
+    }
+}
+
+fn git_remote_confirmation(plan: &GitRemotePlan) -> String {
+    git_remote_confirmation_fields(
+        plan.remote_name(),
+        plan.transport().as_str(),
+        plan.remote_url(),
+    )
+}
+
+fn git_remote_confirmation_fields(remote_name: &str, transport: &str, remote_url: &str) -> String {
+    format!(
+        "Add remote “{}” using this {} address?\n\n{}\n\nThis updates Git config only. Rehow will not connect, authenticate, fetch, or synchronize.",
+        remote_name,
+        transport.to_uppercase(),
+        remote_url
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2480,6 +2666,8 @@ pub fn run() {
             set_open_guide_archived,
             git_initialize_plan_open_workspace,
             git_initialize_apply_open_workspace,
+            git_remote_plan_open_workspace,
+            git_remote_apply_open_workspace,
             git_status_open_workspace,
             search_open_workspace
         ])
@@ -2491,16 +2679,18 @@ pub fn run() {
 mod tests {
     use super::{
         APPLICATION_NAME, CategoryPayload, FolderFactsPayload, GitInitPlanPayload,
-        GitInitResultPayload, GuideBodyPayload, GuidePayload, PendingGitPlanError,
-        SearchHighlightPayload, SearchHitPayload, WorkspacePayload, WorkspaceWatchEventPayload,
-        attachment_removal_code, attachment_removal_message, category_create_code,
-        category_create_message, category_remove_code, category_remove_message,
-        category_reorder_code, category_reorder_message, category_update_code,
-        category_update_message, empty_git_payload, git_init_code, git_init_confirmation,
-        git_init_message, guide_create_code, guide_create_message, guide_remove_code,
-        guide_remove_confirmation, guide_remove_message, guide_update_code, guide_update_message,
-        native_command_error, search_status_scope, take_matching_git_plan,
-        workspace_initialization_message, workspace_refresh_code, workspace_refresh_message,
+        GitInitResultPayload, GitRemotePlanPayload, GitRemoteResultPayload, GuideBodyPayload,
+        GuidePayload, PendingGitPlanError, SearchHighlightPayload, SearchHitPayload,
+        WorkspacePayload, WorkspaceWatchEventPayload, attachment_removal_code,
+        attachment_removal_message, category_create_code, category_create_message,
+        category_remove_code, category_remove_message, category_reorder_code,
+        category_reorder_message, category_update_code, category_update_message, empty_git_payload,
+        git_init_code, git_init_confirmation, git_init_message, git_remote_code,
+        git_remote_confirmation_fields, git_remote_message, guide_create_code,
+        guide_create_message, guide_remove_code, guide_remove_confirmation, guide_remove_message,
+        guide_update_code, guide_update_message, native_command_error, search_status_scope,
+        take_matching_git_plan, workspace_initialization_message, workspace_refresh_code,
+        workspace_refresh_message,
     };
     use rehow_core::{
         application::{
@@ -2508,7 +2698,7 @@ mod tests {
             CategoryUpdateError, GuideCreateError, GuideRemoveError, GuideUpdateError,
             WorkspaceInitializationError, WorkspaceRefreshError,
         },
-        git::GitInitError,
+        git::{GitInitError, GitRemoteError},
         markdown::parse_safe_markdown,
         protocol::PlanToken,
     };
@@ -2547,6 +2737,39 @@ mod tests {
         assert_eq!(git_init_code(GitInitError::PlanStale), "planStale");
         assert!(git_init_message(GitInitError::Unsafe).contains("not overwritten"));
         assert!(git_init_confirmation().contains("will not commit"));
+    }
+
+    #[test]
+    fn git_remote_payload_and_errors_are_closed_and_url_free() {
+        let token = PlanToken::from_str(&format!("plan:v1:{}", "A".repeat(43))).unwrap();
+        let plan = serde_json::to_value(GitRemotePlanPayload {
+            plan_token: token,
+            remote_name: "origin".to_owned(),
+            transport: "https",
+            host: "example.invalid".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(plan.as_object().unwrap().len(), 4);
+        assert!(plan.get("url").is_none());
+        assert!(plan.get("path").is_none());
+        assert!(!plan.to_string().contains("token="));
+        let result = serde_json::to_value(GitRemoteResultPayload { connected: false }).unwrap();
+        assert_eq!(result.as_object().unwrap().len(), 1);
+        assert_eq!(result["connected"], false);
+        assert_eq!(
+            git_remote_code(GitRemoteError::InvalidUrl),
+            "invalidRemoteUrl"
+        );
+        assert!(!git_remote_message(GitRemoteError::InvalidUrl).contains("https://"));
+        assert!(!git_remote_message(GitRemoteError::PlanStale).contains("config.lock"));
+        let confirmation = git_remote_confirmation_fields(
+            "origin",
+            "https",
+            "https://example.invalid/team/rehow.git",
+        );
+        assert!(confirmation.contains("origin"));
+        assert!(confirmation.contains("https://example.invalid/team/rehow.git"));
+        assert!(confirmation.contains("will not connect"));
     }
 
     #[test]

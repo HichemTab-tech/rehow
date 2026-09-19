@@ -128,7 +128,7 @@ Every mutation accepts `expected_revision`, a full inventory snapshot, or an ope
 ### Git
 
 - Accepted read surface: `git_capabilities`, `git_status`.
-- Accepted onboarding surface: pathless `git_initialize_plan_open_workspace` / `git_initialize_apply_open_workspace` for the open compatible Workspace. Proposed gated surface: `git_clone_choose_destination/plan/apply`, `git_remote_plan/apply`, `git_commit_plan/commit`, `git_sync_plan/sync`. A command does not exist until its operation ADR/security gate is accepted.
+- Accepted onboarding surface: pathless `git_initialize_plan_open_workspace` / `git_initialize_apply_open_workspace`, plus `git_remote_plan_open_workspace` / `git_remote_apply_open_workspace`; only the remote plan request accepts a bounded name and secret-free URL, and its response omits the URL. Proposed gated surface: `git_clone_choose_destination/plan/apply`, `git_commit_plan/commit`, `git_sync_plan/sync`. A command does not exist until its operation ADR/security gate is accepted.
 
 There is no generic `read_file`, `write_file`, `open_path`, or `run_command` command.
 
@@ -206,7 +206,7 @@ The desktop offers Active, Tested, Draft, Stale, Archived, and All scopes. Tauri
 - Parse porcelain v2 `-z`. Never run user aliases, hooks, submodule commands, repository-selected helpers, difftools, mergetools, or arbitrary refspecs.
 - Read discovery/status is the only accepted baseline. Commit/sync/clone/init remain proposed until separate ADRs define exact config isolation, Git-state CAS, index preservation, managed path scope, incoming-tree validation, journaled materialization, credentials, and conflict behavior.
 - ADR 0021 implements that baseline with fixed root-owned Git/Bubblewrap paths, a cleared environment, machine output, bounded execution, and remote names without URLs. Repository commands receive a read-only Workspace plus a synthetic config-free Git directory assembled from inherited descriptors inside an unshared mount/network namespace; object-info alternates are masked. Gitfiles and common directories are rejected.
-- ADR 0022 accepts only local initialization first. Rust creates a canonical private direct Git directory through the retained Workspace descriptor after a single-use plan and native confirmation; it executes no Git process and uses an exact private marker to resume only Rehow-owned canonical interruption states. Remote connection and clone remain blocked on their accepted ADR deltas.
+- ADR 0022 accepts local initialization and metadata-only remote connection as separate gates. Initialization creates canonical private direct metadata without Git. Remote connection validates a secret-free HTTPS/SSH address, losslessly appends one remote section through an exact config revision and native-held plan, and uses a durable `config.lock` plus atomic exchange for same-request recovery. It performs no network or credential operation. Clone remains blocked on its accepted ADR delta.
 
 ## MCP architecture
 

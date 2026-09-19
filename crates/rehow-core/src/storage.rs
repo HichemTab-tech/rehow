@@ -42,9 +42,125 @@ use std::{
     collections::{HashMap, HashSet},
     fmt,
     fs::File,
-    os::fd::OwnedFd,
+    io::{Read, Seek, SeekFrom, Write},
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
     path::Path,
 };
+
+const GIT_CONFIG_LIMIT: usize = 1024 * 1024;
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct GitConfigFiles {
+    pub(crate) config: Vec<u8>,
+    pub(crate) config_mode: u32,
+    config_identity: (u64, u64),
+    pub(crate) lock: Option<Vec<u8>>,
+    pub(crate) lock_mode: Option<u32>,
+    lock_identity: Option<(u64, u64)>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitConfigStorageError {
+    Conflict,
+    Unsafe,
+    Unsupported,
+    TooLarge,
+    Io,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GitConfigMetadata {
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+    mode: u32,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitConfigFault {
+    LockPublished,
+    Exchanged,
+    Quarantined,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitConfigRace {
+    ReplaceConfigBeforeExchange,
+    ReplaceLockBeforeQuarantine,
+}
+
+#[cfg(test)]
+thread_local! {
+    static GIT_CONFIG_FAULT: std::cell::Cell<Option<GitConfigFault>> = const { std::cell::Cell::new(None) };
+    static GIT_CONFIG_RACE: std::cell::Cell<Option<GitConfigRace>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_git_config_fault(fault: GitConfigFault) {
+    GIT_CONFIG_FAULT.set(Some(fault));
+}
+
+#[cfg(test)]
+pub(crate) fn set_git_config_race(race: GitConfigRace) {
+    GIT_CONFIG_RACE.set(Some(race));
+}
+
+#[cfg(test)]
+fn git_config_fail(point: GitConfigFault) -> Result<(), GitConfigStorageError> {
+    if GIT_CONFIG_FAULT.get() == Some(point) {
+        GIT_CONFIG_FAULT.set(None);
+        Err(GitConfigStorageError::Unsupported)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+fn git_config_race(point: GitConfigRace, directory: &OwnedFd) -> Result<(), GitConfigStorageError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    if GIT_CONFIG_RACE.get() != Some(point) {
+        return Ok(());
+    }
+    GIT_CONFIG_RACE.set(None);
+    let root = std::path::PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
+    match point {
+        GitConfigRace::ReplaceConfigBeforeExchange => {
+            std::fs::write(
+                root.join("race-config"),
+                b"[external]\n\tvalue = before-exchange\n",
+            )
+            .map_err(|_| GitConfigStorageError::Io)?;
+            std::fs::set_permissions(
+                root.join("race-config"),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .map_err(|_| GitConfigStorageError::Io)?;
+            std::fs::rename(root.join("race-config"), root.join("config"))
+                .map_err(|_| GitConfigStorageError::Io)?;
+        }
+        GitConfigRace::ReplaceLockBeforeQuarantine => {
+            std::fs::rename(root.join("config.lock"), root.join("external-saved-lock"))
+                .map_err(|_| GitConfigStorageError::Io)?;
+            std::fs::write(
+                root.join("config.lock"),
+                b"[external]\n\tvalue = before-quarantine\n",
+            )
+            .map_err(|_| GitConfigStorageError::Io)?;
+            std::fs::set_permissions(
+                root.join("config.lock"),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .map_err(|_| GitConfigStorageError::Io)?;
+        }
+    }
+    Ok(())
+}
 
 pub(crate) struct GitRepositoryCapability {
     _work_tree: OwnedFd,
@@ -93,6 +209,372 @@ impl GitRepositoryCapability {
     }
     pub(crate) fn shallow_path(&self) -> Option<&str> {
         self.shallow_path.as_deref()
+    }
+
+    pub(crate) fn read_config_files(&self) -> Result<GitConfigFiles, GitConfigStorageError> {
+        validate_git_directory_for_mutation(&self._git_dir)?;
+        let (config, config_metadata) = read_git_config_entry(&self._git_dir, "config")?
+            .ok_or(GitConfigStorageError::Unsafe)?;
+        let lock = read_git_config_entry(&self._git_dir, "config.lock")?;
+        Ok(GitConfigFiles {
+            config,
+            config_mode: config_metadata.mode,
+            config_identity: (config_metadata.device, config_metadata.inode),
+            lock: lock.as_ref().map(|(bytes, _)| bytes.clone()),
+            lock_mode: lock.as_ref().map(|(_, metadata)| metadata.mode),
+            lock_identity: lock.map(|(_, metadata)| (metadata.device, metadata.inode)),
+        })
+    }
+
+    pub(crate) fn apply_config_candidate(
+        &self,
+        expected: &[u8],
+        candidate: &[u8],
+        mode: u32,
+    ) -> Result<(), GitConfigStorageError> {
+        if expected == candidate || !matches!(mode, 0o600 | 0o644) {
+            return Err(GitConfigStorageError::Unsafe);
+        }
+        let mut state = self.read_config_files()?;
+        if state.config == expected && state.config_mode == mode && state.lock.is_none() {
+            publish_git_config_lock(&self._git_dir, candidate, mode)?;
+            sync_git_directory(&self._git_dir)?;
+            #[cfg(test)]
+            git_config_fail(GitConfigFault::LockPublished)?;
+            state = self.read_config_files()?;
+        }
+        if state.config == expected
+            && state.config_mode == mode
+            && state.lock.as_deref() == Some(candidate)
+            && state.lock_mode == Some(mode)
+        {
+            let expected_config_identity = state.config_identity;
+            let expected_lock_identity = state.lock_identity;
+            #[cfg(test)]
+            git_config_race(GitConfigRace::ReplaceConfigBeforeExchange, &self._git_dir)?;
+            exchange_git_config_and_lock(&self._git_dir)?;
+            sync_git_directory(&self._git_dir)?;
+            #[cfg(test)]
+            git_config_fail(GitConfigFault::Exchanged)?;
+            state = self.read_config_files()?;
+            let exact_exchange = state.config == candidate
+                && state.config_mode == mode
+                && state.config_identity == expected_lock_identity.unwrap_or_default()
+                && state.lock.as_deref() == Some(expected)
+                && state.lock_mode == Some(mode)
+                && state.lock_identity == Some(expected_config_identity);
+            let candidate_identity = state.config_identity;
+            let displaced_identity = state.lock_identity;
+            #[cfg(test)]
+            git_config_race(GitConfigRace::ReplaceLockBeforeQuarantine, &self._git_dir)?;
+            let backup = quarantine_git_config_lock(&self._git_dir)?;
+            #[cfg(test)]
+            git_config_fail(GitConfigFault::Quarantined)?;
+            sync_git_directory(&self._git_dir)?;
+            let preserved = read_git_config_entry(&self._git_dir, &backup)?;
+            let current = self.read_config_files()?;
+            if !exact_exchange
+                || current.config != candidate
+                || current.config_mode != mode
+                || current.config_identity != candidate_identity
+                || preserved.as_ref().is_none_or(|(bytes, metadata)| {
+                    bytes != expected
+                        || metadata.mode != mode
+                        || Some((metadata.device, metadata.inode)) != displaced_identity
+                })
+            {
+                return Err(GitConfigStorageError::Conflict);
+            }
+            return Ok(());
+        } else if state.config == candidate
+            && state.config_mode == mode
+            && state.lock.as_deref() == Some(expected)
+            && state.lock_mode == Some(mode)
+        {
+            let candidate_identity = state.config_identity;
+            let displaced_identity = state.lock_identity;
+            #[cfg(test)]
+            git_config_race(GitConfigRace::ReplaceLockBeforeQuarantine, &self._git_dir)?;
+            let backup = quarantine_git_config_lock(&self._git_dir)?;
+            #[cfg(test)]
+            git_config_fail(GitConfigFault::Quarantined)?;
+            sync_git_directory(&self._git_dir)?;
+            let preserved = read_git_config_entry(&self._git_dir, &backup)?;
+            let current = self.read_config_files()?;
+            if current.config != candidate
+                || current.config_mode != mode
+                || current.config_identity != candidate_identity
+                || preserved.as_ref().is_none_or(|(bytes, metadata)| {
+                    bytes != expected
+                        || metadata.mode != mode
+                        || Some((metadata.device, metadata.inode)) != displaced_identity
+                })
+            {
+                return Err(GitConfigStorageError::Conflict);
+            }
+            return Ok(());
+        } else if state.config != candidate
+            || state.config_mode != mode
+            || state.lock.as_deref() != Some(expected)
+            || state.lock_mode != Some(mode)
+        {
+            return Err(GitConfigStorageError::Conflict);
+        }
+
+        Err(GitConfigStorageError::Conflict)
+    }
+}
+
+fn read_git_config_entry(
+    directory: &OwnedFd,
+    name: &str,
+) -> Result<Option<(Vec<u8>, GitConfigMetadata)>, GitConfigStorageError> {
+    let name = std::ffi::CString::new(name).map_err(|_| GitConfigStorageError::Unsafe)?;
+    // SAFETY: the retained directory and validated NUL-terminated leaf are valid.
+    let raw = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if raw < 0 {
+        let error = std::io::Error::last_os_error();
+        return match error.raw_os_error() {
+            Some(libc::ENOENT) => Ok(None),
+            Some(libc::ELOOP | libc::ENXIO | libc::ENODEV) => Err(GitConfigStorageError::Unsafe),
+            _ => Err(GitConfigStorageError::Io),
+        };
+    }
+    // SAFETY: successful openat returned a newly owned descriptor.
+    let mut file = unsafe { File::from_raw_fd(raw) };
+    let before = git_config_metadata(&file)?;
+    if before.size > GIT_CONFIG_LIMIT as u64 {
+        return Err(GitConfigStorageError::TooLarge);
+    }
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(before.size as usize)
+        .map_err(|_| GitConfigStorageError::TooLarge)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| GitConfigStorageError::Io)?;
+    Read::by_ref(&mut file)
+        .take((GIT_CONFIG_LIMIT as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| GitConfigStorageError::Io)?;
+    if bytes.len() > GIT_CONFIG_LIMIT {
+        return Err(GitConfigStorageError::TooLarge);
+    }
+    let after = git_config_metadata(&file)?;
+    if before != after || bytes.len() as u64 != after.size {
+        return Err(GitConfigStorageError::Conflict);
+    }
+    Ok(Some((bytes, after)))
+}
+
+fn git_config_metadata(file: &File) -> Result<GitConfigMetadata, GitConfigStorageError> {
+    let metadata = file.metadata().map_err(|_| GitConfigStorageError::Io)?;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let mode = metadata.permissions().mode() & 0o7777;
+    if !metadata.file_type().is_file()
+        || metadata.nlink() != 1
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || !matches!(mode, 0o600 | 0o644)
+    {
+        return Err(GitConfigStorageError::Unsafe);
+    }
+    Ok(GitConfigMetadata {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        size: metadata.len(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        changed_seconds: metadata.ctime(),
+        changed_nanoseconds: metadata.ctime_nsec(),
+        mode,
+    })
+}
+
+fn validate_git_directory_for_mutation(directory: &OwnedFd) -> Result<(), GitConfigStorageError> {
+    // SAFETY: descriptor/status are valid.
+    let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(directory.as_raw_fd(), status.as_mut_ptr()) } != 0 {
+        return Err(GitConfigStorageError::Io);
+    }
+    // SAFETY: successful fstat initialized the structure.
+    let status = unsafe { status.assume_init() };
+    if status.st_uid != unsafe { libc::geteuid() }
+        || status.st_mode & libc::S_IFMT != libc::S_IFDIR
+        || status.st_mode & 0o022 != 0
+    {
+        return Err(GitConfigStorageError::Unsafe);
+    }
+    Ok(())
+}
+
+fn publish_git_config_lock(
+    directory: &OwnedFd,
+    candidate: &[u8],
+    mode: u32,
+) -> Result<(), GitConfigStorageError> {
+    // SAFETY: retained directory and static dot component are valid.
+    let raw = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            c".".as_ptr(),
+            libc::O_WRONLY | libc::O_TMPFILE | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            mode,
+        )
+    };
+    if raw < 0 {
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EOPNOTSUPP | libc::EINVAL | libc::EISDIR) => {
+                Err(GitConfigStorageError::Unsupported)
+            }
+            _ => Err(GitConfigStorageError::Io),
+        };
+    }
+    // SAFETY: successful openat returned a newly owned descriptor.
+    let mut file = unsafe { File::from_raw_fd(raw) };
+    // SAFETY: the owned descriptor is valid.
+    if unsafe { libc::fchmod(file.as_raw_fd(), mode) } != 0 {
+        return Err(GitConfigStorageError::Io);
+    }
+    file.write_all(candidate)
+        .map_err(|_| GitConfigStorageError::Io)?;
+    file.sync_all()
+        .map_err(|_| GitConfigStorageError::Unsupported)?;
+    // SAFETY: descriptors and NUL-terminated names are valid.
+    let mut result = unsafe {
+        libc::linkat(
+            file.as_raw_fd(),
+            c"".as_ptr(),
+            directory.as_raw_fd(),
+            c"config.lock".as_ptr(),
+            libc::AT_EMPTY_PATH,
+        )
+    };
+    if result != 0
+        && matches!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EPERM | libc::EINVAL | libc::ENOENT)
+        )
+    {
+        let source = std::ffi::CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
+            .map_err(|_| GitConfigStorageError::Io)?;
+        // SAFETY: source names the open unnamed inode and target is retained.
+        result = unsafe {
+            libc::linkat(
+                libc::AT_FDCWD,
+                source.as_ptr(),
+                directory.as_raw_fd(),
+                c"config.lock".as_ptr(),
+                libc::AT_SYMLINK_FOLLOW,
+            )
+        };
+    }
+    if result != 0 {
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EEXIST) => Err(GitConfigStorageError::Conflict),
+            Some(libc::EOPNOTSUPP | libc::EINVAL | libc::EPERM) => {
+                Err(GitConfigStorageError::Unsupported)
+            }
+            _ => Err(GitConfigStorageError::Io),
+        };
+    }
+    Ok(())
+}
+
+fn exchange_git_config_and_lock(directory: &OwnedFd) -> Result<(), GitConfigStorageError> {
+    // SAFETY: syscall receives a retained directory and static leaf names.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            directory.as_raw_fd(),
+            c"config".as_ptr(),
+            directory.as_raw_fd(),
+            c"config.lock".as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP) => {
+                Err(GitConfigStorageError::Unsupported)
+            }
+            Some(libc::ENOENT) => Err(GitConfigStorageError::Conflict),
+            _ => Err(GitConfigStorageError::Io),
+        }
+    }
+}
+
+fn quarantine_git_config_lock(directory: &OwnedFd) -> Result<String, GitConfigStorageError> {
+    for _ in 0..8 {
+        let mut random = [0_u8; 16];
+        fill_storage_random(&mut random)?;
+        let mut suffix = String::with_capacity(32);
+        for byte in random {
+            use std::fmt::Write as _;
+            write!(&mut suffix, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        let backup = format!("rehow-config-before-v1-{suffix}");
+        let backup_c =
+            std::ffi::CString::new(backup.as_str()).map_err(|_| GitConfigStorageError::Io)?;
+        // No-replace rename clears Git's conventional lock name while moving
+        // whichever inode currently occupies it to an inert, unique backup.
+        // A concurrent replacement is preserved rather than unlinked.
+        // SAFETY: retained directory and NUL-terminated leaf names are valid.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                directory.as_raw_fd(),
+                c"config.lock".as_ptr(),
+                directory.as_raw_fd(),
+                backup_c.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if result == 0 {
+            return Ok(backup);
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EEXIST) => continue,
+            Some(libc::ENOENT) => return Err(GitConfigStorageError::Conflict),
+            Some(libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP) => {
+                return Err(GitConfigStorageError::Unsupported);
+            }
+            _ => return Err(GitConfigStorageError::Io),
+        }
+    }
+    Err(GitConfigStorageError::Conflict)
+}
+
+fn fill_storage_random(bytes: &mut [u8]) -> Result<(), GitConfigStorageError> {
+    let mut filled = 0usize;
+    while filled < bytes.len() {
+        // SAFETY: the remaining slice is writable for the requested length.
+        let result = unsafe {
+            libc::getrandom(bytes[filled..].as_mut_ptr().cast(), bytes.len() - filled, 0)
+        };
+        if result > 0 {
+            filled += result as usize;
+        } else if result == 0
+            || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+        {
+            return Err(GitConfigStorageError::Io);
+        }
+    }
+    Ok(())
+}
+
+fn sync_git_directory(directory: &OwnedFd) -> Result<(), GitConfigStorageError> {
+    // SAFETY: retained directory descriptor is valid.
+    if unsafe { libc::fsync(directory.as_raw_fd()) } == 0 {
+        Ok(())
+    } else {
+        Err(GitConfigStorageError::Unsupported)
     }
 }
 

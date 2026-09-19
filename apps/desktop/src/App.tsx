@@ -1,4 +1,5 @@
 import type { SafeMarkdownDocument } from "@rehow/contracts";
+import type { FormEvent } from "react";
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { MarkdownDocument } from "./MarkdownDocument";
 
@@ -79,6 +80,17 @@ type GitInitPlanPayload = {
 
 type GitInitResultPayload = {
   initialized: boolean;
+};
+
+type GitRemotePlanPayload = {
+  planToken: string;
+  remoteName: string;
+  transport: "https" | "ssh";
+  host: string;
+};
+
+type GitRemoteResultPayload = {
+  connected: boolean;
 };
 
 type WorkspaceWatchEventPayload = {
@@ -675,6 +687,52 @@ export function isGitInitResultPayload(
   );
 }
 
+export function isGitRemotePlanPayload(
+  value: unknown,
+): value is GitRemotePlanPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const plan = value as Partial<GitRemotePlanPayload> & Record<string, unknown>;
+  if (Object.keys(plan).length !== 4) return false;
+  return (
+    typeof plan.planToken === "string" &&
+    /^plan:v1:[A-Za-z0-9_-]{43}$/.test(plan.planToken) &&
+    typeof plan.remoteName === "string" &&
+    plan.remoteName.length >= 1 &&
+    plan.remoteName.length <= 64 &&
+    (plan.transport === "https" || plan.transport === "ssh") &&
+    typeof plan.host === "string" &&
+    plan.host.length >= 1 &&
+    plan.host.length <= 253
+  );
+}
+
+export function isGitRemoteResultPayload(
+  value: unknown,
+): value is GitRemoteResultPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as Partial<GitRemoteResultPayload> &
+    Record<string, unknown>;
+  return (
+    Object.keys(result).length === 1 && typeof result.connected === "boolean"
+  );
+}
+
+export function normalizedRemoteName(value: string) {
+  const normalized = value.trim();
+  return /^[a-z0-9][a-z0-9._-]{0,63}$/.test(normalized) &&
+    !normalized.includes("..") &&
+    !normalized.endsWith(".lock")
+    ? normalized
+    : null;
+}
+
+export function normalizedRemoteUrl(value: string) {
+  const normalized = value.trim();
+  return normalized.length >= 1 && normalized.length <= 2048
+    ? normalized
+    : null;
+}
+
 function folderFactSuffix(facts: FolderFacts) {
   const access = facts.writable
     ? "The folder is writable."
@@ -760,6 +818,11 @@ export function App() {
   const [gitStatus, setGitStatus] = useState<GitStatusPayload | null>(null);
   const [initializingGit, setInitializingGit] = useState(false);
   const [gitInitError, setGitInitError] = useState("");
+  const [connectingRemote, setConnectingRemote] = useState(false);
+  const [remoteFormOpen, setRemoteFormOpen] = useState(false);
+  const [remoteName, setRemoteName] = useState("origin");
+  const [remoteUrl, setRemoteUrl] = useState("");
+  const [remoteError, setRemoteError] = useState("");
   const [selectedId, setSelectedId] = useState(
     () => initialParameter("guide") ?? "",
   );
@@ -836,6 +899,9 @@ export function App() {
   const lastResultRef = useRef<HTMLButtonElement | null>(null);
   const railToggleRef = useRef<HTMLButtonElement>(null);
   const workspaceRefreshRef = useRef<HTMLButtonElement>(null);
+  const remoteButtonRef = useRef<HTMLButtonElement>(null);
+  const remoteNameRef = useRef<HTMLInputElement>(null);
+  const remoteErrorRef = useRef<HTMLParagraphElement>(null);
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const editDetailsButtonRef = useRef<HTMLButtonElement>(null);
   const guideStatusButtonRef = useRef<HTMLButtonElement>(null);
@@ -1070,6 +1136,13 @@ export function App() {
         event.preventDefault();
         searchRef.current?.focus();
       } else if (event.key === "Escape") {
+        if (remoteFormOpen && !connectingRemote) {
+          event.preventDefault();
+          setRemoteFormOpen(false);
+          setRemoteError("");
+          requestAnimationFrame(() => remoteButtonRef.current?.focus());
+          return;
+        }
         if (editingGuide || editingGuideDetails) return;
         if (railOpen) {
           setRailOpen(false);
@@ -1087,7 +1160,14 @@ export function App() {
     }
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [editingGuide, editingGuideDetails, railOpen, readerOpen]);
+  }, [
+    connectingRemote,
+    editingGuide,
+    editingGuideDetails,
+    railOpen,
+    readerOpen,
+    remoteFormOpen,
+  ]);
 
   useEffect(() => {
     if (
@@ -1536,6 +1616,74 @@ export function App() {
       setAnnouncement(failure.message);
     } finally {
       setInitializingGit(false);
+    }
+  }
+
+  function beginRemoteConnection() {
+    if (workspace === null || gitStatus?.kind !== "ready") return;
+    setRemoteName("origin");
+    setRemoteUrl("");
+    setRemoteError("");
+    setRemoteFormOpen(true);
+    requestAnimationFrame(() => remoteNameRef.current?.focus());
+  }
+
+  function cancelRemoteConnection() {
+    if (connectingRemote) return;
+    setRemoteFormOpen(false);
+    setRemoteError("");
+    requestAnimationFrame(() => remoteButtonRef.current?.focus());
+  }
+
+  async function connectRemote(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (workspace === null || connectingRemote) return;
+    const name = normalizedRemoteName(remoteName);
+    const url = normalizedRemoteUrl(remoteUrl);
+    if (name === null || url === null) {
+      setRemoteError(
+        name === null
+          ? "Use a lowercase name with letters, numbers, dots, dashes, or underscores."
+          : "Enter an HTTPS or SSH repository address.",
+      );
+      requestAnimationFrame(() => remoteErrorRef.current?.focus());
+      return;
+    }
+    setRemoteName(name);
+    setRemoteUrl(url);
+    setRemoteError("");
+    setConnectingRemote(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const plan = await invoke<unknown>("git_remote_plan_open_workspace", {
+        remoteName: name,
+        remoteUrl: url,
+      });
+      if (!isGitRemotePlanPayload(plan))
+        throw new Error("invalid Git remote plan");
+      const result = await invoke<unknown>("git_remote_apply_open_workspace", {
+        planToken: plan.planToken,
+      });
+      if (!isGitRemoteResultPayload(result))
+        throw new Error("invalid Git remote result");
+      if (!result.connected) {
+        setAnnouncement("Git remote connection cancelled.");
+        return;
+      }
+      setRemoteFormOpen(false);
+      setRemoteUrl("");
+      setWorkspace((current) => (current === null ? null : { ...current }));
+      setAnnouncement(
+        `Git remote ${plan.remoteName} was added for ${plan.host}. No network connection was made.`,
+      );
+      requestAnimationFrame(() => searchRef.current?.focus());
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setRemoteError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => remoteErrorRef.current?.focus());
+    } finally {
+      setConnectingRemote(false);
     }
   }
 
@@ -3554,6 +3702,110 @@ export function App() {
         )}
       </main>
 
+      {remoteFormOpen ? (
+        <section
+          id="git-remote-panel"
+          className="git-remote-panel"
+          aria-labelledby="git-remote-heading"
+        >
+          <form
+            className="git-remote-form"
+            aria-busy={connectingRemote}
+            onSubmit={(event) => void connectRemote(event)}
+          >
+            <div className="git-remote-heading">
+              <div>
+                <h2 id="git-remote-heading">Connect a Git Remote</h2>
+                <p>Rehow updates config only and does not connect.</p>
+              </div>
+              <button
+                type="button"
+                className="panel-close"
+                aria-label="Close Git remote form"
+                disabled={connectingRemote}
+                onClick={cancelRemoteConnection}
+              >
+                ×
+              </button>
+            </div>
+            <label htmlFor="git-remote-name">Remote name</label>
+            <input
+              ref={remoteNameRef}
+              id="git-remote-name"
+              name="git-remote-name"
+              autoComplete="off"
+              spellCheck={false}
+              maxLength={64}
+              value={remoteName}
+              aria-invalid={remoteError !== ""}
+              aria-describedby={
+                remoteError !== "" ? "git-remote-error" : undefined
+              }
+              onChange={(event) => {
+                setRemoteName(event.target.value);
+                setRemoteError("");
+              }}
+            />
+            <label htmlFor="git-remote-url">Repository address</label>
+            <input
+              id="git-remote-url"
+              name="git-remote-url"
+              type="text"
+              inputMode="url"
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              maxLength={2048}
+              placeholder="https://host/owner/repository.git…"
+              translate="no"
+              value={remoteUrl}
+              aria-invalid={remoteError !== ""}
+              aria-describedby={
+                remoteError !== ""
+                  ? "git-remote-help git-remote-error"
+                  : "git-remote-help"
+              }
+              onChange={(event) => {
+                setRemoteUrl(event.target.value);
+                setRemoteError("");
+              }}
+            />
+            <p id="git-remote-help" className="field-help">
+              HTTPS, ssh://, or user@host:path. Do not include passwords or
+              tokens.
+            </p>
+            {remoteError !== "" ? (
+              <p
+                ref={remoteErrorRef}
+                id="git-remote-error"
+                className="git-remote-error"
+                role="alert"
+                tabIndex={-1}
+              >
+                {remoteError}
+              </p>
+            ) : null}
+            <div className="git-remote-actions">
+              <button
+                type="button"
+                className="button"
+                disabled={connectingRemote}
+                onClick={cancelRemoteConnection}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="button button-primary"
+                disabled={connectingRemote}
+              >
+                {connectingRemote ? "Reviewing…" : "Review Connection"}
+              </button>
+            </div>
+          </form>
+        </section>
+      ) : null}
+
       <footer className="status-bar">
         <span>
           <span className="sync-indicator" aria-hidden="true" />
@@ -3579,6 +3831,18 @@ export function App() {
               disabled={initializingGit}
             >
               {initializingGit ? "Initializing…" : "Initialize Git"}
+            </button>
+          ) : null}
+          {workspace?.facts.writable && gitStatus?.kind === "ready" ? (
+            <button
+              ref={remoteButtonRef}
+              type="button"
+              className="status-action"
+              aria-expanded={remoteFormOpen}
+              aria-controls="git-remote-panel"
+              onClick={beginRemoteConnection}
+            >
+              Connect Remote
             </button>
           ) : null}
           {gitInitError !== "" ? (

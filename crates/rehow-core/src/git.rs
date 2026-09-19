@@ -2,12 +2,18 @@
 
 use crate::{
     protocol::{PlanToken, Revision},
-    storage::{GitInitializeStorageError, GitRepositoryCapabilityError, WorkspaceView},
+    storage::{
+        GitConfigStorageError, GitInitializeStorageError, GitRepositoryCapabilityError,
+        WorkspaceView,
+    },
 };
 use std::{
-    fs,
-    io::Read,
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    fmt, fs,
+    io::{Read, Seek, SeekFrom, Write},
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::fs::{MetadataExt, PermissionsExt},
+    },
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
@@ -21,6 +27,9 @@ use std::{
 const OUTPUT_LIMIT: usize = 1024 * 1024;
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_REMOTES: usize = 32;
+const MAX_REMOTE_NAME_BYTES: usize = 64;
+const MAX_REMOTE_URL_BYTES: usize = 2048;
+const MAX_GIT_CONFIG_BYTES: usize = 1024 * 1024;
 
 #[cfg(test)]
 thread_local! {
@@ -146,6 +155,467 @@ pub enum GitInitError {
     Unsafe,
     Unsupported,
     Io,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitRemoteTransport {
+    Https,
+    Ssh,
+}
+
+impl GitRemoteTransport {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Https => "https",
+            Self::Ssh => "ssh",
+        }
+    }
+}
+
+pub struct GitRemotePlan {
+    token: PlanToken,
+    workspace_id: String,
+    manifest_revision: Revision,
+    root_capability_hash: [u8; 32],
+    remote_name: String,
+    remote_url: String,
+    transport: GitRemoteTransport,
+    host: String,
+    expected_config: Vec<u8>,
+    candidate_config: Vec<u8>,
+    config_revision: [u8; 32],
+    candidate_hash: [u8; 32],
+    config_mode: u32,
+}
+
+impl fmt::Debug for GitRemotePlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitRemotePlan")
+            .field("token", &"<redacted>")
+            .field("workspace_id", &self.workspace_id)
+            .field("manifest_revision", &self.manifest_revision)
+            .field("root_capability_hash", &"<redacted>")
+            .field("remote_name", &self.remote_name)
+            .field("remote_url", &"<redacted>")
+            .field("transport", &self.transport)
+            .field("host", &self.host)
+            .field("expected_config", &"<redacted>")
+            .field("candidate_config", &"<redacted>")
+            .field("config_revision", &"<redacted>")
+            .field("candidate_hash", &"<redacted>")
+            .field("config_mode", &self.config_mode)
+            .finish()
+    }
+}
+
+impl GitRemotePlan {
+    pub fn token(&self) -> &PlanToken {
+        &self.token
+    }
+
+    pub fn remote_name(&self) -> &str {
+        &self.remote_name
+    }
+
+    pub fn remote_url(&self) -> &str {
+        &self.remote_url
+    }
+
+    pub fn transport(&self) -> GitRemoteTransport {
+        self.transport
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitRemoteError {
+    InvalidName,
+    InvalidUrl,
+    NotRepository,
+    DuplicateRemote,
+    MalformedConfig,
+    RecoveryRequired,
+    PlanStale,
+    Unsafe,
+    TooLarge,
+    Unsupported,
+    GitUnavailable,
+    Io,
+}
+
+#[derive(Debug)]
+struct ValidRemoteUrl {
+    canonical: String,
+    transport: GitRemoteTransport,
+    host: String,
+}
+
+pub fn plan_git_remote_connect(
+    workspace: &WorkspaceView,
+    remote_name: &str,
+    remote_url: &str,
+) -> Result<GitRemotePlan, GitRemoteError> {
+    if !valid_remote_name(remote_name) {
+        return Err(GitRemoteError::InvalidName);
+    }
+    let url = validate_remote_url(remote_url)?;
+    let capability = workspace
+        .git_repository_capability()
+        .map_err(map_git_remote_capability)?;
+    let files = capability
+        .read_config_files()
+        .map_err(map_git_remote_storage)?;
+    let (expected_config, candidate_config, config_mode) = match files.lock {
+        None => {
+            let candidate = append_remote_config(&files.config, remote_name, &url.canonical)?;
+            (files.config, candidate, files.config_mode)
+        }
+        Some(lock) if files.lock_mode == Some(files.config_mode) => {
+            let pre_exchange = append_remote_config(&files.config, remote_name, &url.canonical)
+                .ok()
+                .filter(|candidate| candidate == &lock);
+            let post_exchange = append_remote_config(&lock, remote_name, &url.canonical)
+                .ok()
+                .filter(|candidate| candidate == &files.config);
+            match (pre_exchange, post_exchange) {
+                (Some(candidate), None) => (files.config, candidate, files.config_mode),
+                (None, Some(candidate)) => (lock, candidate, files.config_mode),
+                _ => return Err(GitRemoteError::RecoveryRequired),
+            }
+        }
+        Some(_) => return Err(GitRemoteError::RecoveryRequired),
+    };
+    let (workspace_id, manifest_revision, root_capability_hash) =
+        workspace.git_initialization_binding();
+    let mut random = [0_u8; 32];
+    fill_random(&mut random).map_err(|_| GitRemoteError::Io)?;
+    let config_revision = git_config_revision(config_mode, &expected_config);
+    let candidate_hash = git_config_revision(config_mode, &candidate_config);
+    Ok(GitRemotePlan {
+        token: PlanToken::from_random_bytes(random),
+        workspace_id,
+        manifest_revision,
+        root_capability_hash,
+        remote_name: remote_name.to_owned(),
+        remote_url: url.canonical,
+        transport: url.transport,
+        host: url.host,
+        expected_config,
+        candidate_config,
+        config_revision,
+        candidate_hash,
+        config_mode,
+    })
+}
+
+pub fn apply_git_remote_connect(
+    workspace: &WorkspaceView,
+    plan: &GitRemotePlan,
+) -> Result<(), GitRemoteError> {
+    let (workspace_id, manifest_revision, root_capability_hash) =
+        workspace.git_initialization_binding();
+    if workspace_id != plan.workspace_id
+        || manifest_revision != plan.manifest_revision
+        || root_capability_hash != plan.root_capability_hash
+    {
+        return Err(GitRemoteError::PlanStale);
+    }
+    if git_config_revision(plan.config_mode, &plan.expected_config) != plan.config_revision
+        || git_config_revision(plan.config_mode, &plan.candidate_config) != plan.candidate_hash
+    {
+        return Err(GitRemoteError::PlanStale);
+    }
+    if !workspace
+        .git_manifest_revision_is_current(plan.manifest_revision)
+        .map_err(|error| map_git_remote_storage(map_git_init_storage_to_remote(error)))?
+    {
+        return Err(GitRemoteError::PlanStale);
+    }
+    let capability = workspace
+        .git_repository_capability()
+        .map_err(map_git_remote_capability)?;
+    capability
+        .apply_config_candidate(
+            &plan.expected_config,
+            &plan.candidate_config,
+            plan.config_mode,
+        )
+        .map_err(map_git_remote_storage)
+}
+
+fn git_config_revision(mode: u32, bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"rehow:git-config:v1\0");
+    hasher.update(&mode.to_le_bytes());
+    hasher.update(&(bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+    *hasher.finalize().as_bytes()
+}
+
+fn map_git_init_storage_to_remote(error: GitInitializeStorageError) -> GitConfigStorageError {
+    match error {
+        GitInitializeStorageError::Conflict => GitConfigStorageError::Conflict,
+        GitInitializeStorageError::Unsafe => GitConfigStorageError::Unsafe,
+        GitInitializeStorageError::Unsupported => GitConfigStorageError::Unsupported,
+        GitInitializeStorageError::Io => GitConfigStorageError::Io,
+    }
+}
+
+fn map_git_remote_capability(error: GitRepositoryCapabilityError) -> GitRemoteError {
+    match error {
+        GitRepositoryCapabilityError::NotRepository => GitRemoteError::NotRepository,
+        GitRepositoryCapabilityError::Unsafe => GitRemoteError::Unsafe,
+        GitRepositoryCapabilityError::Io => GitRemoteError::Io,
+    }
+}
+
+fn map_git_remote_storage(error: GitConfigStorageError) -> GitRemoteError {
+    match error {
+        GitConfigStorageError::Conflict => GitRemoteError::PlanStale,
+        GitConfigStorageError::Unsafe => GitRemoteError::Unsafe,
+        GitConfigStorageError::Unsupported => GitRemoteError::Unsupported,
+        GitConfigStorageError::TooLarge => GitRemoteError::TooLarge,
+        GitConfigStorageError::Io => GitRemoteError::Io,
+    }
+}
+
+fn valid_remote_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_REMOTE_NAME_BYTES
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
+        })
+        && !value.ends_with(".lock")
+        && !value.contains("..")
+}
+
+fn validate_remote_url(value: &str) -> Result<ValidRemoteUrl, GitRemoteError> {
+    if value.is_empty()
+        || value.len() > MAX_REMOTE_URL_BYTES
+        || !value.is_ascii()
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+        || value.contains(['\\', '%', '#', '?'])
+    {
+        return Err(GitRemoteError::InvalidUrl);
+    }
+    if value.contains("://") {
+        validate_remote_uri(value)
+    } else {
+        validate_scp_remote(value)
+    }
+}
+
+fn validate_remote_uri(value: &str) -> Result<ValidRemoteUrl, GitRemoteError> {
+    let parsed = url::Url::parse(value).map_err(|_| GitRemoteError::InvalidUrl)?;
+    let transport = match parsed.scheme() {
+        "https" => GitRemoteTransport::Https,
+        "ssh" => GitRemoteTransport::Ssh,
+        _ => return Err(GitRemoteError::InvalidUrl),
+    };
+    if parsed.as_str() != value
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || parsed.port() == Some(0)
+        || (transport == GitRemoteTransport::Https && !parsed.username().is_empty())
+        || (transport == GitRemoteTransport::Ssh
+            && !parsed.username().is_empty()
+            && !valid_ssh_user(parsed.username()))
+    {
+        return Err(GitRemoteError::InvalidUrl);
+    }
+    let host = parsed.host_str().ok_or(GitRemoteError::InvalidUrl)?;
+    if !valid_remote_host(host) || !valid_remote_path(parsed.path(), true) {
+        return Err(GitRemoteError::InvalidUrl);
+    }
+    Ok(ValidRemoteUrl {
+        canonical: value.to_owned(),
+        transport,
+        host: host.to_owned(),
+    })
+}
+
+fn validate_scp_remote(value: &str) -> Result<ValidRemoteUrl, GitRemoteError> {
+    let (authority, path) = value.split_once(':').ok_or(GitRemoteError::InvalidUrl)?;
+    if authority.contains(':') || path.contains(':') || !valid_remote_path(path, false) {
+        return Err(GitRemoteError::InvalidUrl);
+    }
+    let (user, host) = match authority.rsplit_once('@') {
+        Some((user, host)) if valid_ssh_user(user) => (Some(user), host),
+        Some(_) => return Err(GitRemoteError::InvalidUrl),
+        None => (None, authority),
+    };
+    if !valid_remote_host(host) || user == Some("") {
+        return Err(GitRemoteError::InvalidUrl);
+    }
+    Ok(ValidRemoteUrl {
+        canonical: value.to_owned(),
+        transport: GitRemoteTransport::Ssh,
+        host: host.to_owned(),
+    })
+}
+
+fn valid_ssh_user(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+}
+
+fn valid_remote_host(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && value == value.to_ascii_lowercase()
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label.as_bytes()[0].is_ascii_alphanumeric()
+                && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
+fn valid_remote_path(value: &str, absolute: bool) -> bool {
+    if value.is_empty() || value == "/" || (absolute != value.starts_with('/')) {
+        return false;
+    }
+    value.trim_start_matches('/').split('/').all(|part| {
+        !part.is_empty()
+            && part != "."
+            && part != ".."
+            && part.len() <= 255
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._~+-@".contains(&byte))
+    })
+}
+
+fn append_remote_config(
+    config: &[u8],
+    remote_name: &str,
+    remote_url: &str,
+) -> Result<Vec<u8>, GitRemoteError> {
+    let keys = validate_git_config(config)?;
+    let prefix = format!("remote.{remote_name}.");
+    if keys.iter().any(|key| key.starts_with(&prefix))
+        || contains_remote_section(config, remote_name)
+    {
+        return Err(GitRemoteError::DuplicateRemote);
+    }
+    let separator = if config.is_empty() || config.ends_with(b"\n") {
+        ""
+    } else {
+        "\n"
+    };
+    let section = format!("{separator}[remote \"{remote_name}\"]\n\turl = \"{remote_url}\"\n");
+    let size = config
+        .len()
+        .checked_add(section.len())
+        .ok_or(GitRemoteError::TooLarge)?;
+    if size > MAX_GIT_CONFIG_BYTES {
+        return Err(GitRemoteError::TooLarge);
+    }
+    let mut candidate = Vec::new();
+    candidate
+        .try_reserve_exact(size)
+        .map_err(|_| GitRemoteError::TooLarge)?;
+    candidate.extend_from_slice(config);
+    candidate.extend_from_slice(section.as_bytes());
+    validate_git_config(&candidate)?;
+    Ok(candidate)
+}
+
+fn contains_remote_section(config: &[u8], remote_name: &str) -> bool {
+    config.split(|byte| *byte == b'\n').any(|line| {
+        let Ok(line) = std::str::from_utf8(line) else {
+            return false;
+        };
+        let line = line.trim_matches(|character: char| character.is_ascii_whitespace());
+        let Some(close) = line.find(']') else {
+            return false;
+        };
+        if !line.starts_with('[') {
+            return false;
+        }
+        let inner = line[1..close].trim();
+        if let Some((section, subsection)) = inner.split_once('.')
+            && section.eq_ignore_ascii_case("remote")
+            && subsection == remote_name
+        {
+            return true;
+        }
+        let Some((section, subsection)) = inner.split_once(char::is_whitespace) else {
+            return false;
+        };
+        section.eq_ignore_ascii_case("remote")
+            && subsection
+                .trim()
+                .strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+                == Some(remote_name)
+    })
+}
+
+fn validate_git_config(bytes: &[u8]) -> Result<Vec<String>, GitRemoteError> {
+    if bytes.len() > MAX_GIT_CONFIG_BYTES {
+        return Err(GitRemoteError::TooLarge);
+    }
+    let executable = trusted_executable("/usr/bin/git").ok_or(GitRemoteError::GitUnavailable)?;
+    // A memory file gives Git a held, immutable-for-this-call input without
+    // creating a pathname or writing repository state during planning.
+    // SAFETY: static name is valid and a successful call returns an owned fd.
+    let raw = unsafe { libc::memfd_create(c"rehow-git-config".as_ptr(), 0) };
+    if raw < 0 {
+        return Err(GitRemoteError::Unsupported);
+    }
+    // SAFETY: successful memfd_create returned a newly owned descriptor.
+    let mut file = unsafe { fs::File::from_raw_fd(raw) };
+    file.write_all(bytes).map_err(|_| GitRemoteError::Io)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| GitRemoteError::Io)?;
+    let path = format!("/proc/self/fd/{}", file.as_raw_fd());
+    let output = run_git(
+        &executable,
+        None,
+        &[
+            "config",
+            "--file",
+            &path,
+            "--no-includes",
+            "-z",
+            "--name-only",
+            "--list",
+        ],
+    )
+    .map_err(|error| match error {
+        GitReadError::ExitStatus | GitReadError::InvalidOutput => GitRemoteError::MalformedConfig,
+        GitReadError::OutputLimit => GitRemoteError::TooLarge,
+        GitReadError::Spawn => GitRemoteError::GitUnavailable,
+        GitReadError::Signal | GitReadError::Timeout => GitRemoteError::Io,
+    })?;
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+        .map(|record| {
+            let key = std::str::from_utf8(record).map_err(|_| GitRemoteError::MalformedConfig)?;
+            if key.is_empty() || key.len() > 1024 || key.chars().any(char::is_control) {
+                Err(GitRemoteError::MalformedConfig)
+            } else {
+                Ok(key.to_owned())
+            }
+        })
+        .collect()
 }
 
 pub fn plan_git_initialize(workspace: &WorkspaceView) -> Result<GitInitPlan, GitInitError> {
@@ -701,7 +1171,8 @@ fn safe_git_label(value: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::storage::{
-        GitInitFault, WorkspaceInspection, inspect_workspace, set_git_init_fault,
+        GitConfigFault, GitConfigRace, GitInitFault, WorkspaceInspection, inspect_workspace,
+        set_git_config_fault, set_git_config_race, set_git_init_fault,
     };
     use std::{fs, os::unix::fs::symlink, process::Command};
 
@@ -731,6 +1202,421 @@ mod tests {
             panic!()
         };
         workspace
+    }
+
+    fn initialized_workspace(temp: &Temp) -> Box<WorkspaceView> {
+        let workspace = workspace(temp);
+        let plan = plan_git_initialize(&workspace).unwrap();
+        apply_git_initialize(&workspace, &plan).unwrap();
+        open_workspace(temp)
+    }
+
+    fn config_backups(temp: &Temp) -> Vec<Vec<u8>> {
+        let mut backups = fs::read_dir(temp.0.join(".git"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("rehow-config-before-v1-")
+            })
+            .map(|entry| fs::read(entry.path()).unwrap())
+            .collect::<Vec<_>>();
+        backups.sort();
+        backups
+    }
+
+    #[test]
+    fn remote_name_and_url_grammar_is_conservative_and_secret_free() {
+        for name in ["origin", "upstream-2", "team.mirror", "a_b"] {
+            assert!(valid_remote_name(name), "{name}");
+        }
+        for name in ["", ".origin", "Origin", "a..b", "name.lock", "slash/name"] {
+            assert!(!valid_remote_name(name), "{name}");
+        }
+        assert!(valid_remote_name(&format!("a{}", "b".repeat(63))));
+        assert!(!valid_remote_name(&format!("a{}", "b".repeat(64))));
+        for (value, transport, host) in [
+            (
+                "https://github.com/example/rehow.git",
+                GitRemoteTransport::Https,
+                "github.com",
+            ),
+            (
+                "ssh://git@github.com/example/rehow.git",
+                GitRemoteTransport::Ssh,
+                "github.com",
+            ),
+            (
+                "git@github.com:example/rehow.git",
+                GitRemoteTransport::Ssh,
+                "github.com",
+            ),
+        ] {
+            let parsed = validate_remote_url(value).unwrap();
+            assert_eq!(parsed.canonical, value);
+            assert_eq!(parsed.transport, transport);
+            assert_eq!(parsed.host, host);
+        }
+        for value in [
+            "http://github.com/example/rehow.git",
+            "https://user@github.com/example/rehow.git",
+            "https://github.com/example/rehow.git?token=secret",
+            "ssh://git:secret@github.com/example/rehow.git",
+            "ssh://git@GitHub.com/example/rehow.git",
+            "file:///tmp/rehow.git",
+            "git@github.com:../rehow.git",
+            "git@github.com:example/%72ehow.git",
+            "-uploader pack",
+        ] {
+            assert_eq!(
+                validate_remote_url(value).unwrap_err(),
+                GitRemoteError::InvalidUrl,
+                "{value}"
+            );
+        }
+        fn sized_https_url(length: usize) -> String {
+            let mut value = "https://example.invalid/".to_owned();
+            while length.saturating_sub(value.len()) > 255 {
+                value.push_str(&"a".repeat(255));
+                value.push('/');
+            }
+            value.push_str(&"a".repeat(length - value.len()));
+            value
+        }
+        let exact = sized_https_url(MAX_REMOTE_URL_BYTES);
+        let over = sized_https_url(MAX_REMOTE_URL_BYTES + 1);
+        assert_eq!(exact.len(), MAX_REMOTE_URL_BYTES);
+        assert!(validate_remote_url(&exact).is_ok());
+        assert_eq!(
+            validate_remote_url(&over).unwrap_err(),
+            GitRemoteError::InvalidUrl
+        );
+    }
+
+    #[test]
+    fn connects_remote_without_network_and_preserves_existing_config_bytes() {
+        let temp = Temp::new();
+        let workspace = initialized_workspace(&temp);
+        let config_path = temp.0.join(".git/config");
+        let before = fs::read(&config_path).unwrap();
+        let remote_url = "https://offline.example.invalid/team/rehow.git";
+        let plan = plan_git_remote_connect(&workspace, "origin", remote_url).unwrap();
+        assert_eq!(plan.remote_name(), "origin");
+        assert_eq!(plan.transport(), GitRemoteTransport::Https);
+        assert_eq!(plan.host(), "offline.example.invalid");
+        let debug = format!("{plan:?}");
+        assert!(!debug.contains(remote_url));
+        assert!(!debug.contains("team/rehow"));
+        apply_git_remote_connect(&workspace, &plan).unwrap();
+
+        let after = fs::read(&config_path).unwrap();
+        assert!(after.starts_with(&before));
+        assert_eq!(
+            &after[before.len()..],
+            b"[remote \"origin\"]\n\turl = \"https://offline.example.invalid/team/rehow.git\"\n"
+        );
+        assert!(!temp.0.join(".git/config.lock").exists());
+        assert_eq!(config_backups(&temp), vec![before]);
+        assert!(
+            validate_git_config(&after)
+                .unwrap()
+                .iter()
+                .any(|key| key == "remote.origin.url")
+        );
+        assert!(matches!(
+            plan_git_remote_connect(&workspace, "origin", remote_url),
+            Err(GitRemoteError::DuplicateRemote)
+        ));
+    }
+
+    #[test]
+    fn remote_connect_rejects_stale_and_unrelated_config_state() {
+        let temp = Temp::new();
+        let workspace = initialized_workspace(&temp);
+        let plan =
+            plan_git_remote_connect(&workspace, "origin", "git@example.invalid:team/rehow.git")
+                .unwrap();
+        let config_path = temp.0.join(".git/config");
+        let mut changed = fs::read(&config_path).unwrap();
+        changed.extend_from_slice(b"[safe]\n\tdirectory = /unrelated\n");
+        fs::write(&config_path, &changed).unwrap();
+        assert_eq!(
+            apply_git_remote_connect(&workspace, &plan),
+            Err(GitRemoteError::PlanStale)
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), changed);
+
+        fs::write(temp.0.join(".git/config.lock"), b"unrelated\n").unwrap();
+        assert!(matches!(
+            plan_git_remote_connect(
+                &workspace,
+                "backup",
+                "ssh://git@example.invalid/team/rehow.git"
+            ),
+            Err(GitRemoteError::RecoveryRequired)
+        ));
+        assert_eq!(
+            fs::read(temp.0.join(".git/config.lock")).unwrap(),
+            b"unrelated\n"
+        );
+    }
+
+    #[test]
+    fn same_remote_request_resumes_both_atomic_interruption_states() {
+        for fault in [GitConfigFault::LockPublished, GitConfigFault::Exchanged] {
+            let temp = Temp::new();
+            let workspace = initialized_workspace(&temp);
+            let url = "ssh://git@example.invalid/team/rehow.git";
+            let plan = plan_git_remote_connect(&workspace, "origin", url).unwrap();
+            set_git_config_fault(fault);
+            assert_eq!(
+                apply_git_remote_connect(&workspace, &plan),
+                Err(GitRemoteError::Unsupported)
+            );
+            assert!(temp.0.join(".git/config.lock").exists());
+
+            let reopened = open_workspace(&temp);
+            let resumed = plan_git_remote_connect(&reopened, "origin", url).unwrap();
+            apply_git_remote_connect(&reopened, &resumed).unwrap();
+            assert!(!temp.0.join(".git/config.lock").exists());
+            let config = fs::read_to_string(temp.0.join(".git/config")).unwrap();
+            assert_eq!(config.matches("[remote \"origin\"]").count(), 1);
+            assert_eq!(config_backups(&temp).len(), 1);
+        }
+
+        let committed = Temp::new();
+        let workspace = initialized_workspace(&committed);
+        let url = "ssh://git@example.invalid/team/rehow.git";
+        let plan = plan_git_remote_connect(&workspace, "origin", url).unwrap();
+        set_git_config_fault(GitConfigFault::Quarantined);
+        assert_eq!(
+            apply_git_remote_connect(&workspace, &plan),
+            Err(GitRemoteError::Unsupported)
+        );
+        assert!(!committed.0.join(".git/config.lock").exists());
+        assert_eq!(config_backups(&committed).len(), 1);
+        assert!(matches!(
+            plan_git_remote_connect(&open_workspace(&committed), "origin", url),
+            Err(GitRemoteError::DuplicateRemote)
+        ));
+    }
+
+    #[test]
+    fn concurrent_name_replacements_are_quarantined_never_deleted_or_rolled_back() {
+        let before_exchange = Temp::new();
+        let workspace = initialized_workspace(&before_exchange);
+        let plan = plan_git_remote_connect(
+            &workspace,
+            "origin",
+            "https://example.invalid/team/rehow.git",
+        )
+        .unwrap();
+        set_git_config_race(GitConfigRace::ReplaceConfigBeforeExchange);
+        assert_eq!(
+            apply_git_remote_connect(&workspace, &plan),
+            Err(GitRemoteError::PlanStale)
+        );
+        assert!(
+            config_backups(&before_exchange)
+                .iter()
+                .any(|bytes| bytes == b"[external]\n\tvalue = before-exchange\n")
+        );
+        assert!(!before_exchange.0.join(".git/config.lock").exists());
+
+        let before_quarantine = Temp::new();
+        let workspace = initialized_workspace(&before_quarantine);
+        let expected = fs::read(before_quarantine.0.join(".git/config")).unwrap();
+        let plan = plan_git_remote_connect(
+            &workspace,
+            "origin",
+            "https://example.invalid/team/rehow.git",
+        )
+        .unwrap();
+        set_git_config_race(GitConfigRace::ReplaceLockBeforeQuarantine);
+        assert_eq!(
+            apply_git_remote_connect(&workspace, &plan),
+            Err(GitRemoteError::PlanStale)
+        );
+        assert_eq!(
+            fs::read(before_quarantine.0.join(".git/external-saved-lock")).unwrap(),
+            expected
+        );
+        assert!(
+            config_backups(&before_quarantine)
+                .iter()
+                .any(|bytes| bytes == b"[external]\n\tvalue = before-quarantine\n")
+        );
+        assert!(!before_quarantine.0.join(".git/config.lock").exists());
+    }
+
+    #[test]
+    fn remote_connect_refuses_malformed_and_unsafe_config_entries() {
+        let malformed = Temp::new();
+        let workspace = initialized_workspace(&malformed);
+        fs::write(malformed.0.join(".git/config"), b"[broken\n").unwrap();
+        assert!(matches!(
+            plan_git_remote_connect(
+                &workspace,
+                "origin",
+                "https://example.invalid/team/rehow.git"
+            ),
+            Err(GitRemoteError::MalformedConfig)
+        ));
+
+        let linked = Temp::new();
+        let workspace = initialized_workspace(&linked);
+        fs::hard_link(
+            linked.0.join(".git/config"),
+            linked.0.join("config-second-link"),
+        )
+        .unwrap();
+        assert!(matches!(
+            plan_git_remote_connect(
+                &workspace,
+                "origin",
+                "https://example.invalid/team/rehow.git"
+            ),
+            Err(GitRemoteError::Unsafe)
+        ));
+
+        let symlinked_lock = Temp::new();
+        let workspace = initialized_workspace(&symlinked_lock);
+        symlink(
+            symlinked_lock.0.join("rehow.yaml"),
+            symlinked_lock.0.join(".git/config.lock"),
+        )
+        .unwrap();
+        assert!(matches!(
+            plan_git_remote_connect(
+                &workspace,
+                "origin",
+                "https://example.invalid/team/rehow.git"
+            ),
+            Err(GitRemoteError::Unsafe)
+        ));
+
+        let empty_remote = Temp::new();
+        let workspace = initialized_workspace(&empty_remote);
+        let config_path = empty_remote.0.join(".git/config");
+        let mut config = fs::read(&config_path).unwrap();
+        config.extend_from_slice(b"[REMOTE \"origin\"]\n# deliberately empty\n");
+        fs::write(&config_path, config).unwrap();
+        assert!(matches!(
+            plan_git_remote_connect(
+                &workspace,
+                "origin",
+                "https://example.invalid/team/rehow.git"
+            ),
+            Err(GitRemoteError::DuplicateRemote)
+        ));
+
+        let unsafe_mode = Temp::new();
+        let workspace = initialized_workspace(&unsafe_mode);
+        fs::set_permissions(
+            unsafe_mode.0.join(".git/config"),
+            fs::Permissions::from_mode(0o666),
+        )
+        .unwrap();
+        assert!(matches!(
+            plan_git_remote_connect(
+                &workspace,
+                "origin",
+                "https://example.invalid/team/rehow.git"
+            ),
+            Err(GitRemoteError::Unsafe)
+        ));
+
+        let unsafe_directory = Temp::new();
+        let workspace = initialized_workspace(&unsafe_directory);
+        fs::set_permissions(
+            unsafe_directory.0.join(".git"),
+            fs::Permissions::from_mode(0o777),
+        )
+        .unwrap();
+        assert!(matches!(
+            plan_git_remote_connect(
+                &workspace,
+                "origin",
+                "https://example.invalid/team/rehow.git"
+            ),
+            Err(GitRemoteError::Unsafe)
+        ));
+
+        let oversized = Temp::new();
+        let workspace = initialized_workspace(&oversized);
+        fs::write(
+            oversized.0.join(".git/config"),
+            vec![b'#'; MAX_GIT_CONFIG_BYTES + 1],
+        )
+        .unwrap();
+        assert!(matches!(
+            plan_git_remote_connect(
+                &workspace,
+                "origin",
+                "https://example.invalid/team/rehow.git"
+            ),
+            Err(GitRemoteError::TooLarge)
+        ));
+
+        let exact_limit = Temp::new();
+        let workspace = initialized_workspace(&exact_limit);
+        let mut exact_config = Vec::with_capacity(MAX_GIT_CONFIG_BYTES);
+        exact_config.push(b'#');
+        exact_config.resize(MAX_GIT_CONFIG_BYTES - 1, b'a');
+        exact_config.push(b'\n');
+        fs::write(exact_limit.0.join(".git/config"), &exact_config).unwrap();
+        assert_eq!(
+            workspace
+                .git_repository_capability()
+                .unwrap()
+                .read_config_files()
+                .unwrap()
+                .config
+                .len(),
+            MAX_GIT_CONFIG_BYTES
+        );
+        assert!(matches!(
+            plan_git_remote_connect(
+                &workspace,
+                "origin",
+                "https://example.invalid/team/rehow.git"
+            ),
+            Err(GitRemoteError::TooLarge)
+        ));
+
+        let oversized_lock = Temp::new();
+        let workspace = initialized_workspace(&oversized_lock);
+        fs::write(
+            oversized_lock.0.join(".git/config.lock"),
+            vec![b'x'; MAX_GIT_CONFIG_BYTES + 1],
+        )
+        .unwrap();
+        assert!(matches!(
+            plan_git_remote_connect(
+                &workspace,
+                "origin",
+                "https://example.invalid/team/rehow.git"
+            ),
+            Err(GitRemoteError::TooLarge)
+        ));
+
+        let special_lock = Temp::new();
+        let workspace = initialized_workspace(&special_lock);
+        let fifo =
+            std::ffi::CString::new(special_lock.0.join(".git/config.lock").to_str().unwrap())
+                .unwrap();
+        // SAFETY: path is a valid NUL-terminated temporary path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(matches!(
+            plan_git_remote_connect(
+                &workspace,
+                "origin",
+                "https://example.invalid/team/rehow.git"
+            ),
+            Err(GitRemoteError::Unsafe)
+        ));
     }
 
     #[test]
