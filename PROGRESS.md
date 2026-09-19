@@ -5,7 +5,7 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 5B3 in progress — incoming clone-tree validation is complete; next is the isolated fetch/content-validation gate.
+Phase 5B3 in progress — incoming tree validation and pathless destination planning are complete; next is isolated fetch/content validation.
 
 ## Current task
 
@@ -91,10 +91,11 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Added safe Git initialization at signed checkpoint `7df22b9`: capability/revision-bound single-use plans, native confirmation, fresh ancestor and writability checks, process-free canonical repository creation, fsynced unnamed-inode/no-replace file publication, fully flushed private directory trees, inert interruption provenance, nested/symlink/residue refusal, and compact footer action. The single Security Reviewer passed the final implementation with no blocker/high/medium finding.
 - Added safe Git remote connection at signed checkpoint `33d90fa`: strict secret-free remote-name and HTTPS/SSH URL grammars, lossless bounded config preservation, capability/revision-bound single-use plans, exact native confirmation, descriptor-confined atomic config exchange, no-replace before-image quarantine, and deterministic race/interruption coverage. The single Security Reviewer passed the corrected implementation with no blocker/high/medium finding.
 - Added the Phase 5B3A incoming clone-tree envelope at signed checkpoint `3a71e48`: canonical full-width SHA-1/SHA-256 IDs, exact NUL framing/order, Workspace-only paths, regular non-executable blobs, existing file/count/aggregate limits, required manifest, redacted effect hashing, real isolated-Git output coverage, ADR 0023, and no new process/network/filesystem/adapter authority.
+- Added Phase 5B3B1 destination planning at signed checkpoint `1c555f5`: the retained native empty-folder capability and strict secret-free URL become a random one-use Rust-held plan; current emptiness, identity/capability, writability, ancestor Git state, and URL are revalidated while renderer IPC receives only token/transport/host. Selection, cancellation, or local creation invalidates the plan; no network or write authority was added.
 
 ## Work in progress
 
-- Phase 5B3A is complete at signed checkpoint `3a71e48`. Phase 5B3B isolated fetch/content validation and 5B3C journaled materialization/native UX remain. Attachment viewing/export/reveal and MCP mutation remain deferred.
+- Phase 5B3B1 is complete at signed checkpoint `1c555f5`. Phase 5B3B2 isolated fetch/content validation and 5B3C journaled materialization/native UX remain. Attachment viewing/export/reveal and MCP mutation remain deferred.
 
 ## Remaining work
 
@@ -190,6 +191,7 @@ No known regression in accepted phases. If the process is killed after the initi
 - The `7df22b9` initializer executes no Git/config/helper/hook/network process. It uses launch-capability/revision-bound single-use plans, pathless IPC, native confirmation, fresh root/ancestor checks, `O_TMPFILE` plus no-replace publication, exact private modes, full directory fsyncs, and retained marker-bound recovery. Unknown/symlink/nested residue is never overwritten or deleted. The single Security Reviewer passed with no blocker/high/medium finding; unsupported unnamed-inode filesystems fail closed.
 - The `33d90fa` remote connector performs no network or credential-helper operation. It accepts only a strict remote name and canonical secret-free HTTPS/SSH location, parses config with root-owned Git under a cleared environment, and binds exact before/candidate bytes to a one-use native-confirmed plan. The initial review's destructive rollback race was removed: exchanged before-images are moved with no-replace semantics to an inert random `.git` backup and revalidated by bytes and identity. The final Security Reviewer verdict is PASS; the documented low residual is that retained backups may accumulate and may preserve legacy secret-bearing config bytes until identity-safe pruning is designed.
 - ADR 0023 freezes clone into a pure tree envelope, isolated confirmed fetch/content validation, and journaled materialization/ref-CAS pipeline. Checkpoint `3a71e48` implements only the crate-private pure envelope, rejects executable/symlink/gitlink/unknown/Git-active paths, reuses Workspace resource limits, redacts path/OID/hash state, and grants no new filesystem, process, network, credential, or renderer authority. The one Phase 5B3 Security Reviewer is deferred to the first authority-bearing fetch/materialization checkpoint.
+- Checkpoint `1c555f5` adds only pathless read-only destination planning. The selected path, URL, directory identities, and hashes remain native-held and redacted; no confirmation, process, network, credential, marker, Git metadata, or Workspace write occurs. The pending plan is invalidated on every selection lifecycle change.
 
 ## Blockers and human checkpoints
 
@@ -199,10 +201,11 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Latest verified commit
 
-`3a71e48` — signed and verified Phase 5B3A incoming clone-tree validation. This progress-only ledger update follows that feature commit.
+`1c555f5` — signed and verified Phase 5B3B1 clone destination planning. This progress-only ledger update follows that feature commit.
 
 ## Tests last run and results
 
+- 2026-09-19: Phase 5B3B1 checkpoint at `1c555f5`: 327 core tests pass with 1 intentional production-performance ignore, plus 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, and 20 desktop Rust tests. Formatting and locked all-target/all-feature Clippy for core/desktop pass with warnings denied; bootstrap and whitespace checks pass.
 - 2026-09-19: Phase 5B3A checkpoint at `3a71e48`: 6 focused clone-tree tests pass, including an isolated real Git `ls-tree` snapshot and exact/one-over envelopes. The full core gate passes 325 tests with 1 intentional production-performance ignore, plus 18 error-contract, 13 protocol, public-API/trybuild, and 11 unknown-YAML tests. Core all-target/all-feature locked Clippy denies warnings; formatting, bootstrap (23 ADRs), and whitespace checks pass.
 - 2026-09-19: Phase 5B2 Git remote checkpoint at `33d90fa`: the final full gate passed `pnpm check`, 32 Vitest tests, 320 core tests (319 pass and 1 intentional production-performance ignore), 18 error-contract, 13 protocol, 1 public-API/trybuild, 11 unknown-YAML, 19 desktop Rust, and 1 MCP test. Cargo formatting, locked all-Workspace/all-target/all-feature Clippy with warnings denied, production web build, optimized Tauri build, bootstrap, contract drift, and whitespace checks pass. Security Reviewer/xhigh final verdict: PASS with no blocker/high/medium finding.
 - 2026-09-19: Phase 5B1 Git initialization checkpoint at `7df22b9`: 313 normal core tests plus 1 intentional release-only ignore, 18 error-contract, 13 protocol, 1 public-API/trybuild, 11 unknown-YAML, 18 desktop Rust, 1 MCP, and 31 Vitest tests pass. `pnpm check/test/build`, Cargo formatting, locked all-Workspace/all-target/all-feature Clippy with warnings denied, optimized Tauri build, bootstrap/contract/whitespace checks, current Web Interface Guidelines, and focused 7/7 core plus 2/2 native adversarial tests pass. Security Reviewer/xhigh final verdict: PASS with no blocker/high/medium finding.
@@ -376,6 +379,7 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0022, `docs/task-packets/phase-5b1-git-initialize.md`, `docs/evidence/phase-5b1-git-initialize.md`, process-free core Git metadata creation, single-use native plan/apply commands, and the footer action implement Phase 5B1 at `7df22b9`.
 - ADR 0022's remote-connection delta, `docs/task-packets/phase-5b2-git-remote-connect.md`, `docs/evidence/phase-5b2-git-remote-connect.md`, the confined core config mutation, single-use native plan/apply commands, and compact remote form implement Phase 5B2 at `33d90fa`.
 - ADR 0023, `docs/task-packets/phase-5b3a-clone-tree-envelope.md`, `docs/evidence/phase-5b3a-clone-tree-envelope.md`, the crate-private tree parser/effect hash, and the storage path-classification bridge implement Phase 5B3A at `3a71e48`.
+- `docs/task-packets/phase-5b3b1-clone-destination-plan.md`, its evidence, core destination snapshot/plan, and the pathless native plan command implement Phase 5B3B1 at `1c555f5`.
 
 ## Next recommended action
 
@@ -390,6 +394,6 @@ Orchestrator — `gpt-5.6-sol`, high locally for Phase 5B3B implementation under
 1. Read `AGENTS.md` and this file.
 2. Read the Git sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `3a71e48`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `1c555f5`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Resume Phase 5B3B from ADR 0023. Add no checkout or Workspace-content mutation; first bind the unchanged native destination and marker, then connect only the isolated fetch/credential/blob-validation authority described there.
