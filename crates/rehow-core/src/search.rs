@@ -54,31 +54,60 @@ pub enum SearchError {
     TooManyTerms,
 }
 
-pub fn search_workspace(
-    workspace: &WorkspaceView,
-    query: &str,
-    include_archived: bool,
-    limit: usize,
-) -> Result<Vec<SearchHit>, SearchError> {
-    let parsed = SearchQuery::parse(query)?;
-    let limit = limit.min(MAX_SEARCH_RESULTS);
-    if limit == 0 || parsed.terms.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut hits: Vec<(SearchHit, String)> = Vec::new();
+pub(crate) struct SearchIndex {
+    documents: Vec<SearchDocument>,
+}
 
-    for category in workspace.categories() {
-        for loaded in category.guides() {
-            if !include_archived && loaded.effective_status() == GuideStatus::Archived {
+struct SearchDocument {
+    guide_id: GuideId,
+    status: GuideStatus,
+    title: String,
+    fields: SearchFields,
+}
+
+impl SearchIndex {
+    pub(crate) fn build(categories: &[LoadedCategory]) -> Self {
+        let documents = categories
+            .iter()
+            .flat_map(|category| {
+                category.guides().iter().map(|loaded| SearchDocument {
+                    guide_id: *loaded.guide().id(),
+                    status: loaded.effective_status(),
+                    title: normalize(loaded.guide().title()),
+                    fields: SearchFields::extract(category, loaded),
+                })
+            })
+            .collect();
+        Self { documents }
+    }
+
+    fn search(
+        &self,
+        query: &str,
+        include_archived: bool,
+        limit: usize,
+    ) -> Result<Vec<SearchHit>, SearchError> {
+        let parsed = SearchQuery::parse(query)?;
+        let limit = limit.min(MAX_SEARCH_RESULTS);
+        if limit == 0 || parsed.terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut hits: Vec<(SearchHit, &str)> = Vec::new();
+
+        for document in &self.documents {
+            if !include_archived && document.status == GuideStatus::Archived {
                 continue;
             }
-            let fields = SearchFields::extract(category, loaded);
-            if !parsed.terms.iter().all(|term| fields.contains(term)) {
+            if !parsed
+                .terms
+                .iter()
+                .all(|term| document.fields.contains(term))
+            {
                 continue;
             }
-            let (mut base_score, mut matched_fields) = fields.score(&parsed.normalized);
+            let (mut base_score, mut matched_fields) = document.fields.score(&parsed.normalized);
             for term in &parsed.terms {
-                let (term_score, term_fields) = fields.score(term);
+                let (term_score, term_fields) = document.fields.score(term);
                 base_score = base_score.max(term_score);
                 matched_fields.extend(term_fields);
             }
@@ -87,7 +116,7 @@ pub fn search_workspace(
             }
             matched_fields.sort_unstable();
             matched_fields.dedup();
-            let status_tie = match loaded.effective_status() {
+            let status_tie = match document.status {
                 GuideStatus::Tested => 3,
                 GuideStatus::Draft => 2,
                 GuideStatus::Stale => 1,
@@ -95,23 +124,34 @@ pub fn search_workspace(
             };
             hits.push((
                 SearchHit {
-                    guide_id: *loaded.guide().id(),
+                    guide_id: document.guide_id,
                     score: base_score + status_tie,
                     matched_fields,
                 },
-                normalize(loaded.guide().title()),
+                &document.title,
             ));
         }
-    }
 
-    hits.sort_by(|(left, left_title), (right, right_title)| {
-        Reverse(left.score)
-            .cmp(&Reverse(right.score))
-            .then_with(|| left_title.cmp(right_title))
-            .then_with(|| left.guide_id.cmp(&right.guide_id))
-    });
-    hits.truncate(limit);
-    Ok(hits.into_iter().map(|(hit, _)| hit).collect())
+        hits.sort_by(|(left, left_title), (right, right_title)| {
+            Reverse(left.score)
+                .cmp(&Reverse(right.score))
+                .then_with(|| left_title.cmp(right_title))
+                .then_with(|| left.guide_id.cmp(&right.guide_id))
+        });
+        hits.truncate(limit);
+        Ok(hits.into_iter().map(|(hit, _)| hit).collect())
+    }
+}
+
+pub fn search_workspace(
+    workspace: &WorkspaceView,
+    query: &str,
+    include_archived: bool,
+    limit: usize,
+) -> Result<Vec<SearchHit>, SearchError> {
+    workspace
+        .search_index()
+        .search(query, include_archived, limit)
 }
 
 struct SearchQuery {
@@ -665,5 +705,46 @@ mod tests {
             search_workspace(&workspace, &"x".repeat(513), false, 10),
             Err(SearchError::QueryTooLarge)
         );
+    }
+
+    #[test]
+    fn disposable_index_rebuild_tracks_external_changes_and_ignores_malformed_guides() {
+        let (temp, mut workspace) = workspace();
+        assert!(
+            search_workspace(&workspace, "new external token", false, 10)
+                .unwrap()
+                .is_empty()
+        );
+        let guide_path = temp
+            .path()
+            .join("categories/linux/0199a1d7-7b0d-7d8e-a38d-f936c5735e21.md");
+        let source = fs::read_to_string(&guide_path).unwrap();
+        fs::write(
+            &guide_path,
+            source.replace("Edit `/etc/example.conf`.", "New external token."),
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("categories/linux/malformed.md"),
+            "---\ntitle: [not valid\n---\n",
+        )
+        .unwrap();
+        assert!(
+            search_workspace(&workspace, "new external token", false, 10)
+                .unwrap()
+                .is_empty(),
+            "the retained index must not observe disk changes before a successful refresh"
+        );
+
+        crate::storage::refresh_workspace(&mut workspace).unwrap();
+
+        assert_eq!(
+            search_workspace(&workspace, "new external token", false, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(!workspace.issues().is_empty());
+        assert_eq!(workspace.search_index().documents.len(), 4);
     }
 }

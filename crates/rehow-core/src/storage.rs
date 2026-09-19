@@ -150,6 +150,7 @@ pub struct WorkspaceView {
     manifest_revision: Revision,
     categories: Vec<LoadedCategory>,
     issues: Vec<WorkspaceIssue>,
+    search_index: crate::search::SearchIndex,
 }
 
 pub struct LoadedCategory {
@@ -181,6 +182,10 @@ impl WorkspaceView {
 
     pub fn issues(&self) -> &[WorkspaceIssue] {
         &self.issues
+    }
+
+    pub(crate) fn search_index(&self) -> &crate::search::SearchIndex {
+        &self.search_index
     }
 }
 
@@ -932,12 +937,14 @@ fn inspect_open_root(
 
     inspect_attachments(&root, &categories, &mut issues)?;
 
+    let search_index = crate::search::SearchIndex::build(&categories);
     Ok(WorkspaceInspection::Compatible(Box::new(WorkspaceView {
         _root: root,
         manifest,
         manifest_revision,
         categories,
         issues,
+        search_index,
     })))
 }
 
