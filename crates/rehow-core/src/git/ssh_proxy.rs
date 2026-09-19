@@ -17,7 +17,7 @@ struct ProxyTarget {
 }
 
 /// Entry point for the dedicated `rehow-git-ssh` binary. It accepts only
-/// Git's bounded upload-pack argv and delegates to the root-owned OpenSSH
+/// Git's bounded upload-pack or receive-pack argv and delegates to the root-owned OpenSSH
 /// client with a fixed noninteractive policy. It never logs argv or output.
 pub fn run_git_ssh_proxy() -> ExitCode {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
@@ -67,11 +67,11 @@ fn parse_git_ssh_arguments(arguments: &[OsString]) -> Option<ProxyTarget> {
         cursor = cursor.checked_add(2)?;
     }
     let destination = validate_destination(arguments[split])?;
-    let remote_path = parse_upload_pack(arguments[split + 1])?;
+    let remote_command = parse_pack_command(arguments[split + 1])?;
     Some(ProxyTarget {
         port,
         destination,
-        remote_command: format!("git-upload-pack '{remote_path}'"),
+        remote_command,
     })
 }
 
@@ -93,14 +93,21 @@ fn validate_destination(value: &str) -> Option<String> {
     })
 }
 
-fn parse_upload_pack(value: &str) -> Option<&str> {
-    let path = value
-        .strip_prefix("git-upload-pack '")?
-        .strip_suffix('\'')?;
-    if path.len() > 2_048 || !valid_remote_path(path, path.starts_with('/')) {
+fn parse_pack_command(value: &str) -> Option<String> {
+    for service in ["git-upload-pack", "git-receive-pack"] {
+        let prefix = format!("{service} '");
+        let Some(path) = value
+            .strip_prefix(&prefix)
+            .and_then(|path| path.strip_suffix('\''))
+        else {
+            continue;
+        };
+        if path.len() <= 2_048 && valid_remote_path(path, path.starts_with('/')) {
+            return Some(format!("{service} '{path}'"));
+        }
         return None;
     }
-    Some(path)
+    None
 }
 
 fn fixed_ssh_command(executable: &OsStr, target: &ProxyTarget) -> Command {
@@ -202,7 +209,7 @@ mod tests {
     use std::os::unix::ffi::OsStringExt;
 
     #[test]
-    fn parser_accepts_only_git_upload_pack_grammar() {
+    fn parser_accepts_only_git_pack_service_grammar() {
         let target = parse_git_ssh_arguments(&[
             "-o".into(),
             "SendEnv=GIT_PROTOCOL".into(),
@@ -222,6 +229,13 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(relative.port, None);
+
+        let receive = parse_git_ssh_arguments(&[
+            "git@example.invalid".into(),
+            "git-receive-pack '/team/rehow.git'".into(),
+        ])
+        .unwrap();
+        assert_eq!(receive.remote_command, "git-receive-pack '/team/rehow.git'");
     }
 
     #[test]
@@ -250,7 +264,7 @@ mod tests {
                 "git-upload-pack 'x'".into(),
             ],
             vec!["GitHub.com".into(), "git-upload-pack 'x'".into()],
-            vec!["example.invalid".into(), "git-receive-pack 'x'".into()],
+            vec!["example.invalid".into(), "git-upload-archive 'x'".into()],
             vec!["example.invalid".into(), "git-upload-pack '../x'".into()],
             vec![
                 "example.invalid".into(),

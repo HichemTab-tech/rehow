@@ -1,6 +1,6 @@
 # ADR 0025: Safe Git synchronization
 
-- Status: Partially Accepted — manual anonymous-HTTPS synchronization/push and authenticated-SSH clone/sync inspection implemented; authenticated SSH push pending
+- Status: Partially Accepted — manual anonymous-HTTPS and authenticated-SSH clone/sync/push implemented; authenticated HTTPS helpers pending
 - Date: 2026-09-19
 
 ## Context
@@ -73,7 +73,7 @@ This accepted provenance primitive performs no connect, network, SSH/Git process
 
 #### 5D3B2A — fixed Git SSH proxy
 
-The Workspace now compiles a dedicated `rehow-git-ssh` binary, but no product network operation invokes or packages it yet. The proxy accepts only Git's observed SSH upload-pack argv: optional single `-o SendEnv=GIT_PROTOCOL` and canonical nonzero `-p` pairs, one canonical lowercase host with an optional bounded user, and exactly one single-quoted `git-upload-pack` command whose relative or absolute path uses Rehow's existing remote-path grammar. Unknown, duplicate, non-UTF-8, receive-pack, option-like, traversal, quote, whitespace, metacharacter, or trailing command input exits 255 without diagnostics.
+The Workspace compiles a dedicated `rehow-git-ssh` binary. Its initial accepted boundary handled upload-pack only; Phase 5D3C2 extends the same parser to the sole additional service `git-receive-pack`. The proxy accepts optional single `-o SendEnv=GIT_PROTOCOL` and canonical nonzero `-p` pairs, one canonical lowercase host with an optional bounded user, and exactly one single-quoted accepted service command whose relative or absolute path uses Rehow's existing remote-path grammar. Unknown, duplicate, non-UTF-8, other-service, option-like, traversal, quote, whitespace, metacharacter, or trailing command input exits 255 without diagnostics.
 
 Accepted input is reconstructed rather than forwarded. The proxy invokes only root-owned `/usr/bin/ssh` by argv after clearing the environment. It selects `/dev/null` configuration; fixed synthetic home, agent, user-known-host, and global-known-host paths; protocol-v2 `SendEnv`; strict host verification; public-key-only batch authentication; no key files, passwords, keyboard interaction, forwarding, proxy/jump/local/known-host commands, control socket, prompt, or TTY; and fixed connection/liveness bounds. It contains no shell path. OpenSSH's own config-dump parser verifies the complete fixed option set in tests without making a connection.
 
@@ -107,11 +107,17 @@ The accepted sync plan, private staging, complete Workspace validation, and boun
 
 Every remote child preserves the existing process-group cancellation, time, output, staging, history, revision, and active-state checks. Missing resources fail before network use; fixed authentication and host-key failures remain distinct closed errors. The active Workspace, objects, index, refs, config, and reflogs stay read-only during inspection. Authenticated push remains a separate later gate.
 
+#### 5D3C2 — authenticated SSH push
+
+The accepted local-ahead publication state machine now prepares the same sealed SSH resources after native confirmation. Preflight and postflight discovery reuse the exact configured SSH upstream; publication exposes only read-only local objects, synthetic Git metadata, one internally constructed full-OID-to-full-branch refspec, and the fixed proxy. The proxy permits only exact upload-pack or receive-pack commands and still rejects every other remote service, option, path, or trailing input.
+
+Push remains an ordinary server-enforced fast-forward with no force, lease, delete, tag, wildcard, caller refspec, or branch selection. Missing resources, authentication failure, host-key refusal, remote races, rejection, timeout, and uncertain postflight retain the accepted closed outcomes. A disposable loopback bare repository proves wrong-host refusal leaves the remote ref unchanged and successful publication moves it to exactly the validated local commit.
+
 - SSH accepts only the launch-inherited, owner-safe Unix `SSH_AUTH_SOCK`; a compiled fixed-grammar proxy invokes the exact descriptor-mounted system SSH client with a synthetic home, no user config, strict host verification, batch mode, fixed timeouts, and bounded owner-safe `known_hosts` snapshots. It never reads private-key files or accepts proxy/local commands.
 - HTTPS reconstructs only an accepted helper from root-owned system or owner-safe user Git config read with includes disabled. Executables must be root-owned absolute binaries in `/usr/bin` or `/usr/lib/git-core` with no free-form arguments, except the exact root-owned `gh auth git-credential` argv. Shell, relative, owner-writable, URL-scoped executable, proxy, header, askpass, and repository overrides are refused.
 - A compiled credential proxy forwards Git's credential protocol without exposing secret fields to Rehow plans, renderer IPC, errors, `Debug`, logs, evidence, or storage. Credential and SSH processes receive no Workspace or repository mount. Stable results distinguish authentication-required, host-key, unavailable, timeout, remote-changed, and rejected-non-fast-forward outcomes without returning raw Git output.
 
-Authenticated SSH clone and sync inspection are accepted only after their Security Reviews; authenticated SSH push and HTTPS helpers remain gated on equivalent credential canaries and operation-specific review. Scheduled or start-time sync remains opt-in and cannot precede acceptance of the same gates used by manual sync.
+Authenticated SSH clone, sync, and push are accepted only after their Security Reviews; authenticated HTTPS helpers remain gated on equivalent credential canaries and operation-specific review. Scheduled or start-time sync remains opt-in and cannot precede acceptance of the same gates used by manual sync.
 
 ## Consequences
 

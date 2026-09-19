@@ -19,7 +19,7 @@ use rehow_core::{
         GitReadError, GitRemoteError, GitRemotePlan, GitRemoteTransport, GitRepositoryStatus,
         GitSshTransportError, GitSshTransportResources, GitSyncAncestry, GitSyncClassification,
         GitSyncError, apply_git_clone_repository_finalization, apply_git_clone_validation_with_ssh,
-        apply_git_commit, apply_git_initialize, apply_git_push, apply_git_remote_connect,
+        apply_git_commit, apply_git_initialize, apply_git_push_with_ssh, apply_git_remote_connect,
         apply_git_sync_fast_forward, apply_git_sync_inspection_with_ssh, cancel_git_commit_plan,
         capture_git_ssh_agent_provenance, capture_git_ssh_host_keys_provenance,
         capture_git_ssh_proxy_provenance, classify_git_sync_ancestry_with_ssh,
@@ -1810,6 +1810,24 @@ async fn git_push_apply_open_workspace(
         finish_git_sync_apply(&state)?;
         return Ok(GitPushResultPayload::Declined);
     }
+    let ssh = if classification.transport() == GitRemoteTransport::Ssh {
+        match GitSshTransportResources::prepare(
+            &state.ssh_agent_provenance,
+            &state.ssh_host_keys_provenance,
+            &state.ssh_proxy_provenance,
+        ) {
+            Ok(resources) => Some(resources),
+            Err(error) => {
+                finish_git_sync_apply(&state)?;
+                return Err(native_command_error(
+                    git_ssh_transport_code(error),
+                    git_ssh_transport_message(error),
+                ));
+            }
+        }
+    } else {
+        None
+    };
     let worker_app = app.clone();
     let operation = tauri::async_runtime::spawn_blocking(move || {
         let state = worker_app.state::<DesktopState>();
@@ -1822,7 +1840,7 @@ async fn git_push_apply_open_workspace(
         let workspace = guard.as_ref().ok_or_else(|| {
             native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
         })?;
-        apply_git_push(&workspace.view, classification)
+        apply_git_push_with_ssh(&workspace.view, classification, ssh.as_ref())
             .map_err(|error| native_command_error(git_sync_code(error), git_sync_message(error)))
     })
     .await;

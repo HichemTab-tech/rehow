@@ -2322,12 +2322,25 @@ pub fn apply_git_push(
     workspace: &WorkspaceView,
     classification: GitSyncClassification,
 ) -> Result<GitPushOutcome, GitSyncError> {
+    apply_git_push_with_ssh(workspace, classification, None)
+}
+
+/// Publishes through optional launch-captured SSH authority. HTTPS ignores the
+/// authority; SSH fails closed when it is absent.
+pub fn apply_git_push_with_ssh(
+    workspace: &WorkspaceView,
+    classification: GitSyncClassification,
+    ssh: Option<&GitSshTransportResources>,
+) -> Result<GitPushOutcome, GitSyncError> {
+    if classification.transport() == GitRemoteTransport::Ssh && ssh.is_none() {
+        return Err(GitSyncError::UnsupportedTransport);
+    }
     let not_cancelled = AtomicBool::new(false);
     apply_git_push_with(
         workspace,
         classification,
-        |plan| discover_git_sync_remote_head(plan, &not_cancelled, None),
-        execute_exact_git_push,
+        |plan| discover_git_sync_remote_head(plan, &not_cancelled, ssh),
+        |workspace, plan, local_commit| execute_exact_git_push(workspace, plan, local_commit, ssh),
     )
 }
 
@@ -2346,9 +2359,6 @@ where
     }
     let inspection = &classification.inspection;
     let plan = &inspection.plan;
-    if plan.transport != GitRemoteTransport::Https {
-        return Err(GitSyncError::UnsupportedTransport);
-    }
     revalidate_git_sync_plan(workspace, plan)?;
     let expected_remote = inspection.remote_head.object_id();
     let local_commit = plan
@@ -2383,7 +2393,11 @@ fn execute_exact_git_push(
     workspace: &WorkspaceView,
     plan: &GitSyncPlan,
     local_commit: &str,
+    ssh: Option<&GitSshTransportResources>,
 ) -> Result<(), GitSyncError> {
+    if plan.transport == GitRemoteTransport::Ssh && ssh.is_none() {
+        return Err(GitSyncError::UnsupportedTransport);
+    }
     let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
     let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
     let capability = workspace
@@ -2404,12 +2418,15 @@ fn execute_exact_git_push(
         &plan.remote_url,
         local_commit,
         &plan.remote_ref,
+        plan.transport,
+        ssh,
     )?;
-    let push_result = run_clone_command(
+    let push_result = run_clone_command_for_transport(
         command,
         &AtomicBool::new(false),
         PUSH_TIMEOUT,
         CLONE_DISCOVERY_OUTPUT_LIMIT,
+        plan.transport,
     )
     .map(|_| ())
     .map_err(map_clone_discovery_to_sync);
@@ -4520,6 +4537,7 @@ fn remote_discovery_command(
     command
 }
 
+#[allow(clippy::too_many_arguments)]
 fn git_push_command(
     executable: &Path,
     sandbox: &Path,
@@ -4528,6 +4546,8 @@ fn git_push_command(
     remote_url: &str,
     local_commit: &str,
     remote_ref: &str,
+    transport: GitRemoteTransport,
+    ssh: Option<&GitSshTransportResources>,
 ) -> Result<(Command, File), GitSyncError> {
     if validate_object_id(local_commit) != Some(object_format)
         || !remote_ref.starts_with("refs/heads/")
@@ -4616,6 +4636,14 @@ fn git_push_command(
             command.args(["--ro-bind"]).arg(source).arg(destination);
         }
     }
+    if transport == GitRemoteTransport::Ssh {
+        command
+            .env("GIT_SSH", "/home/rehow/bin/rehow-git-ssh")
+            .env("GIT_SSH_VARIANT", "ssh");
+        if let Some(ssh) = ssh {
+            ssh.add_bubblewrap_mounts(&mut command);
+        }
+    }
     command
         .args(["--"])
         .arg(executable)
@@ -4639,9 +4667,17 @@ fn git_push_command(
             "-c",
             "protocol.allow=never",
             "-c",
-            "protocol.https.allow=always",
+            if transport == GitRemoteTransport::Https {
+                "protocol.https.allow=always"
+            } else {
+                "protocol.https.allow=never"
+            },
             "-c",
-            "protocol.ssh.allow=never",
+            if transport == GitRemoteTransport::Ssh {
+                "protocol.ssh.allow=always"
+            } else {
+                "protocol.ssh.allow=never"
+            },
             "push",
             "--porcelain",
             "--no-verify",
@@ -14839,6 +14875,8 @@ mod tests {
             remote_url,
             local_commit,
             remote_ref,
+            GitRemoteTransport::Https,
+            None,
         )
         .unwrap();
         let arguments = command
@@ -14911,6 +14949,39 @@ mod tests {
         );
         assert_eq!(environment["GIT_TERMINAL_PROMPT"].as_deref(), Some("0"));
         assert_eq!(environment["GIT_OPTIONAL_LOCKS"].as_deref(), Some("0"));
+
+        let (ssh_command, _ssh_config) = git_push_command(
+            Path::new("/usr/bin/git"),
+            Path::new("/usr/bin/bwrap"),
+            &capability,
+            GitObjectFormat::Sha1,
+            "ssh://git@example.invalid/team/rehow.git",
+            local_commit,
+            remote_ref,
+            GitRemoteTransport::Ssh,
+            None,
+        )
+        .unwrap();
+        let ssh_arguments = ssh_command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let ssh_environment = ssh_command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            ssh_environment["GIT_SSH"].as_deref(),
+            Some("/home/rehow/bin/rehow-git-ssh")
+        );
+        for required in ["protocol.https.allow=never", "protocol.ssh.allow=always"] {
+            assert!(ssh_arguments.iter().any(|argument| argument == required));
+        }
     }
 
     #[test]
@@ -15272,10 +15343,22 @@ mod tests {
                 .success()
         );
 
+        let remote = Temp::new();
+        assert!(
+            Command::new("/usr/bin/git")
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .args(["clone", "--quiet", "--bare"])
+                .arg(&source.0)
+                .arg(&remote.0)
+                .status()
+                .unwrap()
+                .success()
+        );
         let destination = Temp::new();
         let state = Temp::new();
         let target = empty_target(&destination);
-        let url = format!("ssh://{user}@127.0.0.1:{port}{}", source.0.display());
+        let url = format!("ssh://{user}@127.0.0.1:{port}{}", remote.0.display());
         let plan = plan_git_clone(&target, &url).unwrap();
         let validation = apply_git_clone_validation_with_ssh(
             &target,
@@ -15400,6 +15483,75 @@ mod tests {
         assert_eq!(
             fs::read(sync_workspace.0.join(".git/config")).unwrap(),
             config_before
+        );
+
+        let push_workspace = Temp::new();
+        assert!(
+            Command::new("/usr/bin/git")
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .args(["clone", "--quiet", "--no-local"])
+                .arg(&remote.0)
+                .arg(&push_workspace.0)
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::create_dir_all(push_workspace.0.join("categories")).unwrap();
+        configure_fixture_identity(&push_workspace);
+        fixture_git(&push_workspace, &["remote", "set-url", "origin", &url]);
+        fs::write(
+            push_workspace.0.join("rehow.yaml"),
+            b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: SSH Push\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-20T00:00:00Z\"\n",
+        )
+        .unwrap();
+        fixture_git(&push_workspace, &["add", "--", "rehow.yaml"]);
+        fixture_git(&push_workspace, &["commit", "-qm", "local ahead"]);
+        let push_view = open_workspace(&push_workspace);
+        let inspect_local_ahead = |push_state: &Temp| {
+            let plan = plan_git_sync(&push_view, &push_state.0).unwrap();
+            let inspection = apply_git_sync_inspection_with_ssh(
+                &push_view,
+                &push_state.0,
+                plan,
+                &AtomicBool::new(false),
+                Some(&resources),
+            )
+            .unwrap();
+            classify_git_sync_ancestry_with_ssh(
+                &push_view,
+                inspection,
+                &AtomicBool::new(false),
+                Some(&resources),
+            )
+            .unwrap()
+        };
+        let rejected_push_state = Temp::new();
+        let rejected_push = inspect_local_ahead(&rejected_push_state);
+        assert_eq!(rejected_push.ancestry(), GitSyncAncestry::LocalAhead);
+        assert_eq!(
+            apply_git_push_with_ssh(&push_view, rejected_push, Some(&wrong_resources))
+                .err()
+                .unwrap(),
+            GitSyncError::HostKeyRejected
+        );
+        assert_eq!(
+            fixture_git_stdout(&remote, &["rev-parse", "refs/heads/main"]),
+            commit
+        );
+
+        let push_state = Temp::new();
+        let push_classification = inspect_local_ahead(&push_state);
+        assert_eq!(push_classification.ancestry(), GitSyncAncestry::LocalAhead);
+        let local_head = fixture_git_stdout(&push_workspace, &["rev-parse", "HEAD"]);
+        assert!(
+            apply_git_push_with_ssh(&push_view, push_classification, Some(&resources))
+                .unwrap()
+                .pushed()
+        );
+        assert_eq!(
+            fixture_git_stdout(&remote, &["rev-parse", "refs/heads/main"]),
+            local_head
         );
     }
 
