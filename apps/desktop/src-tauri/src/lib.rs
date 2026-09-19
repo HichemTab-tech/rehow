@@ -16,16 +16,16 @@ use rehow_core::{
     git::{
         GitCloneApplyError, GitCloneError, GitCloneMaterializeError, GitClonePlan,
         GitCloneValidation, GitCommitPlan, GitCommitPlanError, GitInitError, GitInitPlan,
-        GitReadError, GitRemoteError, GitRemotePlan, GitRepositoryStatus, GitSyncAncestry,
-        GitSyncClassification, GitSyncError, apply_git_clone_repository_finalization,
-        apply_git_clone_validation, apply_git_commit, apply_git_initialize, apply_git_push,
-        apply_git_remote_connect, apply_git_sync_fast_forward, apply_git_sync_inspection,
-        cancel_git_commit_plan, capture_git_ssh_agent_provenance,
-        capture_git_ssh_host_keys_provenance, capture_git_ssh_proxy_provenance,
-        classify_git_sync_ancestry, git_commit_recovery_required, git_sync_recovery_required,
-        plan_git_clone, plan_git_commit, plan_git_initialize, plan_git_remote_connect,
-        plan_git_sync, read_git_status, resume_pending_git_commit_publication,
-        resume_pending_git_sync_publication,
+        GitReadError, GitRemoteError, GitRemotePlan, GitRemoteTransport, GitRepositoryStatus,
+        GitSshTransportError, GitSshTransportResources, GitSyncAncestry, GitSyncClassification,
+        GitSyncError, apply_git_clone_repository_finalization, apply_git_clone_validation_with_ssh,
+        apply_git_commit, apply_git_initialize, apply_git_push, apply_git_remote_connect,
+        apply_git_sync_fast_forward, apply_git_sync_inspection, cancel_git_commit_plan,
+        capture_git_ssh_agent_provenance, capture_git_ssh_host_keys_provenance,
+        capture_git_ssh_proxy_provenance, classify_git_sync_ancestry, git_commit_recovery_required,
+        git_sync_recovery_required, plan_git_clone, plan_git_commit, plan_git_initialize,
+        plan_git_remote_connect, plan_git_sync, read_git_status,
+        resume_pending_git_commit_publication, resume_pending_git_sync_publication,
     },
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
     protocol::{AttachmentId, CategoryId, GuideId, PlanToken, Revision},
@@ -51,9 +51,9 @@ const WORKSPACE_INVALIDATED_EVENT: &str = "rehow://workspace-invalidated/v1";
 const GIT_COMMIT_MESSAGE_INPUT_BYTES: usize = 800;
 
 struct DesktopState {
-    _ssh_agent_provenance: rehow_core::git::GitSshAgentProvenance,
-    _ssh_host_keys_provenance: rehow_core::git::GitSshHostKeysProvenance,
-    _ssh_proxy_provenance: rehow_core::git::GitSshProxyProvenance,
+    ssh_agent_provenance: rehow_core::git::GitSshAgentProvenance,
+    ssh_host_keys_provenance: rehow_core::git::GitSshHostKeysProvenance,
+    ssh_proxy_provenance: rehow_core::git::GitSshProxyProvenance,
     workspace: Mutex<Option<DesktopWorkspace>>,
     pending_empty: Mutex<Option<PendingWorkspace>>,
     pending_git_init: Mutex<Option<(PlanToken, GitInitPlan)>>,
@@ -67,9 +67,9 @@ struct DesktopState {
 impl Default for DesktopState {
     fn default() -> Self {
         Self {
-            _ssh_agent_provenance: capture_git_ssh_agent_provenance(),
-            _ssh_host_keys_provenance: capture_git_ssh_host_keys_provenance(),
-            _ssh_proxy_provenance: capture_git_ssh_proxy_provenance(),
+            ssh_agent_provenance: capture_git_ssh_agent_provenance(),
+            ssh_host_keys_provenance: capture_git_ssh_host_keys_provenance(),
+            ssh_proxy_provenance: capture_git_ssh_proxy_provenance(),
             workspace: Mutex::default(),
             pending_empty: Mutex::default(),
             pending_git_init: Mutex::default(),
@@ -2193,12 +2193,6 @@ async fn git_clone_apply_selected_workspace(
                 ),
             },
         )?;
-        if plan.transport() != rehow_core::git::GitRemoteTransport::Https {
-            return Err(native_command_error(
-                "unsupportedTransport",
-                "Anonymous HTTPS is the only clone transport enabled in this build.".to_owned(),
-            ));
-        }
         let selected = state
             .pending_empty
             .lock()
@@ -2220,6 +2214,7 @@ async fn git_clone_apply_selected_workspace(
         lifecycle.finalizing = false;
         (plan, selected)
     };
+    let transport_mode = git_clone_transport_mode(plan.transport());
     let confirmed = rfd::MessageDialog::new()
         .set_parent(&window)
         .set_level(rfd::MessageLevel::Info)
@@ -2250,10 +2245,34 @@ async fn git_clone_apply_selected_workspace(
         ));
     };
 
+    let ssh = if transport_mode == NativeGitCloneTransport::AuthenticatedSsh {
+        match GitSshTransportResources::prepare(
+            &state.ssh_agent_provenance,
+            &state.ssh_host_keys_provenance,
+            &state.ssh_proxy_provenance,
+        ) {
+            Ok(resources) => Some(resources),
+            Err(error) => {
+                restore_selected_after_clone(&state, &cancelled, selected)?;
+                return Err(native_command_error(
+                    git_ssh_transport_code(error),
+                    git_ssh_transport_message(error),
+                ));
+            }
+        }
+    } else {
+        None
+    };
+
     let operation_cancelled = Arc::clone(&cancelled);
     let operation = tauri::async_runtime::spawn_blocking(move || {
-        let result =
-            apply_git_clone_validation(&selected.target, plan, &state_home, &operation_cancelled);
+        let result = apply_git_clone_validation_with_ssh(
+            &selected.target,
+            plan,
+            &state_home,
+            &operation_cancelled,
+            ssh.as_ref(),
+        );
         (selected, result)
     })
     .await;
@@ -2586,6 +2605,19 @@ fn git_clone_confirmation_fields(transport: &str, remote_url: &str) -> String {
     )
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeGitCloneTransport {
+    AnonymousHttps,
+    AuthenticatedSsh,
+}
+
+fn git_clone_transport_mode(transport: GitRemoteTransport) -> NativeGitCloneTransport {
+    match transport {
+        GitRemoteTransport::Https => NativeGitCloneTransport::AnonymousHttps,
+        GitRemoteTransport::Ssh => NativeGitCloneTransport::AuthenticatedSsh,
+    }
+}
+
 fn git_clone_completion_confirmation(remote_url: &str) -> String {
     format!(
         "Rehow validated this Git Workspace:\n\n{remote_url}\n\nComplete the clone now? This writes only the validated Workspace and exact Git metadata into the selected folder. Rehow will not run Guide commands, hooks, or a checkout."
@@ -2602,6 +2634,8 @@ fn git_clone_apply_code(error: GitCloneApplyError) -> &'static str {
         GitCloneApplyError::GitUnavailable => "gitUnavailable",
         GitCloneApplyError::SandboxUnavailable => "sandboxUnavailable",
         GitCloneApplyError::RemoteUnavailable => "remoteUnavailable",
+        GitCloneApplyError::AuthenticationFailed => "authenticationFailed",
+        GitCloneApplyError::HostKeyRejected => "hostKeyRejected",
         GitCloneApplyError::InvalidRepository => "invalidRepository",
         GitCloneApplyError::InvalidWorkspace => "invalidWorkspace",
         GitCloneApplyError::WorkspaceIssues => "workspaceIssues",
@@ -2615,7 +2649,7 @@ fn git_clone_apply_code(error: GitCloneApplyError) -> &'static str {
 fn git_clone_apply_message(error: GitCloneApplyError) -> String {
     match error {
         GitCloneApplyError::UnsupportedTransport => {
-            "Anonymous HTTPS is the only clone transport enabled in this build.".to_owned()
+            "This Git transport is not supported. Use canonical HTTPS or SSH.".to_owned()
         }
         GitCloneApplyError::DestinationChanged => {
             "The selected folder changed. Choose the empty destination again.".to_owned()
@@ -2636,7 +2670,15 @@ fn git_clone_apply_message(error: GitCloneApplyError) -> String {
             "The required Bubblewrap clone sandbox is unavailable.".to_owned()
         }
         GitCloneApplyError::RemoteUnavailable => {
-            "The remote could not be reached anonymously. Check the address and access.".to_owned()
+            "The remote could not be reached. Check the address, network, and access.".to_owned()
+        }
+        GitCloneApplyError::AuthenticationFailed => {
+            "SSH authentication failed. Add the correct key to your existing SSH agent and restart Rehow."
+                .to_owned()
+        }
+        GitCloneApplyError::HostKeyRejected => {
+            "SSH host verification failed. Verify and add the host key with your normal SSH tools, then restart Rehow."
+                .to_owned()
         }
         GitCloneApplyError::InvalidRepository => {
             "The remote does not contain a safe supported Git snapshot.".to_owned()
@@ -2659,6 +2701,44 @@ fn git_clone_apply_message(error: GitCloneApplyError) -> String {
         }
         GitCloneApplyError::Io => {
             "Clone validation could not finish. Check system storage and try again.".to_owned()
+        }
+    }
+}
+
+fn git_ssh_transport_code(error: GitSshTransportError) -> &'static str {
+    match error {
+        GitSshTransportError::AgentUnavailable => "sshAgentUnavailable",
+        GitSshTransportError::HostKeysUnavailable => "sshHostKeysUnavailable",
+        GitSshTransportError::ProxyUnavailable => "sshHelperUnavailable",
+        GitSshTransportError::SshUnavailable => "sshUnavailable",
+        GitSshTransportError::ResourceLimit => "resourceLimit",
+        GitSshTransportError::Io => "io",
+    }
+}
+
+fn git_ssh_transport_message(error: GitSshTransportError) -> String {
+    match error {
+        GitSshTransportError::AgentUnavailable => {
+            "No safe SSH agent was available when Rehow started. Start or unlock your normal agent, then restart Rehow."
+                .to_owned()
+        }
+        GitSshTransportError::HostKeysUnavailable => {
+            "No safe trusted SSH host-key snapshot was available when Rehow started. Verify the host with your normal SSH tools, then restart Rehow."
+                .to_owned()
+        }
+        GitSshTransportError::ProxyUnavailable => {
+            "Rehow’s authenticated Git helper is missing or unsafe. Reinstall this Rehow build."
+                .to_owned()
+        }
+        GitSshTransportError::SshUnavailable => {
+            "The trusted system SSH client is unavailable.".to_owned()
+        }
+        GitSshTransportError::ResourceLimit => {
+            "The trusted SSH host-key files exceed Rehow’s safety limit.".to_owned()
+        }
+        GitSshTransportError::Io => {
+            "Rehow could not prepare its sealed SSH resources. Restart Rehow and try again."
+                .to_owned()
         }
     }
 }
@@ -4640,25 +4720,25 @@ mod tests {
         GitInitResultPayload, GitPushResultPayload, GitRemotePlanPayload, GitRemoteResultPayload,
         GitSyncApplyResultPayload, GitSyncCancelError, GitSyncCancelResultPayload,
         GitSyncInspectionPayload, GitSyncLifecycle, GitSyncRecoveryResultPayload, GuideBodyPayload,
-        GuidePayload, PendingGitPlanError, SearchHighlightPayload, SearchHitPayload,
-        WorkspacePayload, WorkspaceWatchEventPayload, attachment_removal_code,
+        GuidePayload, NativeGitCloneTransport, PendingGitPlanError, SearchHighlightPayload,
+        SearchHitPayload, WorkspacePayload, WorkspaceWatchEventPayload, attachment_removal_code,
         attachment_removal_message, category_create_code, category_create_message,
         category_remove_code, category_remove_message, category_reorder_code,
         category_reorder_message, category_update_code, category_update_message, empty_git_payload,
         git_clone_apply_code, git_clone_apply_message, git_clone_code,
         git_clone_completion_confirmation, git_clone_confirmation_fields,
         git_clone_materialize_code, git_clone_materialize_message, git_clone_message,
-        git_commit_code, git_commit_confirmation_fields, git_commit_message,
-        git_commit_message_input_allowed, git_commit_recovery_confirmation, git_init_code,
-        git_init_confirmation, git_init_message, git_push_ancestry_allowed,
+        git_clone_transport_mode, git_commit_code, git_commit_confirmation_fields,
+        git_commit_message, git_commit_message_input_allowed, git_commit_recovery_confirmation,
+        git_init_code, git_init_confirmation, git_init_message, git_push_ancestry_allowed,
         git_push_confirmation_fields, git_remote_code, git_remote_confirmation_fields,
-        git_remote_message, git_sync_ancestry, git_sync_blocks_workspace_switch, git_sync_code,
-        git_sync_confirmation_fields, git_sync_message, git_sync_recovery_confirmation,
-        guide_create_code, guide_create_message, guide_remove_code, guide_remove_confirmation,
-        guide_remove_message, guide_update_code, guide_update_message, native_command_error,
-        request_git_clone_cancellation, request_git_sync_cancellation, search_status_scope,
-        take_matching_git_plan, workspace_initialization_message, workspace_refresh_code,
-        workspace_refresh_message,
+        git_remote_message, git_ssh_transport_code, git_ssh_transport_message, git_sync_ancestry,
+        git_sync_blocks_workspace_switch, git_sync_code, git_sync_confirmation_fields,
+        git_sync_message, git_sync_recovery_confirmation, guide_create_code, guide_create_message,
+        guide_remove_code, guide_remove_confirmation, guide_remove_message, guide_update_code,
+        guide_update_message, native_command_error, request_git_clone_cancellation,
+        request_git_sync_cancellation, search_status_scope, take_matching_git_plan,
+        workspace_initialization_message, workspace_refresh_code, workspace_refresh_message,
     };
     use rehow_core::{
         application::{
@@ -4668,7 +4748,8 @@ mod tests {
         },
         git::{
             GitCloneApplyError, GitCloneError, GitCloneMaterializeError, GitCloneValidation,
-            GitCommitPlanError, GitInitError, GitRemoteError, GitSyncAncestry, GitSyncError,
+            GitCommitPlanError, GitInitError, GitRemoteError, GitRemoteTransport,
+            GitSshTransportError, GitSyncAncestry, GitSyncError,
         },
         markdown::parse_safe_markdown,
         protocol::PlanToken,
@@ -4729,6 +4810,14 @@ mod tests {
         assert_eq!(plan.as_object().unwrap().len(), 4);
         assert!(plan.get("url").is_none());
         assert!(plan.get("path").is_none());
+        assert_eq!(
+            git_clone_transport_mode(GitRemoteTransport::Https),
+            NativeGitCloneTransport::AnonymousHttps
+        );
+        assert_eq!(
+            git_clone_transport_mode(GitRemoteTransport::Ssh),
+            NativeGitCloneTransport::AuthenticatedSsh
+        );
         assert!(!plan.to_string().contains("token="));
         let result = serde_json::to_value(GitRemoteResultPayload { connected: false }).unwrap();
         assert_eq!(result.as_object().unwrap().len(), 1);
@@ -5010,11 +5099,29 @@ mod tests {
             git_clone_apply_code(GitCloneApplyError::WorkspaceIssues),
             "workspaceIssues"
         );
+        assert_eq!(
+            git_clone_apply_code(GitCloneApplyError::AuthenticationFailed),
+            "authenticationFailed"
+        );
+        assert_eq!(
+            git_clone_apply_code(GitCloneApplyError::HostKeyRejected),
+            "hostKeyRejected"
+        );
+        assert_eq!(
+            git_ssh_transport_code(GitSshTransportError::AgentUnavailable),
+            "sshAgentUnavailable"
+        );
+        assert_eq!(
+            git_ssh_transport_code(GitSshTransportError::SshUnavailable),
+            "sshUnavailable"
+        );
         assert!(
             !git_clone_apply_message(GitCloneApplyError::InvalidRepository)
                 .contains("example.invalid")
         );
         assert!(git_clone_apply_message(GitCloneApplyError::Cancelled).contains("not changed"));
+        assert!(!git_clone_apply_message(GitCloneApplyError::AuthenticationFailed).contains('/'));
+        assert!(!git_ssh_transport_message(GitSshTransportError::ProxyUnavailable).contains('/'));
         assert_eq!(
             git_clone_materialize_code(GitCloneMaterializeError::StagingChanged),
             "stagingChanged"

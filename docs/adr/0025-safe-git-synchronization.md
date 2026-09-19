@@ -1,6 +1,6 @@
 # ADR 0025: Safe Git synchronization
 
-- Status: Partially Accepted — manual anonymous-HTTPS synchronization and exact fast-forward push implemented; authenticated transports pending
+- Status: Partially Accepted — manual anonymous-HTTPS synchronization/push and authenticated-SSH clone implemented; authenticated sync/push pending
 - Date: 2026-09-19
 
 ## Context
@@ -93,11 +93,19 @@ One operation may prepare SSH resources only when the launch-captured agent, hos
 
 A networkless Bubblewrap test proves the fixed socket/key/proxy types are visible and `/workspace` is absent. Missing/unsafe inputs, aggregate overflow, proxy symlink/writable mode, memfd/seal failures, and empty output fail closed. These resources remain crate-private and no clone/sync/push path can construct them yet. The first product SSH operation must add a network child, process-group cancellation/output bounds, stable auth/host-key result mapping, credential canaries, packaging evidence, and the deferred Security Reviewer before authenticated transport is accepted.
 
-- SSH accepts only the launch-inherited, owner-safe Unix `SSH_AUTH_SOCK`; a compiled fixed-grammar proxy invokes root-owned `/usr/bin/ssh` with a synthetic home, no user config, strict host verification, batch mode, fixed timeouts, and bounded owner-safe `known_hosts` plus system host keys. It never reads private-key files or accepts proxy/local commands.
+#### 5D3B3 — authenticated SSH clone
+
+Canonical SSH clone discovery and fetch now consume the launch-captured resources through the existing bounded clone pipeline. The child enables only `protocol.ssh`, selects the fixed proxy through a synthetic path, receives no Workspace or private-key file, and preserves the established cancellation, timeout, output, staging, content-validation, and untouched-destination behavior. The exact root-owned system SSH client is captured outside Bubblewrap's user namespace and descriptor-mounted beside the helper; the proxy executes only that synthetic client path.
+
+Host-key memfds remain sealed and are rewound in each Bubblewrap setup child before `--ro-bind-data`, so discovery and fetch safely reuse the same opaque authority. Bounded stderr is never returned; it is inspected only for fixed OpenSSH authentication and host-key failure signatures and collapsed to closed errors. Missing agent, host keys, helper, or system SSH fail before network access with actionable non-sensitive results.
+
+The standard desktop dev and optimized no-bundle build scripts produce a one-link sibling helper, satisfying launch provenance for current builds. Final installer bundle sidecar layout remains part of the later packaging phase while Tauri bundling is disabled. A disposable loopback test uses a temporary agent, client/host keys, unprivileged `sshd`, Git repository, and compatible Workspace to prove real success and wrong-host-key refusal without public network or user credentials. The deferred Security Reviewer is required before this gate is accepted.
+
+- SSH accepts only the launch-inherited, owner-safe Unix `SSH_AUTH_SOCK`; a compiled fixed-grammar proxy invokes the exact descriptor-mounted system SSH client with a synthetic home, no user config, strict host verification, batch mode, fixed timeouts, and bounded owner-safe `known_hosts` snapshots. It never reads private-key files or accepts proxy/local commands.
 - HTTPS reconstructs only an accepted helper from root-owned system or owner-safe user Git config read with includes disabled. Executables must be root-owned absolute binaries in `/usr/bin` or `/usr/lib/git-core` with no free-form arguments, except the exact root-owned `gh auth git-credential` argv. Shell, relative, owner-writable, URL-scoped executable, proxy, header, askpass, and repository overrides are refused.
 - A compiled credential proxy forwards Git's credential protocol without exposing secret fields to Rehow plans, renderer IPC, errors, `Debug`, logs, evidence, or storage. Credential and SSH processes receive no Workspace or repository mount. Stable results distinguish authentication-required, host-key, unavailable, timeout, remote-changed, and rejected-non-fast-forward outcomes without returning raw Git output.
 
-Authenticated 5D3B transport is not accepted until credential canaries prove that secrets cannot reach IPC/log/error surfaces or untrusted repositories and hostile configuration cannot select an executable. Scheduled or start-time sync remains opt-in and cannot precede acceptance of the same gates used by manual sync.
+Authenticated SSH clone is accepted only after the 5D3B3 Security Review; authenticated sync/push and HTTPS helpers remain gated on equivalent credential canaries and operation-specific review. Scheduled or start-time sync remains opt-in and cannot precede acceptance of the same gates used by manual sync.
 
 ## Consequences
 

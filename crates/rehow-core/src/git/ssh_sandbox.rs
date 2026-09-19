@@ -18,6 +18,7 @@ use std::{
 };
 
 const SANDBOX_PROXY: &str = "/home/rehow/bin/rehow-git-ssh";
+const SANDBOX_SSH_CLIENT: &str = "/home/rehow/bin/ssh";
 const SANDBOX_AGENT: &str = "/run/rehow-agent/agent.sock";
 const SANDBOX_USER_KNOWN_HOSTS: &str = "/home/rehow/.ssh/known_hosts";
 const SANDBOX_SYSTEM_KNOWN_HOSTS: &str = "/home/rehow/.ssh/system_known_hosts";
@@ -59,7 +60,7 @@ pub fn capture_git_ssh_proxy_provenance() -> GitSshProxyProvenance {
     capture_git_ssh_proxy_from(candidate.as_deref())
 }
 
-fn capture_git_ssh_proxy_from(candidate: Option<&Path>) -> GitSshProxyProvenance {
+pub(super) fn capture_git_ssh_proxy_from(candidate: Option<&Path>) -> GitSshProxyProvenance {
     let Some(candidate) = candidate else {
         return GitSshProxyProvenance {
             status: GitSshProxyStatus::NotConfigured,
@@ -143,62 +144,86 @@ fn proxy_metadata_safe(metadata: &fs::Metadata, effective_user: u32) -> bool {
         && metadata.permissions().mode() & 0o111 != 0
 }
 
+fn capture_system_ssh_client(path: &Path) -> Option<File> {
+    match capture_proxy_executable(path) {
+        ProxyCapture::Trusted(executable) if executable.metadata().ok()?.uid() == 0 => {
+            Some(executable)
+        }
+        ProxyCapture::Missing | ProxyCapture::Unsafe | ProxyCapture::Trusted(_) => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum GitSshSandboxError {
+pub enum GitSshTransportError {
     AgentUnavailable,
     HostKeysUnavailable,
     ProxyUnavailable,
+    SshUnavailable,
     ResourceLimit,
     Io,
 }
 
-pub(crate) struct GitSshSandboxResources {
+/// Opaque, launch-bound SSH authority for one or more confined Git reads.
+/// It exposes neither source paths nor descriptors.
+pub struct GitSshTransportResources {
     agent: File,
     proxy: File,
+    ssh_client: File,
     known_hosts: File,
     system_known_hosts: File,
 }
 
-impl GitSshSandboxResources {
-    pub(crate) fn prepare(
+impl std::fmt::Debug for GitSshTransportResources {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GitSshTransportResources")
+            .field("authority", &"<redacted>")
+            .finish()
+    }
+}
+
+impl GitSshTransportResources {
+    pub fn prepare(
         agent: &GitSshAgentProvenance,
         host_keys: &GitSshHostKeysProvenance,
         proxy: &GitSshProxyProvenance,
-    ) -> Result<Self, GitSshSandboxError> {
+    ) -> Result<Self, GitSshTransportError> {
         if agent.status != GitSshAgentStatus::Trusted {
-            return Err(GitSshSandboxError::AgentUnavailable);
+            return Err(GitSshTransportError::AgentUnavailable);
         }
         if host_keys.status != GitSshHostKeysStatus::Trusted {
-            return Err(GitSshSandboxError::HostKeysUnavailable);
+            return Err(GitSshTransportError::HostKeysUnavailable);
         }
         if proxy.status != GitSshProxyStatus::Trusted {
-            return Err(GitSshSandboxError::ProxyUnavailable);
+            return Err(GitSshTransportError::ProxyUnavailable);
         }
         let agent = agent
             ._socket
             .as_ref()
-            .ok_or(GitSshSandboxError::AgentUnavailable)?
+            .ok_or(GitSshTransportError::AgentUnavailable)?
             .try_clone()
-            .map_err(|_| GitSshSandboxError::Io)?;
+            .map_err(|_| GitSshTransportError::Io)?;
         let proxy = proxy
             .executable
             .as_ref()
-            .ok_or(GitSshSandboxError::ProxyUnavailable)?
+            .ok_or(GitSshTransportError::ProxyUnavailable)?
             .try_clone()
-            .map_err(|_| GitSshSandboxError::Io)?;
+            .map_err(|_| GitSshTransportError::Io)?;
+        let ssh_client = capture_system_ssh_client(Path::new("/usr/bin/ssh"))
+            .ok_or(GitSshTransportError::SshUnavailable)?;
         let mut combined = Vec::new();
         for source in &host_keys._sources {
             let extra = source
                 .len()
                 .checked_add(1)
-                .ok_or(GitSshSandboxError::ResourceLimit)?;
+                .ok_or(GitSshTransportError::ResourceLimit)?;
             if combined
                 .len()
                 .checked_add(extra)
-                .ok_or(GitSshSandboxError::ResourceLimit)?
+                .ok_or(GitSshTransportError::ResourceLimit)?
                 > MAX_COMBINED_KNOWN_HOSTS_BYTES
             {
-                return Err(GitSshSandboxError::ResourceLimit);
+                return Err(GitSshTransportError::ResourceLimit);
             }
             combined.extend_from_slice(source);
             if !source.ends_with(b"\n") {
@@ -210,6 +235,7 @@ impl GitSshSandboxResources {
         Ok(Self {
             agent,
             proxy,
+            ssh_client,
             known_hosts,
             system_known_hosts,
         })
@@ -218,6 +244,7 @@ impl GitSshSandboxResources {
     pub(crate) fn add_bubblewrap_mounts(&self, command: &mut Command) {
         let agent_fd = self.agent.as_raw_fd();
         let proxy_fd = self.proxy.as_raw_fd();
+        let ssh_client_fd = self.ssh_client.as_raw_fd();
         let known_hosts_fd = self.known_hosts.as_raw_fd();
         let system_known_hosts_fd = self.system_known_hosts.as_raw_fd();
         command
@@ -227,6 +254,9 @@ impl GitSshSandboxResources {
             .args(["--dir", "/home/rehow/bin", "--ro-bind-fd"])
             .arg(proxy_fd.to_string())
             .arg(SANDBOX_PROXY)
+            .args(["--ro-bind-fd"])
+            .arg(ssh_client_fd.to_string())
+            .arg(SANDBOX_SSH_CLIENT)
             .args([
                 "--dir",
                 "/home/rehow/.ssh",
@@ -243,7 +273,18 @@ impl GitSshSandboxResources {
         // fixed mount/file arguments before it execs the selected child.
         unsafe {
             command.pre_exec(move || {
-                for descriptor in [agent_fd, proxy_fd, known_hosts_fd, system_known_hosts_fd] {
+                for descriptor in [known_hosts_fd, system_known_hosts_fd] {
+                    if libc::lseek(descriptor, 0, libc::SEEK_SET) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                }
+                for descriptor in [
+                    agent_fd,
+                    proxy_fd,
+                    ssh_client_fd,
+                    known_hosts_fd,
+                    system_known_hosts_fd,
+                ] {
                     clear_close_on_exec(descriptor)?;
                 }
                 Ok(())
@@ -268,25 +309,26 @@ fn clear_close_on_exec(descriptor: RawFd) -> io::Result<()> {
     }
 }
 
-fn sealed_memfd(name: &str, bytes: &[u8]) -> Result<File, GitSshSandboxError> {
-    let name = CString::new(name).map_err(|_| GitSshSandboxError::Io)?;
+fn sealed_memfd(name: &str, bytes: &[u8]) -> Result<File, GitSshTransportError> {
+    let name = CString::new(name).map_err(|_| GitSshTransportError::Io)?;
     let descriptor =
         unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) };
     if descriptor < 0 {
-        return Err(GitSshSandboxError::Io);
+        return Err(GitSshTransportError::Io);
     }
     let mut file = unsafe { File::from_raw_fd(descriptor) };
-    file.write_all(bytes).map_err(|_| GitSshSandboxError::Io)?;
-    file.flush().map_err(|_| GitSshSandboxError::Io)?;
+    file.write_all(bytes)
+        .map_err(|_| GitSshTransportError::Io)?;
+    file.flush().map_err(|_| GitSshTransportError::Io)?;
     if unsafe { libc::fchmod(file.as_raw_fd(), 0o400) } != 0 {
-        return Err(GitSshSandboxError::Io);
+        return Err(GitSshTransportError::Io);
     }
     let seals = libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
     if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, seals) } != 0 {
-        return Err(GitSshSandboxError::Io);
+        return Err(GitSshTransportError::Io);
     }
     file.seek(SeekFrom::Start(0))
-        .map_err(|_| GitSshSandboxError::Io)?;
+        .map_err(|_| GitSshTransportError::Io)?;
     Ok(file)
 }
 
@@ -334,6 +376,9 @@ mod tests {
             capture_git_ssh_proxy_from(Some(&linked)).status(),
             GitSshProxyStatus::Unsafe
         );
+        assert!(capture_system_ssh_client(Path::new("/usr/bin/ssh")).is_some());
+        fs::set_permissions(&unsafe_proxy, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(capture_system_ssh_client(&unsafe_proxy).is_none());
     }
 
     #[test]
@@ -344,7 +389,13 @@ mod tests {
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)).unwrap();
         let trusted_agent = GitSshAgentProvenance {
             status: GitSshAgentStatus::Trusted,
-            _socket: Some(super::super::inspect_ssh_agent_path(&socket_path).unwrap()),
+            _socket: Some(
+                fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                    .open(&socket_path)
+                    .unwrap(),
+            ),
         };
         let missing_agent = GitSshAgentProvenance {
             status: GitSshAgentStatus::NotConfigured,
@@ -361,24 +412,24 @@ mod tests {
         let trusted_proxy = capture_git_ssh_proxy_from(Some(Path::new("/usr/bin/true")));
         let missing_proxy = capture_git_ssh_proxy_from(None);
         assert!(matches!(
-            GitSshSandboxResources::prepare(&missing_agent, &trusted_keys, &trusted_proxy),
-            Err(GitSshSandboxError::AgentUnavailable)
+            GitSshTransportResources::prepare(&missing_agent, &trusted_keys, &trusted_proxy),
+            Err(GitSshTransportError::AgentUnavailable)
         ));
         assert!(matches!(
-            GitSshSandboxResources::prepare(&trusted_agent, &missing_keys, &trusted_proxy),
-            Err(GitSshSandboxError::HostKeysUnavailable)
+            GitSshTransportResources::prepare(&trusted_agent, &missing_keys, &trusted_proxy),
+            Err(GitSshTransportError::HostKeysUnavailable)
         ));
         assert!(matches!(
-            GitSshSandboxResources::prepare(&trusted_agent, &trusted_keys, &missing_proxy),
-            Err(GitSshSandboxError::ProxyUnavailable)
+            GitSshTransportResources::prepare(&trusted_agent, &trusted_keys, &missing_proxy),
+            Err(GitSshTransportError::ProxyUnavailable)
         ));
         let oversized = GitSshHostKeysProvenance {
             status: GitSshHostKeysStatus::Trusted,
             _sources: vec![vec![0; MAX_COMBINED_KNOWN_HOSTS_BYTES]],
         };
         assert!(matches!(
-            GitSshSandboxResources::prepare(&trusted_agent, &oversized, &trusted_proxy),
-            Err(GitSshSandboxError::ResourceLimit)
+            GitSshTransportResources::prepare(&trusted_agent, &oversized, &trusted_proxy),
+            Err(GitSshTransportError::ResourceLimit)
         ));
     }
 
@@ -390,14 +441,20 @@ mod tests {
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)).unwrap();
         let agent = GitSshAgentProvenance {
             status: GitSshAgentStatus::Trusted,
-            _socket: Some(super::super::inspect_ssh_agent_path(&socket_path).unwrap()),
+            _socket: Some(
+                fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                    .open(&socket_path)
+                    .unwrap(),
+            ),
         };
         let host_keys = GitSshHostKeysProvenance {
             status: GitSshHostKeysStatus::Trusted,
             _sources: vec![b"example.invalid ssh-ed25519 AAAAC3Nza\n".to_vec()],
         };
         let proxy = capture_git_ssh_proxy_from(Some(Path::new("/usr/bin/true")));
-        let resources = GitSshSandboxResources::prepare(&agent, &host_keys, &proxy).unwrap();
+        let resources = GitSshTransportResources::prepare(&agent, &host_keys, &proxy).unwrap();
         let required_seals =
             libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
         assert_eq!(
@@ -449,6 +506,9 @@ mod tests {
                 "-x",
                 SANDBOX_PROXY,
                 "-a",
+                "-x",
+                SANDBOX_SSH_CLIENT,
+                "-a",
                 "!",
                 "-e",
                 "/workspace",
@@ -457,7 +517,11 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let output = command.output().unwrap();
-        assert!(output.status.success());
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert!(output.stdout.is_empty());
         assert!(output.stderr.is_empty());
     }

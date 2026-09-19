@@ -1,10 +1,11 @@
-use super::{trusted_executable, valid_remote_host, valid_remote_path, valid_ssh_user};
+use super::{valid_remote_host, valid_remote_path, valid_ssh_user};
 use std::{
     ffi::{OsStr, OsString},
     process::{Command, ExitCode, Stdio},
 };
 
 const AGENT_SOCKET: &str = "/run/rehow-agent/agent.sock";
+const SSH_CLIENT: &str = "/home/rehow/bin/ssh";
 const USER_KNOWN_HOSTS_OPTION: &str = "UserKnownHostsFile=/home/rehow/.ssh/known_hosts";
 const SYSTEM_KNOWN_HOSTS_OPTION: &str = "GlobalKnownHostsFile=/home/rehow/.ssh/system_known_hosts";
 
@@ -23,10 +24,7 @@ pub fn run_git_ssh_proxy() -> ExitCode {
     let Some(target) = parse_git_ssh_arguments(&arguments) else {
         return ExitCode::from(255);
     };
-    let Some(executable) = trusted_executable("/usr/bin/ssh") else {
-        return ExitCode::from(255);
-    };
-    let status = match fixed_ssh_command(executable.as_os_str(), &target).status() {
+    let status = match fixed_ssh_command(OsStr::new(SSH_CLIENT), &target).status() {
         Ok(status) => status,
         Err(_) => return ExitCode::from(255),
     };

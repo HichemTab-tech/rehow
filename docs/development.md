@@ -64,6 +64,7 @@ GUI apps may not inherit shell startup `PATH`; Git discovery and smoke tests mus
 ## Test hygiene
 
 - Rust `tempfile`/fixture helpers create unique Workspaces and Git repos under test temporary directories.
+- The authenticated-SSH integration fixture requires the system OpenSSH client tools and `sshd`; it creates only disposable loopback keys, agents, repositories, and trust files.
 - UI tests mock the typed IPC boundary.
 - E2E passes a generated temporary Workspace through test-only launch configuration that cannot ship enabled.
 - Failure injection uses explicit test seams, not sleeps or real power loss.

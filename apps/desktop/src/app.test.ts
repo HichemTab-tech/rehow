@@ -473,21 +473,28 @@ describe("application identity", () => {
     ).toBe(false);
   });
 
-  it("normalizes only anonymous canonical HTTPS clone URLs", () => {
+  it("normalizes bounded secret-free HTTPS and SSH clone inputs for native validation", () => {
     expect(normalizedCloneUrl(" https://example.invalid/team/rehow.git ")).toBe(
       "https://example.invalid/team/rehow.git",
     );
-    expect(
-      normalizedCloneUrl("ssh://git@example.invalid/team/rehow.git"),
-    ).toBeNull();
-    expect(
-      normalizedCloneUrl("https://user@example.invalid/rehow.git"),
-    ).toBeNull();
+    expect(normalizedCloneUrl("ssh://git@example.invalid/team/rehow.git")).toBe(
+      "ssh://git@example.invalid/team/rehow.git",
+    );
+    expect(normalizedCloneUrl("git@example.invalid:team/rehow.git")).toBe(
+      "git@example.invalid:team/rehow.git",
+    );
+    expect(normalizedCloneUrl("https://user@example.invalid/rehow.git")).toBe(
+      "https://user@example.invalid/rehow.git",
+    );
     expect(
       normalizedCloneUrl("https://example.invalid/rehow.git?token=x"),
     ).toBeNull();
-    expect(normalizedCloneUrl("https://Example.invalid/rehow.git")).toBeNull();
-    expect(normalizedCloneUrl("https://example.invalid/")).toBeNull();
+    expect(normalizedCloneUrl("https://Example.invalid/rehow.git")).toBe(
+      "https://Example.invalid/rehow.git",
+    );
+    expect(normalizedCloneUrl("https://example.invalid/")).toBe(
+      "https://example.invalid/",
+    );
   });
 
   it("detects exact Guide editor dirty state", () => {

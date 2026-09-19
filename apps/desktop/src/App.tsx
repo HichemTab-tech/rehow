@@ -1274,19 +1274,7 @@ export function normalizedCloneUrl(value: string) {
     normalized.includes("?")
   )
     return null;
-  try {
-    const parsed = new URL(normalized);
-    return parsed.protocol === "https:" &&
-      parsed.username === "" &&
-      parsed.password === "" &&
-      parsed.hostname !== "" &&
-      parsed.pathname !== "/" &&
-      parsed.toString() === normalized
-      ? normalized
-      : null;
-  } catch {
-    return null;
-  }
+  return normalized;
 }
 
 function folderFactSuffix(facts: FolderFacts) {
@@ -2266,7 +2254,7 @@ export function App() {
     const remoteUrl = normalizedCloneUrl(gitCloneUrl);
     if (remoteUrl === null) {
       setWorkspaceSetupError(
-        "Enter a canonical anonymous HTTPS repository URL without credentials, query text, or a fragment.",
+        "Enter a canonical HTTPS or SSH repository address without a password, query text, or fragment.",
       );
       requestAnimationFrame(() => workspaceSetupErrorRef.current?.focus());
       return;
@@ -2284,7 +2272,7 @@ export function App() {
       const plan = await invoke<unknown>("git_clone_plan_selected_workspace", {
         remoteUrl,
       });
-      if (!isGitClonePlanPayload(plan) || plan.transport !== "https")
+      if (!isGitClonePlanPayload(plan))
         throw new Error("invalid Git clone plan");
       setGitCloneHost(plan.host);
       const result = await invoke<unknown>(
@@ -4476,17 +4464,19 @@ export function App() {
                     className="workspace-setup"
                     onSubmit={(event) => void validateGitClone(event)}
                   >
-                    <label htmlFor="git-clone-url">HTTPS Repository URL</label>
+                    <label htmlFor="git-clone-url">
+                      Git Repository Address
+                    </label>
                     <input
                       ref={gitCloneUrlRef}
                       id="git-clone-url"
                       name="git-clone-url"
-                      type="url"
+                      type="text"
                       inputMode="url"
                       autoComplete="off"
                       spellCheck={false}
                       maxLength={2048}
-                      placeholder="https://github.com/you/rehow-workspace.git…"
+                      placeholder="https://host/you/rehow.git or git@host:you/rehow.git"
                       aria-invalid={workspaceSetupError !== ""}
                       aria-describedby={
                         workspaceSetupError !== ""
@@ -4500,8 +4490,8 @@ export function App() {
                       }}
                     />
                     <span id="git-clone-help" className="workspace-setup-help">
-                      Anonymous HTTPS only. Do not paste credentials or access
-                      tokens.
+                      Use canonical HTTPS, ssh://, or user@host:path. Do not
+                      paste passwords, private keys, or access tokens.
                     </span>
                     <div className="workspace-setup-actions">
                       <button
