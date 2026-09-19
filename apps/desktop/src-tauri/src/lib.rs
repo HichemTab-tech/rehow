@@ -21,10 +21,11 @@ use rehow_core::{
         GitSyncError, apply_git_clone_repository_finalization, apply_git_clone_validation_with_ssh,
         apply_git_commit, apply_git_initialize, apply_git_push_with_ssh, apply_git_remote_connect,
         apply_git_sync_fast_forward, apply_git_sync_inspection_with_ssh, cancel_git_commit_plan,
-        capture_git_ssh_agent_provenance, capture_git_ssh_host_keys_provenance,
-        capture_git_ssh_proxy_provenance, classify_git_sync_ancestry_with_ssh,
-        git_commit_recovery_required, git_sync_recovery_required, plan_git_clone, plan_git_commit,
-        plan_git_initialize, plan_git_remote_connect, plan_git_sync, read_git_status,
+        capture_git_https_credential_provenance, capture_git_ssh_agent_provenance,
+        capture_git_ssh_host_keys_provenance, capture_git_ssh_proxy_provenance,
+        classify_git_sync_ancestry_with_ssh, git_commit_recovery_required,
+        git_sync_recovery_required, plan_git_clone, plan_git_commit, plan_git_initialize,
+        plan_git_remote_connect, plan_git_sync, read_git_status,
         resume_pending_git_commit_publication, resume_pending_git_sync_publication,
     },
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -51,6 +52,7 @@ const WORKSPACE_INVALIDATED_EVENT: &str = "rehow://workspace-invalidated/v1";
 const GIT_COMMIT_MESSAGE_INPUT_BYTES: usize = 800;
 
 struct DesktopState {
+    _https_credential_provenance: rehow_core::git::GitHttpsCredentialProvenance,
     ssh_agent_provenance: rehow_core::git::GitSshAgentProvenance,
     ssh_host_keys_provenance: rehow_core::git::GitSshHostKeysProvenance,
     ssh_proxy_provenance: rehow_core::git::GitSshProxyProvenance,
@@ -67,6 +69,7 @@ struct DesktopState {
 impl Default for DesktopState {
     fn default() -> Self {
         Self {
+            _https_credential_provenance: capture_git_https_credential_provenance(),
             ssh_agent_provenance: capture_git_ssh_agent_provenance(),
             ssh_host_keys_provenance: capture_git_ssh_host_keys_provenance(),
             ssh_proxy_provenance: capture_git_ssh_proxy_provenance(),
@@ -4766,9 +4769,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        APPLICATION_NAME, CategoryPayload, FolderFactsPayload, GitCloneApplyResultPayload,
-        GitCloneCancelResultPayload, GitCloneCompleteResultPayload, GitCloneLifecycle,
-        GitClonePlanPayload, GitCommitCancelResultPayload, GitCommitPlanPayload,
+        APPLICATION_NAME, CategoryPayload, DesktopState, FolderFactsPayload,
+        GitCloneApplyResultPayload, GitCloneCancelResultPayload, GitCloneCompleteResultPayload,
+        GitCloneLifecycle, GitClonePlanPayload, GitCommitCancelResultPayload, GitCommitPlanPayload,
         GitCommitRecoveryResultPayload, GitCommitResultPayload, GitInitPlanPayload,
         GitInitResultPayload, GitPushResultPayload, GitRemotePlanPayload, GitRemoteResultPayload,
         GitSyncApplyResultPayload, GitSyncCancelError, GitSyncCancelResultPayload,
@@ -4801,8 +4804,8 @@ mod tests {
         },
         git::{
             GitCloneApplyError, GitCloneError, GitCloneMaterializeError, GitCloneValidation,
-            GitCommitPlanError, GitInitError, GitRemoteError, GitRemoteTransport,
-            GitSshTransportError, GitSyncAncestry, GitSyncError,
+            GitCommitPlanError, GitHttpsCredentialStatus, GitInitError, GitRemoteError,
+            GitRemoteTransport, GitSshTransportError, GitSyncAncestry, GitSyncError,
         },
         markdown::parse_safe_markdown,
         protocol::PlanToken,
@@ -4818,6 +4821,20 @@ mod tests {
     #[test]
     fn application_name_is_stable() {
         assert_eq!(APPLICATION_NAME, "Rehow");
+    }
+
+    #[test]
+    fn https_credential_provenance_is_retained_only_in_native_state() {
+        let state = DesktopState::default();
+        assert!(matches!(
+            state._https_credential_provenance.status(),
+            GitHttpsCredentialStatus::NotConfigured
+                | GitHttpsCredentialStatus::Trusted
+                | GitHttpsCredentialStatus::Unsafe
+        ));
+        let debug = format!("{:?}", state._https_credential_provenance);
+        assert!(!debug.contains('/'));
+        assert!(!debug.contains("helper ="));
     }
 
     #[test]

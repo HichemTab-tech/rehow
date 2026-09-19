@@ -1,0 +1,17 @@
+# Task Packet: authenticated HTTPS credential-helper provenance
+
+- **Objective:** Capture one explicitly trusted HTTPS credential-helper selection at native launch without invoking the helper, reading a credential, or authorizing network use.
+- **Required reasoning level:** xhigh.
+- **Prerequisites:** Signed Phase 5D3C2 checkpoint `fd5532d`; ADR 0025 authenticated-transport policy.
+- **Allowed files or subsystem:** Core Git credential-provenance module/tests, native launch state, ADR 0025, Git architecture/threat/testing docs, this packet/evidence, and `PROGRESS.md`.
+- **Relevant specifications and ADRs:** ADR 0025 authenticated HTTPS policy; `docs/architecture.md` Git process boundary; `docs/threat-model.md` credential, config, process, and disclosure controls.
+- **Exact required behavior:** At launch, stably snapshot only fixed root-owned system and effective-user-owned global Git config files; parse snapshots with trusted Git and includes disabled; apply ordered empty-value reset semantics; reject scoped or multiple effective helpers; accept only one argument-free helper resolved to an inode-held executable in `/usr/bin` or `/usr/lib/git-core`, or the exact reconstructed `/usr/bin/gh auth git-credential` form. Public state exposes only `notConfigured`, `trusted`, or `unsafe`.
+- **Important states and edge cases:** Missing HOME/XDG/config/helper; relative or unsafe HOME/XDG; symlink, hardlink, writable, wrong-owner, oversized, replaced, or malformed config/helper; includes; empty reset; multiple helpers; shell snippets; free-form arguments; scoped helpers; unknown names; hostile/non-UTF-8 values; parser timeout/output overflow.
+- **Security constraints:** No repository/local/worktree config, include expansion, helper invocation, credential protocol, credential bytes, network, shell, PATH lookup, mutable pathname authority, IPC, logging, or filesystem mutation. Paths, values, identities, and helper names are absent from public `Debug`.
+- **Tests to add or update:** Trusted named/absolute/exact-gh selection; ordered reset; missing state; multiple/scoped/shell/argument/relative rejection; unsafe config/helper metadata and path races; bounded malformed/parser output; redacted public state; native launch retention.
+- **Commands to run:** Focused provenance/native tests; `cargo fmt --all --check`; strict all-Workspace Clippy; `pnpm check`; `pnpm test`; production and optimized Tauri builds; bootstrap/whitespace checks.
+- **Required reviews and artifacts:** One reused Security Reviewer only after the complete provenance gate; evidence records exact authority and test results.
+- **Explicit non-goals:** Calling a helper; forwarding credential protocol; authenticated HTTPS clone/sync/push; renderer/MCP visibility; host-specific selection; proxy/header/askpass support; storing credentials; new dependency.
+- **Definition of done:** Native launch retains only a redacted, inode-held accepted helper capability or a closed unavailable state; adversarial tests and the full gate pass; security review passes; the next invocation gate is explicit.
+- **Expected commit boundary:** Core/native/test/docs implementation in one signed commit; verified progress ledger may follow separately.
+- **Conditions requiring escalation:** Need for shell execution, repository config, arbitrary helper arguments/paths, secret material, external credentials/network, new dependency, or unresolved security finding.

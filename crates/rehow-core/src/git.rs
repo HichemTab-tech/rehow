@@ -1,5 +1,6 @@
 //! Confined Git discovery/status and separately gated repository operations.
 
+mod https_credentials;
 mod ssh_proxy;
 #[allow(
     dead_code,
@@ -7,6 +8,9 @@ mod ssh_proxy;
 )]
 mod ssh_sandbox;
 
+pub use https_credentials::{
+    GitHttpsCredentialProvenance, GitHttpsCredentialStatus, capture_git_https_credential_provenance,
+};
 pub use ssh_proxy::run_git_ssh_proxy;
 pub use ssh_sandbox::{
     GitSshProxyProvenance, GitSshProxyStatus, GitSshTransportError, GitSshTransportResources,
@@ -474,7 +478,6 @@ struct SshAgentFileIdentity {
     inode: u64,
     owner: u32,
     mode: u32,
-    links: u64,
 }
 
 fn ssh_agent_file_identity(metadata: &fs::Metadata) -> SshAgentFileIdentity {
@@ -483,7 +486,6 @@ fn ssh_agent_file_identity(metadata: &fs::Metadata) -> SshAgentFileIdentity {
         inode: metadata.ino(),
         owner: metadata.uid(),
         mode: metadata.mode(),
-        links: metadata.nlink(),
     }
 }
 

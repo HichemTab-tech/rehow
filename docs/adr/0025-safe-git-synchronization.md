@@ -1,6 +1,6 @@
 # ADR 0025: Safe Git synchronization
 
-- Status: Partially Accepted — manual anonymous-HTTPS and authenticated-SSH clone/sync/push implemented; authenticated HTTPS helpers pending
+- Status: Partially Accepted — manual anonymous-HTTPS and authenticated-SSH clone/sync/push plus HTTPS helper provenance implemented; authenticated HTTPS invocation pending
 - Date: 2026-09-19
 
 ## Context
@@ -113,11 +113,17 @@ The accepted local-ahead publication state machine now prepares the same sealed 
 
 Push remains an ordinary server-enforced fast-forward with no force, lease, delete, tag, wildcard, caller refspec, or branch selection. Missing resources, authentication failure, host-key refusal, remote races, rejection, timeout, and uncertain postflight retain the accepted closed outcomes. A disposable loopback bare repository proves wrong-host refusal leaves the remote ref unchanged and successful publication moves it to exactly the validated local commit.
 
+#### 5D3D1 — authenticated HTTPS helper provenance
+
+Native launch now stably snapshots only the fixed `/etc/gitconfig`, XDG global config, and home global config when each existing file has the required root/effective-user ownership, one-link regular type, non-writable mode, safe ancestry, size bound, and unchanged path/descriptor identity. A root-owned Git parser receives only those bounded snapshots on stdin with includes disabled; repository, worktree, and local config are absent. Ordered empty `credential.helper` values reset earlier selections. Multiple effective helpers and every URL-scoped helper are refused.
+
+The sole accepted selection is an argument-free helper resolved and inode-held beneath `/usr/lib/git-core` or `/usr/bin`, or the exact `!/usr/bin/gh auth git-credential` declaration reconstructed as the root-owned `gh` argv in the later invocation gate. Shell snippets, other arguments, relative paths, PATH-selected executables, symlinks, hardlinks, writable/wrong-owner files, malformed/oversized/amplifying config, and replacement races fail closed. Public state and `Debug` expose only `notConfigured`, `trusted`, or `unsafe`. This gate invokes no helper, reads no credential protocol value, performs no network or mutation, and adds no renderer/MCP surface.
+
 - SSH accepts only the launch-inherited, owner-safe Unix `SSH_AUTH_SOCK`; a compiled fixed-grammar proxy invokes the exact descriptor-mounted system SSH client with a synthetic home, no user config, strict host verification, batch mode, fixed timeouts, and bounded owner-safe `known_hosts` snapshots. It never reads private-key files or accepts proxy/local commands.
 - HTTPS reconstructs only an accepted helper from root-owned system or owner-safe user Git config read with includes disabled. Executables must be root-owned absolute binaries in `/usr/bin` or `/usr/lib/git-core` with no free-form arguments, except the exact root-owned `gh auth git-credential` argv. Shell, relative, owner-writable, URL-scoped executable, proxy, header, askpass, and repository overrides are refused.
 - A compiled credential proxy forwards Git's credential protocol without exposing secret fields to Rehow plans, renderer IPC, errors, `Debug`, logs, evidence, or storage. Credential and SSH processes receive no Workspace or repository mount. Stable results distinguish authentication-required, host-key, unavailable, timeout, remote-changed, and rejected-non-fast-forward outcomes without returning raw Git output.
 
-Authenticated SSH clone, sync, and push are accepted only after their Security Reviews; authenticated HTTPS helpers remain gated on equivalent credential canaries and operation-specific review. Scheduled or start-time sync remains opt-in and cannot precede acceptance of the same gates used by manual sync.
+Authenticated SSH clone, sync, and push are accepted only after their Security Reviews. HTTPS helper provenance is accepted only after its Security Review; helper invocation and each authenticated HTTPS operation remain gated on credential canaries and operation-specific review. Scheduled or start-time sync remains opt-in and cannot precede acceptance of the same gates used by manual sync.
 
 ## Consequences
 
