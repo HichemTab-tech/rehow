@@ -686,6 +686,166 @@ pub(crate) struct ValidatedGitClone {
     workspace: Box<WorkspaceView>,
 }
 
+/// Opaque native-held clone state that has passed every pre-materialization
+/// validation gate. It deliberately exposes no URL, path, ref, OID, or content.
+pub struct GitCloneValidation {
+    #[allow(dead_code, reason = "consumed by the Phase 5B3C materialization gate")]
+    plan: GitClonePlan,
+    #[allow(dead_code, reason = "consumed by the Phase 5B3C materialization gate")]
+    staging: GitCloneStaging,
+    #[allow(dead_code, reason = "consumed by the Phase 5B3C materialization gate")]
+    remote_head: GitRemoteHead,
+    #[allow(dead_code, reason = "consumed by the Phase 5B3C materialization gate")]
+    validated: ValidatedGitClone,
+}
+
+impl fmt::Debug for GitCloneValidation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitCloneValidation")
+            .field("state", &"<validated>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitCloneApplyError {
+    UnsupportedTransport,
+    DestinationChanged,
+    Cancelled,
+    Timeout,
+    ResourceLimit,
+    GitUnavailable,
+    SandboxUnavailable,
+    RemoteUnavailable,
+    InvalidRepository,
+    InvalidWorkspace,
+    WorkspaceIssues,
+    StagingConflict,
+    Unsafe,
+    Unsupported,
+    Io,
+}
+
+/// Runs the complete pre-materialization clone pipeline. The destination is
+/// revalidated before and after the operation and is never bound into a child
+/// process or written by this function.
+pub fn apply_git_clone_validation(
+    destination: &EmptyWorkspaceTarget,
+    plan: GitClonePlan,
+    state_home: &Path,
+    cancelled: &AtomicBool,
+) -> Result<GitCloneValidation, GitCloneApplyError> {
+    if plan.transport != GitRemoteTransport::Https {
+        return Err(GitCloneApplyError::UnsupportedTransport);
+    }
+    revalidate_git_clone_plan(destination, &plan).map_err(map_clone_apply_destination)?;
+    let result = (|| {
+        let remote_head =
+            discover_git_clone_remote_head(&plan, cancelled).map_err(map_clone_apply_discovery)?;
+        let staging = prepare_git_clone_staging(destination, &plan, &remote_head, state_home)
+            .map_err(map_clone_apply_staging)?;
+        fetch_git_clone_remote(&plan, &remote_head, &staging, cancelled)
+            .map_err(map_clone_apply_discovery)?;
+        let tree = inspect_fetched_git_clone_tree(&staging, &remote_head, cancelled)
+            .map_err(map_clone_apply_inspection)?;
+        let validated = validate_fetched_git_clone(&staging, tree, cancelled)
+            .map_err(map_clone_apply_content)?;
+        Ok((staging, remote_head, validated))
+    })();
+    match result {
+        Ok((staging, remote_head, validated)) => {
+            revalidate_git_clone_plan(destination, &plan)
+                .map_err(|_| GitCloneApplyError::DestinationChanged)?;
+            Ok(GitCloneValidation {
+                plan,
+                staging,
+                remote_head,
+                validated,
+            })
+        }
+        Err(error) => {
+            revalidate_git_clone_plan(destination, &plan)
+                .map_err(|_| GitCloneApplyError::DestinationChanged)?;
+            Err(error)
+        }
+    }
+}
+
+fn map_clone_apply_destination(error: GitCloneError) -> GitCloneApplyError {
+    match error {
+        GitCloneError::Io => GitCloneApplyError::Io,
+        GitCloneError::InvalidUrl
+        | GitCloneError::DestinationChanged
+        | GitCloneError::ReadOnly
+        | GitCloneError::NestedRepository
+        | GitCloneError::Unsafe => GitCloneApplyError::DestinationChanged,
+    }
+}
+
+fn map_clone_apply_discovery(error: GitCloneDiscoveryError) -> GitCloneApplyError {
+    match error {
+        GitCloneDiscoveryError::UnsupportedTransport => GitCloneApplyError::UnsupportedTransport,
+        GitCloneDiscoveryError::GitUnavailable => GitCloneApplyError::GitUnavailable,
+        GitCloneDiscoveryError::SandboxUnavailable => GitCloneApplyError::SandboxUnavailable,
+        GitCloneDiscoveryError::Cancelled => GitCloneApplyError::Cancelled,
+        GitCloneDiscoveryError::Timeout => GitCloneApplyError::Timeout,
+        GitCloneDiscoveryError::OutputLimit => GitCloneApplyError::ResourceLimit,
+        GitCloneDiscoveryError::RemoteUnavailable => GitCloneApplyError::RemoteUnavailable,
+        GitCloneDiscoveryError::InvalidAdvertisement => GitCloneApplyError::InvalidRepository,
+        GitCloneDiscoveryError::Io => GitCloneApplyError::Io,
+    }
+}
+
+fn map_clone_apply_staging(error: GitCloneStageError) -> GitCloneApplyError {
+    match error {
+        GitCloneStageError::DestinationChanged => GitCloneApplyError::DestinationChanged,
+        GitCloneStageError::Conflict => GitCloneApplyError::StagingConflict,
+        GitCloneStageError::Unsafe => GitCloneApplyError::Unsafe,
+        GitCloneStageError::Unsupported => GitCloneApplyError::Unsupported,
+        GitCloneStageError::ResourceLimit => GitCloneApplyError::ResourceLimit,
+        GitCloneStageError::Io => GitCloneApplyError::Io,
+    }
+}
+
+fn map_clone_apply_inspection(error: GitCloneInspectError) -> GitCloneApplyError {
+    match error {
+        GitCloneInspectError::Cancelled => GitCloneApplyError::Cancelled,
+        GitCloneInspectError::Timeout => GitCloneApplyError::Timeout,
+        GitCloneInspectError::OutputLimit => GitCloneApplyError::ResourceLimit,
+        GitCloneInspectError::GitUnavailable => GitCloneApplyError::GitUnavailable,
+        GitCloneInspectError::SandboxUnavailable => GitCloneApplyError::SandboxUnavailable,
+        GitCloneInspectError::Tree(GitCloneTreeError::ResourceLimit) => {
+            GitCloneApplyError::ResourceLimit
+        }
+        GitCloneInspectError::InvalidRepository
+        | GitCloneInspectError::RefMismatch
+        | GitCloneInspectError::Tree(_) => GitCloneApplyError::InvalidRepository,
+        GitCloneInspectError::Io => GitCloneApplyError::Io,
+    }
+}
+
+fn map_clone_apply_content(error: GitCloneContentError) -> GitCloneApplyError {
+    match error {
+        GitCloneContentError::Cancelled => GitCloneApplyError::Cancelled,
+        GitCloneContentError::Timeout => GitCloneApplyError::Timeout,
+        GitCloneContentError::OutputLimit | GitCloneContentError::ResourceLimit => {
+            GitCloneApplyError::ResourceLimit
+        }
+        GitCloneContentError::GitUnavailable => GitCloneApplyError::GitUnavailable,
+        GitCloneContentError::SandboxUnavailable => GitCloneApplyError::SandboxUnavailable,
+        GitCloneContentError::InvalidRepository | GitCloneContentError::BlobMismatch => {
+            GitCloneApplyError::InvalidRepository
+        }
+        GitCloneContentError::InvalidWorkspace => GitCloneApplyError::InvalidWorkspace,
+        GitCloneContentError::WorkspaceIssues => GitCloneApplyError::WorkspaceIssues,
+        GitCloneContentError::Conflict => GitCloneApplyError::StagingConflict,
+        GitCloneContentError::Unsafe => GitCloneApplyError::Unsafe,
+        GitCloneContentError::Unsupported => GitCloneApplyError::Unsupported,
+        GitCloneContentError::Io => GitCloneApplyError::Io,
+    }
+}
+
 impl fmt::Debug for ValidatedGitClone {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -2975,6 +3135,62 @@ mod tests {
             plan_git_clone(&nested, "git@example.com:team/rehow.git"),
             Err(GitCloneError::NestedRepository)
         ));
+    }
+
+    #[test]
+    fn clone_apply_orchestration_rejects_transport_cancel_and_destination_drift() {
+        let ssh_destination = Temp::new();
+        let ssh_target = empty_target(&ssh_destination);
+        let ssh_plan = plan_git_clone(&ssh_target, "git@example.invalid:team/rehow.git").unwrap();
+        assert_eq!(
+            apply_git_clone_validation(
+                &ssh_target,
+                ssh_plan,
+                &Temp::new().0,
+                &AtomicBool::new(false)
+            )
+            .err()
+            .unwrap(),
+            GitCloneApplyError::UnsupportedTransport
+        );
+
+        let cancelled_destination = Temp::new();
+        let cancelled_target = empty_target(&cancelled_destination);
+        let cancelled_plan =
+            plan_git_clone(&cancelled_target, "https://example.invalid/team/rehow.git").unwrap();
+        assert_eq!(
+            apply_git_clone_validation(
+                &cancelled_target,
+                cancelled_plan,
+                &Temp::new().0,
+                &AtomicBool::new(true)
+            )
+            .err()
+            .unwrap(),
+            GitCloneApplyError::Cancelled
+        );
+        assert!(cancelled_destination.0.read_dir().unwrap().next().is_none());
+
+        let changed_destination = Temp::new();
+        let changed_target = empty_target(&changed_destination);
+        let changed_plan =
+            plan_git_clone(&changed_target, "https://example.invalid/team/rehow.git").unwrap();
+        fs::write(changed_destination.0.join("external"), b"preserve").unwrap();
+        assert_eq!(
+            apply_git_clone_validation(
+                &changed_target,
+                changed_plan,
+                &Temp::new().0,
+                &AtomicBool::new(false)
+            )
+            .err()
+            .unwrap(),
+            GitCloneApplyError::DestinationChanged
+        );
+        assert_eq!(
+            fs::read(changed_destination.0.join("external")).unwrap(),
+            b"preserve"
+        );
     }
 
     #[test]

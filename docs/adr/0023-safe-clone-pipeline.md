@@ -1,6 +1,6 @@
 # ADR 0023: Safe clone pipeline
 
-- Status: Accepted; Phase 5B3A tree envelope and 5B3B1 destination plan implemented, fetch/materialization pending
+- Status: Accepted; Phase 5B3A and pre-materialization anonymous-HTTPS validation implemented, authenticated transports/materialization pending
 - Date: 2026-09-19
 
 ## Context
@@ -32,6 +32,8 @@ Every other root file, nested file, `.git*` control file, `.gitattributes`, `.gi
 The native app selects and retains an existing empty writable directory. Planning binds its device/inode/capability identity, exact empty inventory, URL hash, validated transport/host, random one-use token, and launch epoch. Apply consumes the native-held plan only after a native confirmation displays the exact secret-free URL. It repeats the empty/ancestor/writability checks before mutation.
 
 The accepted 5B3B1 slice exposes only `git_clone_plan_selected_workspace`: it uses the already retained native empty-folder capability, accepts one bounded secret-free URL, replaces any older pending clone plan, and returns only a random plan token, transport, and host. Core revalidates emptiness, root identity/capability, effective writability, ancestor repository state, and Git-marker safety. The selected path, URL, hashes, and root identity never cross renderer IPC or `Debug`. This planning slice performs no confirmation, process, network, credential, marker, Git, or filesystem write; those remain in the apply gate.
+
+The accepted 5B3B2/5B3B3 slices implement anonymous HTTPS through a single-use native apply command. A parented native dialog displays the exact already-validated secret-free URL; declining consumes the plan without network or staging. Confirmed work runs off the UI thread, exposes one pathless cancellation flag, and retains only an opaque validated session for 5B3C. The selected destination capability is held out of renderer control and never bound into the Git child. Every success and recoverable failure revalidates destination emptiness; changed or uncertain destinations require reselection.
 
 Before network access, Rehow creates a versioned private staging repository under its owner-only XDG state root, not inside the selected folder. Its provenance record contains no URL or credential: it binds the selected destination identity/capability hash, URL hash, operation ID, object format once known, and current pipeline stage. The selected destination must remain exactly empty through discovery, fetch, and validation. Only exact provenance-bound staging state can resume after cancellation or interruption; unrelated state is preserved and refused. Superseded staging is moved by descriptor identity to an inert owner-only quarantine rather than name-deleted.
 
