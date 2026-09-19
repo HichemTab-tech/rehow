@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[[bin]]
+name = "rehow-git-ssh"
+path = "src/bin/rehow-git-ssh.rs"
+
 [dependencies]
 base64 = { version = "=0.23.1", default-features = false, features = ["std"] }
 blake3 = { version = "=1.8.7", default-features = false, features = ["std", "pure"] }

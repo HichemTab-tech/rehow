@@ -1,5 +1,9 @@
 //! Confined Git discovery/status and separately gated repository operations.
 
+mod ssh_proxy;
+
+pub use ssh_proxy::run_git_ssh_proxy;
+
 use crate::storage::recovery::{
     GitCommitIntent, GitCommitIntentBranchRepresentation, GitCommitIntentError,
     GitCommitIntentStage, GitCommitStaging, GitCommitStagingError, GitCommitStagingSnapshot,
