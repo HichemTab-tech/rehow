@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 5B3 in progress — anonymous HTTPS discovery, bounded private fetch, canonical content validation, and native-confirmed apply orchestration are complete; final materialization and authenticated transports remain.
+Phase 5B3 in progress — anonymous HTTPS discovery, bounded private fetch, canonical validation, native confirmation, and journaled portable-content materialization are complete; Git object/ref finalization, onboarding UI, and authenticated transports remain.
 
 ## Current task
 
-Implement Phase 5B3C: materialize the opaque validated clone into the still-empty selected destination through the accepted recovery boundary, then install the validated Git ref/config without checkout or arbitrary Git execution.
+Implement Phase 5B3C2: install the already validated Git objects, canonical config, `HEAD`, local branch, and remote-tracking ref into the marker-bound private scaffold without checkout or arbitrary Git execution, then connect it to the native-held clone session.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; reconcile external changes; manage Attachment inventory/import/removal; retrieve Guides through the accepted search experience; see confined Git status; initialize a direct private Git repository; and connect a strictly validated remote through a single-use native-confirmed plan. Anonymous HTTPS clone validation is implemented natively but is not yet materialized or exposed in the React onboarding flow. Attachment viewing/export/reveal, Git clone completion/commit/sync workflows, and MCP mutation remain unimplemented; MCP remains read-only.
+In progress. A user can open or initialize a Workspace; manage Categories and Guides; explicitly mark ready Guides tested; reconcile external changes; manage Attachment inventory/import/removal; retrieve Guides through the accepted search experience; see confined Git status; initialize a direct private Git repository; and connect a strictly validated remote through a single-use native-confirmed plan. Anonymous HTTPS clone validation and recoverable portable-content materialization are implemented, but Git metadata finalization and the React onboarding flow are not. Attachment viewing/export/reveal, Git clone completion/commit/sync workflows, and MCP mutation remain unimplemented; MCP remains read-only.
 
 ## Completed work
 
@@ -93,10 +93,11 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Added the Phase 5B3A incoming clone-tree envelope at signed checkpoint `3a71e48`: canonical full-width SHA-1/SHA-256 IDs, exact NUL framing/order, Workspace-only paths, regular non-executable blobs, existing file/count/aggregate limits, required manifest, redacted effect hashing, real isolated-Git output coverage, ADR 0023, and no new process/network/filesystem/adapter authority.
 - Added Phase 5B3B1 destination planning at signed checkpoint `1c555f5`: the retained native empty-folder capability and strict secret-free URL become a random one-use Rust-held plan; current emptiness, identity/capability, writability, ancestor Git state, and URL are revalidated while renderer IPC receives only token/transport/host. Selection, cancellation, or local creation invalidates the plan; no network or write authority was added.
 - Added native-confirmed anonymous-HTTPS clone validation at signed checkpoint `2812c49`: one native lifecycle atomically binds the single-use plan, selected-folder capability, confirmation, cancellation identity, and opaque validated staging state; validation runs off the UI thread; cancellation cannot race to republish authority; no destination file is written. The single Security Reviewer passed the corrected lifecycle with no blocker/high/medium finding.
+- Added journaled clone portable-content materialization at signed checkpoint `48d5ee8`: staging files are descriptor-reread and Git-object verified, every target is absent-only `0600`, a marker-bound private scaffold and one recovery journal survive interruption, exact resume/final inventories refuse foreign residue, and every accepted file is rehashed before canonical reopen. The reused Security Reviewer passed after partial-scaffold recovery was covered at all nine boundaries.
 
 ## Work in progress
 
-- Phase 5B3B3 is complete at signed checkpoint `2812c49`. Phase 5B3C journaled materialization and the React onboarding controls remain; authenticated transports are separate. Attachment viewing/export/reveal and MCP mutation remain deferred.
+- Phase 5B3C1 is complete at signed checkpoint `48d5ee8`. Phase 5B3C2 Git object/config/ref finalization and the React onboarding controls remain; authenticated transports are separate. Attachment viewing/export/reveal and MCP mutation remain deferred.
 
 ## Remaining work
 
@@ -104,7 +105,7 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Phase 2: native shell and safe Workspace onboarding/import/migration.
 - Phase 3: Category/Guide/Attachment lifecycle and edit conflicts.
 - Phase 4: complete at `e17b7d1`.
-- Phase 5: read-only status, safe local initialization, metadata-only remote connection, and clone-tree validation complete; clone fetch/materialization, commit, and synchronization remain.
+- Phase 5: read-only status, safe local initialization, metadata-only remote connection, clone validation, and portable-content materialization complete; clone Git finalization/UI, commit, and synchronization remain.
 - Phase 6: standalone full MCP contract.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
@@ -195,19 +196,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - Checkpoint `1c555f5` adds only pathless read-only destination planning. The selected path, URL, directory identities, and hashes remain native-held and redacted; no confirmation, process, network, credential, marker, Git metadata, or Workspace write occurs. The pending plan is invalidated on every selection lifecycle change.
 - Checkpoint `b14c0f0` adds the crate-private anonymous-HTTPS clone pipeline: config-free Bubblewrap discovery, shallow filtered pack-only fetch, hard file and aggregate staging limits, exact commit/tree/blob verification, independently recomputed Git object IDs, a private no-replace validation mirror, and canonical issue-free Workspace validation. Cancellation kills the process group; close-on-exec descriptors are enabled only for the exact child. The selected destination remains empty. The single Security Reviewer passed the corrected boundary with no blocker/high/medium finding.
 - Checkpoint `2812c49` exposes that pipeline through native confirmation and pathless cancellation while retaining only an opaque validated session. One lifecycle lock prevents folder-selection/confirmation races, and onboarding cancellation revokes pending, active, or validated authority even when it races with successful validation. The destination remains empty. The single Security Reviewer passed the corrected boundary with no blocker/high/medium finding.
+- Checkpoint `48d5ee8` publishes only validated portable content through one recovery journal. Exact marker/scaffold provenance, absent-only journal decoding, no-foreign resume inventory, per-file Git blob revalidation, and canonical reopen all fail closed. Partial scaffold creation resumes only with the exact retained marker and was fault-tested at every boundary. The reused Security Reviewer final verdict is PASS.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5B3B3 reused exactly one Security Reviewer/xhigh and it is complete.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 5B3C1 reused exactly one Security Reviewer/xhigh and it is complete.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`2812c49` — signed and verified Phase 5B3B3 native-confirmed clone validation. This progress-only ledger update follows that feature commit.
+`48d5ee8` — signed and verified Phase 5B3C1 journaled clone portable-content materialization. This progress-only ledger update follows that feature commit.
 
 ## Tests last run and results
 
+- 2026-09-19: Phase 5B3C1 checkpoint at `48d5ee8`: full all-feature core gate passes 344 library tests with 2 intentional ignores, 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, and doc tests. Focused clone materialization passes 4/4, including nine scaffold interruption boundaries, journal interruption, marker loss, foreign residue, and staging drift. Core all-target/all-feature Clippy denies warnings; Cargo formatting, bootstrap validation, whitespace checks, signed-commit verification, and the reused Security Reviewer closure pass.
 - 2026-09-19: Phase 5B3B3 checkpoint at `2812c49`: the full relevant locked core/desktop gate passes 340 core library tests with 2 intentional ignores, 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, and 21 desktop Rust tests. After the lifecycle race corrections, all 21 desktop tests and locked all-target/all-feature core/desktop Clippy pass again; Cargo formatting, bootstrap validation, whitespace checks, signed-commit verification, and the single Security Reviewer closure pass.
 - 2026-09-19: Phase 5B3B2 checkpoint at `b14c0f0`: full locked all-feature core gate passes 339 tests with 2 intentional ignores, plus 18 error-contract, 13 protocol, public-API/trybuild, and 11 unknown-YAML tests. Focused clone coverage passes 20/20 with one explicit network smoke ignore; the public GitHub HTTPS smoke was run explicitly and passes. Core formatting and locked all-target/all-feature Clippy with warnings denied, bootstrap validation, whitespace checks, signed-commit verification, and the single Security Reviewer correction gate pass.
 - 2026-09-19: Phase 5B3B1 checkpoint at `1c555f5`: 327 core tests pass with 1 intentional production-performance ignore, plus 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, and 20 desktop Rust tests. Formatting and locked all-target/all-feature Clippy for core/desktop pass with warnings denied; bootstrap and whitespace checks pass.
@@ -387,20 +390,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - `docs/task-packets/phase-5b3b1-clone-destination-plan.md`, its evidence, core destination snapshot/plan, and the pathless native plan command implement Phase 5B3B1 at `1c555f5`.
 - `docs/task-packets/phase-5b3b2-isolated-fetch-validation.md`, the ADR 0023 correction, private staging store, confined Git subprocess pipeline, canonical validation mirror, and adversarial tests implement anonymous HTTPS validation at `b14c0f0`.
 - `docs/task-packets/phase-5b3b3-native-clone-validation.md`, its evidence, core orchestration, and the atomic native confirmation/cancellation lifecycle implement destination-preserving clone validation at `2812c49`.
+- `docs/task-packets/phase-5b3c1-journaled-clone-content.md`, its evidence, ADR 0023 delta, and the core storage/recovery/Git changes implement portable-content materialization at `48d5ee8`.
 
 ## Next recommended action
 
-Implement Phase 5B3C journaled materialization from the native-held validated staging state into the still-empty destination, with restart-safe recovery and exact ref/config installation. Keep React controls and authenticated HTTPS/SSH separate until the core materialization gate passes.
+Implement Phase 5B3C2 exact Git object/config/`HEAD`/local-branch/remote-tracking-ref installation from the validated staging repository into the marker-bound scaffold, then expose only the completed result through the native-held session. Keep React controls and authenticated HTTPS/SSH separate until this core finalization gate passes.
 
 ## Recommended agent role and reasoning effort
 
-Orchestrator — `gpt-5.6-sol`, high locally for the narrow materialization boundary. Run zero extra agents during routine work; reuse one reviewer only at the next meaningful security checkpoint.
+Orchestrator — `gpt-5.6-sol`, high locally for the narrow Git-finalization boundary. Run zero extra agents during routine work; reuse one reviewer only at the next meaningful security checkpoint.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read the Git sections of `docs/product-spec.md`, `docs/architecture.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `2812c49`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `48d5ee8`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Resume Phase 5B3C from ADR 0023 by implementing only journaled destination materialization and exact validated ref/config installation from the native-held opaque session. Add no React controls, SSH, credential helper, commit, pull, or sync yet.
+6. Resume Phase 5B3C2 from ADR 0023 by implementing only exact validated Git object/config/ref installation and native opaque-session completion. Add no React controls, SSH, credential helper, commit, pull, or sync yet.
