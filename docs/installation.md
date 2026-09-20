@@ -1,7 +1,7 @@
 # Installation and Desktop Integration
 
-Status: planned; commands are not available until Phase 7
-Last updated: 2026-09-05
+Status: desktop packaging planned; Phase 6A MCP development binary available
+Last updated: 2026-09-20
 
 ## Supported baseline
 
@@ -68,6 +68,14 @@ The final instructions must use current Omarchy/Hyprland guidance and tell the u
 ## MCP installation plan
 
 `rehow-mcp` is a separate executable/package entry point. It runs without the desktop over stdio and receives uniquely aliased Workspace roots in the MCP client's user-controlled configuration. Installation docs provide copyable examples for supported clients, read-only default, per-alias `--allow-write`/`--allow-broad`/`--allow-git-write`, the fixed server-launched native `rehow-mcp-approve` companion, headless limitations, version check, stderr logging, and removal.
+
+The implemented Phase 6A development invocation is:
+
+```sh
+cargo run -p rehow-mcp -- --workspace personal=/absolute/path/to/workspace
+```
+
+Repeat `--workspace alias=/absolute/path` for up to 16 non-overlapping compatible Workspaces. Aliases and random launch handles—not paths—appear in tool results. This gate is read-only and exposes only `workspaces_list` and `workspace_get`; the future write flags named above are not implemented yet. It supports MCP `2026-07-28` discovery and `2025-11-25` initialization.
 
 Rehow never edits global MCP client configuration automatically and never asks for an API key. The server has no network listener in the initial release.
 

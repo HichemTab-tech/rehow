@@ -2288,6 +2288,18 @@ pub struct WorkspaceInspectionReport {
     classification: WorkspaceInspection,
 }
 
+/// A Workspace root whose originally selected directory is retained by descriptor.
+pub struct WorkspaceRootSelection {
+    root: linux::DirectoryCapability,
+    canonical_path: std::path::PathBuf,
+}
+
+impl WorkspaceRootSelection {
+    pub fn canonical_path(&self) -> &Path {
+        &self.canonical_path
+    }
+}
+
 impl WorkspaceInspectionReport {
     pub fn facts(&self) -> WorkspaceFolderFacts {
         self.facts
@@ -2645,7 +2657,25 @@ impl DocumentUpdateRequest {
 }
 
 pub fn inspect_workspace(path: &Path) -> Result<WorkspaceInspectionReport, WorkspaceInspectError> {
+    inspect_selected_workspace(select_workspace_root(path)?)
+}
+
+pub fn select_workspace_root(path: &Path) -> Result<WorkspaceRootSelection, WorkspaceInspectError> {
     let root = linux::DirectoryCapability::open_root(path)?;
+    let canonical_path = std::fs::canonicalize(path).map_err(map_io)?;
+    if !root.matches_path(&canonical_path)? {
+        return Err(WorkspaceInspectError::ChangedDuringRead);
+    }
+    Ok(WorkspaceRootSelection {
+        root,
+        canonical_path,
+    })
+}
+
+pub fn inspect_selected_workspace(
+    selection: WorkspaceRootSelection,
+) -> Result<WorkspaceInspectionReport, WorkspaceInspectError> {
+    let root = selection.root;
     let facts = inspect_folder_facts(&root)?;
     let classification = inspect_open_root(root)?;
     Ok(WorkspaceInspectionReport {
@@ -4136,14 +4166,16 @@ mod linux {
 
     impl DirectoryCapability {
         pub(super) fn open_root(path: &Path) -> Result<Self, WorkspaceInspectError> {
-            let canonical = std::fs::canonicalize(path).map_err(super::map_io)?;
-            let path = CString::new(canonical.as_os_str().as_bytes())
+            let raw_path = CString::new(path.as_os_str().as_bytes())
                 .map_err(|_| WorkspaceInspectError::UnsafeRoot)?;
             // SAFETY: `path` is NUL-terminated and valid for the duration of the call.
             let raw = unsafe {
                 libc::open(
-                    path.as_ptr(),
-                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                    raw_path.as_ptr(),
+                    // Root selection may intentionally arrive through a portal or
+                    // `/proc/self/fd` symlink. The opened descriptor is authoritative;
+                    // canonicalization below must resolve back to this exact inode.
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
                 )
             };
             if raw < 0 {
@@ -4153,6 +4185,11 @@ mod linux {
             let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
             let (device, inode) =
                 descriptor_identity(&descriptor).map_err(|_| WorkspaceInspectError::UnsafeRoot)?;
+            let canonical = std::fs::canonicalize(path).map_err(super::map_io)?;
+            let metadata = std::fs::metadata(&canonical).map_err(super::map_io)?;
+            if metadata.dev() != device || metadata.ino() != inode {
+                return Err(WorkspaceInspectError::ChangedDuringRead);
+            }
             let mut root_hasher = blake3::Hasher::new();
             root_hasher.update(b"rehow-canonical-root-v1\0");
             root_hasher.update(&(canonical.as_os_str().as_bytes().len() as u64).to_be_bytes());
@@ -4172,6 +4209,14 @@ mod linux {
                 root_hash,
                 capability_hash,
             })
+        }
+
+        pub(super) fn matches_path(&self, path: &Path) -> Result<bool, WorkspaceInspectError> {
+            let metadata = std::fs::metadata(path).map_err(super::map_io)?;
+            let (device, inode) = self
+                .identity()
+                .map_err(super::map_clone_destination_error)?;
+            Ok(metadata.is_dir() && metadata.dev() == device && metadata.ino() == inode)
         }
 
         pub(super) fn entries(&self, limit: usize) -> Result<Vec<String>, WorkspaceInspectError> {
@@ -7758,6 +7803,29 @@ mod tests {
         assert!(matches!(
             classification(empty.path()),
             WorkspaceInspection::UnrelatedNonempty
+        ));
+    }
+
+    #[test]
+    fn selected_root_descriptor_survives_path_replacement() {
+        let base = TestDirectory::new();
+        let selected_path = base.path().join("selected");
+        let moved_path = base.path().join("original");
+        fs::create_dir(&selected_path).unwrap();
+        write_compatible(&selected_path);
+        let selection = select_workspace_root(&selected_path).unwrap();
+
+        fs::rename(&selected_path, &moved_path).unwrap();
+        fs::create_dir(&selected_path).unwrap();
+
+        let report = inspect_selected_workspace(selection).unwrap();
+        let WorkspaceInspection::Compatible(view) = report.classification() else {
+            panic!("the originally selected descriptor must remain authoritative");
+        };
+        assert_eq!(view.manifest().name(), "Test Workspace");
+        assert!(matches!(
+            classification(&selected_path),
+            WorkspaceInspection::Empty(_)
         ));
     }
 

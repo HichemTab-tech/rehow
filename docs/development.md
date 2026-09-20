@@ -1,7 +1,7 @@
 # Development Guide
 
-Status: bootstrap; scaffold commands become executable in Phase 1
-Last updated: 2026-09-05
+Status: active development through Phase 6A
+Last updated: 2026-09-20
 
 ## Prerequisites
 
@@ -72,6 +72,8 @@ GUI apps may not inherit shell startup `PATH`; Git discovery and smoke tests mus
 - Failure injection uses explicit test seams, not sleeps or real power loss.
 - Test Git config sets local identity in the temp repo and never reads/writes developer repositories.
 - Secret canaries are fake and asserted absent from diagnostics.
+
+For the standalone MCP server, use `cargo test -p rehow-mcp --all-features` for the focused gate. Tests exercise both supported protocol lifecycles through the bounded in-memory stdio transport and only temporary Workspace roots. The development binary requires one or more explicit `--workspace alias=/absolute/path` arguments and never defaults to the current directory.
 
 ## Dependency changes
 

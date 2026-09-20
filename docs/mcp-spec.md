@@ -1,8 +1,9 @@
 # Rehow MCP Server Specification
 
-Status: required Phase 6 contract baseline
+Status: required Phase 6 contract; current protocol baseline refreshed for 2026-07-28
 Transport: local stdio
-Last updated: 2026-09-05
+Protocol: MCP 2026-07-28 plus 2025-11-25 compatibility
+Last updated: 2026-09-20
 
 ## Purpose and deployment
 
@@ -17,6 +18,8 @@ rehow-mcp --workspace personal=/absolute/path --allow-write personal
 Exact packaging syntax is finalized during Phase 6, but alias and per-Workspace capability semantics are normative. Each startup root has a unique user-chosen alias. Canonical duplicate/nested/overlapping roots and duplicate aliases are rejected. Portable Workspace IDs may legitimately repeat across clones, so the server returns a random launch-scoped `workspaceHandle`; every tool requires it. No tool accepts a new path. Default mode is read-only; `--allow-write <alias>`, `--allow-broad <alias>`, and `--allow-git-write <alias>` are separate capabilities. Stdout contains protocol frames only; redacted diagnostics use stderr.
 
 Initial transport is stdio. Remote Streamable HTTP is deferred until authentication, origin, multi-user, and network threat models exist.
+
+The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. The first Phase 6A gate exposes only `workspaces_list` and `workspace_get`; all content-list/search and mutation tools remain absent until their pagination, response-bound, and capability gates are accepted. Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
 
 ## Trust rules
 
@@ -89,7 +92,7 @@ All list/search tools require/cap `limit` and use cursors. Full Guide reads have
 ## Workspace tools
 
 - `workspaces_list()` — configured aliases only, returning launch handle, portable ID, compatibility/availability, and capabilities. Duplicate portable IDs are explicitly reported.
-- `workspace_get({workspaceHandle})` — manifest summary, full inventory, health, counts, schema, and Git capability; no absolute path.
+- `workspace_get({workspaceHandle})` — manifest summary, inventory/health counts, schema, and Git capability; no absolute path or Guide body. Entry-level inventory is deferred beyond Phase 6A and will be bounded/paginated.
 - `workspace_validate({workspaceHandle, scope?, cursor?, limit?})` — paginated diagnostics.
 - `workspace_refresh({workspaceHandle})` — read/reconcile only; does not mutate canonical content.
 

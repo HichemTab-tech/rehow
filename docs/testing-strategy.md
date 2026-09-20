@@ -65,6 +65,8 @@ Phase 1D follows ADR 0014's named aggregate gate: exact/one-over scalar and coll
 
 Spawn the actual binary over stdio. Assert initialize/handshake, deterministic tool schemas, protocol-only stdout, stderr redaction, cancellation/shutdown, pagination/limits, read-only/write mode, errors, and end-to-end mutation files. Use a hostile MCP client harness for traversal, oversized messages, plan replay/substitution, tested-confirmation bypass, prompt-injected Guide content, and concurrent writers.
 
+Phase 6A first proves the current `2026-07-28` discovery lifecycle and legacy `2025-11-25` initialize lifecycle against the exact two-tool read-only surface. It tests the 1 MiB frame boundary at exact/one-over sizes, CRLF, malformed JSON, unterminated EOF, stdout purity, unknown handles, alias/count limits, duplicate/nested canonical roots, incompatible Workspace classifications, launch-handle/path redaction, and clean disconnect. All roots are disposable temporary Workspaces; no test may open personal content.
+
 ### End-to-end desktop tests
 
 Use the most stable Tauri/WebDriver-compatible automation available at Phase 2 and retain manual smoke coverage where Linux WebKit automation is incomplete. Tests launch the production-like native app against a temporary Workspace and exercise open/create/search/read/edit/restart/conflict. Never rely exclusively on the Vite browser view because native IPC, CSP, WebKitGTK, window behavior, and file dialogs are product behavior.
