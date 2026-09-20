@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 6A is complete at signed checkpoint `cb6f7de`: Rehow now has a bounded, separately runnable, read-only stdio MCP foundation. Phase 6B content retrieval is next.
+Phase 6B is complete at signed checkpoint `2d27481`: the standalone MCP server now provides bounded Workspace, Category, Guide, search, validation, and refresh reads through an exact nine-tool surface.
 
 ## Current task
 
-Implement Phase 6B bounded read tools: Category/Guide listing, Guide search/read, pagination, response limits, refresh/validation, and stable errors over the accepted Phase 6A authority boundary.
+Prepare Phase 6C's smallest safe MCP write gate: explicit per-Workspace startup write capability plus revision-checked draft Guide creation and typed non-destructive edits, with no broad/destructive/Git/tested authority.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace; manage Categories and Guides; search; use confined Git workflows; and run a separately usable read-only MCP server that safely lists and summarizes explicitly granted Workspaces. Attachment viewing/export/reveal and MCP content/mutation/Git tools remain incomplete.
+In progress. A user can open or initialize a Workspace; manage Categories and Guides; search; use confined Git workflows; and use the standalone MCP server to list, search, validate, refresh, and read content from explicitly granted Workspaces. Attachment viewing/export/reveal and MCP mutation/Git tools remain incomplete.
 
 ## Completed work
 
@@ -127,17 +127,18 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Completed Phase 5D3D3 at signed checkpoint `332ff6a`: native launch retains only an immutable sealed snapshot of the minimal accepted `gh` backing when required; a closed authentication authority connects the fixed proxy to HTTPS clone, sync/history, and exact push. Command tests prove helper reset, fixed host/port binding, descriptor-only mounts, anonymous/SSH absence, and unchanged push semantics. IPv6-literal remotes remain explicitly deferred under the conservative URL policy; authentication errors are transport-neutral. The full gate and one reused Security Reviewer pass.
 - Completed Phase 5D4 and Phase 5 overall at signed checkpoint `6fcb0ae`: the bounded parser accepts Git's normal loose-over-packed precedence while still binding the complete `packed-refs` file. Packed-only sync uses the existing index-first/loose-ref-last recovery intent, never rewrites packed refs, reopens safely, and passes focused/full tests plus one reused Security Reviewer.
 - Completed Phase 6A at signed checkpoint `cb6f7de`: exact-pinned official `rmcp` 3.4 serves MCP `2026-07-28` discovery and `2025-11-25` initialization over a Rehow-owned 1 MiB fail-closed stdio transport. Startup accepts only 1–16 explicit non-overlapping aliased compatible Workspaces, binds the originally selected root descriptor before canonicalization, assigns random launch handles, returns no paths, and exposes only read-only `workspaces_list`/`workspace_get`. The full gate and one reused Security Reviewer pass after closing the reviewer-found root-swap race.
+- Completed Phase 6B at signed checkpoint `2d27481`: the exact nine-tool read-only MCP surface adds bounded Category/Guide list/get, core-ranked pre-cap filtered search, UTF-8-safe Guide body/code extraction, validation, and descriptor-confined refresh. Per-launch keyed cursors prevent offset forgery, duplicate portable IDs are recomputed coherently after refresh, the full gate passes, and the one reused Security Reviewer correction recheck is PASS.
 
 ## Work in progress
 
-- No Rehow implementation is uncommitted. Phase 6A is complete at signed checkpoint `cb6f7de`; this ledger update follows it. Untracked `x` remains unrelated and untouched.
+- No Rehow implementation is uncommitted. Phase 6B is complete at signed checkpoint `2d27481`; this ledger update follows it. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
 - Workspace adoption/import/migration and Attachment viewing/export/reveal remain incomplete.
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
-- Phase 6: protocol/startup/Workspace-summary foundation is complete at `cb6f7de`; bounded Category/Guide/search/validation reads, capability-gated mutations/approvals, Git tools, and broader client documentation remain.
+- Phase 6: protocol plus bounded content reads are complete at `2d27481`; capability-gated mutations/approvals, Attachment metadata, Git tools, and broader client documentation remain.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
 ## Known bugs
@@ -250,19 +251,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - Phase 5D3D3 mounts only held proxy/helper descriptors and the optional sealed `gh` backing at fixed synthetic paths. Every HTTPS network surface resets configured helpers and binds the exact canonical host/port; anonymous HTTPS and SSH receive no credential-proxy authority. The final reused Security Reviewer rechecked IPv6 policy, transport-neutral errors, and all discovery/fetch/history/push command surfaces and returned PASS.
 - Phase 5D4 treats a valid loose ref as authoritative over a parsed packed entry, matching Git semantics. Packed-only sync binds the exact full packed file and parent before creating a recoverable loose shadow; packed bytes are never rewritten. Focused Security Review returned PASS.
 - Phase 6A uses only startup-selected descriptor-held Workspace roots and random launch handles; no tool accepts a path or grants write/Git authority. The custom transport bounds content frames at 1 MiB and closes on malformed, overlong, or unterminated input without echoing it. Security review found a canonicalize/open swap race; the corrected selection opens and retains the root first, binds canonical dev/inode identity, and consumes that exact descriptor. Deterministic replacement coverage and the reused Security Reviewer final PASS close the finding.
+- Phase 6B remains read-only. Security review found forged cursor offsets, post-cap filtering, and duplicate-ID state cached across refresh; keyed cursor MACs, core pre-cap filtering, coherent all-view duplicate derivation, and three regression tests close the findings. Correction re-review is PASS.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 6A reused the same single Security Reviewer only at the completed authority gate and the final verdict is PASS.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 6B reused one existing Security Reviewer only at the completed authority gate and the correction verdict is PASS.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`cb6f7de` — signed Phase 6A bounded read-only MCP foundation. This progress-only ledger update follows that implementation commit.
+`2d27481` — signed Phase 6B bounded MCP content reads. This progress-only ledger update follows that implementation commit.
 
 ## Tests last run and results
 
+- 2026-09-20: Phase 6B checkpoint `2d27481` passes `pnpm check`, `pnpm build`, 39 Vitest tests, 441 core tests with 2 intentional ignores, supporting contract/API suites, 25 desktop Rust tests, 15 MCP unit tests and 1 real-binary integration test. Strict all-Workspace Clippy, Cargo formatting, bootstrap/whitespace checks, signed-commit verification, tampered-cursor/pre-cap-filter/refresh-duplicate regressions, and the one reused Security Reviewer correction recheck pass.
 - 2026-09-20: Phase 6A checkpoint `cb6f7de` passes `pnpm check`, `pnpm build`, 39 Vitest tests, 441 core tests with 2 intentional ignores, 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 25 desktop Rust, 11 MCP unit and 1 real-binary stdio integration test. Strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, bootstrap/whitespace checks, signed-commit verification, deterministic root-replacement coverage, and the one reused Security Reviewer correction/delta rechecks pass.
 - 2026-09-20: Phase 5D4 checkpoint `6fcb0ae` passes 5 focused packed-ref tests, 6 focused sync-publication tests, strict all-feature/all-target core Clippy, `pnpm check`, 39 Vitest tests, 440 core tests with 2 intentional ignores, 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 25 desktop Rust, MCP/example and packaged-helper checks. Cargo formatting, bootstrap/whitespace checks, signed-commit verification, and the reused Security Reviewer pass.
 - 2026-09-20: Phase 5D3D3 checkpoint `332ff6a` passes `pnpm check`, the packaged real-Git credential-proxy smoke, 39 Vitest tests, 440 core tests with 2 intentional ignores, 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 25 desktop Rust, MCP, and example targets. Strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, bootstrap/whitespace checks, signed-commit verification, focused IPv6/message/command-boundary regressions, and the one reused Security Reviewer correction recheck pass.
@@ -507,20 +510,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0025, `docs/task-packets/phase-5d3d3-authenticated-https-integration.md`, its evidence, sealed minimal backing capture, closed core/native authentication routing, all HTTPS network command surfaces, and packaged real-Git proxy smoke implement authenticated HTTPS at `332ff6a`.
 - ADR 0025, `docs/task-packets/phase-5d4-packed-branch-publication.md`, its evidence, loose-over-packed parser policy, and packed-only sync publication regression complete Phase 5 at `6fcb0ae`.
 - ADR 0026, `docs/task-packets/phase-6a-mcp-protocol-foundation.md`, its evidence, descriptor-bound core root selection, exact-pinned MCP dependencies, bounded stdio transport, strict startup parser, two-tool read-only server, and real-binary integration test implement Phase 6A at `cb6f7de`.
+- ADR 0027, `docs/task-packets/phase-6b-mcp-content-reads.md`, its evidence, authenticated pagination, shared pre-cap search filtering, bounded content schemas, and the nine-tool read-only adapter implement Phase 6B at `2d27481`.
 
 ## Next recommended action
 
-Implement one compact Phase 6B read-only content gate: frozen pagination/response limits and stable schemas for `categories_list`, `category_get`, `guides_list`, `guides_search`, `guide_get`, `workspace_refresh`, and `workspace_validate`. Reuse core views/search; expose no mutation, Git, arbitrary path, shell, network, or ambient authority.
+Define and implement one compact Phase 6C safe-write gate: explicit per-alias startup write authority, expected revisions/snapshots, draft-only Guide creation, and a minimal typed non-destructive edit subset. Keep broad/destructive operations, `tested`, Git, paths, shell, network, and client-supplied approval absent.
 
 ## Recommended agent role and reasoning effort
 
-Architect/Orchestrator locally with `gpt-5.6-sol`, high judgment for the bounded MCP read contract. Run zero extra agents during routine work; reuse at most one Security Reviewer only at a completed authority gate.
+Architect/Orchestrator locally with `gpt-5.6-sol`, high judgment for the MCP write-capability boundary. Run zero extra agents during routine work; reuse at most one Security Reviewer only at the completed authority gate.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read ADR 0026, `docs/mcp-spec.md`, the Phase 6A evidence/packet, and the MCP sections of architecture/testing/threat docs.
+2. Read ADRs 0026–0027, `docs/mcp-spec.md`, the Phase 6B evidence/packet, and the MCP sections of architecture/testing/threat docs.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `cb6f7de` and `6fcb0ae`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoints `2d27481` and `cb6f7de`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 6A as complete. Begin the compact Phase 6B bounded content-read gate; do not add mutation, approval-helper, Git-write, arbitrary path, shell, network, or ambient discovery authority.
+6. Treat Phase 6B as complete. Begin the compact Phase 6C safe-write gate; do not add broad/destructive mutation, tested approval, Git-write, arbitrary path, shell, network, or ambient discovery authority.
