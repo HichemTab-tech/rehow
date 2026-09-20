@@ -19,7 +19,7 @@ Each startup root has a unique user-chosen alias. Canonical duplicate/nested/ove
 
 Initial transport is stdio. Remote Streamable HTTP is deferred until authentication, origin, multi-user, and network threat models exist.
 
-The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6C6 exposes the nine Phase 6B reads plus capability-gated Guide/Category create/update and separate archive/restore tools (seventeen tools total). Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
+The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6C7 exposes the nine Phase 6B reads plus capability-gated Guide/Category create/update, separate archive/restore, and Guide mark-stale tools (eighteen tools total). Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
 
 ## Trust rules
 
@@ -127,7 +127,7 @@ Every Guide tool requires `workspaceHandle`.
 - `guide_set_tags` / `guide_set_aliases` — complete normalized arrays with expected revision.
 - `guide_change_status({…, status})` — cannot set `tested` through MCP.
 - `guide_request_tested_approval({workspaceHandle, guideId, expectedRevision})` — readiness check plus pending native approval; no immediate status change.
-- `guide_mark_stale({…, reason?})`
+- `guide_mark_stale({workspaceHandle, guideId, expectedRevision})` — implemented trust-reducing typed mutation; draft/tested become stale, stale is a no-op, and archived remains archived with stale restore state. Schema v1 has no stale-reason field, so no free-form reason or unknown metadata is accepted.
 - `guide_archive({workspaceHandle, guideId, expectedRevision})` / `guide_restore(…)` — implemented separate typed lifecycle operations; path/content/Category remain fixed and restore cannot assert tested.
 - `guide_delete_plan({workspaceHandle, guideId, expectedRevision})`
 - `guide_delete({workspaceHandle, planToken})` — recoverable trash; startup broad capability and native approval.

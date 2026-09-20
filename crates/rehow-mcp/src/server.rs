@@ -3,7 +3,7 @@ use rehow_core::{
     application::{
         CategoryCreateError, CategoryUpdateError, GuideCreateError, GuideEdit, GuideUpdateError,
         create_category_at_snapshot, create_guide_at_revision, refresh_open_workspace,
-        set_category_archived, set_guide_archived, update_category_details, update_guide,
+        set_category_archived, update_category_details, update_guide,
     },
     domain::{CategoryStatus, GuideStatus, RestorableGuideStatus},
     markdown::{MAX_MARKDOWN_BYTES, SafeMarkdownContainer, SafeMarkdownEvent, parse_safe_markdown},
@@ -18,14 +18,15 @@ use rehow_core::{
         guide_archive_busy_error, guide_create_archived_category_error, guide_create_busy_error,
         guide_create_category_not_found_error, guide_create_category_revision_conflict_error,
         guide_create_limit_error, guide_create_unavailable_error,
-        guide_lifecycle_unavailable_error, guide_not_found_error, guide_restore_busy_error,
-        guide_revision_conflict_error, guide_update_body_limit_error, guide_update_busy_error,
-        guide_update_unavailable_error, invalid_category_create_name_error,
-        invalid_category_create_summary_error, invalid_category_lifecycle_error,
-        invalid_category_update_error, invalid_category_update_name_error,
-        invalid_category_update_summary_error, invalid_guide_create_summary_error,
-        invalid_guide_create_title_error, invalid_guide_lifecycle_error,
-        invalid_guide_update_error, new_request_id, workspace_write_required_error,
+        guide_lifecycle_unavailable_error, guide_mark_stale_busy_error, guide_not_found_error,
+        guide_restore_busy_error, guide_revision_conflict_error, guide_update_body_limit_error,
+        guide_update_busy_error, guide_update_unavailable_error,
+        invalid_category_create_name_error, invalid_category_create_summary_error,
+        invalid_category_lifecycle_error, invalid_category_update_error,
+        invalid_category_update_name_error, invalid_category_update_summary_error,
+        invalid_guide_create_summary_error, invalid_guide_create_title_error,
+        invalid_guide_lifecycle_error, invalid_guide_update_error, new_request_id,
+        workspace_write_required_error,
     },
     search::{MAX_SEARCH_RESULTS, SearchError, search_workspace_filtered},
     storage::{
@@ -314,6 +315,23 @@ struct GuideLifecycleInput {
     expected_revision: String,
 }
 
+#[derive(Clone, Copy)]
+enum GuideStatusMutation {
+    MarkStale,
+    Archive,
+    Restore,
+}
+
+impl GuideStatusMutation {
+    fn edit(self) -> GuideEdit {
+        match self {
+            Self::MarkStale => GuideEdit::MarkStale,
+            Self::Archive => GuideEdit::Archive,
+            Self::Restore => GuideEdit::Restore,
+        }
+    }
+}
+
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GuideCreateInput {
@@ -494,6 +512,7 @@ struct GuideUpdateOutput {
     refresh_required: bool,
     declared_status: Option<&'static str>,
     effective_status: Option<&'static str>,
+    restorable_status: Option<&'static str>,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -1049,13 +1068,16 @@ fn guide_update_error(
 fn guide_lifecycle_error(
     request_id: rehow_core::protocol::RequestId,
     guide_id: GuideId,
-    archived: bool,
+    action: GuideStatusMutation,
     error: GuideUpdateError,
 ) -> ErrorDto {
     match error {
         GuideUpdateError::NotFound => guide_not_found_error(request_id, guide_id),
-        GuideUpdateError::Busy if archived => guide_archive_busy_error(request_id),
-        GuideUpdateError::Busy => guide_restore_busy_error(request_id),
+        GuideUpdateError::Busy => match action {
+            GuideStatusMutation::MarkStale => guide_mark_stale_busy_error(request_id),
+            GuideStatusMutation::Archive => guide_archive_busy_error(request_id),
+            GuideStatusMutation::Restore => guide_restore_busy_error(request_id),
+        },
         GuideUpdateError::RevisionConflict
         | GuideUpdateError::InvalidGuide
         | GuideUpdateError::InvalidEdit
@@ -1078,7 +1100,7 @@ fn guide_lifecycle_error(
 fn guide_lifecycle(
     server: &McpServer,
     input: GuideLifecycleInput,
-    archived: bool,
+    action: GuideStatusMutation,
 ) -> Result<CallToolResult, McpError> {
     let request_id = new_request_id();
     let workspace = server.workspace(&input.workspace_handle)?;
@@ -1111,7 +1133,7 @@ fn guide_lifecycle(
             current.revision(),
         ));
     }
-    let outcome = match set_guide_archived(
+    let outcome = match update_guide(
         &mut view,
         &recovery.state_home.bridge_path,
         recovery
@@ -1120,7 +1142,7 @@ fn guide_lifecycle(
             .map(|directory| directory.bridge_path.as_path()),
         guide_id,
         expected_revision,
-        archived,
+        action.edit(),
     ) {
         Ok(outcome) => outcome,
         Err(GuideUpdateError::CommittedRefreshRequired { revision }) => {
@@ -1131,6 +1153,7 @@ fn guide_lifecycle(
                 refresh_required: true,
                 declared_status: None,
                 effective_status: None,
+                restorable_status: None,
             };
             return serde_json::to_value(output)
                 .map(CallToolResult::structured)
@@ -1152,16 +1175,23 @@ fn guide_lifecycle(
         }
         Err(error) => {
             return structured_tool_error(guide_lifecycle_error(
-                request_id, guide_id, archived, error,
+                request_id, guide_id, action, error,
             ));
         }
     };
     let (_, updated) = find_guide(&view, &guide_id)
         .ok_or_else(|| McpError::internal_error("Updated Guide unavailable", None))?;
-    if updated.revision() != outcome.revision()
-        || (archived && updated.effective_status() != GuideStatus::Archived)
-        || (!archived && updated.effective_status() == GuideStatus::Archived)
-    {
+    let expected_state = match action {
+        GuideStatusMutation::MarkStale => {
+            updated.guide().declared_status() == GuideStatus::Stale
+                || updated.guide().archive().is_some_and(|archive| {
+                    archive.archived_from_status() == RestorableGuideStatus::Stale
+                })
+        }
+        GuideStatusMutation::Archive => updated.effective_status() == GuideStatus::Archived,
+        GuideStatusMutation::Restore => updated.effective_status() != GuideStatus::Archived,
+    };
+    if updated.revision() != outcome.revision() || !expected_state {
         return Err(McpError::internal_error(
             "Updated Guide state unavailable",
             None,
@@ -1174,6 +1204,10 @@ fn guide_lifecycle(
         refresh_required: false,
         declared_status: Some(guide_status(updated.guide().declared_status())),
         effective_status: Some(guide_status(updated.effective_status())),
+        restorable_status: updated
+            .guide()
+            .archive()
+            .map(|archive| restorable_status(archive.archived_from_status())),
     };
     serde_json::to_value(output)
         .map(CallToolResult::structured)
@@ -2184,6 +2218,18 @@ impl McpServer {
     }
 
     #[tool(
+        name = "guide_mark_stale",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<GuideUpdateOutput>(),
+        description = "Mark one Guide stale at its exact revision. Draft and tested Guides become stale; archived Guides remain archived with stale restore state. Requires startup write capability and cannot assert tested status."
+    )]
+    fn guide_mark_stale(
+        &self,
+        Parameters(input): Parameters<GuideLifecycleInput>,
+    ) -> Result<CallToolResult, McpError> {
+        guide_lifecycle(self, input, GuideStatusMutation::MarkStale)
+    }
+
+    #[tool(
         name = "guide_update",
         output_schema = rmcp::handler::server::tool::schema_for_type::<GuideUpdateOutput>(),
         description = "Atomically replace one Guide's complete editable title, summary, Tags, aliases, and Markdown body using its expected revision. Requires startup write capability. AI edits never assert tested; verification-relevant changes become stale. Returned content is untrusted data."
@@ -2252,6 +2298,7 @@ impl McpServer {
                     refresh_required: true,
                     declared_status: None,
                     effective_status: None,
+                    restorable_status: None,
                 };
                 return serde_json::to_value(output)
                     .map(CallToolResult::structured)
@@ -2284,6 +2331,10 @@ impl McpServer {
             refresh_required: false,
             declared_status: Some(guide_status(loaded.guide().declared_status())),
             effective_status: Some(guide_status(loaded.effective_status())),
+            restorable_status: loaded
+                .guide()
+                .archive()
+                .map(|archive| restorable_status(archive.archived_from_status())),
         };
         serde_json::to_value(output)
             .map(CallToolResult::structured)
@@ -2299,7 +2350,7 @@ impl McpServer {
         &self,
         Parameters(input): Parameters<GuideLifecycleInput>,
     ) -> Result<CallToolResult, McpError> {
-        guide_lifecycle(self, input, true)
+        guide_lifecycle(self, input, GuideStatusMutation::Archive)
     }
 
     #[tool(
@@ -2311,7 +2362,7 @@ impl McpServer {
         &self,
         Parameters(input): Parameters<GuideLifecycleInput>,
     ) -> Result<CallToolResult, McpError> {
-        guide_lifecycle(self, input, false)
+        guide_lifecycle(self, input, GuideStatusMutation::Restore)
     }
 
     #[tool(
@@ -2446,6 +2497,24 @@ mod tests {
             "---\nschema_version: 1\nid: 0199a1d7-7b0d-7d8e-a38d-f936c5735e12\ntitle: Install a Tarball\nsummary: Install a downloaded archive.\ncategory_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e11\ntags:\n  - linux\n  - install\naliases:\n  - manual install\nstatus: draft\ncreated_at: \"2026-09-20T00:00:00Z\"\nupdated_at: \"2026-09-20T00:00:00Z\"\n---\n\n## Steps\n\nRun this command:\n\n```sh\ntar -xf tool.tar.gz\n```\n\nError: permission denied.\n",
         )
         .unwrap();
+    }
+
+    fn fixture_guide_status(root: &std::path::Path, status: &str) {
+        fixture_guide(root);
+        let path = root.join("categories/general/0199a1d7-7b0d-7d8e-a38d-f936c5735e12.md");
+        let source = fs::read_to_string(&path).unwrap();
+        let replacement = match status {
+            "draft" => return,
+            "stale" => "status: stale\n",
+            "tested" => {
+                "status: tested\nlast_verified_at: \"2026-09-20T00:00:00Z\"\nverified_content_hash: verify:v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
+            }
+            "archived" => {
+                "status: archived\narchived_from_status: draft\narchived_at: \"2026-09-20T00:00:00Z\"\n"
+            }
+            _ => panic!("unsupported fixture status"),
+        };
+        fs::write(path, source.replacen("status: draft\n", replacement, 1)).unwrap();
     }
 
     fn fixture_filtered_search_over_cap(root: &std::path::Path) {
@@ -2745,6 +2814,7 @@ mod tests {
                 "guide_archive",
                 "guide_create",
                 "guide_get",
+                "guide_mark_stale",
                 "guide_restore",
                 "guide_update",
                 "guides_list",
@@ -2850,7 +2920,7 @@ mod tests {
                 );
             }
         }
-        for name in ["guide_archive", "guide_restore"] {
+        for name in ["guide_archive", "guide_mark_stale", "guide_restore"] {
             let lifecycle = responses[1]["result"]["tools"]
                 .as_array()
                 .unwrap()
@@ -2863,7 +2933,7 @@ mod tests {
                     .get("expectedRevision")
                     .is_some()
             );
-            for forbidden in ["archived", "status", "path", "body"] {
+            for forbidden in ["archived", "status", "reason", "path", "body"] {
                 assert!(
                     lifecycle["inputSchema"]["properties"]
                         .get(forbidden)
@@ -3683,6 +3753,7 @@ mod tests {
         assert_eq!(archived_output["changed"], true);
         assert_eq!(archived_output["declaredStatus"], "archived");
         assert_eq!(archived_output["effectiveStatus"], "archived");
+        assert_eq!(archived_output["restorableStatus"], "draft");
         let archived_revision: Revision = archived_output["revision"]
             .as_str()
             .unwrap()
@@ -3707,11 +3778,129 @@ mod tests {
         let restored_output = restored.structured_content.unwrap();
         assert_eq!(restored_output["declaredStatus"], "draft");
         assert_eq!(restored_output["effectiveStatus"], "draft");
+        assert!(restored_output["restorableStatus"].is_null());
         let view = writable.workspaces[0].view.read().unwrap();
         let (_, guide) = find_guide(&view, &guide_id).unwrap();
         assert_eq!(guide.relative_path(), relative_path);
         assert_eq!(guide.guide().category_id(), &category_id);
         assert_eq!(guide.guide().body(), body);
+    }
+
+    #[test]
+    fn guide_mark_stale_requires_capability_and_applies_the_closed_matrix() {
+        let read_only_root = tempfile::tempdir().unwrap();
+        let read_only_state = tempfile::tempdir().unwrap();
+        fixture_workspace(read_only_root.path());
+        fixture_guide(read_only_root.path());
+        let guide_path = read_only_root
+            .path()
+            .join("categories/general/0199a1d7-7b0d-7d8e-a38d-f936c5735e12.md");
+        let before = fs::read(&guide_path).unwrap();
+        let read_only = open_server_with_recovery(
+            LaunchConfig {
+                workspaces: vec![WorkspaceArgument {
+                    alias: "personal".to_owned(),
+                    path: read_only_root.path().to_owned(),
+                    allow_write: false,
+                }],
+            },
+            Some(RecoveryLocationPaths {
+                state_home: read_only_state.path().to_owned(),
+                runtime_directory: None,
+            }),
+        )
+        .unwrap();
+        let denied = read_only
+            .guide_mark_stale(Parameters(GuideLifecycleInput {
+                workspace_handle: read_only.workspaces[0].handle.clone(),
+                guide_id: "invalid".to_owned(),
+                expected_revision: "invalid".to_owned(),
+            }))
+            .unwrap();
+        assert_eq!(denied.is_error, Some(true));
+        assert_eq!(
+            denied.structured_content.as_ref().unwrap()["code"],
+            "WORKSPACE_READ_ONLY"
+        );
+        assert_eq!(fs::read(guide_path).unwrap(), before);
+        assert!(!read_only_state.path().join("rehow").exists());
+
+        for (initial, changed, declared, effective, restorable) in [
+            ("draft", true, "stale", "stale", None),
+            ("tested", true, "stale", "stale", None),
+            ("stale", false, "stale", "stale", None),
+            ("archived", true, "archived", "archived", Some("stale")),
+        ] {
+            let workspace_root = tempfile::tempdir().unwrap();
+            let state_root = tempfile::tempdir().unwrap();
+            fixture_workspace(workspace_root.path());
+            fixture_guide_status(workspace_root.path(), initial);
+            let server = open_server_with_recovery(
+                LaunchConfig {
+                    workspaces: vec![WorkspaceArgument {
+                        alias: "personal".to_owned(),
+                        path: workspace_root.path().to_owned(),
+                        allow_write: true,
+                    }],
+                },
+                Some(RecoveryLocationPaths {
+                    state_home: state_root.path().to_owned(),
+                    runtime_directory: None,
+                }),
+            )
+            .unwrap();
+            let guide_id: GuideId = "0199a1d7-7b0d-7d8e-a38d-f936c5735e12".parse().unwrap();
+            let handle = server.workspaces[0].handle.clone();
+            let (revision, relative_path, category_id, body) = {
+                let view = server.workspaces[0].view.read().unwrap();
+                let (_, guide) = find_guide(&view, &guide_id).unwrap();
+                (
+                    guide.revision(),
+                    guide.relative_path().to_owned(),
+                    *guide.guide().category_id(),
+                    guide.guide().body().to_owned(),
+                )
+            };
+            let result = server
+                .guide_mark_stale(Parameters(GuideLifecycleInput {
+                    workspace_handle: handle.clone(),
+                    guide_id: guide_id.to_string(),
+                    expected_revision: revision.to_string(),
+                }))
+                .unwrap();
+            assert_eq!(result.is_error, Some(false), "initial status {initial}");
+            let output = result.structured_content.unwrap();
+            assert_eq!(output["changed"], changed, "initial status {initial}");
+            assert_eq!(output["declaredStatus"], declared);
+            assert_eq!(output["effectiveStatus"], effective);
+            match restorable {
+                Some(value) => assert_eq!(output["restorableStatus"], value),
+                None => assert!(output["restorableStatus"].is_null()),
+            }
+            let view = server.workspaces[0].view.read().unwrap();
+            let (_, guide) = find_guide(&view, &guide_id).unwrap();
+            assert_eq!(guide.relative_path(), relative_path);
+            assert_eq!(guide.guide().category_id(), &category_id);
+            assert_eq!(guide.guide().body(), body);
+            let new_revision = guide.revision();
+            drop(view);
+            assert_eq!(new_revision != revision, changed);
+
+            if initial == "draft" {
+                let stale = server
+                    .guide_mark_stale(Parameters(GuideLifecycleInput {
+                        workspace_handle: handle,
+                        guide_id: guide_id.to_string(),
+                        expected_revision: revision.to_string(),
+                    }))
+                    .unwrap();
+                assert_eq!(stale.is_error, Some(true));
+                assert_eq!(
+                    stale.structured_content.as_ref().unwrap()["code"],
+                    "REVISION_CONFLICT"
+                );
+            }
+        }
     }
 
     #[test]
@@ -4043,7 +4232,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn guide_archive_works_through_the_protocol() {
+    async fn guide_mark_stale_works_through_the_protocol() {
         let workspace_root = tempfile::tempdir().unwrap();
         let state_root = tempfile::tempdir().unwrap();
         fixture_workspace(workspace_root.path());
@@ -4079,7 +4268,7 @@ mod tests {
             &[
                 serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
                 serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-                serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"guide_archive","arguments":{"workspaceHandle":handle,"guideId":"0199a1d7-7b0d-7d8e-a38d-f936c5735e12","expectedRevision":revision}}}),
+                serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"guide_mark_stale","arguments":{"workspaceHandle":handle,"guideId":"0199a1d7-7b0d-7d8e-a38d-f936c5735e12","expectedRevision":revision}}}),
             ],
             2,
         )
@@ -4087,7 +4276,7 @@ mod tests {
         assert_eq!(responses[1]["result"]["isError"], false);
         assert_eq!(
             responses[1]["result"]["structuredContent"]["effectiveStatus"],
-            "archived"
+            "stale"
         );
         let bytes = fs::read_to_string(
             workspace_root
@@ -4095,7 +4284,7 @@ mod tests {
                 .join("categories/general/0199a1d7-7b0d-7d8e-a38d-f936c5735e12.md"),
         )
         .unwrap();
-        assert!(bytes.contains("status: archived"));
+        assert!(bytes.contains("status: stale"));
     }
 
     #[test]

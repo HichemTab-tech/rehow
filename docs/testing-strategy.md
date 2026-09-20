@@ -81,6 +81,8 @@ Phase 6C5 adds an exact fifteen-tool surface. Tests prove separate archive/resto
 
 Phase 6C6 adds an exact seventeen-tool surface. Tests prove separate Guide archive/restore schemas, read-only denial, reversible lifecycle through typed recovery, stable Markdown path/body/Category, declared/effective status output, and real protocol archive. Existing stale-revision, tested/stale restoration, presentation, recovery, and confinement suites remain part of the full gate.
 
+Phase 6C7 adds an exact eighteen-tool surface. Tests prove mark-stale has no generic status/reason/content authority, capability checks precede parsing, exact revisions conflict safely, the draft/tested/stale/archived matrix is closed, archived restore state is reported, path/body/Category are preserved, and real protocol execution succeeds. Existing recovery and confinement suites remain part of the full gate.
+
 ### End-to-end desktop tests
 
 Use the most stable Tauri/WebDriver-compatible automation available at Phase 2 and retain manual smoke coverage where Linux WebKit automation is incomplete. Tests launch the production-like native app against a temporary Workspace and exercise open/create/search/read/edit/restart/conflict. Never rely exclusively on the Vite browser view because native IPC, CSP, WebKitGTK, window behavior, and file dialogs are product behavior.

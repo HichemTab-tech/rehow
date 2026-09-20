@@ -215,6 +215,14 @@ pub fn guide_restore_busy_error(request_id: RequestId) -> ErrorDto {
     ))
 }
 
+pub fn guide_mark_stale_busy_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::io_busy(
+        request_id,
+        construction::Operation::GuideChangeStatus,
+        2_000,
+    ))
+}
+
 pub fn guide_lifecycle_unavailable_error(request_id: RequestId) -> ErrorDto {
     constructed_error(construction::workspace_unavailable(
         request_id,
