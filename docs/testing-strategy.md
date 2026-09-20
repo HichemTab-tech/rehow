@@ -75,6 +75,8 @@ Phase 6C2 adds an exact eleven-tool surface. Tests prove canonical draft-only cr
 
 Phase 6C3 adds an exact twelve-tool surface. Tests prove the list result carries a complete-inventory Category snapshot, canonical core-owned creation, absence of caller ID/path/order/status/time authority, deterministic external Category-change refusal under the writer lock with no directory, stale-view refusal at the raw 1,000-entry cap, and accurate committed-refresh reporting. Existing core Category emission, journal interruption, confinement, and limit suites remain part of the full gate.
 
+Phase 6C4 adds an exact thirteen-tool surface. Tests prove read-only denial, exact-revision typed Category name/optional-summary replacement through real protocol framing, stable core-owned path/order/status, refreshed inventory snapshots, and deterministic external-edit refusal without overwrite. Existing core no-op, presentation, unknown-metadata, recovery, and confinement suites remain part of the full gate.
+
 ### End-to-end desktop tests
 
 Use the most stable Tauri/WebDriver-compatible automation available at Phase 2 and retain manual smoke coverage where Linux WebKit automation is incomplete. Tests launch the production-like native app against a temporary Workspace and exercise open/create/search/read/edit/restart/conflict. Never rely exclusively on the Vite browser view because native IPC, CSP, WebKitGTK, window behavior, and file dialogs are product behavior.
