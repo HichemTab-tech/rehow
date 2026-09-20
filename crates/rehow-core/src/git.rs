@@ -15,9 +15,11 @@ mod ssh_sandbox;
 
 pub use credential_proxy::run_git_credential_proxy;
 pub use https_credentials::{
+    GitHttpsCredentialBackingProvenance, GitHttpsCredentialBackingStatus,
     GitHttpsCredentialProvenance, GitHttpsCredentialProxyProvenance, GitHttpsCredentialProxyStatus,
     GitHttpsCredentialResourceError, GitHttpsCredentialResources, GitHttpsCredentialStatus,
-    capture_git_https_credential_provenance, capture_git_https_credential_proxy_provenance,
+    capture_git_https_credential_backing_provenance, capture_git_https_credential_provenance,
+    capture_git_https_credential_proxy_provenance,
 };
 pub use ssh_proxy::run_git_ssh_proxy;
 pub use ssh_sandbox::{
@@ -1041,6 +1043,51 @@ impl GitRemoteTransport {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum GitRemoteAuthentication<'a> {
+    Anonymous,
+    Https(&'a GitHttpsCredentialResources),
+    Ssh(&'a GitSshTransportResources),
+}
+
+impl fmt::Debug for GitRemoteAuthentication<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kind = match self {
+            Self::Anonymous => "anonymous",
+            Self::Https(_) => "https",
+            Self::Ssh(_) => "ssh",
+        };
+        formatter
+            .debug_struct("GitRemoteAuthentication")
+            .field("kind", &kind)
+            .finish()
+    }
+}
+
+impl<'a> GitRemoteAuthentication<'a> {
+    fn supports(self, transport: GitRemoteTransport) -> bool {
+        matches!(
+            (transport, self),
+            (GitRemoteTransport::Https, Self::Anonymous | Self::Https(_))
+                | (GitRemoteTransport::Ssh, Self::Ssh(_))
+        )
+    }
+
+    fn ssh(self) -> Option<&'a GitSshTransportResources> {
+        match self {
+            Self::Ssh(resources) => Some(resources),
+            Self::Anonymous | Self::Https(_) => None,
+        }
+    }
+
+    fn https(self) -> Option<&'a GitHttpsCredentialResources> {
+        match self {
+            Self::Https(resources) => Some(resources),
+            Self::Anonymous | Self::Ssh(_) => None,
+        }
+    }
+}
+
 pub struct GitRemotePlan {
     token: PlanToken,
     workspace_id: String,
@@ -1372,12 +1419,12 @@ impl GitRemoteHead {
 pub(crate) fn discover_git_clone_remote_head(
     plan: &GitClonePlan,
     cancelled: &AtomicBool,
-    ssh: Option<&GitSshTransportResources>,
+    authentication: GitRemoteAuthentication<'_>,
 ) -> Result<GitRemoteHead, GitCloneDiscoveryError> {
     if cancelled.load(Ordering::Relaxed) {
         return Err(GitCloneDiscoveryError::Cancelled);
     }
-    if plan.transport == GitRemoteTransport::Ssh && ssh.is_none() {
+    if !authentication.supports(plan.transport) {
         return Err(GitCloneDiscoveryError::UnsupportedTransport);
     }
     let executable =
@@ -1389,7 +1436,7 @@ pub(crate) fn discover_git_clone_remote_head(
         &sandbox,
         &plan.remote_url,
         plan.transport,
-        ssh,
+        authentication,
     );
     let output = run_clone_command_for_transport(
         command,
@@ -1397,6 +1444,7 @@ pub(crate) fn discover_git_clone_remote_head(
         CLONE_DISCOVERY_TIMEOUT,
         CLONE_DISCOVERY_OUTPUT_LIMIT,
         plan.transport,
+        authentication,
     )?;
     parse_git_remote_head(&output.stdout)
 }
@@ -1404,12 +1452,12 @@ pub(crate) fn discover_git_clone_remote_head(
 fn discover_git_sync_remote_head(
     plan: &GitSyncPlan,
     cancelled: &AtomicBool,
-    ssh: Option<&GitSshTransportResources>,
+    authentication: GitRemoteAuthentication<'_>,
 ) -> Result<GitRemoteHead, GitSyncError> {
     if cancelled.load(Ordering::Relaxed) {
         return Err(GitSyncError::Cancelled);
     }
-    if plan.transport == GitRemoteTransport::Ssh && ssh.is_none() {
+    if !authentication.supports(plan.transport) {
         return Err(GitSyncError::UnsupportedTransport);
     }
     let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
@@ -1421,12 +1469,13 @@ fn discover_git_sync_remote_head(
             &plan.remote_url,
             &plan.remote_ref,
             plan.transport,
-            ssh,
+            authentication,
         ),
         cancelled,
         CLONE_DISCOVERY_TIMEOUT,
         CLONE_DISCOVERY_OUTPUT_LIMIT,
         plan.transport,
+        authentication,
     )
     .map_err(map_clone_discovery_to_sync)?;
     parse_git_sync_remote_ref(&output.stdout, &plan.remote_ref)
@@ -1486,9 +1535,9 @@ fn fetch_git_sync_remote(
     remote_head: &GitRemoteHead,
     staging: &GitCloneStaging,
     cancelled: &AtomicBool,
-    ssh: Option<&GitSshTransportResources>,
+    authentication: GitRemoteAuthentication<'_>,
 ) -> Result<(), GitSyncError> {
-    if plan.transport == GitRemoteTransport::Ssh && ssh.is_none() {
+    if !authentication.supports(plan.transport) {
         return Err(GitSyncError::UnsupportedTransport);
     }
     let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
@@ -1502,12 +1551,13 @@ fn fetch_git_sync_remote(
             &plan.remote_url,
             remote_head.object_id(),
             plan.transport,
-            ssh,
+            authentication,
         ),
         cancelled,
         CLONE_FETCH_TIMEOUT,
         CLONE_DISCOVERY_OUTPUT_LIMIT,
         plan.transport,
+        authentication,
     )
     .map_err(map_clone_discovery_to_sync)?;
     if !output.stdout.is_empty() {
@@ -1530,9 +1580,9 @@ pub(crate) fn fetch_git_clone_remote(
     remote_head: &GitRemoteHead,
     staging: &GitCloneStaging,
     cancelled: &AtomicBool,
-    ssh: Option<&GitSshTransportResources>,
+    authentication: GitRemoteAuthentication<'_>,
 ) -> Result<(), GitCloneDiscoveryError> {
-    if plan.transport == GitRemoteTransport::Ssh && ssh.is_none() {
+    if !authentication.supports(plan.transport) {
         return Err(GitCloneDiscoveryError::UnsupportedTransport);
     }
     let executable =
@@ -1547,7 +1597,7 @@ pub(crate) fn fetch_git_clone_remote(
         &plan.remote_url,
         &remote_head.object_id,
         plan.transport,
-        ssh,
+        authentication,
     );
     let output = run_clone_command_for_transport(
         command,
@@ -1555,6 +1605,7 @@ pub(crate) fn fetch_git_clone_remote(
         CLONE_FETCH_TIMEOUT,
         CLONE_DISCOVERY_OUTPUT_LIMIT,
         plan.transport,
+        authentication,
     )?;
     if !output.stdout.is_empty() {
         return Err(GitCloneDiscoveryError::InvalidAdvertisement);
@@ -2005,7 +2056,13 @@ pub fn apply_git_clone_validation(
     state_home: &Path,
     cancelled: &AtomicBool,
 ) -> Result<GitCloneValidation, GitCloneApplyError> {
-    apply_git_clone_validation_with_ssh(destination, plan, state_home, cancelled, None)
+    apply_git_clone_validation_with_authentication(
+        destination,
+        plan,
+        state_home,
+        cancelled,
+        GitRemoteAuthentication::Anonymous,
+    )
 }
 
 /// Runs clone validation with optional launch-captured SSH authority. HTTPS
@@ -2017,13 +2074,40 @@ pub fn apply_git_clone_validation_with_ssh(
     cancelled: &AtomicBool,
     ssh: Option<&GitSshTransportResources>,
 ) -> Result<GitCloneValidation, GitCloneApplyError> {
+    let authentication = if plan.transport == GitRemoteTransport::Ssh {
+        ssh.map_or(
+            GitRemoteAuthentication::Anonymous,
+            GitRemoteAuthentication::Ssh,
+        )
+    } else {
+        GitRemoteAuthentication::Anonymous
+    };
+    apply_git_clone_validation_with_authentication(
+        destination,
+        plan,
+        state_home,
+        cancelled,
+        authentication,
+    )
+}
+
+pub fn apply_git_clone_validation_with_authentication(
+    destination: &EmptyWorkspaceTarget,
+    plan: GitClonePlan,
+    state_home: &Path,
+    cancelled: &AtomicBool,
+    authentication: GitRemoteAuthentication<'_>,
+) -> Result<GitCloneValidation, GitCloneApplyError> {
+    if !authentication.supports(plan.transport) {
+        return Err(GitCloneApplyError::UnsupportedTransport);
+    }
     revalidate_git_clone_plan(destination, &plan).map_err(map_clone_apply_destination)?;
     let result = (|| {
-        let remote_head = discover_git_clone_remote_head(&plan, cancelled, ssh)
+        let remote_head = discover_git_clone_remote_head(&plan, cancelled, authentication)
             .map_err(map_clone_apply_discovery)?;
         let staging = prepare_git_clone_staging(destination, &plan, &remote_head, state_home)
             .map_err(map_clone_apply_staging)?;
-        fetch_git_clone_remote(&plan, &remote_head, &staging, cancelled, ssh)
+        fetch_git_clone_remote(&plan, &remote_head, &staging, cancelled, authentication)
             .map_err(map_clone_apply_discovery)?;
         let tree = inspect_fetched_git_clone_tree(&staging, &remote_head, cancelled)
             .map_err(map_clone_apply_inspection)?;
@@ -2100,7 +2184,13 @@ pub fn apply_git_sync_inspection(
     plan: GitSyncPlan,
     cancelled: &AtomicBool,
 ) -> Result<GitSyncInspection, GitSyncError> {
-    apply_git_sync_inspection_with_ssh(workspace, state_home, plan, cancelled, None)
+    apply_git_sync_inspection_with_authentication(
+        workspace,
+        state_home,
+        plan,
+        cancelled,
+        GitRemoteAuthentication::Anonymous,
+    )
 }
 
 /// Runs sync inspection with optional launch-captured SSH authority. HTTPS
@@ -2112,16 +2202,40 @@ pub fn apply_git_sync_inspection_with_ssh(
     cancelled: &AtomicBool,
     ssh: Option<&GitSshTransportResources>,
 ) -> Result<GitSyncInspection, GitSyncError> {
-    if plan.transport == GitRemoteTransport::Ssh && ssh.is_none() {
+    let authentication = if plan.transport == GitRemoteTransport::Ssh {
+        ssh.map_or(
+            GitRemoteAuthentication::Anonymous,
+            GitRemoteAuthentication::Ssh,
+        )
+    } else {
+        GitRemoteAuthentication::Anonymous
+    };
+    apply_git_sync_inspection_with_authentication(
+        workspace,
+        state_home,
+        plan,
+        cancelled,
+        authentication,
+    )
+}
+
+pub fn apply_git_sync_inspection_with_authentication(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    plan: GitSyncPlan,
+    cancelled: &AtomicBool,
+    authentication: GitRemoteAuthentication<'_>,
+) -> Result<GitSyncInspection, GitSyncError> {
+    if !authentication.supports(plan.transport) {
         return Err(GitSyncError::UnsupportedTransport);
     }
     revalidate_git_sync_plan(workspace, &plan)?;
-    let remote_head = discover_git_sync_remote_head(&plan, cancelled, ssh)?;
+    let remote_head = discover_git_sync_remote_head(&plan, cancelled, authentication)?;
     if remote_head.object_format != plan.preflight.object_format {
         return Err(GitSyncError::InvalidRepository);
     }
     let staging = prepare_git_sync_staging(&plan, &remote_head, state_home)?;
-    fetch_git_sync_remote(&plan, &remote_head, &staging, cancelled, ssh)?;
+    fetch_git_sync_remote(&plan, &remote_head, &staging, cancelled, authentication)?;
     finish_git_sync_inspection(workspace, plan, staging, remote_head, cancelled)
 }
 
@@ -2180,7 +2294,12 @@ pub fn classify_git_sync_ancestry(
     inspection: GitSyncInspection,
     cancelled: &AtomicBool,
 ) -> Result<GitSyncClassification, GitSyncError> {
-    classify_git_sync_ancestry_with_ssh(workspace, inspection, cancelled, None)
+    classify_git_sync_ancestry_with_authentication(
+        workspace,
+        inspection,
+        cancelled,
+        GitRemoteAuthentication::Anonymous,
+    )
 }
 
 /// Extends ancestry inspection with the same optional SSH authority used for
@@ -2191,7 +2310,24 @@ pub fn classify_git_sync_ancestry_with_ssh(
     cancelled: &AtomicBool,
     ssh: Option<&GitSshTransportResources>,
 ) -> Result<GitSyncClassification, GitSyncError> {
-    if inspection.plan.transport == GitRemoteTransport::Ssh && ssh.is_none() {
+    let authentication = if inspection.plan.transport == GitRemoteTransport::Ssh {
+        ssh.map_or(
+            GitRemoteAuthentication::Anonymous,
+            GitRemoteAuthentication::Ssh,
+        )
+    } else {
+        GitRemoteAuthentication::Anonymous
+    };
+    classify_git_sync_ancestry_with_authentication(workspace, inspection, cancelled, authentication)
+}
+
+pub fn classify_git_sync_ancestry_with_authentication(
+    workspace: &WorkspaceView,
+    inspection: GitSyncInspection,
+    cancelled: &AtomicBool,
+    authentication: GitRemoteAuthentication<'_>,
+) -> Result<GitSyncClassification, GitSyncError> {
+    if !authentication.supports(inspection.plan.transport) {
         return Err(GitSyncError::UnsupportedTransport);
     }
     revalidate_git_sync_plan(workspace, &inspection.plan)?;
@@ -2216,7 +2352,7 @@ pub fn classify_git_sync_ancestry_with_ssh(
         });
     }
 
-    deepen_git_sync_remote(&inspection, cancelled, ssh)?;
+    deepen_git_sync_remote(&inspection, cancelled, authentication)?;
     let refreshed_tree =
         inspect_fetched_git_clone_tree(&inspection.staging, &inspection.remote_head, cancelled)
             .map_err(map_clone_inspection_to_sync)?;
@@ -2332,7 +2468,11 @@ pub fn apply_git_push(
     workspace: &WorkspaceView,
     classification: GitSyncClassification,
 ) -> Result<GitPushOutcome, GitSyncError> {
-    apply_git_push_with_ssh(workspace, classification, None)
+    apply_git_push_with_authentication(
+        workspace,
+        classification,
+        GitRemoteAuthentication::Anonymous,
+    )
 }
 
 /// Publishes through optional launch-captured SSH authority. HTTPS ignores the
@@ -2342,15 +2482,33 @@ pub fn apply_git_push_with_ssh(
     classification: GitSyncClassification,
     ssh: Option<&GitSshTransportResources>,
 ) -> Result<GitPushOutcome, GitSyncError> {
-    if classification.transport() == GitRemoteTransport::Ssh && ssh.is_none() {
+    let authentication = if classification.transport() == GitRemoteTransport::Ssh {
+        ssh.map_or(
+            GitRemoteAuthentication::Anonymous,
+            GitRemoteAuthentication::Ssh,
+        )
+    } else {
+        GitRemoteAuthentication::Anonymous
+    };
+    apply_git_push_with_authentication(workspace, classification, authentication)
+}
+
+pub fn apply_git_push_with_authentication(
+    workspace: &WorkspaceView,
+    classification: GitSyncClassification,
+    authentication: GitRemoteAuthentication<'_>,
+) -> Result<GitPushOutcome, GitSyncError> {
+    if !authentication.supports(classification.transport()) {
         return Err(GitSyncError::UnsupportedTransport);
     }
     let not_cancelled = AtomicBool::new(false);
     apply_git_push_with(
         workspace,
         classification,
-        |plan| discover_git_sync_remote_head(plan, &not_cancelled, ssh),
-        |workspace, plan, local_commit| execute_exact_git_push(workspace, plan, local_commit, ssh),
+        |plan| discover_git_sync_remote_head(plan, &not_cancelled, authentication),
+        |workspace, plan, local_commit| {
+            execute_exact_git_push(workspace, plan, local_commit, authentication)
+        },
     )
 }
 
@@ -2403,9 +2561,9 @@ fn execute_exact_git_push(
     workspace: &WorkspaceView,
     plan: &GitSyncPlan,
     local_commit: &str,
-    ssh: Option<&GitSshTransportResources>,
+    authentication: GitRemoteAuthentication<'_>,
 ) -> Result<(), GitSyncError> {
-    if plan.transport == GitRemoteTransport::Ssh && ssh.is_none() {
+    if !authentication.supports(plan.transport) {
         return Err(GitSyncError::UnsupportedTransport);
     }
     let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
@@ -2429,7 +2587,7 @@ fn execute_exact_git_push(
         local_commit,
         &plan.remote_ref,
         plan.transport,
-        ssh,
+        authentication,
     )?;
     let push_result = run_clone_command_for_transport(
         command,
@@ -2437,6 +2595,7 @@ fn execute_exact_git_push(
         PUSH_TIMEOUT,
         CLONE_DISCOVERY_OUTPUT_LIMIT,
         plan.transport,
+        authentication,
     )
     .map(|_| ())
     .map_err(map_clone_discovery_to_sync);
@@ -3160,9 +3319,9 @@ fn git_sync_workspace_matches_tree(
 fn deepen_git_sync_remote(
     inspection: &GitSyncInspection,
     cancelled: &AtomicBool,
-    ssh: Option<&GitSshTransportResources>,
+    authentication: GitRemoteAuthentication<'_>,
 ) -> Result<(), GitSyncError> {
-    if inspection.plan.transport == GitRemoteTransport::Ssh && ssh.is_none() {
+    if !authentication.supports(inspection.plan.transport) {
         return Err(GitSyncError::UnsupportedTransport);
     }
     let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
@@ -3189,12 +3348,13 @@ fn deepen_git_sync_remote(
             inspection.remote_head.object_id(),
             file_limit,
             inspection.plan.transport,
-            ssh,
+            authentication,
         ),
         cancelled,
         CLONE_FETCH_TIMEOUT,
         CLONE_DISCOVERY_OUTPUT_LIMIT,
         inspection.plan.transport,
+        authentication,
     )
     .map_err(map_clone_discovery_to_sync)?;
     if !output.stdout.is_empty() {
@@ -4282,7 +4442,15 @@ fn run_clone_command(
     timeout: Duration,
     output_limit: usize,
 ) -> Result<ProcessOutput, GitCloneDiscoveryError> {
-    run_clone_command_inner(command, cancelled, timeout, output_limit, false, false)
+    run_clone_command_inner(
+        command,
+        cancelled,
+        timeout,
+        output_limit,
+        false,
+        false,
+        false,
+    )
 }
 
 fn run_clone_command_for_transport(
@@ -4291,6 +4459,7 @@ fn run_clone_command_for_transport(
     timeout: Duration,
     output_limit: usize,
     transport: GitRemoteTransport,
+    authentication: GitRemoteAuthentication<'_>,
 ) -> Result<ProcessOutput, GitCloneDiscoveryError> {
     run_clone_command_inner(
         command,
@@ -4299,6 +4468,7 @@ fn run_clone_command_for_transport(
         output_limit,
         false,
         transport == GitRemoteTransport::Ssh,
+        transport == GitRemoteTransport::Https && authentication.https().is_some(),
     )
 }
 
@@ -4308,6 +4478,7 @@ fn run_clone_command_for_transport_with_missing_ref(
     timeout: Duration,
     output_limit: usize,
     transport: GitRemoteTransport,
+    authentication: GitRemoteAuthentication<'_>,
 ) -> Result<ProcessOutput, GitCloneDiscoveryError> {
     run_clone_command_inner(
         command,
@@ -4316,6 +4487,7 @@ fn run_clone_command_for_transport_with_missing_ref(
         output_limit,
         true,
         transport == GitRemoteTransport::Ssh,
+        transport == GitRemoteTransport::Https && authentication.https().is_some(),
     )
 }
 
@@ -4326,6 +4498,7 @@ fn run_clone_command_inner(
     output_limit: usize,
     classify_missing_ref: bool,
     classify_ssh: bool,
+    classify_https_authentication: bool,
 ) -> Result<ProcessOutput, GitCloneDiscoveryError> {
     if cancelled.load(Ordering::Relaxed) {
         return Err(GitCloneDiscoveryError::Cancelled);
@@ -4385,6 +4558,13 @@ fn run_clone_command_inner(
                 return Err(GitCloneDiscoveryError::AuthenticationFailed);
             }
         }
+        if classify_https_authentication
+            && (stderr_contains(&stderr, b"Authentication failed")
+                || stderr_contains(&stderr, b"returned error: 401")
+                || stderr_contains(&stderr, b"could not read Username"))
+        {
+            return Err(GitCloneDiscoveryError::AuthenticationFailed);
+        }
         return Err(GitCloneDiscoveryError::RemoteUnavailable);
     }
     Ok(ProcessOutput { stdout })
@@ -4403,7 +4583,7 @@ fn clone_discovery_command(executable: &Path, sandbox: &Path, remote_url: &str) 
         sandbox,
         remote_url,
         GitRemoteTransport::Https,
-        None,
+        GitRemoteAuthentication::Anonymous,
     )
 }
 
@@ -4412,10 +4592,16 @@ fn clone_discovery_command_with_transport(
     sandbox: &Path,
     remote_url: &str,
     transport: GitRemoteTransport,
-    ssh: Option<&GitSshTransportResources>,
+    authentication: GitRemoteAuthentication<'_>,
 ) -> Command {
     remote_discovery_command(
-        executable, sandbox, remote_url, "HEAD", true, transport, ssh,
+        executable,
+        sandbox,
+        remote_url,
+        "HEAD",
+        true,
+        transport,
+        authentication,
     )
 }
 
@@ -4425,10 +4611,16 @@ fn sync_discovery_command(
     remote_url: &str,
     remote_ref: &str,
     transport: GitRemoteTransport,
-    ssh: Option<&GitSshTransportResources>,
+    authentication: GitRemoteAuthentication<'_>,
 ) -> Command {
     remote_discovery_command(
-        executable, sandbox, remote_url, remote_ref, false, transport, ssh,
+        executable,
+        sandbox,
+        remote_url,
+        remote_ref,
+        false,
+        transport,
+        authentication,
     )
 }
 
@@ -4439,7 +4631,7 @@ fn remote_discovery_command(
     remote_ref: &str,
     symref: bool,
     transport: GitRemoteTransport,
-    ssh: Option<&GitSshTransportResources>,
+    authentication: GitRemoteAuthentication<'_>,
 ) -> Command {
     let mut command = Command::new(sandbox);
     command
@@ -4463,6 +4655,9 @@ fn remote_discovery_command(
             "--ro-bind",
             "/usr",
             "/usr",
+            "--symlink",
+            "usr/bin",
+            "/bin",
             "--symlink",
             "usr/lib",
             "/lib",
@@ -4496,18 +4691,30 @@ fn remote_discovery_command(
         command
             .env("GIT_SSH", "/home/rehow/bin/rehow-git-ssh")
             .env("GIT_SSH_VARIANT", "ssh");
-        if let Some(ssh) = ssh {
+        if let Some(ssh) = authentication.ssh() {
             ssh.add_bubblewrap_mounts(&mut command);
         }
+    } else if let Some(credentials) = authentication.https()
+        && let Some(host) = https_credential_host(remote_url)
+    {
+        credentials.configure_bubblewrap(&mut command, &host);
+    }
+    command.arg("--").arg(executable).args([
+        "--no-pager",
+        "--literal-pathspecs",
+        "-c",
+        "credential.helper=",
+    ]);
+    if authentication.https().is_some() {
+        command.args([
+            "-c",
+            credential_proxy::CREDENTIAL_HELPER_CONFIG,
+            "-c",
+            "credential.useHttpPath=false",
+        ]);
     }
     command
-        .arg("--")
-        .arg(executable)
         .args([
-            "--no-pager",
-            "--literal-pathspecs",
-            "-c",
-            "credential.helper=",
             "-c",
             "credential.interactive=false",
             "-c",
@@ -4557,7 +4764,7 @@ fn git_push_command(
     local_commit: &str,
     remote_ref: &str,
     transport: GitRemoteTransport,
-    ssh: Option<&GitSshTransportResources>,
+    authentication: GitRemoteAuthentication<'_>,
 ) -> Result<(Command, File), GitSyncError> {
     if validate_object_id(local_commit) != Some(object_format)
         || !remote_ref.starts_with("refs/heads/")
@@ -4593,6 +4800,9 @@ fn git_push_command(
             "--ro-bind",
             "/usr",
             "/usr",
+            "--symlink",
+            "usr/bin",
+            "/bin",
             "--symlink",
             "usr/lib",
             "/lib",
@@ -4650,18 +4860,30 @@ fn git_push_command(
         command
             .env("GIT_SSH", "/home/rehow/bin/rehow-git-ssh")
             .env("GIT_SSH_VARIANT", "ssh");
-        if let Some(ssh) = ssh {
+        if let Some(ssh) = authentication.ssh() {
             ssh.add_bubblewrap_mounts(&mut command);
         }
+    } else if let Some(credentials) = authentication.https()
+        && let Some(host) = https_credential_host(remote_url)
+    {
+        credentials.configure_bubblewrap(&mut command, &host);
+    }
+    command.args(["--"]).arg(executable).args([
+        "--no-pager",
+        "--literal-pathspecs",
+        "-c",
+        "credential.helper=",
+    ]);
+    if authentication.https().is_some() {
+        command.args([
+            "-c",
+            credential_proxy::CREDENTIAL_HELPER_CONFIG,
+            "-c",
+            "credential.useHttpPath=false",
+        ]);
     }
     command
-        .args(["--"])
-        .arg(executable)
         .args([
-            "--no-pager",
-            "--literal-pathspecs",
-            "-c",
-            "credential.helper=",
             "-c",
             "credential.interactive=false",
             "-c",
@@ -4734,7 +4956,7 @@ fn clone_fetch_command(
         remote_url,
         object_id,
         GitRemoteTransport::Https,
-        None,
+        GitRemoteAuthentication::Anonymous,
     )
 }
 
@@ -4747,7 +4969,7 @@ fn clone_fetch_command_with_transport(
     remote_url: &str,
     object_id: &str,
     transport: GitRemoteTransport,
-    ssh: Option<&GitSshTransportResources>,
+    authentication: GitRemoteAuthentication<'_>,
 ) -> Command {
     remote_fetch_command(
         executable,
@@ -4759,7 +4981,7 @@ fn clone_fetch_command_with_transport(
         1,
         CLONE_STAGING_FILE_LIMIT,
         transport,
-        ssh,
+        authentication,
     )
 }
 
@@ -4773,7 +4995,7 @@ fn sync_history_fetch_command(
     object_id: &str,
     file_limit: u64,
     transport: GitRemoteTransport,
-    ssh: Option<&GitSshTransportResources>,
+    authentication: GitRemoteAuthentication<'_>,
 ) -> Command {
     remote_fetch_command(
         executable,
@@ -4785,7 +5007,7 @@ fn sync_history_fetch_command(
         SYNC_HISTORY_LIMIT,
         file_limit,
         transport,
-        ssh,
+        authentication,
     )
 }
 
@@ -4800,7 +5022,7 @@ fn remote_fetch_command(
     depth: usize,
     file_limit: u64,
     transport: GitRemoteTransport,
-    ssh: Option<&GitSshTransportResources>,
+    authentication: GitRemoteAuthentication<'_>,
 ) -> Command {
     let refspec = format!("{object_id}:refs/rehow/clone/head");
     let depth = format!("--depth={depth}");
@@ -4826,6 +5048,9 @@ fn remote_fetch_command(
             "--ro-bind",
             "/usr",
             "/usr",
+            "--symlink",
+            "usr/bin",
+            "/bin",
             "--symlink",
             "usr/lib",
             "/lib",
@@ -4862,19 +5087,31 @@ fn remote_fetch_command(
         command
             .env("GIT_SSH", "/home/rehow/bin/rehow-git-ssh")
             .env("GIT_SSH_VARIANT", "ssh");
-        if let Some(ssh) = ssh {
+        if let Some(ssh) = authentication.ssh() {
             ssh.add_bubblewrap_mounts(&mut command);
         }
+    } else if let Some(credentials) = authentication.https()
+        && let Some(host) = https_credential_host(remote_url)
+    {
+        credentials.configure_bubblewrap(&mut command, &host);
+    }
+    command.arg("--").arg(executable).args([
+        "--no-pager",
+        "--literal-pathspecs",
+        "--git-dir=/repo.git",
+        "-c",
+        "credential.helper=",
+    ]);
+    if authentication.https().is_some() {
+        command.args([
+            "-c",
+            credential_proxy::CREDENTIAL_HELPER_CONFIG,
+            "-c",
+            "credential.useHttpPath=false",
+        ]);
     }
     command
-        .arg("--")
-        .arg(executable)
         .args([
-            "--no-pager",
-            "--literal-pathspecs",
-            "--git-dir=/repo.git",
-            "-c",
-            "credential.helper=",
             "-c",
             "credential.interactive=false",
             "-c",
@@ -6327,6 +6564,25 @@ fn validate_remote_uri(value: &str) -> Result<ValidRemoteUrl, GitRemoteError> {
         transport,
         host: host.to_owned(),
     })
+}
+
+fn https_credential_host(remote_url: &str) -> Option<String> {
+    let parsed = url::Url::parse(remote_url).ok()?;
+    if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() {
+        return None;
+    }
+    let mut host = match parsed.host()? {
+        url::Host::Domain(value) => value.to_owned(),
+        url::Host::Ipv4(value) => value.to_string(),
+        // IPv6-literal remotes remain outside the conservative remote URL
+        // grammar. Do not authenticate a host form planning cannot accept.
+        url::Host::Ipv6(_) => return None,
+    };
+    if let Some(port) = parsed.port() {
+        use std::fmt::Write as _;
+        write!(&mut host, ":{port}").ok()?;
+    }
+    Some(host)
 }
 
 fn validate_scp_remote(value: &str) -> Result<ValidRemoteUrl, GitRemoteError> {
@@ -11975,6 +12231,85 @@ mod tests {
         }
     }
 
+    fn command_arguments(command: &Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn command_environment(command: &Command) -> std::collections::HashMap<String, Option<String>> {
+        command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect()
+    }
+
+    fn assert_https_credential_boundary(command: &Command, expected_host: &str) {
+        let arguments = command_arguments(command);
+        assert_eq!(
+            arguments
+                .iter()
+                .filter(|argument| {
+                    argument.as_str() == credential_proxy::CREDENTIAL_HELPER_CONFIG
+                })
+                .count(),
+            1
+        );
+        for required in [
+            "credential.helper=",
+            "credential.useHttpPath=false",
+            credential_proxy::SANDBOX_CREDENTIAL_PROXY,
+            credential_proxy::SANDBOX_CREDENTIAL_HELPER,
+        ] {
+            assert!(
+                arguments.iter().any(|argument| argument == required),
+                "{required}"
+            );
+        }
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument.contains("workspace"))
+        );
+        let environment = command_environment(command);
+        assert_eq!(
+            environment["REHOW_CREDENTIAL_HOST"].as_deref(),
+            Some(expected_host)
+        );
+        assert_eq!(
+            environment["REHOW_CREDENTIAL_HELPER_KIND"].as_deref(),
+            Some("direct")
+        );
+    }
+
+    fn assert_no_https_credential_boundary(command: &Command) {
+        let arguments = command_arguments(command);
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument == credential_proxy::CREDENTIAL_HELPER_CONFIG)
+        );
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument == credential_proxy::SANDBOX_CREDENTIAL_PROXY)
+        );
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument == credential_proxy::SANDBOX_CREDENTIAL_HELPER)
+        );
+        let environment = command_environment(command);
+        assert!(!environment.contains_key("REHOW_CREDENTIAL_HOST"));
+        assert!(!environment.contains_key("REHOW_CREDENTIAL_HELPER_KIND"));
+    }
+
     fn workspace(temp: &Temp) -> Box<WorkspaceView> {
         fs::create_dir(temp.0.join("categories")).unwrap();
         fs::write(temp.0.join("rehow.yaml"), "schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Git\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T00:00:00Z\"\n").unwrap();
@@ -14619,6 +14954,7 @@ mod tests {
                 Duration::from_secs(2),
                 1024,
                 GitRemoteTransport::Https,
+                GitRemoteAuthentication::Anonymous,
             )
             .err()
             .unwrap(),
@@ -14659,6 +14995,7 @@ mod tests {
                     Duration::from_secs(2),
                     1024,
                     GitRemoteTransport::Ssh,
+                    GitRemoteAuthentication::Anonymous,
                 )
                 .err()
                 .unwrap(),
@@ -14716,6 +15053,7 @@ mod tests {
         );
         assert_eq!(environment["GIT_TERMINAL_PROMPT"].as_deref(), Some("0"));
         assert_eq!(environment["HOME"].as_deref(), Some("/home/rehow"));
+        assert_no_https_credential_boundary(&command);
 
         let ssh_url = "ssh://git@example.invalid:2222/team/rehow.git";
         let ssh = clone_discovery_command_with_transport(
@@ -14723,7 +15061,7 @@ mod tests {
             Path::new("/usr/bin/bwrap"),
             ssh_url,
             GitRemoteTransport::Ssh,
-            None,
+            GitRemoteAuthentication::Anonymous,
         );
         let ssh_arguments = ssh
             .get_args()
@@ -14750,6 +15088,7 @@ mod tests {
             Some("/home/rehow/bin/rehow-git-ssh")
         );
         assert_eq!(ssh_environment["GIT_SSH_VARIANT"].as_deref(), Some("ssh"));
+        assert_no_https_credential_boundary(&ssh);
 
         let sync = sync_discovery_command(
             Path::new("/usr/bin/git"),
@@ -14757,7 +15096,7 @@ mod tests {
             url,
             "refs/heads/team/main",
             GitRemoteTransport::Https,
-            None,
+            GitRemoteAuthentication::Anonymous,
         );
         let sync_arguments = sync
             .get_args()
@@ -14787,7 +15126,7 @@ mod tests {
             "ssh://git@example.invalid/team/rehow.git",
             "refs/heads/team/main",
             GitRemoteTransport::Ssh,
-            None,
+            GitRemoteAuthentication::Anonymous,
         );
         let ssh_sync_arguments = ssh_sync
             .get_args()
@@ -14867,7 +15206,7 @@ mod tests {
             "0123456789abcdef0123456789abcdef01234567",
             1024 * 1024,
             GitRemoteTransport::Https,
-            None,
+            GitRemoteAuthentication::Anonymous,
         );
         let history_arguments = history_fetch
             .get_args()
@@ -14882,6 +15221,64 @@ mod tests {
             !history_arguments
                 .iter()
                 .any(|argument| argument == "--depth=1")
+        );
+    }
+
+    #[test]
+    fn authenticated_https_discovery_fetch_and_history_use_only_fixed_credentials() {
+        let resources = https_credentials::test_direct_resources();
+        let url = "https://example.invalid:8443/team/rehow.git";
+        let object_id = "0123456789abcdef0123456789abcdef01234567";
+        let discovery = clone_discovery_command_with_transport(
+            Path::new("/usr/bin/git"),
+            Path::new("/usr/bin/bwrap"),
+            url,
+            GitRemoteTransport::Https,
+            GitRemoteAuthentication::Https(&resources),
+        );
+        assert_https_credential_boundary(&discovery, "example.invalid:8443");
+
+        let fetch = clone_fetch_command_with_transport(
+            Path::new("/usr/bin/git"),
+            Path::new("/usr/bin/bwrap"),
+            "/proc/self/fd/99",
+            99,
+            url,
+            object_id,
+            GitRemoteTransport::Https,
+            GitRemoteAuthentication::Https(&resources),
+        );
+        assert_https_credential_boundary(&fetch, "example.invalid:8443");
+        let fetch_arguments = command_arguments(&fetch);
+        assert!(
+            fetch_arguments
+                .iter()
+                .any(|argument| argument == "--depth=1")
+        );
+        assert_eq!(
+            fetch_arguments
+                .windows(2)
+                .filter(|arguments| *arguments == ["-c", "gc.auto=0"])
+                .count(),
+            1
+        );
+
+        let history = sync_history_fetch_command(
+            Path::new("/usr/bin/git"),
+            Path::new("/usr/bin/bwrap"),
+            "/proc/self/fd/99",
+            99,
+            url,
+            object_id,
+            1024 * 1024,
+            GitRemoteTransport::Https,
+            GitRemoteAuthentication::Https(&resources),
+        );
+        assert_https_credential_boundary(&history, "example.invalid:8443");
+        assert!(
+            command_arguments(&history)
+                .iter()
+                .any(|argument| argument == "--depth=4096")
         );
     }
 
@@ -14903,7 +15300,7 @@ mod tests {
             local_commit,
             remote_ref,
             GitRemoteTransport::Https,
-            None,
+            GitRemoteAuthentication::Anonymous,
         )
         .unwrap();
         let arguments = command
@@ -14976,6 +15373,7 @@ mod tests {
         );
         assert_eq!(environment["GIT_TERMINAL_PROMPT"].as_deref(), Some("0"));
         assert_eq!(environment["GIT_OPTIONAL_LOCKS"].as_deref(), Some("0"));
+        assert_no_https_credential_boundary(&command);
 
         let (ssh_command, _ssh_config) = git_push_command(
             Path::new("/usr/bin/git"),
@@ -14986,7 +15384,7 @@ mod tests {
             local_commit,
             remote_ref,
             GitRemoteTransport::Ssh,
-            None,
+            GitRemoteAuthentication::Anonymous,
         )
         .unwrap();
         let ssh_arguments = ssh_command
@@ -15009,6 +15407,38 @@ mod tests {
         for required in ["protocol.https.allow=never", "protocol.ssh.allow=always"] {
             assert!(ssh_arguments.iter().any(|argument| argument == required));
         }
+        assert_no_https_credential_boundary(&ssh_command);
+
+        let resources = https_credentials::test_direct_resources();
+        let authenticated_url = "https://example.invalid:8443/team/rehow.git";
+        let (https_command, _https_config) = git_push_command(
+            Path::new("/usr/bin/git"),
+            Path::new("/usr/bin/bwrap"),
+            &capability,
+            GitObjectFormat::Sha1,
+            authenticated_url,
+            local_commit,
+            remote_ref,
+            GitRemoteTransport::Https,
+            GitRemoteAuthentication::Https(&resources),
+        )
+        .unwrap();
+        assert_https_credential_boundary(&https_command, "example.invalid:8443");
+        let https_arguments = command_arguments(&https_command);
+        for required in [
+            "push",
+            "--porcelain",
+            "--no-verify",
+            "--no-follow-tags",
+            "--recurse-submodules=no",
+            authenticated_url,
+            &format!("{local_commit}:{remote_ref}"),
+        ] {
+            assert!(https_arguments.iter().any(|argument| argument == required));
+        }
+        for forbidden in ["--force", "--force-with-lease", "--delete", "--mirror"] {
+            assert!(!https_arguments.iter().any(|argument| argument == forbidden));
+        }
     }
 
     #[test]
@@ -15018,12 +15448,16 @@ mod tests {
         let https = plan_git_clone(&target, "https://example.invalid/team/rehow.git").unwrap();
         let cancelled = AtomicBool::new(true);
         assert_eq!(
-            discover_git_clone_remote_head(&https, &cancelled, None),
+            discover_git_clone_remote_head(&https, &cancelled, GitRemoteAuthentication::Anonymous,),
             Err(GitCloneDiscoveryError::Cancelled)
         );
         let ssh = plan_git_clone(&target, "git@example.invalid:team/rehow.git").unwrap();
         assert_eq!(
-            discover_git_clone_remote_head(&ssh, &AtomicBool::new(false), None),
+            discover_git_clone_remote_head(
+                &ssh,
+                &AtomicBool::new(false),
+                GitRemoteAuthentication::Anonymous,
+            ),
             Err(GitCloneDiscoveryError::UnsupportedTransport)
         );
     }
@@ -17353,9 +17787,18 @@ mod tests {
         let target = empty_target(&destination);
         let plan = plan_git_clone(&target, "https://github.com/octocat/Hello-World.git").unwrap();
         let cancelled = AtomicBool::new(false);
-        let head = discover_git_clone_remote_head(&plan, &cancelled, None).unwrap();
+        let head =
+            discover_git_clone_remote_head(&plan, &cancelled, GitRemoteAuthentication::Anonymous)
+                .unwrap();
         let staging = prepare_git_clone_staging(&target, &plan, &head, &state.0).unwrap();
-        fetch_git_clone_remote(&plan, &head, &staging, &cancelled, None).unwrap();
+        fetch_git_clone_remote(
+            &plan,
+            &head,
+            &staging,
+            &cancelled,
+            GitRemoteAuthentication::Anonymous,
+        )
+        .unwrap();
         assert!(destination.0.read_dir().unwrap().next().is_none());
         assert_eq!(
             fs::read_to_string(Path::new(staging.git_path()).join("refs/rehow/clone/head"))
@@ -17408,6 +17851,7 @@ mod tests {
             "https://github.com/example/rehow.git?token=secret",
             "ssh://git:secret@github.com/example/rehow.git",
             "ssh://git@GitHub.com/example/rehow.git",
+            "https://[::1]/example/rehow.git",
             "file:///tmp/rehow.git",
             "git@github.com:../rehow.git",
             "git@github.com:example/%72ehow.git",

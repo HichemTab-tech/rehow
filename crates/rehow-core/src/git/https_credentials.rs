@@ -22,6 +22,7 @@ use std::{
 
 const MAX_CREDENTIAL_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_HELPER_NAME_BYTES: usize = 128;
+const SANDBOX_GH_CONFIG: &str = "/home/rehow/.config/gh/hosts.yml";
 
 #[cfg(test)]
 thread_local! {
@@ -92,6 +93,211 @@ pub fn capture_git_https_credential_proxy_provenance() -> GitHttpsCredentialProx
     capture_credential_proxy_from(candidate.as_deref())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitHttpsCredentialBackingStatus {
+    NotConfigured,
+    Trusted,
+    Unsafe,
+}
+
+pub struct GitHttpsCredentialBackingProvenance {
+    status: GitHttpsCredentialBackingStatus,
+    gh_config: Option<File>,
+}
+
+impl GitHttpsCredentialBackingProvenance {
+    pub fn status(&self) -> GitHttpsCredentialBackingStatus {
+        self.status
+    }
+}
+
+impl fmt::Debug for GitHttpsCredentialBackingProvenance {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitHttpsCredentialBackingProvenance")
+            .field("status", &self.status)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Retains only the ordinary GitHub CLI credential file inode. Rehow never
+/// parses, logs, copies, or returns its contents.
+pub fn capture_git_https_credential_backing_provenance() -> GitHttpsCredentialBackingProvenance {
+    let path = match gh_config_path() {
+        Ok(Some(path)) => path,
+        Ok(None) => return unavailable_backing(GitHttpsCredentialBackingStatus::NotConfigured),
+        Err(()) => return unavailable_backing(GitHttpsCredentialBackingStatus::Unsafe),
+    };
+    capture_credential_backing_from(Some(&path))
+}
+
+fn gh_config_path() -> Result<Option<PathBuf>, ()> {
+    let directory = if let Some(value) = env::var_os("GH_CONFIG_DIR") {
+        PathBuf::from(value)
+    } else if let Some(value) = env::var_os("XDG_CONFIG_HOME") {
+        PathBuf::from(value).join("gh")
+    } else if let Some(value) = env::var_os("HOME") {
+        PathBuf::from(value).join(".config/gh")
+    } else {
+        return Ok(None);
+    };
+    if !safe_provenance_path(&directory) {
+        return Err(());
+    }
+    Ok(Some(directory.join("hosts.yml")))
+}
+
+fn unavailable_backing(
+    status: GitHttpsCredentialBackingStatus,
+) -> GitHttpsCredentialBackingProvenance {
+    GitHttpsCredentialBackingProvenance {
+        status,
+        gh_config: None,
+    }
+}
+
+fn capture_credential_backing_from(
+    candidate: Option<&Path>,
+) -> GitHttpsCredentialBackingProvenance {
+    let Some(candidate) = candidate else {
+        return unavailable_backing(GitHttpsCredentialBackingStatus::NotConfigured);
+    };
+    if !safe_provenance_path(candidate) {
+        return unavailable_backing(GitHttpsCredentialBackingStatus::Unsafe);
+    }
+    let effective_user = unsafe { libc::geteuid() };
+    let before = match fs::symlink_metadata(candidate) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return unavailable_backing(GitHttpsCredentialBackingStatus::NotConfigured);
+        }
+        Err(_) => return unavailable_backing(GitHttpsCredentialBackingStatus::Unsafe),
+    };
+    let Some(parent) = candidate.parent() else {
+        return unavailable_backing(GitHttpsCredentialBackingStatus::Unsafe);
+    };
+    let Some(before_parents) = inspect_ssh_agent_parents(parent, effective_user) else {
+        return unavailable_backing(GitHttpsCredentialBackingStatus::Unsafe);
+    };
+    if !credential_backing_metadata_safe(&before, effective_user) {
+        return unavailable_backing(GitHttpsCredentialBackingStatus::Unsafe);
+    }
+    let file = match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(candidate)
+    {
+        Ok(file) => file,
+        Err(_) => return unavailable_backing(GitHttpsCredentialBackingStatus::Unsafe),
+    };
+    let held_before = match file.metadata() {
+        Ok(metadata) if credential_backing_metadata_safe(&metadata, effective_user) => metadata,
+        _ => return unavailable_backing(GitHttpsCredentialBackingStatus::Unsafe),
+    };
+    if backing_identity(&before) != backing_identity(&held_before) {
+        return unavailable_backing(GitHttpsCredentialBackingStatus::Unsafe);
+    }
+    let Some(snapshot) = sealed_credential_backing_snapshot(&file, held_before.size()) else {
+        return unavailable_backing(GitHttpsCredentialBackingStatus::Unsafe);
+    };
+    let held_after = match file.metadata() {
+        Ok(metadata) if credential_backing_metadata_safe(&metadata, effective_user) => metadata,
+        _ => return unavailable_backing(GitHttpsCredentialBackingStatus::Unsafe),
+    };
+    let after = match fs::symlink_metadata(candidate) {
+        Ok(metadata) => metadata,
+        Err(_) => return unavailable_backing(GitHttpsCredentialBackingStatus::Unsafe),
+    };
+    let Some(after_parents) = inspect_ssh_agent_parents(parent, effective_user) else {
+        return unavailable_backing(GitHttpsCredentialBackingStatus::Unsafe);
+    };
+    if backing_identity(&before) != backing_identity(&held_after)
+        || backing_identity(&after) != backing_identity(&held_after)
+        || backing_identity(&held_before) != backing_identity(&held_after)
+        || before_parents != after_parents
+    {
+        return unavailable_backing(GitHttpsCredentialBackingStatus::Unsafe);
+    }
+    GitHttpsCredentialBackingProvenance {
+        status: GitHttpsCredentialBackingStatus::Trusted,
+        gh_config: Some(snapshot),
+    }
+}
+
+fn credential_backing_metadata_safe(metadata: &fs::Metadata, effective_user: u32) -> bool {
+    metadata.is_file()
+        && !metadata.file_type().is_symlink()
+        && metadata.uid() == effective_user
+        && metadata.nlink() == 1
+        && metadata.permissions().mode() & 0o077 == 0
+        && metadata.size() <= MAX_CREDENTIAL_CONFIG_BYTES
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct CredentialBackingIdentity {
+    file: FileIdentity,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+fn backing_identity(metadata: &fs::Metadata) -> CredentialBackingIdentity {
+    CredentialBackingIdentity {
+        file: file_identity(metadata),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        changed_seconds: metadata.ctime(),
+        changed_nanoseconds: metadata.ctime_nsec(),
+    }
+}
+
+fn sealed_credential_backing_snapshot(source: &File, size: u64) -> Option<File> {
+    if size > MAX_CREDENTIAL_CONFIG_BYTES {
+        return None;
+    }
+    let descriptor = unsafe {
+        libc::memfd_create(
+            c"rehow-gh-config".as_ptr(),
+            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+        )
+    };
+    if descriptor < 0 {
+        return None;
+    }
+    let snapshot = unsafe { File::from_raw_fd(descriptor) };
+    let mut source_offset: libc::off_t = 0;
+    let mut remaining = usize::try_from(size).ok()?;
+    while remaining > 0 {
+        let copied = unsafe {
+            libc::sendfile(
+                snapshot.as_raw_fd(),
+                source.as_raw_fd(),
+                &mut source_offset,
+                remaining,
+            )
+        };
+        if copied < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return None;
+        }
+        if copied == 0 {
+            return None;
+        }
+        remaining = remaining.checked_sub(usize::try_from(copied).ok()?)?;
+    }
+    if unsafe { libc::fchmod(snapshot.as_raw_fd(), 0o400) } != 0 {
+        return None;
+    }
+    let seals = libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+    if unsafe { libc::fcntl(snapshot.as_raw_fd(), libc::F_ADD_SEALS, seals) } != 0 {
+        return None;
+    }
+    Some(snapshot)
+}
+
 fn capture_credential_proxy_from(candidate: Option<&Path>) -> GitHttpsCredentialProxyProvenance {
     let Some(candidate) = candidate else {
         return GitHttpsCredentialProxyProvenance {
@@ -141,6 +347,7 @@ fn capture_credential_proxy_from(candidate: Option<&Path>) -> GitHttpsCredential
 pub enum GitHttpsCredentialResourceError {
     CredentialsUnavailable,
     ProxyUnavailable,
+    BackingUnavailable,
     Io,
 }
 
@@ -150,6 +357,7 @@ pub struct GitHttpsCredentialResources {
     kind: CredentialHelperKind,
     helper: File,
     proxy: File,
+    gh_config: Option<File>,
 }
 
 impl fmt::Debug for GitHttpsCredentialResources {
@@ -165,6 +373,7 @@ impl GitHttpsCredentialResources {
     pub fn prepare(
         credentials: &GitHttpsCredentialProvenance,
         proxy: &GitHttpsCredentialProxyProvenance,
+        backing: &GitHttpsCredentialBackingProvenance,
     ) -> Result<Self, GitHttpsCredentialResourceError> {
         if credentials.status != GitHttpsCredentialStatus::Trusted {
             return Err(GitHttpsCredentialResourceError::CredentialsUnavailable);
@@ -176,6 +385,19 @@ impl GitHttpsCredentialResources {
             .helper
             .as_ref()
             .ok_or(GitHttpsCredentialResourceError::CredentialsUnavailable)?;
+        let gh_config = if helper.kind == CredentialHelperKind::GithubCli {
+            Some(
+                backing
+                    .gh_config
+                    .as_ref()
+                    .filter(|_| backing.status == GitHttpsCredentialBackingStatus::Trusted)
+                    .ok_or(GitHttpsCredentialResourceError::BackingUnavailable)?
+                    .try_clone()
+                    .map_err(|_| GitHttpsCredentialResourceError::Io)?,
+            )
+        } else {
+            None
+        };
         Ok(Self {
             kind: helper.kind,
             helper: helper
@@ -188,6 +410,7 @@ impl GitHttpsCredentialResources {
                 .ok_or(GitHttpsCredentialResourceError::ProxyUnavailable)?
                 .try_clone()
                 .map_err(|_| GitHttpsCredentialResourceError::Io)?,
+            gh_config,
         })
     }
 
@@ -196,6 +419,13 @@ impl GitHttpsCredentialResources {
             CredentialHelperKind::Direct => "direct",
             CredentialHelperKind::GithubCli => "githubCli",
         }
+    }
+
+    pub(crate) fn configure_bubblewrap(&self, command: &mut Command, expected_host: &str) {
+        command
+            .env("REHOW_CREDENTIAL_HOST", expected_host)
+            .env("REHOW_CREDENTIAL_HELPER_KIND", self.helper_kind_env());
+        self.add_bubblewrap_mounts(command);
     }
 
     pub(crate) fn add_bubblewrap_mounts(&self, command: &mut Command) {
@@ -208,9 +438,30 @@ impl GitHttpsCredentialResources {
             .args(["--ro-bind-fd"])
             .arg(helper_fd.to_string())
             .arg(SANDBOX_CREDENTIAL_HELPER);
+        let gh_config_fd = self.gh_config.as_ref().map(AsRawFd::as_raw_fd);
+        if let Some(gh_config_fd) = gh_config_fd {
+            command
+                .args([
+                    "--dir",
+                    "/home/rehow/.config",
+                    "--dir",
+                    "/home/rehow/.config/gh",
+                    "--perms",
+                    "0400",
+                ])
+                .args(["--ro-bind-data"])
+                .arg(gh_config_fd.to_string())
+                .arg(SANDBOX_GH_CONFIG);
+        }
         unsafe {
             command.pre_exec(move || {
                 for descriptor in [proxy_fd, helper_fd] {
+                    clear_close_on_exec(descriptor)?;
+                }
+                if let Some(descriptor) = gh_config_fd {
+                    if libc::lseek(descriptor, 0, libc::SEEK_SET) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
                     clear_close_on_exec(descriptor)?;
                 }
                 Ok(())
@@ -694,6 +945,28 @@ fn helper_metadata_safe(metadata: &fs::Metadata, expected_owner: u32) -> bool {
 }
 
 #[cfg(test)]
+pub(super) fn test_direct_resources() -> GitHttpsCredentialResources {
+    let proxy = capture_credential_proxy_from(Some(Path::new("/usr/bin/true")));
+    let effective_user = unsafe { libc::geteuid() };
+    let helper =
+        match capture_helper_executable_result(Path::new("/usr/bin/true"), 0, effective_user) {
+            FileCapture::Trusted(helper) => helper,
+            FileCapture::Missing | FileCapture::Unsafe => {
+                panic!("system test helper unavailable")
+            }
+        };
+    let credentials = GitHttpsCredentialProvenance {
+        status: GitHttpsCredentialStatus::Trusted,
+        helper: Some(CredentialHelperCapability {
+            kind: CredentialHelperKind::Direct,
+            executable: helper,
+        }),
+    };
+    let backing = unavailable_backing(GitHttpsCredentialBackingStatus::NotConfigured);
+    GitHttpsCredentialResources::prepare(&credentials, &proxy, &backing).unwrap()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::PermissionsExt, process::Stdio};
@@ -1096,11 +1369,82 @@ mod tests {
                 executable: helper,
             }),
         };
-        let resources = GitHttpsCredentialResources::prepare(&credentials, &proxy).unwrap();
+        let backing = unavailable_backing(GitHttpsCredentialBackingStatus::NotConfigured);
+        let resources =
+            GitHttpsCredentialResources::prepare(&credentials, &proxy, &backing).unwrap();
         assert_eq!(resources.helper_kind_env(), "direct");
         assert_eq!(
             format!("{resources:?}"),
             "GitHttpsCredentialResources { authority: \"<redacted>\" }"
+        );
+
+        let discovery = super::super::remote_discovery_command(
+            Path::new("/usr/bin/git"),
+            Path::new("/usr/bin/bwrap"),
+            "https://example.invalid:8443/team/rehow.git",
+            "HEAD",
+            true,
+            super::super::GitRemoteTransport::Https,
+            super::super::GitRemoteAuthentication::Https(&resources),
+        );
+        let environment = discovery
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            environment["REHOW_CREDENTIAL_HOST"].as_deref(),
+            Some("example.invalid:8443")
+        );
+        assert_eq!(
+            environment["REHOW_CREDENTIAL_HELPER_KIND"].as_deref(),
+            Some("direct")
+        );
+        let arguments = discovery
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(arguments.iter().any(|argument| {
+            argument == super::super::credential_proxy::CREDENTIAL_HELPER_CONFIG
+        }));
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| argument == SANDBOX_CREDENTIAL_PROXY)
+        );
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| argument == SANDBOX_CREDENTIAL_HELPER)
+        );
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument.contains("workspace"))
+        );
+
+        let mut rejected = Command::new("/usr/bin/sh");
+        rejected
+            .args(["-c", "printf 'fatal: Authentication failed\\n' >&2; exit 1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        assert_eq!(
+            super::super::run_clone_command_for_transport(
+                rejected,
+                &std::sync::atomic::AtomicBool::new(false),
+                std::time::Duration::from_secs(2),
+                1024,
+                super::super::GitRemoteTransport::Https,
+                super::super::GitRemoteAuthentication::Https(&resources),
+            )
+            .err()
+            .unwrap(),
+            super::super::GitCloneDiscoveryError::AuthenticationFailed
         );
 
         let mut command = Command::new("/usr/bin/bwrap");
@@ -1157,12 +1501,12 @@ mod tests {
 
         let missing = capture_credential_proxy_from(None);
         assert!(matches!(
-            GitHttpsCredentialResources::prepare(&credentials, &missing),
+            GitHttpsCredentialResources::prepare(&credentials, &missing, &backing),
             Err(GitHttpsCredentialResourceError::ProxyUnavailable)
         ));
         let unavailable = unavailable(GitHttpsCredentialStatus::NotConfigured);
         assert!(matches!(
-            GitHttpsCredentialResources::prepare(&unavailable, &proxy),
+            GitHttpsCredentialResources::prepare(&unavailable, &proxy, &backing),
             Err(GitHttpsCredentialResourceError::CredentialsUnavailable)
         ));
 
@@ -1173,6 +1517,101 @@ mod tests {
         assert_eq!(
             capture_credential_proxy_from(Some(&unsafe_proxy)).status(),
             GitHttpsCredentialProxyStatus::Unsafe
+        );
+    }
+
+    #[test]
+    fn github_backing_is_private_descriptor_held_and_required() {
+        let temp = Temp::new();
+        let config_dir = temp.0.join("gh");
+        fs::create_dir(&config_dir).unwrap();
+        fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let config = config_dir.join("hosts.yml");
+        fs::write(&config, b"example.invalid:\n  oauth_token: canary\n").unwrap();
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+        let backing = capture_credential_backing_from(Some(&config));
+        assert_eq!(backing.status(), GitHttpsCredentialBackingStatus::Trusted);
+        assert!(!format!("{backing:?}").contains(temp.0.to_str().unwrap()));
+        assert!(!format!("{backing:?}").contains("canary"));
+        fs::write(&config, b"replacement\n").unwrap();
+        let mut snapshot = backing.gh_config.as_ref().unwrap().try_clone().unwrap();
+        snapshot.seek(SeekFrom::Start(0)).unwrap();
+        let mut snapshot_bytes = Vec::new();
+        snapshot.read_to_end(&mut snapshot_bytes).unwrap();
+        assert_eq!(snapshot_bytes, b"example.invalid:\n  oauth_token: canary\n");
+        snapshot_bytes.fill(0);
+
+        let proxy = capture_credential_proxy_from(Some(Path::new("/usr/bin/true")));
+        let uid = unsafe { libc::geteuid() };
+        let helper = match capture_helper_executable_result(Path::new("/usr/bin/true"), 0, uid) {
+            FileCapture::Trusted(helper) => helper,
+            FileCapture::Missing | FileCapture::Unsafe => panic!("system helper unavailable"),
+        };
+        let credentials = GitHttpsCredentialProvenance {
+            status: GitHttpsCredentialStatus::Trusted,
+            helper: Some(CredentialHelperCapability {
+                kind: CredentialHelperKind::GithubCli,
+                executable: helper,
+            }),
+        };
+        let resources =
+            GitHttpsCredentialResources::prepare(&credentials, &proxy, &backing).unwrap();
+        assert_eq!(resources.helper_kind_env(), "githubCli");
+
+        let mut command = Command::new("/usr/bin/bwrap");
+        command.args([
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-all",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib",
+            "/lib64",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--dir",
+            "/home",
+            "--dir",
+            "/home/rehow",
+        ]);
+        resources.add_bubblewrap_mounts(&mut command);
+        command
+            .args(["--", "/usr/bin/test", "-f", SANDBOX_GH_CONFIG])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let missing = unavailable_backing(GitHttpsCredentialBackingStatus::NotConfigured);
+        assert!(matches!(
+            GitHttpsCredentialResources::prepare(&credentials, &proxy, &missing),
+            Err(GitHttpsCredentialResourceError::BackingUnavailable)
+        ));
+
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            capture_credential_backing_from(Some(&config)).status(),
+            GitHttpsCredentialBackingStatus::Unsafe
+        );
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::hard_link(&config, config_dir.join("alias")).unwrap();
+        assert_eq!(
+            capture_credential_backing_from(Some(&config)).status(),
+            GitHttpsCredentialBackingStatus::Unsafe
         );
     }
 }

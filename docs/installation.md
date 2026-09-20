@@ -34,6 +34,8 @@ Package metadata must declare the exact WebKitGTK 4.1, GTK, SSL, and other runti
 
 Desktop packaging must place the fixed `rehow-git-ssh` and `rehow-git-credential` binaries beside the application executable as non-writable one-link executables. Rehow does not install, enable, or alter a user's credential helper; it may use only an already configured helper that passes the documented provenance gate.
 
+Authenticated HTTPS supports a trusted self-contained system helper or the exact `gh auth git-credential` configuration. The `gh` path requires its ordinary private `hosts.yml`; keyring/libsecret mediation is not yet supported. Rehow never asks for or stores a token.
+
 ## Wayland behavior
 
 - Do not depend on global window coordinates, programmatic placement, always-on-top, shadows, blur, or compositor effects; support differs on Wayland.

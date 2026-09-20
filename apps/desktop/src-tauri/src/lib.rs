@@ -15,17 +15,20 @@ use rehow_core::{
     domain::GuideStatus,
     git::{
         GitCloneApplyError, GitCloneError, GitCloneMaterializeError, GitClonePlan,
-        GitCloneValidation, GitCommitPlan, GitCommitPlanError, GitInitError, GitInitPlan,
-        GitReadError, GitRemoteError, GitRemotePlan, GitRemoteTransport, GitRepositoryStatus,
-        GitSshTransportError, GitSshTransportResources, GitSyncAncestry, GitSyncClassification,
-        GitSyncError, apply_git_clone_repository_finalization, apply_git_clone_validation_with_ssh,
-        apply_git_commit, apply_git_initialize, apply_git_push_with_ssh, apply_git_remote_connect,
-        apply_git_sync_fast_forward, apply_git_sync_inspection_with_ssh, cancel_git_commit_plan,
-        capture_git_https_credential_provenance, capture_git_https_credential_proxy_provenance,
-        capture_git_ssh_agent_provenance, capture_git_ssh_host_keys_provenance,
-        capture_git_ssh_proxy_provenance, classify_git_sync_ancestry_with_ssh,
-        git_commit_recovery_required, git_sync_recovery_required, plan_git_clone, plan_git_commit,
-        plan_git_initialize, plan_git_remote_connect, plan_git_sync, read_git_status,
+        GitCloneValidation, GitCommitPlan, GitCommitPlanError, GitHttpsCredentialResourceError,
+        GitHttpsCredentialResources, GitHttpsCredentialStatus, GitInitError, GitInitPlan,
+        GitReadError, GitRemoteAuthentication, GitRemoteError, GitRemotePlan, GitRemoteTransport,
+        GitRepositoryStatus, GitSshTransportError, GitSshTransportResources, GitSyncAncestry,
+        GitSyncClassification, GitSyncError, apply_git_clone_repository_finalization,
+        apply_git_clone_validation_with_authentication, apply_git_commit, apply_git_initialize,
+        apply_git_push_with_authentication, apply_git_remote_connect, apply_git_sync_fast_forward,
+        apply_git_sync_inspection_with_authentication, cancel_git_commit_plan,
+        capture_git_https_credential_backing_provenance, capture_git_https_credential_provenance,
+        capture_git_https_credential_proxy_provenance, capture_git_ssh_agent_provenance,
+        capture_git_ssh_host_keys_provenance, capture_git_ssh_proxy_provenance,
+        classify_git_sync_ancestry_with_authentication, git_commit_recovery_required,
+        git_sync_recovery_required, plan_git_clone, plan_git_commit, plan_git_initialize,
+        plan_git_remote_connect, plan_git_sync, read_git_status,
         resume_pending_git_commit_publication, resume_pending_git_sync_publication,
     },
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -52,8 +55,9 @@ const WORKSPACE_INVALIDATED_EVENT: &str = "rehow://workspace-invalidated/v1";
 const GIT_COMMIT_MESSAGE_INPUT_BYTES: usize = 800;
 
 struct DesktopState {
-    _https_credential_provenance: rehow_core::git::GitHttpsCredentialProvenance,
-    _https_credential_proxy_provenance: rehow_core::git::GitHttpsCredentialProxyProvenance,
+    https_credential_backing_provenance: rehow_core::git::GitHttpsCredentialBackingProvenance,
+    https_credential_provenance: rehow_core::git::GitHttpsCredentialProvenance,
+    https_credential_proxy_provenance: rehow_core::git::GitHttpsCredentialProxyProvenance,
     ssh_agent_provenance: rehow_core::git::GitSshAgentProvenance,
     ssh_host_keys_provenance: rehow_core::git::GitSshHostKeysProvenance,
     ssh_proxy_provenance: rehow_core::git::GitSshProxyProvenance,
@@ -70,8 +74,9 @@ struct DesktopState {
 impl Default for DesktopState {
     fn default() -> Self {
         Self {
-            _https_credential_provenance: capture_git_https_credential_provenance(),
-            _https_credential_proxy_provenance: capture_git_https_credential_proxy_provenance(),
+            https_credential_backing_provenance: capture_git_https_credential_backing_provenance(),
+            https_credential_provenance: capture_git_https_credential_provenance(),
+            https_credential_proxy_provenance: capture_git_https_credential_proxy_provenance(),
             ssh_agent_provenance: capture_git_ssh_agent_provenance(),
             ssh_host_keys_provenance: capture_git_ssh_host_keys_provenance(),
             ssh_proxy_provenance: capture_git_ssh_proxy_provenance(),
@@ -84,6 +89,59 @@ impl Default for DesktopState {
             git_sync: Mutex::default(),
             next_watch_session: AtomicU64::default(),
         }
+    }
+}
+
+enum PreparedGitRemoteAuthentication {
+    Anonymous,
+    Https(GitHttpsCredentialResources),
+    Ssh(GitSshTransportResources),
+}
+
+impl PreparedGitRemoteAuthentication {
+    fn as_borrowed(&self) -> GitRemoteAuthentication<'_> {
+        match self {
+            Self::Anonymous => GitRemoteAuthentication::Anonymous,
+            Self::Https(resources) => GitRemoteAuthentication::Https(resources),
+            Self::Ssh(resources) => GitRemoteAuthentication::Ssh(resources),
+        }
+    }
+}
+
+fn prepare_git_remote_authentication(
+    state: &DesktopState,
+    transport: GitRemoteTransport,
+) -> Result<PreparedGitRemoteAuthentication, NativeCommandError> {
+    match transport {
+        GitRemoteTransport::Ssh => GitSshTransportResources::prepare(
+            &state.ssh_agent_provenance,
+            &state.ssh_host_keys_provenance,
+            &state.ssh_proxy_provenance,
+        )
+        .map(PreparedGitRemoteAuthentication::Ssh)
+        .map_err(|error| {
+            native_command_error(
+                git_ssh_transport_code(error),
+                git_ssh_transport_message(error),
+            )
+        }),
+        GitRemoteTransport::Https
+            if state.https_credential_provenance.status() == GitHttpsCredentialStatus::Trusted =>
+        {
+            GitHttpsCredentialResources::prepare(
+                &state.https_credential_provenance,
+                &state.https_credential_proxy_provenance,
+                &state.https_credential_backing_provenance,
+            )
+            .map(PreparedGitRemoteAuthentication::Https)
+            .map_err(|error| {
+                native_command_error(
+                    git_https_credential_code(error),
+                    git_https_credential_message(error),
+                )
+            })
+        }
+        GitRemoteTransport::Https => Ok(PreparedGitRemoteAuthentication::Anonymous),
     }
 }
 
@@ -1592,36 +1650,20 @@ async fn git_sync_inspect_open_workspace(
         })?;
         let plan = plan_git_sync(&workspace.view, &state_home)
             .map_err(|error| native_command_error(git_sync_code(error), git_sync_message(error)))?;
-        let ssh = if plan.transport() == GitRemoteTransport::Ssh {
-            Some(
-                GitSshTransportResources::prepare(
-                    &state.ssh_agent_provenance,
-                    &state.ssh_host_keys_provenance,
-                    &state.ssh_proxy_provenance,
-                )
-                .map_err(|error| {
-                    native_command_error(
-                        git_ssh_transport_code(error),
-                        git_ssh_transport_message(error),
-                    )
-                })?,
-            )
-        } else {
-            None
-        };
-        let inspection = apply_git_sync_inspection_with_ssh(
+        let authentication = prepare_git_remote_authentication(&state, plan.transport())?;
+        let inspection = apply_git_sync_inspection_with_authentication(
             &workspace.view,
             &state_home,
             plan,
             &operation_cancelled,
-            ssh.as_ref(),
+            authentication.as_borrowed(),
         )
         .map_err(|error| native_command_error(git_sync_code(error), git_sync_message(error)))?;
-        classify_git_sync_ancestry_with_ssh(
+        classify_git_sync_ancestry_with_authentication(
             &workspace.view,
             inspection,
             &operation_cancelled,
-            ssh.as_ref(),
+            authentication.as_borrowed(),
         )
         .map_err(|error| native_command_error(git_sync_code(error), git_sync_message(error)))
     })
@@ -1815,23 +1857,13 @@ async fn git_push_apply_open_workspace(
         finish_git_sync_apply(&state)?;
         return Ok(GitPushResultPayload::Declined);
     }
-    let ssh = if classification.transport() == GitRemoteTransport::Ssh {
-        match GitSshTransportResources::prepare(
-            &state.ssh_agent_provenance,
-            &state.ssh_host_keys_provenance,
-            &state.ssh_proxy_provenance,
-        ) {
-            Ok(resources) => Some(resources),
-            Err(error) => {
-                finish_git_sync_apply(&state)?;
-                return Err(native_command_error(
-                    git_ssh_transport_code(error),
-                    git_ssh_transport_message(error),
-                ));
-            }
+    let authentication = match prepare_git_remote_authentication(&state, classification.transport())
+    {
+        Ok(authentication) => authentication,
+        Err(error) => {
+            finish_git_sync_apply(&state)?;
+            return Err(error);
         }
-    } else {
-        None
     };
     let worker_app = app.clone();
     let operation = tauri::async_runtime::spawn_blocking(move || {
@@ -1845,8 +1877,12 @@ async fn git_push_apply_open_workspace(
         let workspace = guard.as_ref().ok_or_else(|| {
             native_command_error("workspaceUnavailable", "No Workspace is open".to_owned())
         })?;
-        apply_git_push_with_ssh(&workspace.view, classification, ssh.as_ref())
-            .map_err(|error| native_command_error(git_sync_code(error), git_sync_message(error)))
+        apply_git_push_with_authentication(
+            &workspace.view,
+            classification,
+            authentication.as_borrowed(),
+        )
+        .map_err(|error| native_command_error(git_sync_code(error), git_sync_message(error)))
     })
     .await;
     finish_git_sync_apply(&state)?;
@@ -2128,7 +2164,7 @@ fn git_sync_message(error: GitSyncError) -> String {
             "The configured upstream could not be reached or authenticated.".to_owned()
         }
         GitSyncError::AuthenticationFailed => {
-            "SSH authentication failed. Check that your launch-time SSH agent has the required key."
+            "Remote authentication failed. Check the credential helper or SSH agent configured for this remote."
                 .to_owned()
         }
         GitSyncError::HostKeyRejected => {
@@ -2272,7 +2308,6 @@ async fn git_clone_apply_selected_workspace(
         lifecycle.finalizing = false;
         (plan, selected)
     };
-    let transport_mode = git_clone_transport_mode(plan.transport());
     let confirmed = rfd::MessageDialog::new()
         .set_parent(&window)
         .set_level(rfd::MessageLevel::Info)
@@ -2303,33 +2338,22 @@ async fn git_clone_apply_selected_workspace(
         ));
     };
 
-    let ssh = if transport_mode == NativeGitCloneTransport::AuthenticatedSsh {
-        match GitSshTransportResources::prepare(
-            &state.ssh_agent_provenance,
-            &state.ssh_host_keys_provenance,
-            &state.ssh_proxy_provenance,
-        ) {
-            Ok(resources) => Some(resources),
-            Err(error) => {
-                restore_selected_after_clone(&state, &cancelled, selected)?;
-                return Err(native_command_error(
-                    git_ssh_transport_code(error),
-                    git_ssh_transport_message(error),
-                ));
-            }
+    let authentication = match prepare_git_remote_authentication(&state, plan.transport()) {
+        Ok(authentication) => authentication,
+        Err(error) => {
+            restore_selected_after_clone(&state, &cancelled, selected)?;
+            return Err(error);
         }
-    } else {
-        None
     };
 
     let operation_cancelled = Arc::clone(&cancelled);
     let operation = tauri::async_runtime::spawn_blocking(move || {
-        let result = apply_git_clone_validation_with_ssh(
+        let result = apply_git_clone_validation_with_authentication(
             &selected.target,
             plan,
             &state_home,
             &operation_cancelled,
-            ssh.as_ref(),
+            authentication.as_borrowed(),
         );
         (selected, result)
     })
@@ -2663,19 +2687,6 @@ fn git_clone_confirmation_fields(transport: &str, remote_url: &str) -> String {
     )
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum NativeGitCloneTransport {
-    AnonymousHttps,
-    AuthenticatedSsh,
-}
-
-fn git_clone_transport_mode(transport: GitRemoteTransport) -> NativeGitCloneTransport {
-    match transport {
-        GitRemoteTransport::Https => NativeGitCloneTransport::AnonymousHttps,
-        GitRemoteTransport::Ssh => NativeGitCloneTransport::AuthenticatedSsh,
-    }
-}
-
 fn git_clone_completion_confirmation(remote_url: &str) -> String {
     format!(
         "Rehow validated this Git Workspace:\n\n{remote_url}\n\nComplete the clone now? This writes only the validated Workspace and exact Git metadata into the selected folder. Rehow will not run Guide commands, hooks, or a checkout."
@@ -2731,7 +2742,7 @@ fn git_clone_apply_message(error: GitCloneApplyError) -> String {
             "The remote could not be reached. Check the address, network, and access.".to_owned()
         }
         GitCloneApplyError::AuthenticationFailed => {
-            "SSH authentication failed. Add the correct key to your existing SSH agent and restart Rehow."
+            "Remote authentication failed. Check the credential helper or SSH agent configured for this remote."
                 .to_owned()
         }
         GitCloneApplyError::HostKeyRejected => {
@@ -2796,6 +2807,36 @@ fn git_ssh_transport_message(error: GitSshTransportError) -> String {
         }
         GitSshTransportError::Io => {
             "Rehow could not prepare its sealed SSH resources. Restart Rehow and try again."
+                .to_owned()
+        }
+    }
+}
+
+fn git_https_credential_code(error: GitHttpsCredentialResourceError) -> &'static str {
+    match error {
+        GitHttpsCredentialResourceError::CredentialsUnavailable => "httpsCredentialsUnavailable",
+        GitHttpsCredentialResourceError::ProxyUnavailable => "httpsCredentialHelperUnavailable",
+        GitHttpsCredentialResourceError::BackingUnavailable => "httpsCredentialBackingUnavailable",
+        GitHttpsCredentialResourceError::Io => "io",
+    }
+}
+
+fn git_https_credential_message(error: GitHttpsCredentialResourceError) -> String {
+    match error {
+        GitHttpsCredentialResourceError::CredentialsUnavailable => {
+            "No safe HTTPS credential helper was available when Rehow started. Check your normal Git configuration, then restart Rehow."
+                .to_owned()
+        }
+        GitHttpsCredentialResourceError::ProxyUnavailable => {
+            "Rehow’s HTTPS credential proxy is missing or unsafe. Reinstall this Rehow build."
+                .to_owned()
+        }
+        GitHttpsCredentialResourceError::BackingUnavailable => {
+            "The configured GitHub CLI helper needs a private hosts.yml file that was unavailable when Rehow started. Sign in with gh, protect that file, then restart Rehow."
+                .to_owned()
+        }
+        GitHttpsCredentialResourceError::Io => {
+            "Rehow could not prepare its confined HTTPS credential resources. Restart Rehow and try again."
                 .to_owned()
         }
     }
@@ -4778,17 +4819,17 @@ mod tests {
         GitInitResultPayload, GitPushResultPayload, GitRemotePlanPayload, GitRemoteResultPayload,
         GitSyncApplyResultPayload, GitSyncCancelError, GitSyncCancelResultPayload,
         GitSyncInspectionPayload, GitSyncLifecycle, GitSyncRecoveryResultPayload, GuideBodyPayload,
-        GuidePayload, NativeGitCloneTransport, PendingGitPlanError, SearchHighlightPayload,
-        SearchHitPayload, WorkspacePayload, WorkspaceWatchEventPayload, attachment_removal_code,
+        GuidePayload, PendingGitPlanError, SearchHighlightPayload, SearchHitPayload,
+        WorkspacePayload, WorkspaceWatchEventPayload, attachment_removal_code,
         attachment_removal_message, category_create_code, category_create_message,
         category_remove_code, category_remove_message, category_reorder_code,
         category_reorder_message, category_update_code, category_update_message, empty_git_payload,
         git_clone_apply_code, git_clone_apply_message, git_clone_code,
         git_clone_completion_confirmation, git_clone_confirmation_fields,
         git_clone_materialize_code, git_clone_materialize_message, git_clone_message,
-        git_clone_transport_mode, git_commit_code, git_commit_confirmation_fields,
-        git_commit_message, git_commit_message_input_allowed, git_commit_recovery_confirmation,
-        git_init_code, git_init_confirmation, git_init_message, git_push_ancestry_allowed,
+        git_commit_code, git_commit_confirmation_fields, git_commit_message,
+        git_commit_message_input_allowed, git_commit_recovery_confirmation, git_init_code,
+        git_init_confirmation, git_init_message, git_push_ancestry_allowed,
         git_push_confirmation_fields, git_remote_code, git_remote_confirmation_fields,
         git_remote_message, git_ssh_transport_code, git_ssh_transport_message, git_sync_ancestry,
         git_sync_blocks_workspace_switch, git_sync_code, git_sync_confirmation_fields,
@@ -4806,8 +4847,8 @@ mod tests {
         },
         git::{
             GitCloneApplyError, GitCloneError, GitCloneMaterializeError, GitCloneValidation,
-            GitCommitPlanError, GitHttpsCredentialProxyStatus, GitHttpsCredentialStatus,
-            GitInitError, GitRemoteError, GitRemoteTransport, GitSshTransportError,
+            GitCommitPlanError, GitHttpsCredentialBackingStatus, GitHttpsCredentialProxyStatus,
+            GitHttpsCredentialStatus, GitInitError, GitRemoteError, GitSshTransportError,
             GitSyncAncestry, GitSyncError,
         },
         markdown::parse_safe_markdown,
@@ -4830,21 +4871,28 @@ mod tests {
     fn https_credential_provenance_is_retained_only_in_native_state() {
         let state = DesktopState::default();
         assert!(matches!(
-            state._https_credential_provenance.status(),
+            state.https_credential_provenance.status(),
             GitHttpsCredentialStatus::NotConfigured
                 | GitHttpsCredentialStatus::Trusted
                 | GitHttpsCredentialStatus::Unsafe
         ));
-        let debug = format!("{:?}", state._https_credential_provenance);
+        let debug = format!("{:?}", state.https_credential_provenance);
         assert!(!debug.contains('/'));
         assert!(!debug.contains("helper ="));
         assert!(matches!(
-            state._https_credential_proxy_provenance.status(),
+            state.https_credential_proxy_provenance.status(),
             GitHttpsCredentialProxyStatus::NotConfigured
                 | GitHttpsCredentialProxyStatus::Trusted
                 | GitHttpsCredentialProxyStatus::Unsafe
         ));
-        assert!(!format!("{:?}", state._https_credential_proxy_provenance).contains('/'));
+        assert!(!format!("{:?}", state.https_credential_proxy_provenance).contains('/'));
+        assert!(matches!(
+            state.https_credential_backing_provenance.status(),
+            GitHttpsCredentialBackingStatus::NotConfigured
+                | GitHttpsCredentialBackingStatus::Trusted
+                | GitHttpsCredentialBackingStatus::Unsafe
+        ));
+        assert!(!format!("{:?}", state.https_credential_backing_provenance).contains('/'));
     }
 
     #[test]
@@ -4890,14 +4938,6 @@ mod tests {
         assert_eq!(plan.as_object().unwrap().len(), 4);
         assert!(plan.get("url").is_none());
         assert!(plan.get("path").is_none());
-        assert_eq!(
-            git_clone_transport_mode(GitRemoteTransport::Https),
-            NativeGitCloneTransport::AnonymousHttps
-        );
-        assert_eq!(
-            git_clone_transport_mode(GitRemoteTransport::Ssh),
-            NativeGitCloneTransport::AuthenticatedSsh
-        );
         assert!(!plan.to_string().contains("token="));
         let result = serde_json::to_value(GitRemoteResultPayload { connected: false }).unwrap();
         assert_eq!(result.as_object().unwrap().len(), 1);
@@ -5089,6 +5129,8 @@ mod tests {
             assert!(!message.contains("refs/"));
             assert!(!message.contains("https://"));
         }
+        let authentication = git_sync_message(GitSyncError::AuthenticationFailed);
+        assert!(authentication.contains("credential helper or SSH agent"));
     }
 
     #[test]
@@ -5203,6 +5245,10 @@ mod tests {
         );
         assert!(git_clone_apply_message(GitCloneApplyError::Cancelled).contains("not changed"));
         assert!(!git_clone_apply_message(GitCloneApplyError::AuthenticationFailed).contains('/'));
+        assert!(
+            git_clone_apply_message(GitCloneApplyError::AuthenticationFailed)
+                .contains("credential helper or SSH agent")
+        );
         assert!(!git_ssh_transport_message(GitSshTransportError::ProxyUnavailable).contains('/'));
         assert_eq!(
             git_clone_materialize_code(GitCloneMaterializeError::StagingChanged),

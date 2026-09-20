@@ -1,6 +1,6 @@
 # ADR 0025: Safe Git synchronization
 
-- Status: Partially Accepted — manual anonymous-HTTPS and authenticated-SSH clone/sync/push plus HTTPS helper provenance implemented; authenticated HTTPS invocation pending
+- Status: Partially Accepted — manual anonymous/authenticated HTTPS and authenticated SSH clone/sync/push implemented; packed-branch publication pending
 - Date: 2026-09-19
 
 ## Context
@@ -125,11 +125,17 @@ The standard build now produces a dedicated one-link `rehow-git-credential` sibl
 
 The proxy accepts exactly one `get`, `store`, or `erase` argument plus core-set closed helper-kind and expected-host environment values. It requires a bounded LF credential record with exact `protocol=https` and host equality, rejects unknown/duplicate/control-bearing fields and any secret field on `get`, and invokes only the fixed helper path by argv after clearing the environment. Direct helpers receive only the operation; `gh` receives exactly `auth git-credential <operation>`. Input, output, stderr, time, and process group are bounded; helper output is revalidated before it becomes proxy stdout. Errors exit 255 with no diagnostics, and secret values have no plan, `Debug`, log, evidence, storage, IPC, or parent-process result channel. This gate remains networkless and does not yet pass the resource to Git.
 
+#### 5D3D3 — authenticated HTTPS integration
+
+Native launch kernel-copies and seals the normal GitHub CLI `hosts.yml` only after private, one-link, bounded effective-user-owned descriptor and stable-ancestry checks; Rehow does not parse credential bytes, and later source mutation cannot alter the snapshot. The exact `gh` helper requires that backing, while a direct accepted helper receives no user-home/config mount. The backing is materialized `0400` at one synthetic path.
+
+Clone discovery/fetch, sync discovery/fetch/history, and exact push consume a closed anonymous-HTTPS/authenticated-HTTPS/authenticated-SSH authority. Authenticated HTTPS resets every other helper, binds the canonical HTTPS host including an explicit port, and enables only the fixed proxy. The existing conservative remote grammar continues to reject IPv6-literal URLs; that support is deferred rather than partially authenticated. Network children still receive no active Workspace, repository-selected config/helper, prompt, redirect, arbitrary refspec, or credential result channel. Git's fixed helper launcher uses its internal `/bin/sh` only for the compile-time absolute proxy path plus the closed `get`/`store`/`erase` word; no untrusted text becomes shell syntax. Real Git-to-proxy packaged canary coverage and one focused Security Review gate acceptance.
+
 - SSH accepts only the launch-inherited, owner-safe Unix `SSH_AUTH_SOCK`; a compiled fixed-grammar proxy invokes the exact descriptor-mounted system SSH client with a synthetic home, no user config, strict host verification, batch mode, fixed timeouts, and bounded owner-safe `known_hosts` snapshots. It never reads private-key files or accepts proxy/local commands.
 - HTTPS reconstructs only an accepted helper from root-owned system or owner-safe user Git config read with includes disabled. Executables must be root-owned absolute binaries in `/usr/bin` or `/usr/lib/git-core` with no free-form arguments, except the exact root-owned `gh auth git-credential` argv. Shell, relative, owner-writable, URL-scoped executable, proxy, header, askpass, and repository overrides are refused.
 - A compiled credential proxy forwards Git's credential protocol without exposing secret fields to Rehow plans, renderer IPC, errors, `Debug`, logs, evidence, or storage. Credential and SSH processes receive no Workspace or repository mount. Stable results distinguish authentication-required, host-key, unavailable, timeout, remote-changed, and rejected-non-fast-forward outcomes without returning raw Git output.
 
-Authenticated SSH clone, sync, and push are accepted only after their Security Reviews. HTTPS helper provenance and the fixed proxy/resource boundary are accepted only after their Security Reviews; Git network integration and each authenticated HTTPS operation remain gated on operation-specific credential canaries and review. Scheduled or start-time sync remains opt-in and cannot precede acceptance of the same gates used by manual sync.
+Authenticated SSH and HTTPS clone, sync, and push are accepted only after their Security Reviews. Scheduled or start-time sync remains opt-in and cannot precede acceptance of the same gates used by manual sync.
 
 ## Consequences
 

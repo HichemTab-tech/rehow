@@ -14,6 +14,8 @@ use std::{
 )]
 pub(super) const SANDBOX_CREDENTIAL_PROXY: &str = "/home/rehow/bin/rehow-git-credential";
 pub(super) const SANDBOX_CREDENTIAL_HELPER: &str = "/home/rehow/bin/credential-helper";
+pub(super) const CREDENTIAL_HELPER_CONFIG: &str =
+    "credential.helper=/home/rehow/bin/rehow-git-credential";
 const MAX_CREDENTIAL_RECORD_BYTES: usize = 32 * 1024;
 const MAX_CREDENTIAL_LINES: usize = 64;
 const MAX_CREDENTIAL_KEY_BYTES: usize = 32;
@@ -132,7 +134,7 @@ fn proxy_exchange(
     )
     .map_err(|_| ProxyError::Helper)?
     .stdout;
-    validate_response(&output, operation)?;
+    validate_response(&output, operation, expected_host.as_bytes())?;
     Ok(output)
 }
 
@@ -183,7 +185,7 @@ fn validate_request(
     operation: Operation,
     expected_host: &[u8],
 ) -> Result<(), ProxyError> {
-    let fields = parse_record(input, true)?;
+    let fields = parse_record(input)?;
     let protocol = one_value(&fields, b"protocol").ok_or(ProxyError::Invalid)?;
     let host = one_value(&fields, b"host").ok_or(ProxyError::Invalid)?;
     if protocol != b"https" || host != expected_host {
@@ -195,32 +197,36 @@ fn validate_request(
     Ok(())
 }
 
-fn validate_response(output: &[u8], operation: Operation) -> Result<(), ProxyError> {
+fn validate_response(
+    output: &[u8],
+    operation: Operation,
+    expected_host: &[u8],
+) -> Result<(), ProxyError> {
     if output.is_empty() {
         return Ok(());
     }
     if operation != Operation::Get {
         return Err(ProxyError::Invalid);
     }
-    let fields = parse_record(output, false)?;
+    let fields = parse_record(output)?;
     if fields.iter().any(|(key, _)| !response_key(key)) {
+        return Err(ProxyError::Invalid);
+    }
+    if one_value(&fields, b"protocol").is_some_and(|value| value != b"https")
+        || one_value(&fields, b"host").is_some_and(|value| value != expected_host)
+    {
         return Err(ProxyError::Invalid);
     }
     Ok(())
 }
 
-fn parse_record(
-    input: &[u8],
-    require_blank_terminator: bool,
-) -> Result<Vec<CredentialField<'_>>, ProxyError> {
+fn parse_record(input: &[u8]) -> Result<Vec<CredentialField<'_>>, ProxyError> {
     if input.len() > MAX_CREDENTIAL_RECORD_BYTES
         || input.iter().any(|byte| *byte == 0 || *byte == b'\r')
     {
         return Err(ProxyError::Invalid);
     }
-    let body = if require_blank_terminator {
-        input.strip_suffix(b"\n\n").ok_or(ProxyError::Invalid)?
-    } else if let Some(body) = input.strip_suffix(b"\n\n") {
+    let body = if let Some(body) = input.strip_suffix(b"\n\n") {
         body
     } else {
         input.strip_suffix(b"\n").ok_or(ProxyError::Invalid)?
@@ -279,7 +285,9 @@ fn repeatable_key(key: &[u8]) -> bool {
 fn response_key(key: &[u8]) -> bool {
     matches!(
         key,
-        b"username"
+        b"protocol"
+            | b"host"
+            | b"username"
             | b"password"
             | b"password_expiry_utc"
             | b"oauth_refresh_token"
@@ -318,7 +326,7 @@ mod tests {
             b"protocol=https\nhost=example.invalid\nunknown=value\n\n".as_slice(),
             b"protocol=https\nhost=example.invalid\npassword=secret\n\n".as_slice(),
             b"protocol=https\nhost=example.invalid\r\n\r\n".as_slice(),
-            b"protocol=https\nhost=example.invalid\n".as_slice(),
+            b"protocol=https\nhost=example.invalid".as_slice(),
         ] {
             assert!(validate_request(hostile, Operation::Get, b"example.invalid").is_err());
         }
@@ -326,6 +334,14 @@ mod tests {
             validate_request(
                 b"protocol=https\nhost=example.invalid\npassword=secret\n\n",
                 Operation::Store,
+                b"example.invalid"
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_request(
+                b"protocol=https\nhost=example.invalid\n",
+                Operation::Get,
                 b"example.invalid"
             )
             .is_ok()
@@ -349,19 +365,36 @@ mod tests {
     #[test]
     fn response_grammar_is_bounded_and_only_get_may_return_fields() {
         let response = b"username=user\npassword=secret\n\n";
-        assert!(validate_response(response, Operation::Get).is_ok());
-        assert!(validate_response(response, Operation::Store).is_err());
-        assert!(validate_response(b"", Operation::Store).is_ok());
-        assert!(validate_response(b"password=one\npassword=two\n", Operation::Get).is_err());
-        assert!(validate_response(b"url=https://secret\n", Operation::Get).is_err());
-        assert!(validate_response(b"protocol=https\n", Operation::Get).is_err());
-        assert!(validate_response(b"password=secret\r\n", Operation::Get).is_err());
+        assert!(validate_response(response, Operation::Get, b"example.invalid").is_ok());
+        assert!(validate_response(response, Operation::Store, b"example.invalid").is_err());
+        assert!(validate_response(b"", Operation::Store, b"example.invalid").is_ok());
         assert!(
-            validate_response(&vec![b'x'; MAX_CREDENTIAL_RECORD_BYTES + 1], Operation::Get)
-                .is_err()
+            validate_response(
+                b"protocol=https\nhost=example.invalid\nusername=user\npassword=secret\n",
+                Operation::Get,
+                b"example.invalid"
+            )
+            .is_ok()
+        );
+        for hostile in [
+            b"password=one\npassword=two\n".as_slice(),
+            b"url=https://secret\n".as_slice(),
+            b"protocol=http\nusername=user\n".as_slice(),
+            b"protocol=https\nhost=other.invalid\nusername=user\n".as_slice(),
+            b"password=secret\r\n".as_slice(),
+        ] {
+            assert!(validate_response(hostile, Operation::Get, b"example.invalid").is_err());
+        }
+        assert!(
+            validate_response(
+                &vec![b'x'; MAX_CREDENTIAL_RECORD_BYTES + 1],
+                Operation::Get,
+                b"example.invalid"
+            )
+            .is_err()
         );
         let canary = b"unknown=credential-canary\n";
-        let error = validate_response(canary, Operation::Get).unwrap_err();
+        let error = validate_response(canary, Operation::Get, b"example.invalid").unwrap_err();
         assert!(!format!("{error:?}").contains("credential-canary"));
     }
 
