@@ -123,6 +123,74 @@ pub(crate) fn new_operation_id() -> OperationId {
     OperationId(Uuid::now_v7())
 }
 
+pub fn new_request_id() -> RequestId {
+    RequestId(Uuid::now_v7())
+}
+
+fn constructed_error(value: Result<ErrorDto, construction::ErrorConstructionError>) -> ErrorDto {
+    match value {
+        Ok(value) => value,
+        Err(_) => unreachable!("fixed public error construction must remain valid"),
+    }
+}
+
+pub fn workspace_write_required_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::workspace_read_only(
+        request_id,
+        construction::Reason::CapabilityMissing,
+        Some(RequiredCapability::Write),
+    ))
+}
+
+pub fn guide_not_found_error(request_id: RequestId, guide_id: GuideId) -> ErrorDto {
+    constructed_error(construction::guide_not_found(request_id, guide_id))
+}
+
+pub fn guide_revision_conflict_error(
+    request_id: RequestId,
+    guide_id: GuideId,
+    expected_revision: Revision,
+    actual_revision: Revision,
+) -> ErrorDto {
+    constructed_error(construction::revision_conflict(
+        request_id,
+        PortableEntityId::guide(guide_id),
+        expected_revision,
+        actual_revision,
+    ))
+}
+
+pub fn invalid_guide_update_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::Details,
+        construction::Reason::InvalidFormat,
+    ))
+}
+
+pub fn guide_update_body_limit_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::Details,
+        construction::Reason::OutOfRange,
+    ))
+}
+
+pub fn guide_update_busy_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::io_busy(
+        request_id,
+        construction::Operation::GuideUpdate,
+        2_000,
+    ))
+}
+
+pub fn guide_update_unavailable_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::workspace_unavailable(
+        request_id,
+        construction::Reason::WorkspaceRootChanged,
+    ))
+}
+
 pub(crate) fn new_workspace_id() -> WorkspaceId {
     WorkspaceId(Uuid::now_v7())
 }

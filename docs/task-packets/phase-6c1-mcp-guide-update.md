@@ -1,0 +1,16 @@
+# Task Packet: Phase 6C1 capability-gated MCP Guide update
+
+- **Objective:** Add the first safe MCP mutation: exact-revision, atomic complete-content update of an existing Guide under an explicit per-alias startup write grant.
+- **Required reasoning level:** high; this introduces external mutation authority.
+- **Prerequisites:** signed Phase 6B checkpoint `2d27481`; ADRs 0009, 0026, 0027, and 0028; accepted core Guide update/recovery behavior.
+- **Allowed files or subsystem:** MCP CLI/server/tests; narrow core `GuideEdit` composition and public error factories; MCP/security/testing/install/development docs; this packet/evidence.
+- **Relevant specifications and ADRs:** `docs/mcp-spec.md`, `docs/error-contract.md`, `docs/threat-model.md`, ADR 0009, and ADR 0028.
+- **Exact required behavior:** Parse `--allow-write <alias>` separately from root selection; reject unknown/repeated grants. Default all aliases read-only. Expose exactly one new `guide_update` tool. Require handle, Guide ID, expected revision, complete title/summary/Tags/aliases/body. Cap body at 768 KiB. Apply one revision-checked recovery-journaled candidate, preserve unknown metadata, and return revision/change/status. Report committed-but-refresh-required accurately. Return shared `ErrorDto` as tool errors for valid domain failures.
+- **Important states and edge cases:** read-only grant; unavailable recovery base; non-writable Workspace; malformed/stale revision; missing/malformed/archived/tested Guide; no-op; invalid or duplicate Tag/Alias; empty and exact/over-limit body; unsafe presentation; external race; busy writer; committed refresh failure.
+- **Security constraints:** No runtime path, YAML/frontmatter, status/tested, ID/time/operation, shell/process/network, raw Attachment, Git, create/delete/move/archive, broad, or approval authority. Never echo content/path/token values in errors or logs.
+- **Tests to add or update:** CLI authority matrix; exact ten-tool schema; read-only denial with byte identity; successful direct and real-protocol update; stale revision byte identity and correlated error; complete-field round trip; no path/status fields; existing core crash/recovery and tested-to-stale suites remain mandatory.
+- **Commands to run:** focused MCP tests; Cargo formatting and strict full-workspace Clippy; `pnpm check`; `pnpm test`; `pnpm build`; bootstrap and whitespace checks.
+- **Explicit non-goals:** Guide/Category creation; partial patches; lifecycle/move/delete; Attachment or Git tools; native approval helper; client config edits.
+- **Definition of done:** The tool exists only behind the explicit startup grant, all writes use existing confined revision/recovery primitives, negative cases write nothing, structured domain errors match the shared contract, full gates pass, security review passes, and docs match code.
+- **Expected commit boundary:** ADR/packet, capability parser, core composition/error bridge, tool/schema, adversarial tests, evidence, and aligned docs form one signed checkpoint; progress follows separately.
+- **Conditions requiring escalation:** A write can occur without the grant/revision; core cannot atomically compose the complete edit; committed state becomes ambiguous; arbitrary path/status/process authority appears; ErrorDto parity cannot be preserved.

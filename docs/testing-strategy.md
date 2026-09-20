@@ -69,6 +69,8 @@ Phase 6A first proves the current `2026-07-28` discovery lifecycle and legacy `2
 
 Phase 6B expands this to an exact nine-tool read-only surface. Focused tests cover real protocol calls for Category listing, ranked search, bounded Guide bodies/code extraction, diagnostics, and tool/filter/view-bound cursors; full core search and descriptor-refresh suites remain shared conformance evidence.
 
+Phase 6C1 adds an exact ten-tool surface. Tests prove separate per-alias startup write authority, read-only byte identity, complete typed Guide updates through real protocol framing, expected-revision conflicts, shared structured domain errors, and recovery-journal reuse. Existing core recovery interruption, unsafe-presentation, unknown-metadata, resource-limit, and tested-to-stale tests remain part of the full gate.
+
 ### End-to-end desktop tests
 
 Use the most stable Tauri/WebDriver-compatible automation available at Phase 2 and retain manual smoke coverage where Linux WebKit automation is incomplete. Tests launch the production-like native app against a temporary Workspace and exercise open/create/search/read/edit/restart/conflict. Never rely exclusively on the Vite browser view because native IPC, CSP, WebKitGTK, window behavior, and file dialogs are product behavior.

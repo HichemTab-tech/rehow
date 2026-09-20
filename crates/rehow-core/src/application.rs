@@ -951,6 +951,13 @@ pub enum GuideEdit {
         tags: Vec<String>,
         aliases: Vec<String>,
     },
+    SetContent {
+        title: String,
+        summary: String,
+        tags: Vec<String>,
+        aliases: Vec<String>,
+        body: Vec<u8>,
+    },
     ReplaceBody(Vec<u8>),
     MarkStale,
     Archive,
@@ -2200,6 +2207,29 @@ pub(crate) fn update_guide_with_context(
                         GuideMutation::SetSummary(summary),
                         GuideMutation::ReplaceTags(tags),
                         GuideMutation::ReplaceAliases(aliases),
+                    ] {
+                        let parsed = parse_guide_source(candidate_bytes)
+                            .map_err(|_| PlanError::InvalidGuide)?;
+                        let candidate_bound =
+                            bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
+                        candidate_bytes = apply_guide_mutation(&candidate_bound, mutation, &stamp)?;
+                    }
+                    Ok(candidate_bytes)
+                }
+                GuideEdit::SetContent {
+                    title,
+                    summary,
+                    tags,
+                    aliases,
+                    body,
+                } => {
+                    let mut candidate_bytes = copy_bytes(bound.source_bytes())?;
+                    for mutation in [
+                        GuideMutation::SetTitle(title),
+                        GuideMutation::SetSummary(summary),
+                        GuideMutation::ReplaceTags(tags),
+                        GuideMutation::ReplaceAliases(aliases),
+                        GuideMutation::ReplaceBody(body),
                     ] {
                         let parsed = parse_guide_source(candidate_bytes)
                             .map_err(|_| PlanError::InvalidGuide)?;
