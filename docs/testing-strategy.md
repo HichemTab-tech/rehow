@@ -87,6 +87,8 @@ Phase 6C8 adds an exact twenty-tool surface. Tests prove separate Tag/Alias sche
 
 Phase 6C9 adds an exact twenty-one-tool surface. Tests prove no caller path/metadata authority, capability-before-parse denial, exact Guide and destination Category revisions, lock-scoped concurrent destination-archive refusal, verified same-Category no-op, destination-first move, stable ID/filename/content, tested-to-stale behavior, stale conflict correlation, and real protocol execution. Existing interruption, destination-collision, no-follow, recovery, and confinement suites remain part of the full gate.
 
+Phase 6D1 adds an exact twenty-four-tool surface. Tests prove pathless validation with warning/error grouping, conservative normalized title/alias duplicate reasons, exact candidate/comparison ceilings, explicit-over-metadata related ranking, authenticated pagination, strict read-only schemas, and real protocol routing.
+
 ### End-to-end desktop tests
 
 Use the most stable Tauri/WebDriver-compatible automation available at Phase 2 and retain manual smoke coverage where Linux WebKit automation is incomplete. Tests launch the production-like native app against a temporary Workspace and exercise open/create/search/read/edit/restart/conflict. Never rely exclusively on the Vite browser view because native IPC, CSP, WebKitGTK, window behavior, and file dialogs are product behavior.

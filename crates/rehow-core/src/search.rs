@@ -19,6 +19,11 @@ pub const MAX_SEARCH_RESULTS: usize = 100;
 pub const MAX_SEARCH_EXCERPT_CHARS: usize = 220;
 pub const MAX_SEARCH_HIGHLIGHTS: usize = 32;
 
+/// Apply the same NFKC normalization and lowercase mapping used by the search index.
+pub fn normalize_search_text(value: &str) -> String {
+    normalize(value)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SearchStatusScope {
     Active,

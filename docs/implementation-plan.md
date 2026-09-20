@@ -135,6 +135,7 @@ Milestones:
 - Phase 6C7: exact-revision Guide mark-stale with a closed trust-reducing state matrix and no generic status authority.
 - Phase 6C8: separate exact-revision complete Guide Tag/Alias replacement with core validation and tested-to-stale behavior.
 - Phase 6C9: pathless Guide Category change with exact Guide/destination revisions and lock-scoped destination validation.
+- Phase 6D1: bundled read-only Guide validation, exact duplicate discovery, and explainable related-Guide ranking.
 - Later gates: Attachment-metadata and mutation tools.
 - Per-Workspace write/broad/Git capabilities, launch handles, revisions/effect sets, dry-run tokens, and native out-of-band approval companion.
 - Git status/plan/commit/safe sync only after Phase 5 primitives are approved.

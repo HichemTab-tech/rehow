@@ -19,7 +19,7 @@ Each startup root has a unique user-chosen alias. Canonical duplicate/nested/ove
 
 Initial transport is stdio. Remote Streamable HTTP is deferred until authentication, origin, multi-user, and network threat models exist.
 
-The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6C9 exposes the nine Phase 6B reads plus capability-gated Guide/Category create/update, separate archive/restore, Guide mark-stale, complete Tag/Alias replacement, and Guide Category change (twenty-one tools total). Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
+The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6D1 exposes the prior twenty-one read/mutation tools plus Guide validation, duplicate discovery, and related-Guide discovery (twenty-four tools total). Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
 
 ## Trust rules
 
@@ -131,9 +131,9 @@ Every Guide tool requires `workspaceHandle`.
 - `guide_archive({workspaceHandle, guideId, expectedRevision})` / `guide_restore(…)` — implemented separate typed lifecycle operations; path/content/Category remain fixed and restore cannot assert tested.
 - `guide_delete_plan({workspaceHandle, guideId, expectedRevision})`
 - `guide_delete({workspaceHandle, planToken})` — recoverable trash; startup broad capability and native approval.
-- `guide_validate({workspaceHandle, guideId})`
-- `guides_find_duplicates({workspaceHandle, guideId?, cursor?, limit?})`
-- `guides_find_related({workspaceHandle, guideId, cursor?, limit?})`
+- `guide_validate({workspaceHandle, guideId})` — implemented pathless grouped validation for the loaded Guide, its managed Attachments, verification state, and missing related IDs; `valid` means the Guide parsed/bound, while `healthy` requires no warning/error.
+- `guides_find_duplicates({workspaceHandle, guideId?, cursor?, limit?})` — implemented conservative exact NFKC/lowercase title/alias identity with closed reasons, authenticated pagination, and deterministic 10,000-pair/100,000-comparison global caps.
+- `guides_find_related({workspaceHandle, guideId, cursor?, limit?})` — implemented explainable ranking from explicit forward/reverse links, shared aliases/Tags/meaningful title terms, and same-Category context.
 
 Read results separate typed metadata, body, bounded fenced-code blocks, diagnostics, and revision. They do not return rendered HTML or Attachment bytes.
 
