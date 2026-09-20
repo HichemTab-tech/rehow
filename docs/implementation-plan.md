@@ -131,6 +131,7 @@ Milestones:
 - Phase 6C3: complete-inventory-snapshot canonical Category creation with core-owned ID/time/path/order/status and lock-scoped raw-entry limit.
 - Phase 6C4: exact-revision typed Category name/optional-summary replacement with stable path/order/status and unknown-metadata preservation.
 - Phase 6C5: separate exact-revision Category archive/restore with lock-scoped manifest/inventory guard and default-Category refusal.
+- Phase 6C6: separate exact-revision Guide archive/restore with stable path/content and no tested assertion.
 - Later gates: Attachment-metadata and mutation tools.
 - Per-Workspace write/broad/Git capabilities, launch handles, revisions/effect sets, dry-run tokens, and native out-of-band approval companion.
 - Git status/plan/commit/safe sync only after Phase 5 primitives are approved.

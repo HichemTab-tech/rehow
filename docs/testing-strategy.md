@@ -79,6 +79,8 @@ Phase 6C4 adds an exact thirteen-tool surface. Tests prove read-only denial, exa
 
 Phase 6C5 adds an exact fifteen-tool surface. Tests prove separate archive/restore schemas, read-only denial, reversible lifecycle through typed recovery, fixed directories/Guides, default refusal, a concurrent manifest/default change caught under the writer lock, and real protocol archive. Existing Category-details, lifecycle, snapshot, recovery, and confinement suites remain part of the full gate.
 
+Phase 6C6 adds an exact seventeen-tool surface. Tests prove separate Guide archive/restore schemas, read-only denial, reversible lifecycle through typed recovery, stable Markdown path/body/Category, declared/effective status output, and real protocol archive. Existing stale-revision, tested/stale restoration, presentation, recovery, and confinement suites remain part of the full gate.
+
 ### End-to-end desktop tests
 
 Use the most stable Tauri/WebDriver-compatible automation available at Phase 2 and retain manual smoke coverage where Linux WebKit automation is incomplete. Tests launch the production-like native app against a temporary Workspace and exercise open/create/search/read/edit/restart/conflict. Never rely exclusively on the Vite browser view because native IPC, CSP, WebKitGTK, window behavior, and file dialogs are product behavior.

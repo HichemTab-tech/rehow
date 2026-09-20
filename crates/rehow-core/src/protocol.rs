@@ -191,6 +191,37 @@ pub fn guide_update_unavailable_error(request_id: RequestId) -> ErrorDto {
     ))
 }
 
+pub fn invalid_guide_lifecycle_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::Status,
+        construction::Reason::UnsupportedValue,
+    ))
+}
+
+pub fn guide_archive_busy_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::io_busy(
+        request_id,
+        construction::Operation::GuideArchive,
+        2_000,
+    ))
+}
+
+pub fn guide_restore_busy_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::io_busy(
+        request_id,
+        construction::Operation::GuideRestore,
+        2_000,
+    ))
+}
+
+pub fn guide_lifecycle_unavailable_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::workspace_unavailable(
+        request_id,
+        construction::Reason::WorkspaceRootChanged,
+    ))
+}
+
 pub fn guide_create_category_not_found_error(
     request_id: RequestId,
     category_id: CategoryId,
