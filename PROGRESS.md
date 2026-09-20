@@ -5,11 +5,11 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 6C8 is complete at signed checkpoint `620c117`: the standalone MCP server now adds exact-revision Guide Tag/Alias replacement while remaining read-only by default.
+Phase 6C9 is complete at signed checkpoint `45505e3`: the standalone MCP server now adds exact-revision, pathless Guide Category change while remaining read-only by default.
 
 ## Current task
 
-Prepare Phase 6C9's typed exact-revision `guide_change_category` tool with destination-Category concurrency protection and no caller path authority.
+Prepare one bundled read-only MCP phase for Guide validation, duplicate discovery, and related-Guide discovery.
 
 ## Overall status
 
@@ -136,17 +136,18 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Completed Phase 6C6 at signed checkpoint `c0084b6`: separate capability-gated `guide_archive`/`guide_restore` tools require exact Guide revisions, preserve path/body/Category/Attachments/unknown metadata, and cannot assert `tested`. Full gates and the single reused Security Reviewer pass.
 - Completed Phase 6C7 at signed checkpoint `aa876d9`: capability-gated `guide_mark_stale` requires an exact Guide revision and accepts no generic status/reason/content field. Draft/tested become stale, stale is a no-op, and archived remains archived with stale restore state. Full gates and the single reused Security Reviewer pass.
 - Completed Phase 6C8 at signed checkpoint `620c117`: separate capability-gated `guide_set_tags`/`guide_set_aliases` tools require exact Guide revisions, use typed core limits and Unicode-fold duplicate rejection, preserve unrelated content, and reduce tested trust to stale. Full gates and the single reused Security Reviewer pass.
+- Completed Phase 6C9 at signed checkpoint `45505e3`: capability-gated `guide_change_category` binds exact Guide and destination Category revisions, derives paths in Rust, rechecks the active destination descriptor under the recovery writer lock, preserves filename/content/unknown metadata, and never overwrites. Full gates and the single reused Security Reviewer pass.
 
 ## Work in progress
 
-- No Rehow implementation is uncommitted. Phase 6C8 is complete at signed checkpoint `620c117`; this ledger update follows it. Untracked `x` remains unrelated and untouched.
+- No Rehow implementation is uncommitted. Phase 6C9 is complete at signed checkpoint `45505e3`; this ledger update follows it. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
 - Workspace adoption/import/migration and Attachment viewing/export/reveal remain incomplete.
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
-- Phase 6: protocol, bounded reads, existing-Guide update, draft Guide creation, Guide Tag/Alias/mark-stale/archive/restore, and Category create/details/archive/restore are complete at `620c117`; Category reorder/removal, Guide Category/tested approval, remaining typed/broad/destructive approvals, Attachment metadata, Git tools, and broader client documentation remain.
+- Phase 6: protocol, bounded reads, existing-Guide update, draft Guide creation, Guide Tag/Alias/mark-stale/archive/restore/Category-change, and Category create/details/archive/restore are complete at `45505e3`; Category reorder/removal, Guide validation/duplicate/related/tested approval, remaining typed/broad/destructive approvals, Attachment metadata, Git tools, and broader client documentation remain.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
 ## Known bugs
@@ -266,19 +267,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - Phase 6C6 exposes separate Guide archive/restore intent with exact revisions and no generic status. The typed core restoration matrix prevents MCP from asserting tested while preserving path/content/Category/Attachments/unknown metadata. The single reused Security Reviewer verdict is PASS with no findings.
 - Phase 6C7 exposes only a trust-reducing exact-revision Guide mark-stale operation. Capability denial precedes input parsing; callers cannot select a status, reason, body, path, Category, or tested state. The single reused Security Reviewer verdict is PASS with no findings.
 - Phase 6C8 exposes only complete Tag or alias replacement at an exact Guide revision. Core validation, recovery, no-op behavior, and tested-to-stale policy remain authoritative; neither schema accepts unrelated Guide fields. The single reused Security Reviewer verdict is PASS with no findings.
+- Phase 6C9 exposes only exact-revision Guide Category change. The destination descriptor is rechecked under the recovery writer lock, Rust derives both paths, destination occupancy never overwrites, same-Category is a verified no-op, and tested content becomes stale. The single reused Security Reviewer verdict is PASS with no findings.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 6C8 reused one existing Security Reviewer only at the completed authority gate and the verdict is PASS.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 6C9 reused one existing Security Reviewer only at the completed authority gate and the verdict is PASS.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`620c117` — signed Phase 6C8 revision-bound MCP Guide Tag/Alias replacement. This progress-only ledger update follows that implementation commit.
+`45505e3` — signed Phase 6C9 revision-bound MCP Guide Category change. This progress-only ledger update follows that implementation commit.
 
 ## Tests last run and results
 
+- 2026-09-20: Phase 6C9 checkpoint `45505e3` passes `pnpm check`, `pnpm test`, `pnpm build`, 39 Vitest tests, 444 core tests with 2 intentional ignores, supporting contract/API suites, 25 desktop Rust tests, 34 MCP unit tests and 1 real-binary integration test. Strict all-Workspace Clippy, Cargo formatting, bootstrap/whitespace checks, exact twenty-one-tool schema, move/no-op/race/preservation/trust cases, real JSON-RPC execution, and the single reused Security Reviewer pass.
 - 2026-09-20: Phase 6C8 checkpoint `620c117` passes `pnpm check`, `pnpm test`, `pnpm build`, 39 Vitest tests, 444 core tests with 2 intentional ignores, supporting contract/API suites, 25 desktop Rust tests, 31 MCP unit tests and 1 real-binary integration test. Strict all-Workspace Clippy, Cargo formatting, bootstrap/whitespace checks, exact twenty-tool schema, Tag/Alias validation/preservation/trust cases, real JSON-RPC Tag replacement, and the single reused Security Reviewer pass.
 - 2026-09-20: Phase 6C7 checkpoint `aa876d9` passes `pnpm check`, `pnpm test`, `pnpm build`, 39 Vitest tests, 444 core tests with 2 intentional ignores, supporting contract/API suites, 25 desktop Rust tests, 29 MCP unit tests and 1 real-binary integration test. Strict all-Workspace Clippy, Cargo formatting, bootstrap/whitespace checks, exact eighteen-tool schema, full stale-state matrix, real JSON-RPC mark-stale, and the single reused Security Reviewer pass.
 - 2026-09-20: Phase 6C6 checkpoint `c0084b6` passes `pnpm check`, `pnpm test`, `pnpm build`, 39 Vitest tests, 444 core tests with 2 intentional ignores, supporting contract/API suites, 25 desktop Rust tests, 28 MCP unit tests and 1 real-binary integration test. Strict all-Workspace Clippy, Cargo formatting, bootstrap/whitespace checks, real JSON-RPC Guide archive, reversible archive/restore preservation coverage, and the single reused Security Reviewer pass.
@@ -541,20 +544,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0033, `docs/task-packets/phase-6c6-mcp-guide-lifecycle.md`, its evidence, typed exact-revision lifecycle adapter, and separate Guide archive/restore tools implement the seventeen-tool MCP surface at `c0084b6`.
 - ADR 0034, `docs/task-packets/phase-6c7-mcp-guide-mark-stale.md`, its evidence, typed exact-revision stale transition, restorable-state output, and closed schemas implement the eighteen-tool MCP surface at `aa876d9`.
 - ADR 0035, `docs/task-packets/phase-6c8-mcp-guide-tags-aliases.md`, its evidence, typed exact-revision collection mutations, closed schemas, and trust/preservation tests implement the twenty-tool MCP surface at `620c117`.
+- ADR 0036, `docs/task-packets/phase-6c9-mcp-guide-category-change.md`, its evidence, lock-scoped destination prerequisite, pathless journaled move/no-op, and preservation/race tests implement the twenty-one-tool MCP surface at `45505e3`.
 
 ## Next recommended action
 
-Define and implement Phase 6C9's `guide_change_category` tool using exact Guide and destination Category revisions. Reuse the core journaled move, derive paths internally, preserve content/filename/ID, and keep arbitrary path, tested approval, delete, Git, shell, and network absent.
+Bundle the remaining read-only Guide intelligence into one Phase 6D1 checkpoint: `guide_validate`, duplicate discovery, and related-Guide discovery. Reuse retained Workspace/search/domain data, keep outputs bounded and pathless, and add no mutation authority.
 
 ## Recommended agent role and reasoning effort
 
-Architect/Orchestrator locally with `gpt-5.6-sol`, high judgment for the MCP Guide move boundary. Run zero extra agents during routine work; reuse at most one Security Reviewer only at the completed authority gate.
+Orchestrator locally with `gpt-5.6-sol`, high judgment. Run zero extra agents for this read-only bundle; use a reviewer only if implementation reveals a new security boundary.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read ADRs 0026–0035, `docs/mcp-spec.md`, the Phase 6C8 evidence/packet, and the MCP sections of architecture/testing/threat docs.
+2. Read ADRs 0026–0036, `docs/mcp-spec.md`, the Phase 6C9 evidence/packet, and the MCP sections of architecture/testing/threat docs.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `620c117` and `aa876d9`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoints `45505e3` and `620c117`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 6C8 as complete. Begin the Phase 6C9 Guide Category-change gate; require exact Guide and destination Category revisions and do not add caller path, unrelated metadata, destructive mutation, tested approval, Git-write, shell, network, or ambient discovery authority.
+6. Treat Phase 6C9 as complete. Begin the bundled Phase 6D1 read-only Guide validation/duplicate/related gate; keep schemas bounded and pathless and add no write, Git, shell, network, or ambient discovery authority.
