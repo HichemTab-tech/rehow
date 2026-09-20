@@ -1,6 +1,6 @@
 # Development Guide
 
-Status: active development through Phase 6D1
+Status: active development through Phase 6D2
 Last updated: 2026-09-20
 
 ## Prerequisites

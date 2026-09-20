@@ -19,7 +19,7 @@ Each startup root has a unique user-chosen alias. Canonical duplicate/nested/ove
 
 Initial transport is stdio. Remote Streamable HTTP is deferred until authentication, origin, multi-user, and network threat models exist.
 
-The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6D1 exposes the prior twenty-one read/mutation tools plus Guide validation, duplicate discovery, and related-Guide discovery (twenty-four tools total). Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
+The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6D2 exposes twenty-six tools, including dedicated Attachment metadata and confined Git-status reads. Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
 
 ## Trust rules
 
@@ -139,7 +139,7 @@ Read results separate typed metadata, body, bounded fenced-code blocks, diagnost
 
 ## Attachment metadata tools
 
-- `attachments_list({workspaceHandle, guideId})`
+- `attachments_list({workspaceHandle, guideId})` — implemented bounded declared metadata plus exact Guide revision; no Attachment bytes or host-path authority.
 - `attachment_metadata_add/update/remove_plan/remove` operate only on Guide metadata plus already managed Attachment IDs.
 
 Raw arbitrary attachment upload/download through MCP is deferred. If later approved, it must use bounded protocol resources, content hashes, regular-file-only confined storage, and separate threat review. A tool cannot attach a host path supplied in its arguments.
@@ -174,7 +174,7 @@ The opaque token is process-local, short-lived, single-use, and bound to launch 
 
 Availability follows the approved Phase 5 core:
 
-- `git_status({workspaceHandle})`
+- `git_status({workspaceHandle})` — implemented through the accepted networkless confined core reader; returns closed availability/repository/branch/divergence/change/remote-name state and no URL, path, raw output, or credentials.
 - `git_commit_plan({workspaceHandle, expectedGitState, message})`
 - `git_commit({workspaceHandle, planToken})`
 - `git_sync_plan({workspaceHandle, expectedGitState, direction})`

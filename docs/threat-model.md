@@ -128,6 +128,8 @@ Phase 6C9 adds pathless Guide Category change with exact Guide and destination C
 
 Phase 6D1 adds only bounded reads over the retained Workspace view. Validation omits filesystem paths; duplicate generation has a deterministic candidate ceiling; related ranking uses bounded metadata and closed reasons. No body expansion, mutation, Git, shell, network, broad, destructive, or tested authority is added.
 
+Phase 6D2 exposes declared managed Attachment relative paths as untrusted metadata but no bytes, host paths, handles, or mutation. Git status delegates to the accepted fixed-executable, descriptor-confined, networkless Phase 5 reader and returns no URL, raw output, environment, credential, or path. No new process primitive, network, write, broad, destructive, or tested authority is added.
+
 The portable `verify:v1` digest is intentionally unkeyed: it detects instruction-bearing content drift but is not cryptographic proof of which person or program wrote the Markdown. Rehow guarantees that its desktop renderer and MCP APIs cannot assert Tested without native confirmation. A same-user process with direct Workspace filesystem write access can reproduce or replace the declaration and digest and is outside that hard boundary; Workspace permissions, Git review, and visible diagnostics remain the mitigations. A future provenance/signature feature would require a separate portability and key-management decision.
 
 Network/removable filesystems may not honor local atomicity/fsync/watch semantics. Detect known filesystem characteristics where practical, warn that guarantees are degraded, use polling/reconciliation, and do not claim durable atomic behavior that the mount cannot provide.

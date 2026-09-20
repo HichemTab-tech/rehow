@@ -89,6 +89,8 @@ Phase 6C9 adds an exact twenty-one-tool surface. Tests prove no caller path/meta
 
 Phase 6D1 adds an exact twenty-four-tool surface. Tests prove pathless validation with warning/error grouping, conservative normalized title/alias duplicate reasons, exact candidate/comparison ceilings, explicit-over-metadata related ranking, authenticated pagination, strict read-only schemas, and real protocol routing.
 
+Phase 6D2 adds an exact twenty-six-tool surface. Tests prove bounded Attachment metadata without bytes, isolated-repository Git branch/change/remote-name state, URL/path non-disclosure, strict input schemas, and real protocol routing through the already accepted networkless core reader.
+
 ### End-to-end desktop tests
 
 Use the most stable Tauri/WebDriver-compatible automation available at Phase 2 and retain manual smoke coverage where Linux WebKit automation is incomplete. Tests launch the production-like native app against a temporary Workspace and exercise open/create/search/read/edit/restart/conflict. Never rely exclusively on the Vite browser view because native IPC, CSP, WebKitGTK, window behavior, and file dialogs are product behavior.
