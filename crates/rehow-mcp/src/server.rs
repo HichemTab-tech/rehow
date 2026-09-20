@@ -3,21 +3,24 @@ use rehow_core::{
     application::{
         CategoryCreateError, CategoryUpdateError, GuideCreateError, GuideEdit, GuideUpdateError,
         create_category_at_snapshot, create_guide_at_revision, refresh_open_workspace,
-        update_category_details, update_guide,
+        set_category_archived, update_category_details, update_guide,
     },
     domain::{CategoryStatus, GuideStatus, RestorableGuideStatus},
     markdown::{MAX_MARKDOWN_BYTES, SafeMarkdownContainer, SafeMarkdownEvent, parse_safe_markdown},
     protocol::{
-        CategoryId, ErrorDto, GuideId, Revision, Snapshot, category_create_busy_error,
-        category_create_limit_error, category_create_snapshot_conflict_error,
-        category_create_unavailable_error, category_update_busy_error,
-        category_update_not_found_error, category_update_revision_conflict_error,
-        category_update_unavailable_error, guide_create_archived_category_error,
-        guide_create_busy_error, guide_create_category_not_found_error,
-        guide_create_category_revision_conflict_error, guide_create_limit_error,
-        guide_create_unavailable_error, guide_not_found_error, guide_revision_conflict_error,
-        guide_update_body_limit_error, guide_update_busy_error, guide_update_unavailable_error,
-        invalid_category_create_name_error, invalid_category_create_summary_error,
+        CategoryId, ErrorDto, GuideId, Revision, Snapshot, category_archive_busy_error,
+        category_archive_default_error, category_create_busy_error, category_create_limit_error,
+        category_create_snapshot_conflict_error, category_create_unavailable_error,
+        category_inventory_snapshot_conflict_error, category_lifecycle_not_found_error,
+        category_lifecycle_revision_conflict_error, category_lifecycle_unavailable_error,
+        category_restore_busy_error, category_update_busy_error, category_update_not_found_error,
+        category_update_revision_conflict_error, category_update_unavailable_error,
+        guide_create_archived_category_error, guide_create_busy_error,
+        guide_create_category_not_found_error, guide_create_category_revision_conflict_error,
+        guide_create_limit_error, guide_create_unavailable_error, guide_not_found_error,
+        guide_revision_conflict_error, guide_update_body_limit_error, guide_update_busy_error,
+        guide_update_unavailable_error, invalid_category_create_name_error,
+        invalid_category_create_summary_error, invalid_category_lifecycle_error,
         invalid_category_update_error, invalid_category_update_name_error,
         invalid_category_update_summary_error, invalid_guide_create_summary_error,
         invalid_guide_create_title_error, invalid_guide_update_error, new_request_id,
@@ -227,6 +230,14 @@ struct CategoryUpdateInput {
     expected_revision: String,
     name: String,
     summary: Option<String>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CategoryLifecycleInput {
+    workspace_handle: String,
+    category_id: String,
+    expected_revision: String,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -1092,6 +1103,158 @@ fn category_update_error(
     }
 }
 
+fn category_lifecycle_error(
+    request_id: rehow_core::protocol::RequestId,
+    category_id: CategoryId,
+    archived: bool,
+    error: CategoryUpdateError,
+) -> ErrorDto {
+    match error {
+        CategoryUpdateError::NotFound => {
+            category_lifecycle_not_found_error(request_id, category_id)
+        }
+        CategoryUpdateError::RevisionConflict => invalid_category_lifecycle_error(request_id),
+        CategoryUpdateError::DefaultCategory => category_archive_default_error(request_id),
+        CategoryUpdateError::Busy if archived => category_archive_busy_error(request_id),
+        CategoryUpdateError::Busy => category_restore_busy_error(request_id),
+        CategoryUpdateError::InvalidCategory
+        | CategoryUpdateError::InvalidName
+        | CategoryUpdateError::InvalidSummary
+        | CategoryUpdateError::UnsafeRoundTrip
+        | CategoryUpdateError::ResourceLimit => invalid_category_lifecycle_error(request_id),
+        CategoryUpdateError::UnsafeStorage
+        | CategoryUpdateError::UnsupportedFilesystem
+        | CategoryUpdateError::Io
+        | CategoryUpdateError::CommittedRefreshRequired { .. } => {
+            category_lifecycle_unavailable_error(request_id)
+        }
+    }
+}
+
+fn category_lifecycle(
+    server: &McpServer,
+    input: CategoryLifecycleInput,
+    archived: bool,
+) -> Result<CallToolResult, McpError> {
+    let request_id = new_request_id();
+    let workspace = server.workspace(&input.workspace_handle)?;
+    if !workspace.allow_write {
+        return structured_tool_error(workspace_write_required_error(request_id));
+    }
+    let category_id = input
+        .category_id
+        .parse::<CategoryId>()
+        .map_err(|_| McpError::invalid_params("invalid Category ID", None))?;
+    let expected_revision = input
+        .expected_revision
+        .parse::<Revision>()
+        .map_err(|_| McpError::invalid_params("invalid Category revision", None))?;
+    let Some(recovery) = server.recovery_locations.as_ref() else {
+        return structured_tool_error(category_lifecycle_unavailable_error(request_id));
+    };
+    let mut view = workspace
+        .view
+        .write()
+        .map_err(|_| McpError::internal_error("Workspace view unavailable", None))?;
+    let Some(current) = find_category(&view, &category_id) else {
+        return structured_tool_error(category_lifecycle_not_found_error(request_id, category_id));
+    };
+    if current.descriptor_revision() != expected_revision {
+        return structured_tool_error(category_lifecycle_revision_conflict_error(
+            request_id,
+            category_id,
+            expected_revision,
+            current.descriptor_revision(),
+        ));
+    }
+    let expected_category_snapshot = category_inventory_snapshot(&view);
+    let outcome = match set_category_archived(
+        &mut view,
+        &recovery.state_home.bridge_path,
+        recovery
+            .runtime_directory
+            .as_ref()
+            .map(|directory| directory.bridge_path.as_path()),
+        category_id,
+        expected_revision,
+        archived,
+    ) {
+        Ok(outcome) => outcome,
+        Err(CategoryUpdateError::CommittedRefreshRequired { revision }) => {
+            let output = CategoryUpdateOutput {
+                category_id: category_id.to_string(),
+                revision: revision.to_string(),
+                changed: true,
+                refresh_required: true,
+                category_snapshot: None,
+            };
+            return serde_json::to_value(output)
+                .map(CallToolResult::structured)
+                .map_err(|_| McpError::internal_error("Tool output unavailable", None));
+        }
+        Err(CategoryUpdateError::RevisionConflict) => {
+            if refresh_open_workspace(&mut view).is_ok() {
+                let Some(current) = find_category(&view, &category_id) else {
+                    return structured_tool_error(category_lifecycle_not_found_error(
+                        request_id,
+                        category_id,
+                    ));
+                };
+                if current.descriptor_revision() != expected_revision {
+                    return structured_tool_error(category_lifecycle_revision_conflict_error(
+                        request_id,
+                        category_id,
+                        expected_revision,
+                        current.descriptor_revision(),
+                    ));
+                }
+                let actual_category_snapshot = category_inventory_snapshot(&view);
+                if actual_category_snapshot != expected_category_snapshot {
+                    return structured_tool_error(category_inventory_snapshot_conflict_error(
+                        request_id,
+                        expected_category_snapshot,
+                        actual_category_snapshot,
+                    ));
+                }
+            }
+            return structured_tool_error(category_lifecycle_unavailable_error(request_id));
+        }
+        Err(error) => {
+            return structured_tool_error(category_lifecycle_error(
+                request_id,
+                category_id,
+                archived,
+                error,
+            ));
+        }
+    };
+    let updated = find_category(&view, &category_id)
+        .ok_or_else(|| McpError::internal_error("Updated Category unavailable", None))?;
+    let expected_status = if archived {
+        CategoryStatus::Archived
+    } else {
+        CategoryStatus::Active
+    };
+    if updated.descriptor_revision() != outcome.revision()
+        || updated.category().status() != expected_status
+    {
+        return Err(McpError::internal_error(
+            "Updated Category state unavailable",
+            None,
+        ));
+    }
+    let output = CategoryUpdateOutput {
+        category_id: category_id.to_string(),
+        revision: outcome.revision().to_string(),
+        changed: outcome.changed(),
+        refresh_required: false,
+        category_snapshot: Some(category_inventory_snapshot(&view).to_string()),
+    };
+    serde_json::to_value(output)
+        .map(CallToolResult::structured)
+        .map_err(|_| McpError::internal_error("Tool output unavailable", None))
+}
+
 fn structured_tool_error(error: ErrorDto) -> Result<CallToolResult, McpError> {
     serde_json::to_value(error)
         .map(CallToolResult::structured_error)
@@ -1382,6 +1545,7 @@ impl McpServer {
                 current.descriptor_revision(),
             ));
         }
+        let expected_category_snapshot = category_inventory_snapshot(&view);
         let outcome = match update_category_details(
             &mut view,
             &recovery.state_home.bridge_path,
@@ -1409,7 +1573,13 @@ impl McpServer {
             }
             Err(CategoryUpdateError::RevisionConflict) => {
                 if refresh_open_workspace(&mut view).is_ok() {
-                    if let Some(current) = find_category(&view, &category_id) {
+                    let Some(current) = find_category(&view, &category_id) else {
+                        return structured_tool_error(category_update_not_found_error(
+                            request_id,
+                            category_id,
+                        ));
+                    };
+                    if current.descriptor_revision() != expected_revision {
                         return structured_tool_error(category_update_revision_conflict_error(
                             request_id,
                             category_id,
@@ -1417,10 +1587,14 @@ impl McpServer {
                             current.descriptor_revision(),
                         ));
                     }
-                    return structured_tool_error(category_update_not_found_error(
-                        request_id,
-                        category_id,
-                    ));
+                    let actual_category_snapshot = category_inventory_snapshot(&view);
+                    if actual_category_snapshot != expected_category_snapshot {
+                        return structured_tool_error(category_inventory_snapshot_conflict_error(
+                            request_id,
+                            expected_category_snapshot,
+                            actual_category_snapshot,
+                        ));
+                    }
                 }
                 return structured_tool_error(category_update_unavailable_error(request_id));
             }
@@ -1450,6 +1624,30 @@ impl McpServer {
         serde_json::to_value(output)
             .map(CallToolResult::structured)
             .map_err(|_| McpError::internal_error("Tool output unavailable", None))
+    }
+
+    #[tool(
+        name = "category_archive",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<CategoryUpdateOutput>(),
+        description = "Archive one Category at its exact revision without moving its directory or Guides. The Workspace default Category cannot be archived. Requires startup write capability."
+    )]
+    fn category_archive(
+        &self,
+        Parameters(input): Parameters<CategoryLifecycleInput>,
+    ) -> Result<CallToolResult, McpError> {
+        category_lifecycle(self, input, true)
+    }
+
+    #[tool(
+        name = "category_restore",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<CategoryUpdateOutput>(),
+        description = "Restore one archived Category to active at its exact revision without moving its directory or Guides. Requires startup write capability."
+    )]
+    fn category_restore(
+        &self,
+        Parameters(input): Parameters<CategoryLifecycleInput>,
+    ) -> Result<CallToolResult, McpError> {
+        category_lifecycle(self, input, false)
     }
 
     #[tool(
@@ -2372,8 +2570,10 @@ mod tests {
             names,
             [
                 "categories_list",
+                "category_archive",
                 "category_create",
                 "category_get",
+                "category_restore",
                 "category_update",
                 "guide_create",
                 "guide_get",
@@ -2459,6 +2659,27 @@ mod tests {
                     .get(forbidden)
                     .is_none()
             );
+        }
+        for name in ["category_archive", "category_restore"] {
+            let lifecycle = responses[1]["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap();
+            assert!(lifecycle["outputSchema"].is_object());
+            assert!(
+                lifecycle["inputSchema"]["properties"]
+                    .get("expectedRevision")
+                    .is_some()
+            );
+            for forbidden in ["archived", "status", "path", "order"] {
+                assert!(
+                    lifecycle["inputSchema"]["properties"]
+                        .get(forbidden)
+                        .is_none()
+                );
+            }
         }
     }
 
@@ -2982,6 +3203,216 @@ mod tests {
     }
 
     #[test]
+    fn category_archive_and_restore_are_exact_reversible_mutations() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let state_root = tempfile::tempdir().unwrap();
+        fixture_workspace(workspace_root.path());
+        fixture_guide(workspace_root.path());
+        let read_only = open_server_with_recovery(
+            LaunchConfig {
+                workspaces: vec![WorkspaceArgument {
+                    alias: "personal".to_owned(),
+                    path: workspace_root.path().to_owned(),
+                    allow_write: false,
+                }],
+            },
+            Some(RecoveryLocationPaths {
+                state_home: state_root.path().to_owned(),
+                runtime_directory: None,
+            }),
+        )
+        .unwrap();
+        let category_id: CategoryId = "0199a1d7-7b0d-7d8e-a38d-f936c5735e11".parse().unwrap();
+        let read_only_revision = {
+            let view = read_only.workspaces[0].view.read().unwrap();
+            find_category(&view, &category_id)
+                .unwrap()
+                .descriptor_revision()
+        };
+        let denied = read_only
+            .category_archive(Parameters(CategoryLifecycleInput {
+                workspace_handle: read_only.workspaces[0].handle.clone(),
+                category_id: category_id.to_string(),
+                expected_revision: read_only_revision.to_string(),
+            }))
+            .unwrap();
+        assert_eq!(denied.is_error, Some(true));
+        assert_eq!(
+            denied.structured_content.as_ref().unwrap()["code"],
+            "WORKSPACE_READ_ONLY"
+        );
+        assert!(!state_root.path().join("rehow").exists());
+
+        let writable = open_server_with_recovery(
+            LaunchConfig {
+                workspaces: vec![WorkspaceArgument {
+                    alias: "personal".to_owned(),
+                    path: workspace_root.path().to_owned(),
+                    allow_write: true,
+                }],
+            },
+            Some(RecoveryLocationPaths {
+                state_home: state_root.path().to_owned(),
+                runtime_directory: None,
+            }),
+        )
+        .unwrap();
+        let handle = writable.workspaces[0].handle.clone();
+        let (revision, relative_directory, guide_count, initial_snapshot) = {
+            let view = writable.workspaces[0].view.read().unwrap();
+            let category = find_category(&view, &category_id).unwrap();
+            (
+                category.descriptor_revision(),
+                category.relative_directory().to_owned(),
+                category.guides().len(),
+                category_inventory_snapshot(&view),
+            )
+        };
+        let archived = writable
+            .category_archive(Parameters(CategoryLifecycleInput {
+                workspace_handle: handle.clone(),
+                category_id: category_id.to_string(),
+                expected_revision: revision.to_string(),
+            }))
+            .unwrap();
+        assert_eq!(archived.is_error, Some(false));
+        let archived_output = archived.structured_content.unwrap();
+        assert_eq!(archived_output["changed"], true);
+        assert_ne!(
+            archived_output["categorySnapshot"],
+            initial_snapshot.to_string()
+        );
+        let archived_revision: Revision = archived_output["revision"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        {
+            let view = writable.workspaces[0].view.read().unwrap();
+            let category = find_category(&view, &category_id).unwrap();
+            assert_eq!(category.category().status(), CategoryStatus::Archived);
+            assert_eq!(category.relative_directory(), relative_directory);
+            assert_eq!(category.guides().len(), guide_count);
+        }
+
+        let restored = writable
+            .category_restore(Parameters(CategoryLifecycleInput {
+                workspace_handle: handle.clone(),
+                category_id: category_id.to_string(),
+                expected_revision: archived_revision.to_string(),
+            }))
+            .unwrap();
+        assert_eq!(restored.is_error, Some(false));
+        let view = writable.workspaces[0].view.read().unwrap();
+        let category = find_category(&view, &category_id).unwrap();
+        assert_eq!(category.category().status(), CategoryStatus::Active);
+        assert_eq!(category.relative_directory(), relative_directory);
+        assert_eq!(category.guides().len(), guide_count);
+        let restored_revision = category.descriptor_revision();
+        drop(view);
+
+        let manifest_path = workspace_root.path().join("rehow.yaml");
+        let mut manifest = fs::read_to_string(&manifest_path).unwrap();
+        manifest.push_str(&format!(
+            "settings:\n  default_category_id: {category_id}\n"
+        ));
+        fs::write(&manifest_path, manifest).unwrap();
+        writable
+            .workspace_refresh(Parameters(WorkspaceGetInput {
+                workspace_handle: handle.clone(),
+            }))
+            .unwrap();
+        let default_refusal = writable
+            .category_archive(Parameters(CategoryLifecycleInput {
+                workspace_handle: handle,
+                category_id: category_id.to_string(),
+                expected_revision: restored_revision.to_string(),
+            }))
+            .unwrap();
+        assert_eq!(default_refusal.is_error, Some(true));
+        assert_eq!(
+            default_refusal.structured_content.as_ref().unwrap()["code"],
+            "INVALID_ARGUMENT"
+        );
+        assert!(
+            fs::read_to_string(
+                workspace_root
+                    .path()
+                    .join("categories/general/category.yaml")
+            )
+            .unwrap()
+            .contains("status: active")
+        );
+    }
+
+    #[test]
+    fn category_archive_reports_inventory_conflict_when_default_changes_externally() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let state_root = tempfile::tempdir().unwrap();
+        fixture_workspace(workspace_root.path());
+        let server = open_server_with_recovery(
+            LaunchConfig {
+                workspaces: vec![WorkspaceArgument {
+                    alias: "personal".to_owned(),
+                    path: workspace_root.path().to_owned(),
+                    allow_write: true,
+                }],
+            },
+            Some(RecoveryLocationPaths {
+                state_home: state_root.path().to_owned(),
+                runtime_directory: None,
+            }),
+        )
+        .unwrap();
+        let category_id: CategoryId = "0199a1d7-7b0d-7d8e-a38d-f936c5735e11".parse().unwrap();
+        let (revision, retained_snapshot) = {
+            let view = server.workspaces[0].view.read().unwrap();
+            (
+                find_category(&view, &category_id)
+                    .unwrap()
+                    .descriptor_revision(),
+                category_inventory_snapshot(&view),
+            )
+        };
+        let manifest_path = workspace_root.path().join("rehow.yaml");
+        let mut manifest = fs::read_to_string(&manifest_path).unwrap();
+        manifest.push_str(&format!(
+            "settings:\n  default_category_id: {category_id}\n"
+        ));
+        fs::write(manifest_path, manifest).unwrap();
+
+        let refusal = server
+            .category_archive(Parameters(CategoryLifecycleInput {
+                workspace_handle: server.workspaces[0].handle.clone(),
+                category_id: category_id.to_string(),
+                expected_revision: revision.to_string(),
+            }))
+            .unwrap();
+        assert_eq!(refusal.is_error, Some(true));
+        assert_eq!(
+            refusal.structured_content.as_ref().unwrap()["code"],
+            "SNAPSHOT_CONFLICT"
+        );
+        assert_eq!(
+            refusal.structured_content.as_ref().unwrap()["details"]["expectedSnapshot"],
+            retained_snapshot.to_string()
+        );
+        assert_ne!(
+            refusal.structured_content.as_ref().unwrap()["details"]["actualSnapshot"],
+            retained_snapshot.to_string()
+        );
+        assert!(
+            fs::read_to_string(
+                workspace_root
+                    .path()
+                    .join("categories/general/category.yaml")
+            )
+            .unwrap()
+            .contains("status: active")
+        );
+    }
+
+    #[test]
     fn guide_update_requires_capability_and_expected_revision() {
         let workspace_root = tempfile::tempdir().unwrap();
         let state_root = tempfile::tempdir().unwrap();
@@ -3256,6 +3687,57 @@ mod tests {
         .unwrap();
         assert!(bytes.contains("name: \"Protocol Category\""));
         assert!(bytes.contains("Updated through MCP."));
+    }
+
+    #[tokio::test]
+    async fn category_archive_works_through_the_protocol() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let state_root = tempfile::tempdir().unwrap();
+        fixture_workspace(workspace_root.path());
+        let server = open_server_with_recovery(
+            LaunchConfig {
+                workspaces: vec![WorkspaceArgument {
+                    alias: "personal".to_owned(),
+                    path: workspace_root.path().to_owned(),
+                    allow_write: true,
+                }],
+            },
+            Some(RecoveryLocationPaths {
+                state_home: state_root.path().to_owned(),
+                runtime_directory: None,
+            }),
+        )
+        .unwrap();
+        let handle = server.workspaces[0].handle.clone();
+        let revision = {
+            let view = server.workspaces[0].view.read().unwrap();
+            find_category(
+                &view,
+                &"0199a1d7-7b0d-7d8e-a38d-f936c5735e11".parse().unwrap(),
+            )
+            .unwrap()
+            .descriptor_revision()
+            .to_string()
+        };
+        let responses = protocol_exchange(
+            server,
+            &[
+                serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
+                serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+                serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"category_archive","arguments":{"workspaceHandle":handle,"categoryId":"0199a1d7-7b0d-7d8e-a38d-f936c5735e11","expectedRevision":revision}}}),
+            ],
+            2,
+        )
+        .await;
+        assert_eq!(responses[1]["result"]["isError"], false);
+        assert_eq!(responses[1]["result"]["structuredContent"]["changed"], true);
+        let bytes = fs::read_to_string(
+            workspace_root
+                .path()
+                .join("categories/general/category.yaml"),
+        )
+        .unwrap();
+        assert!(bytes.contains("status: archived"));
     }
 
     #[test]

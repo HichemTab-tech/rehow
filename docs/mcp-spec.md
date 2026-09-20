@@ -19,7 +19,7 @@ Each startup root has a unique user-chosen alias. Canonical duplicate/nested/ove
 
 Initial transport is stdio. Remote Streamable HTTP is deferred until authentication, origin, multi-user, and network threat models exist.
 
-The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6C4 exposes the nine Phase 6B reads plus capability-gated `guide_update`, `guide_create`, `category_create`, and `category_update`. Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
+The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6C5 exposes the nine Phase 6B reads plus capability-gated `guide_update`, `guide_create`, `category_create`, `category_update`, `category_archive`, and `category_restore`. Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
 
 ## Trust rules
 
@@ -108,7 +108,7 @@ Every Category tool requires `workspaceHandle`; omitted parameters below are sho
 - `category_update({workspaceHandle, categoryId, expectedRevision, name, summary?})` — implemented complete typed details replacement; stable directory, order, status, Guides, and unknown metadata are preserved.
 - `category_reorder_plan({workspaceHandle, expectedWorkspaceSnapshot, orderedCategoryIds})`
 - `category_reorder({workspaceHandle, planToken})` — requires startup broad capability and out-of-band approval.
-- `category_archive` / `category_restore` with expected revision.
+- `category_archive({workspaceHandle, categoryId, expectedRevision})` / `category_restore(…)` — implemented separate typed lifecycle operations; stable directory/Guides, lock-scoped manifest/inventory guard, and default-Category archive refusal.
 - `category_remove_plan({workspaceHandle, categoryId, expectedRevision, replacementDefaultCategoryId?})`
 - `category_remove({workspaceHandle, planToken})` — only empty Category; recoverable trash; startup broad capability and out-of-band approval.
 

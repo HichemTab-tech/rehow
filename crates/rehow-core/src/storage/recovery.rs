@@ -2234,6 +2234,7 @@ pub(super) fn execute_document_update<E, F>(
     workspace_id: WorkspaceId,
     relative_path: &str,
     expected_revision: Revision,
+    expected_category_snapshot: Option<Snapshot>,
     operation_id: OperationId,
     created_at: Timestamp,
     prepare: F,
@@ -2251,6 +2252,16 @@ where
     let lock = store
         .acquire_lock(runtime_directory)
         .map_err(map_store_update)?;
+    if let Some(expected_snapshot) = expected_category_snapshot {
+        let current_root = root.duplicate().map_err(|_| DocumentUpdateError::Io)?;
+        let current = match super::inspect_open_root(current_root).map_err(map_inspect_update)? {
+            super::WorkspaceInspection::Compatible(view) => view,
+            _ => return Err(DocumentUpdateError::Conflict),
+        };
+        if super::category_inventory_snapshot(&current) != expected_snapshot {
+            return Err(DocumentUpdateError::Conflict);
+        }
+    }
     let target = root
         .open_managed_target(relative_path)
         .map_err(map_io_update)?;
@@ -2279,6 +2290,9 @@ where
     let (root_device, root_inode) = root.identity().map_err(map_io_update)?;
     let mut plan = blake3::Hasher::new();
     plan.update(b"rehow-document-update-plan-v1\0");
+    if let Some(snapshot) = expected_category_snapshot {
+        hash_plan_field(&mut plan, snapshot.to_string().as_bytes());
+    }
     hash_plan_field(&mut plan, relative_path.as_bytes());
     hash_plan_field(&mut plan, expected_revision.to_string().as_bytes());
     plan.update(&old_hash);
@@ -2327,6 +2341,18 @@ where
         revision: super::document_revision(relative_path, &candidate),
         changed: true,
     })
+}
+
+fn map_inspect_update<E>(error: super::WorkspaceInspectError) -> DocumentUpdateError<E> {
+    match error {
+        super::WorkspaceInspectError::ResourceLimit => DocumentUpdateError::TooLarge,
+        super::WorkspaceInspectError::ChangedDuringRead => DocumentUpdateError::Conflict,
+        super::WorkspaceInspectError::NotFound
+        | super::WorkspaceInspectError::NotDirectory
+        | super::WorkspaceInspectError::PermissionDenied
+        | super::WorkspaceInspectError::UnsafeRoot => DocumentUpdateError::Unsafe,
+        super::WorkspaceInspectError::Io => DocumentUpdateError::Io,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

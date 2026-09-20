@@ -264,6 +264,14 @@ pub fn category_create_snapshot_conflict_error(
     expected_snapshot: Snapshot,
     actual_snapshot: Snapshot,
 ) -> ErrorDto {
+    category_inventory_snapshot_conflict_error(request_id, expected_snapshot, actual_snapshot)
+}
+
+pub fn category_inventory_snapshot_conflict_error(
+    request_id: RequestId,
+    expected_snapshot: Snapshot,
+    actual_snapshot: Snapshot,
+) -> ErrorDto {
     constructed_error(construction::snapshot_conflict(
         request_id,
         expected_snapshot,
@@ -363,6 +371,66 @@ pub fn category_update_busy_error(request_id: RequestId) -> ErrorDto {
 }
 
 pub fn category_update_unavailable_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::workspace_unavailable(
+        request_id,
+        construction::Reason::WorkspaceRootChanged,
+    ))
+}
+
+pub fn category_lifecycle_not_found_error(
+    request_id: RequestId,
+    category_id: CategoryId,
+) -> ErrorDto {
+    constructed_error(construction::category_not_found(request_id, category_id))
+}
+
+pub fn category_lifecycle_revision_conflict_error(
+    request_id: RequestId,
+    category_id: CategoryId,
+    expected_revision: Revision,
+    actual_revision: Revision,
+) -> ErrorDto {
+    constructed_error(construction::revision_conflict(
+        request_id,
+        PortableEntityId::category(category_id),
+        expected_revision,
+        actual_revision,
+    ))
+}
+
+pub fn category_archive_default_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::CategoryId,
+        construction::Reason::UnsupportedValue,
+    ))
+}
+
+pub fn invalid_category_lifecycle_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::Status,
+        construction::Reason::UnsupportedValue,
+    ))
+}
+
+pub fn category_archive_busy_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::io_busy(
+        request_id,
+        construction::Operation::CategoryArchive,
+        2_000,
+    ))
+}
+
+pub fn category_restore_busy_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::io_busy(
+        request_id,
+        construction::Operation::CategoryRestore,
+        2_000,
+    ))
+}
+
+pub fn category_lifecycle_unavailable_error(request_id: RequestId) -> ErrorDto {
     constructed_error(construction::workspace_unavailable(
         request_id,
         construction::Reason::WorkspaceRootChanged,

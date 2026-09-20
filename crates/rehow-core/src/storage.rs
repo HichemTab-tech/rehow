@@ -2736,6 +2736,36 @@ where
         *workspace.manifest.workspace_id(),
         relative_path,
         expected_revision,
+        None,
+        operation_id,
+        created_at,
+        prepare,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_category_document_update<E, F>(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    relative_path: &str,
+    expected_revision: Revision,
+    expected_category_snapshot: Snapshot,
+    operation_id: crate::protocol::OperationId,
+    created_at: crate::protocol::Timestamp,
+    prepare: F,
+) -> Result<DocumentUpdateOutcome, DocumentUpdateError<E>>
+where
+    F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
+{
+    recovery::execute_document_update(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        relative_path,
+        expected_revision,
+        Some(expected_category_snapshot),
         operation_id,
         created_at,
         prepare,

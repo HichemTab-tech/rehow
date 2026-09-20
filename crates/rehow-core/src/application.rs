@@ -32,10 +32,10 @@ use crate::{
         EmptyWorkspaceTarget, MultiDocumentUpdateError, WorkspaceInitializeError,
         WorkspaceInspectError, WorkspaceView, category_inventory_snapshot,
         execute_attachment_import, execute_attachment_removal, execute_category_create,
-        execute_category_remove, execute_document_create, execute_document_move,
-        execute_document_remove, execute_document_update, execute_multi_document_update,
-        execute_workspace_initialize, open_initialized_workspace, preview_attachment_import,
-        preview_attachment_removal, refresh_workspace,
+        execute_category_document_update, execute_category_remove, execute_document_create,
+        execute_document_move, execute_document_remove, execute_document_update,
+        execute_multi_document_update, execute_workspace_initialize, open_initialized_workspace,
+        preview_attachment_import, preview_attachment_removal, refresh_workspace,
     },
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -610,6 +610,7 @@ fn update_category_with_mutations<const N: usize>(
     expected_revision: Revision,
     mutations: [CategoryMutation; N],
 ) -> Result<CategoryUpdateOutcome, CategoryUpdateError> {
+    let expected_category_snapshot = category_inventory_snapshot(workspace);
     let loaded = workspace
         .categories()
         .iter()
@@ -622,12 +623,13 @@ fn update_category_with_mutations<const N: usize>(
     let relative_path = format!("{relative_directory}/category.yaml");
     let at = current_timestamp();
     let stamp = MutationStamp::from_trusted_time(at);
-    let result = execute_document_update(
+    let result = execute_category_document_update(
         workspace,
         state_home,
         runtime_directory,
         &relative_path,
         expected_revision,
+        expected_category_snapshot,
         new_operation_id(),
         at,
         |bytes| {
@@ -3256,6 +3258,46 @@ mod tests {
         assert_eq!(
             view.categories()[0].category().status(),
             CategoryStatus::Active
+        );
+    }
+
+    #[test]
+    fn category_archive_rechecks_external_default_change_under_the_writer_lock() {
+        let (workspace, state, mut view) = initialized_workspace("category-default-race");
+        let created = create_category(&mut view, state.path(), None, "Linux System", None).unwrap();
+        let manifest_path = workspace.path().join("rehow.yaml");
+        let mut manifest = fs::read_to_string(&manifest_path).unwrap();
+        manifest.push_str(&format!(
+            "settings:\n  default_category_id: {}\n",
+            created.category_id()
+        ));
+        fs::write(&manifest_path, manifest).unwrap();
+
+        assert_eq!(
+            set_category_archived(
+                &mut view,
+                state.path(),
+                None,
+                created.category_id(),
+                created.revision(),
+                true,
+            ),
+            Err(CategoryUpdateError::RevisionConflict)
+        );
+        let inspection = inspect_workspace(workspace.path()).unwrap().into_parts().1;
+        let WorkspaceInspection::Compatible(current) = inspection else {
+            panic!("expected compatible Workspace");
+        };
+        assert_eq!(
+            current.categories()[0].category().status(),
+            CategoryStatus::Active
+        );
+        assert_eq!(
+            current
+                .manifest()
+                .settings()
+                .and_then(|settings| settings.default_category_id()),
+            Some(&created.category_id())
         );
     }
 
