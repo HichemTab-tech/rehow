@@ -1,6 +1,6 @@
 # ADR 0025: Safe Git synchronization
 
-- Status: Partially Accepted — manual anonymous/authenticated HTTPS and authenticated SSH clone/sync/push implemented; packed-branch publication pending
+- Status: Accepted — manual anonymous/authenticated HTTPS and authenticated SSH clone/sync/push, including packed-current-branch publication, implemented
 - Date: 2026-09-19
 
 ## Context
@@ -37,7 +37,9 @@ Core now composes the accepted Workspace journal with append-only incoming objec
 
 Recovery accepts only the exact before/before, candidate-index/before-ref, or candidate/candidate states. It replays the Workspace journal before Git publication, verifies the complete Workspace against the candidate index while holding the cooperating writer lock, revalidates candidate objects, publishes the index before the direct loose branch ref, and marks completion only after another object check. Any foreign Workspace, index, ref, static metadata, identity, or intent state becomes an explicit conflict; Rehow does not roll it back or overwrite it. Append-only packs and inert recovery objects may remain after an interrupted pre-intent attempt.
 
-Packed-only current branches are deliberately refused by this gate. Publishing a loose shadow without a separately accepted packed-ref compatibility policy would leave Rehow's strict single-representation parser unable to reopen the result. SHA-1 and SHA-256 object widths use the same validation path; the complete SHA-256 sync fixture remains a later portability case. The boundary stays crate-private until the native lifecycle and recovery presentation are specified.
+#### 5D4 — packed-current-branch publication
+
+Git's standard loose-over-packed precedence is accepted explicitly. Rehow still parses and revision-binds the complete bounded `packed-refs` file, including exactly one well-formed target entry, but a valid direct loose current-branch ref is authoritative when both exist. A fast-forward from a packed-only branch uses the already accepted recovery intent to publish the candidate index first and a direct loose shadow last. `packed-refs` remains byte-identical and is never rewritten, deleted, repacked, or maintained by Rehow. Before publication the packed entry must remain the exact planned parent; after publication the exact candidate loose ref must exist and can be reopened under the same parser policy. Unborn sync publication remains unsupported. SHA-1 and SHA-256 object widths use the same validation path; the complete SHA-256 sync fixture remains a portability follow-up.
 
 ### 5D2C — native sync lifecycle
 
@@ -45,7 +47,7 @@ The native adapter owns one `active` / `classified` / `applying` lifecycle and n
 
 Only a clean proven `remoteFastForward` can reach apply. Apply consumes the token once, requires an OS-native confirmation, invokes the durable publication state machine, replaces the retained Workspace view only after core success, and rebuilds external-change watching. Recovery is a separate pathless, natively confirmed command that first proves an incomplete sync intent exists. Workspace switching is blocked during active/applying work and otherwise revokes retained authority. Git status reports incomplete commit or sync intent uniformly as recovery-required.
 
-This gate deliberately adds no React UI. The next UI slice must explain unsupported packed branches, conflicts, dirty state, divergence, and history limits using only the closed native result. It must not add renderer URL/ref/OID/path authority.
+This gate deliberately added no React UI. The later accepted Reference Desk lifecycle explains conflicts, dirty state, divergence, and history limits using only the closed native result; packed-current branches require no renderer distinction or new authority.
 
 ### 5D2D — Reference Desk manual sync
 

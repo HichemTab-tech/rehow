@@ -2673,9 +2673,8 @@ fn install_git_sync_publication_intent(
         .ok_or(GitSyncError::Unsafe)?;
     let representation = match current.branch.representation {
         GitBranchRepresentation::Loose => GitCommitIntentBranchRepresentation::Loose,
-        GitBranchRepresentation::Packed | GitBranchRepresentation::Unborn => {
-            return Err(GitSyncError::Unsupported);
-        }
+        GitBranchRepresentation::Packed => GitCommitIntentBranchRepresentation::Packed,
+        GitBranchRepresentation::Unborn => return Err(GitSyncError::Unsupported),
     };
     let mut candidate_ref = Vec::new();
     candidate_ref
@@ -6051,7 +6050,10 @@ fn parse_git_commit_branch(
         (None, None) => (None, GitBranchRepresentation::Unborn),
         (Some(object_id), None) => (Some(object_id), GitBranchRepresentation::Loose),
         (None, Some(object_id)) => (Some(object_id), GitBranchRepresentation::Packed),
-        (Some(_), Some(_)) => return Err(GitCommitPlanError::UnsafeRepository),
+        // Git gives a valid loose ref precedence over an older packed entry.
+        // Rehow still parses and binds the complete packed-refs file, but the
+        // direct loose ref is authoritative for this branch.
+        (Some(object_id), Some(_)) => (Some(object_id), GitBranchRepresentation::Loose),
     };
 
     Ok(GitCommitBranch {
@@ -12771,7 +12773,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_branch_accepts_exactly_one_direct_representation() {
+    fn commit_branch_accepts_git_loose_over_packed_precedence() {
         let object_id = "0123456789abcdef0123456789abcdef01234567";
         let head = b"ref: refs/heads/team/main\n";
         let loose = format!("{object_id}\n");
@@ -12797,6 +12799,16 @@ mod tests {
                 .representation,
             GitBranchRepresentation::Unborn
         );
+        let stale_packed = "# pack-refs with: peeled\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/team/main\n";
+        let shadowed = parse_git_commit_branch(
+            head,
+            Some(loose.as_bytes()),
+            Some(stale_packed.as_bytes()),
+            GitObjectFormat::Sha1,
+        )
+        .unwrap();
+        assert_eq!(shadowed.expected_object_id.as_deref(), Some(object_id));
+        assert_eq!(shadowed.representation, GitBranchRepresentation::Loose);
 
         for (candidate_head, candidate_loose, candidate_packed) in [
             (
@@ -12808,11 +12820,6 @@ mod tests {
                 head.as_slice(),
                 Some(b"ref: refs/heads/other\n".as_slice()),
                 None,
-            ),
-            (
-                head.as_slice(),
-                Some(loose.as_bytes()),
-                Some(packed.as_bytes()),
             ),
         ] {
             assert!(matches!(
@@ -17421,7 +17428,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_fast_forward_refuses_a_packed_only_current_branch() {
+    fn sync_fast_forward_publishes_a_loose_shadow_for_a_packed_current_branch() {
         let temp = Temp::new();
         let state = Temp::new();
         drop(configured_sync_workspace(&temp));
@@ -17430,6 +17437,7 @@ mod tests {
         fixture_git(&temp, &["commit", "-qm", "ignore recovery trash"]);
         fixture_git(&temp, &["pack-refs", "--all", "--prune"]);
         let before_head = fixture_git_stdout(&temp, &["rev-parse", "HEAD"]);
+        let packed_refs_before = fs::read(temp.0.join(".git/packed-refs")).unwrap();
         let workspace = open_workspace(&temp);
         let plan = plan_git_sync(&workspace, &state.0).unwrap();
         let source = Temp::new();
@@ -17437,25 +17445,52 @@ mod tests {
         fs::write(source.0.join(".gitignore"), b".rehow/\n").unwrap();
         let remote_manifest = b"schema_version: 1\nworkspace_id: 0199a1d7-7b0d-7d8e-a38d-f936c5735e10\nname: Packed refusal\ncreated_at: \"2026-09-19T00:00:00Z\"\nupdated_at: \"2026-09-19T01:00:00Z\"\n";
         let inspection = stage_sync_fixture(&workspace, plan, &state, &source, remote_manifest);
+        let remote_head = inspection.remote_head.object_id().to_owned();
         let classification = GitSyncClassification {
             inspection,
             ancestry: GitSyncAncestry::RemoteFastForward,
         };
 
-        assert_eq!(
-            apply_git_sync_fast_forward(&workspace, &state.0, None, classification)
-                .err()
-                .unwrap(),
-            GitSyncError::Unsupported
-        );
+        let (fresh, outcome) =
+            apply_git_sync_fast_forward(&workspace, &state.0, None, classification).unwrap();
+        assert!(outcome.changed());
+        assert_ne!(remote_head, before_head);
         assert_eq!(
             fixture_git_stdout(&temp, &["rev-parse", "HEAD"]),
-            before_head
+            remote_head
         );
-        let session = workspace
+        assert_eq!(
+            fs::read(temp.0.join(".git/packed-refs")).unwrap(),
+            packed_refs_before
+        );
+        assert!(temp.0.join(".git/refs/heads/main").is_file());
+        let capability = fresh.git_repository_capability().unwrap();
+        let repository = capability.read_commit_repository_snapshot().unwrap();
+        let branch = capability.read_commit_branch_snapshot("main").unwrap();
+        assert_eq!(
+            parse_git_commit_branch(
+                &repository.head.bytes,
+                branch.target.as_ref().map(|target| target.bytes.as_slice()),
+                repository
+                    .packed_refs
+                    .as_ref()
+                    .map(|packed| packed.bytes.as_slice()),
+                GitObjectFormat::Sha1,
+            )
+            .unwrap()
+            .representation,
+            GitBranchRepresentation::Loose
+        );
+        let session = fresh
             .open_git_commit_recovery_session(&state.0, None)
             .unwrap();
-        assert!(session.list_sync_intents().unwrap().is_empty());
+        assert_eq!(
+            session
+                .read_sync_intent(outcome.operation_id)
+                .unwrap()
+                .stage,
+            GitSyncIntentStage::Complete
+        );
     }
 
     #[test]
