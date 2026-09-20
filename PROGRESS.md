@@ -5,11 +5,11 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 6C2 is complete at signed checkpoint `9c9078c`: the standalone MCP server now adds revision-bound canonical draft Guide creation while remaining read-only by default.
+Phase 6C3 is complete at signed checkpoint `7a30335`: the standalone MCP server now adds snapshot-bound canonical Category creation while remaining read-only by default.
 
 ## Current task
 
-Prepare Phase 6C3's smallest Category-management gate, beginning with safe Category creation and no lifecycle/destructive/Git/tested authority.
+Prepare Phase 6C4's smallest Category-edit gate: exact-revision name/optional-summary replacement with no lifecycle/destructive/Git/tested authority.
 
 ## Overall status
 
@@ -130,17 +130,18 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Completed Phase 6B at signed checkpoint `2d27481`: the exact nine-tool read-only MCP surface adds bounded Category/Guide list/get, core-ranked pre-cap filtered search, UTF-8-safe Guide body/code extraction, validation, and descriptor-confined refresh. Per-launch keyed cursors prevent offset forgery, duplicate portable IDs are recomputed coherently after refresh, the full gate passes, and the one reused Security Reviewer correction recheck is PASS.
 - Completed Phase 6C1 at signed checkpoint `13202bd`: a separate per-alias `--allow-write` startup grant enables only complete existing-Guide content replacement under an exact revision. The typed core mutation preserves unknown metadata, journaled recovery remains atomic, AI edits cannot assert `tested`, and recovery state/runtime directories are descriptor-retained and refused if they overlap any configured Workspace. Full gates and the reused Security Reviewer correction recheck pass.
 - Completed Phase 6C2 at signed checkpoint `9c9078c`: capability-gated `guide_create` accepts only Category ID/revision plus title/summary; core owns ID/time/path/draft/status/body and performs one absent-only recovery create. Category revision and the 10,000-Guide candidate cap are rechecked under the writer lock. Full gates and the reused Security Reviewer correction recheck pass.
+- Completed Phase 6C3 at signed checkpoint `7a30335`: capability-gated `category_create` accepts only a complete Category-inventory snapshot, name, and optional summary; core owns ID/time/path/order/active status. The raw 1,000-entry cap, fresh compatible inspection, and full inventory snapshot are rechecked under the writer lock before absent-only recovery creation. Full gates and the single reused Security Reviewer pass.
 
 ## Work in progress
 
-- No Rehow implementation is uncommitted. Phase 6C2 is complete at signed checkpoint `9c9078c`; this ledger update follows it. Untracked `x` remains unrelated and untouched.
+- No Rehow implementation is uncommitted. Phase 6C3 is complete at signed checkpoint `7a30335`; this ledger update follows it. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
 - Workspace adoption/import/migration and Attachment viewing/export/reveal remain incomplete.
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
-- Phase 6: protocol, bounded reads, existing-Guide update, and draft Guide creation are complete at `9c9078c`; Category management, remaining typed/broad/destructive approvals, Attachment metadata, Git tools, and broader client documentation remain.
+- Phase 6: protocol, bounded reads, existing-Guide update, draft Guide creation, and Category creation are complete at `7a30335`; Category edits/lifecycle, remaining typed/broad/destructive approvals, Attachment metadata, Git tools, and broader client documentation remain.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
 ## Known bugs
@@ -254,19 +255,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - Phase 5D4 treats a valid loose ref as authoritative over a parsed packed entry, matching Git semantics. Packed-only sync binds the exact full packed file and parent before creating a recoverable loose shadow; packed bytes are never rewritten. Focused Security Review returned PASS.
 - Phase 6A uses only startup-selected descriptor-held Workspace roots and random launch handles; no tool accepts a path or grants write/Git authority. The custom transport bounds content frames at 1 MiB and closes on malformed, overlong, or unterminated input without echoing it. Security review found a canonicalize/open swap race; the corrected selection opens and retains the root first, binds canonical dev/inode identity, and consumes that exact descriptor. Deterministic replacement coverage and the reused Security Reviewer final PASS close the finding.
 - Phase 6B remains read-only. Security review found forged cursor offsets, post-cap filtering, and duplicate-ID state cached across refresh; keyed cursor MACs, core pre-cap filtering, coherent all-view duplicate derivation, and three regression tests close the findings. Correction re-review is PASS.
+- Phase 6C3 grants only canonical Category creation to explicitly writable aliases. A full valid-inventory snapshot and raw entry cap are rechecked during fresh descriptor-confined inspection under the recovery writer lock; authoritative fields remain core-owned. The single reused Security Reviewer verdict is PASS with no findings.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 6C2 reused one existing Security Reviewer only at the completed authority gate and the correction verdict is PASS.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 6C3 reused one existing Security Reviewer only at the completed authority gate and the verdict is PASS.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`9c9078c` — signed Phase 6C2 revision-bound MCP Guide creation. This progress-only ledger update follows that implementation commit.
+`7a30335` — signed Phase 6C3 snapshot-bound MCP Category creation. This progress-only ledger update follows that implementation commit.
 
 ## Tests last run and results
 
+- 2026-09-20: Phase 6C3 checkpoint `7a30335` passes `pnpm check`, `pnpm test`, `pnpm build`, 39 Vitest tests, 443 core tests with 2 intentional ignores, supporting contract/API suites, 25 desktop Rust tests, 21 MCP unit tests and 1 real-binary integration test. Strict all-Workspace Clippy, Cargo formatting, bootstrap/whitespace checks, external Category-change refusal, stale-view raw 1,000-entry refusal under the writer lock, and the single reused Security Reviewer pass.
 - 2026-09-20: Phase 6C2 checkpoint `9c9078c` passes `pnpm check`, `pnpm test`, `pnpm build`, 39 Vitest tests, 442 core tests with 2 intentional ignores, supporting contract/API suites, 25 desktop Rust tests, 20 MCP unit tests and 1 real-binary integration test. Strict all-Workspace Clippy, Cargo formatting, bootstrap/whitespace checks, external Category-change refusal, stale-view 10,000-candidate refusal under the writer lock, and the one reused Security Reviewer correction recheck pass.
 - 2026-09-20: Phase 6C1 checkpoint `13202bd` passes `pnpm check`, `pnpm test`, `pnpm build`, 39 Vitest tests, 441 core tests with 2 intentional ignores, supporting contract/API suites, 25 desktop Rust tests, 19 MCP unit tests and 1 real-binary integration test. Strict all-Workspace Clippy, Cargo formatting, whitespace checks, capability/revision/body-limit regressions, two-Workspace recovery-overlap refusal, deterministic post-startup state/runtime pathname replacement, and the one reused Security Reviewer correction recheck pass.
 - 2026-09-20: Phase 6B checkpoint `2d27481` passes `pnpm check`, `pnpm build`, 39 Vitest tests, 441 core tests with 2 intentional ignores, supporting contract/API suites, 25 desktop Rust tests, 15 MCP unit tests and 1 real-binary integration test. Strict all-Workspace Clippy, Cargo formatting, bootstrap/whitespace checks, signed-commit verification, tampered-cursor/pre-cap-filter/refresh-duplicate regressions, and the one reused Security Reviewer correction recheck pass.
@@ -517,20 +520,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0027, `docs/task-packets/phase-6b-mcp-content-reads.md`, its evidence, authenticated pagination, shared pre-cap search filtering, bounded content schemas, and the nine-tool read-only adapter implement Phase 6B at `2d27481`.
 - ADR 0028, `docs/task-packets/phase-6c1-mcp-guide-update.md`, its evidence, explicit per-alias write grants, shared structured mutation errors, complete typed Guide content replacement, and retained recovery-root confinement implement Phase 6C1 at `13202bd`.
 - ADR 0029, `docs/task-packets/phase-6c2-mcp-guide-create.md`, its evidence, lock-scoped Category/candidate prerequisites, core-owned canonical draft fields, absent-only publication, structured errors, and the eleven-tool MCP surface implement Phase 6C2 at `9c9078c`.
+- ADR 0030, `docs/task-packets/phase-6c3-mcp-category-create.md`, its evidence, complete Category-inventory snapshots, lock-scoped raw-entry/fresh-inspection prerequisites, core-owned canonical fields, and the twelve-tool MCP surface implement Phase 6C3 at `7a30335`.
 
 ## Next recommended action
 
-Define and implement Phase 6C3's compact `category_create` tool using the existing per-alias write grant, an exact current Workspace prerequisite, core-owned ID/time/path/order, and one recoverable create. Keep lifecycle/destructive operations, `tested`, Git, caller paths/IDs/times/order, shell, and network absent.
+Define and implement Phase 6C4's compact `category_update` tool using the existing per-alias write grant and exact Category revision. Reuse the typed core name/optional-summary update and keep path/order/status/lifecycle/destructive operations, `tested`, Git, shell, and network absent.
 
 ## Recommended agent role and reasoning effort
 
-Architect/Orchestrator locally with `gpt-5.6-sol`, high judgment for the MCP Category-create boundary. Run zero extra agents during routine work; reuse at most one Security Reviewer only at the completed authority gate.
+Architect/Orchestrator locally with `gpt-5.6-sol`, high judgment for the MCP Category-update boundary. Run zero extra agents during routine work; reuse at most one Security Reviewer only at the completed authority gate.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read ADRs 0026–0029, `docs/mcp-spec.md`, the Phase 6C2 evidence/packet, and the MCP sections of architecture/testing/threat docs.
+2. Read ADRs 0026–0030, `docs/mcp-spec.md`, the Phase 6C3 evidence/packet, and the MCP sections of architecture/testing/threat docs.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `9c9078c` and `13202bd`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoints `7a30335` and `9c9078c`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 6C2 as complete. Begin the compact Phase 6C3 Category-create gate; do not add lifecycle/destructive mutation, tested approval, Git-write, caller path/ID/time/order, shell, network, or ambient discovery authority.
+6. Treat Phase 6C3 as complete. Begin the compact Phase 6C4 Category-update gate; do not add path/order/status/lifecycle/destructive mutation, tested approval, Git-write, shell, network, or ambient discovery authority.
