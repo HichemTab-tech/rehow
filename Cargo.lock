@@ -2646,6 +2646,8 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "futures",
+ "gtk-sys",
+ "libc",
  "rehow-core",
  "rmcp",
  "serde",

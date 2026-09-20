@@ -1,7 +1,9 @@
+mod approval;
 mod cli;
 mod server;
 mod transport;
 
+pub use approval::run_approval_helper;
 pub use cli::{LaunchConfig, LaunchError, WorkspaceArgument, parse_launch_arguments};
 pub use server::{McpServer, OpenError, open_server};
 pub use transport::{MAX_INPUT_FRAME_BYTES, StdioTransport};

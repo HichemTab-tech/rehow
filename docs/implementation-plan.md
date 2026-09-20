@@ -138,6 +138,7 @@ Milestones:
 - Phase 6D1: bundled read-only Guide validation, exact duplicate discovery, and explainable related-Guide ranking.
 - Phase 6D2: dedicated bounded Attachment metadata listing and confined networkless Git status.
 - Phase 6E1A: explicit per-alias broad and Git-write startup grants, dependent on write authority and inert until later plan/native-approval gates.
+- Phase 6E1B1: separately packaged inert native approval endpoint with exact private-pipe framing, descriptor isolation, bounded plain text, and headless refusal.
 - Later gates: Attachment-metadata and mutation tools.
 - Per-Workspace write/broad/Git capabilities, launch handles, revisions/effect sets, dry-run tokens, and native out-of-band approval companion.
 - Git status/plan/commit/safe sync only after Phase 5 primitives are approved.
