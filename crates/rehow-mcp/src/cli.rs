@@ -7,6 +7,8 @@ pub struct WorkspaceArgument {
     pub alias: String,
     pub path: PathBuf,
     pub allow_write: bool,
+    pub allow_broad: bool,
+    pub allow_git_write: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,6 +26,7 @@ pub enum LaunchError {
     DuplicateAlias,
     DuplicateCapability,
     UnknownCapabilityAlias,
+    MissingWriteCapability,
 }
 
 impl fmt::Display for LaunchError {
@@ -35,8 +38,13 @@ impl fmt::Display for LaunchError {
             Self::InvalidAlias => "Workspace alias is invalid",
             Self::InvalidPath => "Workspace path must be absolute UTF-8 without NUL bytes",
             Self::DuplicateAlias => "Workspace aliases must be unique",
-            Self::DuplicateCapability => "Workspace write capability was repeated",
-            Self::UnknownCapabilityAlias => "--allow-write must name a configured Workspace alias",
+            Self::DuplicateCapability => "Workspace capability was repeated",
+            Self::UnknownCapabilityAlias => {
+                "capability flags must name a configured Workspace alias"
+            }
+            Self::MissingWriteCapability => {
+                "--allow-broad and --allow-git-write require --allow-write for the same alias"
+            }
         })
     }
 }
@@ -49,17 +57,26 @@ pub fn parse_launch_arguments(
     let mut arguments = arguments.into_iter();
     let mut workspaces: Vec<WorkspaceArgument> = Vec::new();
     let mut writable_aliases: Vec<String> = Vec::new();
+    let mut broad_aliases: Vec<String> = Vec::new();
+    let mut git_writable_aliases: Vec<String> = Vec::new();
     while let Some(flag) = arguments.next() {
         let value = arguments.next().ok_or(LaunchError::InvalidArgument)?;
         let value = value.to_str().ok_or(LaunchError::InvalidArgument)?;
-        if flag == "--allow-write" {
+        if flag == "--allow-write" || flag == "--allow-broad" || flag == "--allow-git-write" {
             if !valid_alias(value) {
                 return Err(LaunchError::InvalidAlias);
             }
-            if writable_aliases.iter().any(|alias| alias == value) {
+            let aliases = if flag == "--allow-write" {
+                &mut writable_aliases
+            } else if flag == "--allow-broad" {
+                &mut broad_aliases
+            } else {
+                &mut git_writable_aliases
+            };
+            if aliases.iter().any(|alias| alias == value) {
                 return Err(LaunchError::DuplicateCapability);
             }
-            writable_aliases.push(value.to_owned());
+            aliases.push(value.to_owned());
             continue;
         }
         if flag != "--workspace" {
@@ -83,6 +100,8 @@ pub fn parse_launch_arguments(
             alias: alias.to_owned(),
             path,
             allow_write: false,
+            allow_broad: false,
+            allow_git_write: false,
         });
         if workspaces.len() > MAX_WORKSPACES {
             return Err(LaunchError::TooManyWorkspaces);
@@ -97,6 +116,25 @@ pub fn parse_launch_arguments(
             .find(|workspace| workspace.alias == alias)
             .ok_or(LaunchError::UnknownCapabilityAlias)?;
         workspace.allow_write = true;
+    }
+    for (aliases, capability) in [
+        (broad_aliases, "broad"),
+        (git_writable_aliases, "git-write"),
+    ] {
+        for alias in aliases {
+            let workspace = workspaces
+                .iter_mut()
+                .find(|workspace| workspace.alias == alias)
+                .ok_or(LaunchError::UnknownCapabilityAlias)?;
+            if !workspace.allow_write {
+                return Err(LaunchError::MissingWriteCapability);
+            }
+            if capability == "broad" {
+                workspace.allow_broad = true;
+            } else {
+                workspace.allow_git_write = true;
+            }
+        }
     }
     Ok(LaunchConfig { workspaces })
 }
@@ -142,11 +180,19 @@ mod tests {
             "arch_2=/tmp/arch",
             "--allow-write",
             "personal",
+            "--allow-broad",
+            "personal",
+            "--allow-git-write",
+            "personal",
         ]))
         .unwrap();
         assert_eq!(config.workspaces.len(), 2);
         assert!(config.workspaces[0].allow_write);
+        assert!(config.workspaces[0].allow_broad);
+        assert!(config.workspaces[0].allow_git_write);
         assert!(!config.workspaces[1].allow_write);
+        assert!(!config.workspaces[1].allow_broad);
+        assert!(!config.workspaces[1].allow_git_write);
     }
 
     #[test]
@@ -159,12 +205,25 @@ mod tests {
             vec!["--workspace", "a--b=/tmp/x"],
             vec!["--workspace", "a=/tmp/x", "--workspace", "a=/tmp/y"],
             vec!["--workspace", "a=/tmp/x", "--allow-write", "missing"],
+            vec!["--workspace", "a=/tmp/x", "--allow-broad", "a"],
+            vec!["--workspace", "a=/tmp/x", "--allow-git-write", "a"],
+            vec!["--workspace", "a=/tmp/x", "--allow-broad", "missing"],
             vec![
                 "--workspace",
                 "a=/tmp/x",
                 "--allow-write",
                 "a",
                 "--allow-write",
+                "a",
+            ],
+            vec![
+                "--workspace",
+                "a=/tmp/x",
+                "--allow-write",
+                "a",
+                "--allow-broad",
+                "a",
+                "--allow-broad",
                 "a",
             ],
         ] {

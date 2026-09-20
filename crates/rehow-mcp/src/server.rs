@@ -61,6 +61,7 @@ pub enum OpenErrorKind {
     OverlappingRoots,
     Inspection,
     Incompatible,
+    InvalidCapabilities,
     NotWritable,
     RecoveryUnavailable,
     RecoveryUnsafe,
@@ -80,6 +81,9 @@ impl fmt::Display for OpenError {
             OpenErrorKind::OverlappingRoots => "configured roots overlap",
             OpenErrorKind::Inspection => "inspection failed safely",
             OpenErrorKind::Incompatible => "not a compatible Rehow Workspace",
+            OpenErrorKind::InvalidCapabilities => {
+                "broad and Git-write capabilities require write capability"
+            }
             OpenErrorKind::NotWritable => "write capability requires a writable Workspace",
             OpenErrorKind::RecoveryUnavailable => {
                 "write capability requires a private recovery state directory"
@@ -99,6 +103,8 @@ struct ConfiguredWorkspace {
     view: RwLock<WorkspaceView>,
     facts: WorkspaceFolderFacts,
     allow_write: bool,
+    allow_broad: bool,
+    allow_git_write: bool,
 }
 
 struct RecoveryLocationPaths {
@@ -142,6 +148,7 @@ struct WorkspaceListItem {
 struct WorkspaceCapabilities {
     read: bool,
     write: bool,
+    broad: bool,
     git_write: bool,
 }
 
@@ -777,24 +784,36 @@ fn open_server_with_recovery(
         .iter()
         .find(|workspace| workspace.allow_write)
         .map(|workspace| workspace.alias.clone());
-    let mut canonical: Vec<(String, bool, PathBuf, WorkspaceRootSelection)> =
+    let mut canonical: Vec<(String, bool, bool, bool, PathBuf, WorkspaceRootSelection)> =
         Vec::with_capacity(config.workspaces.len());
     for argument in config.workspaces {
+        if (argument.allow_broad || argument.allow_git_write) && !argument.allow_write {
+            return Err(OpenError {
+                alias: argument.alias,
+                kind: OpenErrorKind::InvalidCapabilities,
+            });
+        }
         let selection = select_workspace_root(&argument.path).map_err(|_| OpenError {
             alias: argument.alias.clone(),
             kind: OpenErrorKind::Canonicalize,
         })?;
         let root = selection.canonical_path().to_owned();
-        if canonical
-            .iter()
-            .any(|(_, _, existing, _)| root.starts_with(existing) || existing.starts_with(&root))
-        {
+        if canonical.iter().any(|(_, _, _, _, existing, _)| {
+            root.starts_with(existing) || existing.starts_with(&root)
+        }) {
             return Err(OpenError {
                 alias: argument.alias,
                 kind: OpenErrorKind::OverlappingRoots,
             });
         }
-        canonical.push((argument.alias, argument.allow_write, root, selection));
+        canonical.push((
+            argument.alias,
+            argument.allow_write,
+            argument.allow_broad,
+            argument.allow_git_write,
+            root,
+            selection,
+        ));
     }
 
     let recovery_locations = match (writable_alias.as_deref(), recovery_paths) {
@@ -809,7 +828,7 @@ fn open_server_with_recovery(
     };
 
     let mut opened = Vec::with_capacity(canonical.len());
-    for (alias, allow_write, _root, selection) in canonical {
+    for (alias, allow_write, allow_broad, allow_git_write, _root, selection) in canonical {
         let report = inspect_selected_workspace(selection).map_err(|_| OpenError {
             alias: alias.clone(),
             kind: OpenErrorKind::Inspection,
@@ -833,6 +852,8 @@ fn open_server_with_recovery(
             view: RwLock::new(*view),
             facts,
             allow_write,
+            allow_broad,
+            allow_git_write,
         });
     }
 
@@ -852,7 +873,7 @@ fn open_server_with_recovery(
 
 fn retain_recovery_locations(
     paths: RecoveryLocationPaths,
-    workspaces: &[(String, bool, PathBuf, WorkspaceRootSelection)],
+    workspaces: &[(String, bool, bool, bool, PathBuf, WorkspaceRootSelection)],
     writable_alias: &str,
 ) -> Result<RecoveryLocations, OpenError> {
     let state_home = retain_recovery_directory(paths.state_home, workspaces, writable_alias)?;
@@ -868,7 +889,7 @@ fn retain_recovery_locations(
 
 fn retain_recovery_directory(
     path: PathBuf,
-    workspaces: &[(String, bool, PathBuf, WorkspaceRootSelection)],
+    workspaces: &[(String, bool, bool, bool, PathBuf, WorkspaceRootSelection)],
     writable_alias: &str,
 ) -> Result<RetainedDirectory, OpenError> {
     let unsafe_error = || OpenError {
@@ -884,7 +905,7 @@ fn retain_recovery_directory(
     }
     let bridge_path = PathBuf::from(format!("/proc/self/fd/{}/.", descriptor.as_raw_fd()));
     let canonical_path = fs::canonicalize(&bridge_path).map_err(|_| unsafe_error())?;
-    if workspaces.iter().any(|(_, _, root, _)| {
+    if workspaces.iter().any(|(_, _, _, _, root, _)| {
         canonical_path.starts_with(root) || root.starts_with(&canonical_path)
     }) {
         return Err(unsafe_error());
@@ -900,7 +921,8 @@ impl McpServer {
         WorkspaceCapabilities {
             read: true,
             write: workspace.allow_write,
-            git_write: false,
+            broad: workspace.allow_broad,
+            git_write: workspace.allow_git_write,
         }
     }
 
@@ -3748,6 +3770,8 @@ mod tests {
                 alias: "personal".to_owned(),
                 path: temp.path().to_owned(),
                 allow_write: false,
+                allow_broad: false,
+                allow_git_write: false,
             }],
         })
         .unwrap();
@@ -3767,6 +3791,54 @@ mod tests {
     }
 
     #[test]
+    fn reports_only_explicit_startup_capabilities() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let state_root = tempfile::tempdir().unwrap();
+        fixture_workspace(workspace_root.path());
+        let server = open_server_with_recovery(
+            LaunchConfig {
+                workspaces: vec![WorkspaceArgument {
+                    alias: "personal".to_owned(),
+                    path: workspace_root.path().to_owned(),
+                    allow_write: true,
+                    allow_broad: true,
+                    allow_git_write: true,
+                }],
+            },
+            Some(RecoveryLocationPaths {
+                state_home: state_root.path().to_owned(),
+                runtime_directory: None,
+            }),
+        )
+        .unwrap();
+
+        let capabilities = &server.workspaces_list().unwrap().0.workspaces[0].capabilities;
+        assert!(capabilities.read);
+        assert!(capabilities.write);
+        assert!(capabilities.broad);
+        assert!(capabilities.git_write);
+    }
+
+    #[test]
+    fn rejects_programmatic_capability_escalation() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        fixture_workspace(workspace_root.path());
+        let error = open_server(LaunchConfig {
+            workspaces: vec![WorkspaceArgument {
+                alias: "personal".to_owned(),
+                path: workspace_root.path().to_owned(),
+                allow_write: false,
+                allow_broad: true,
+                allow_git_write: false,
+            }],
+        })
+        .err()
+        .unwrap();
+
+        assert_eq!(error.kind, OpenErrorKind::InvalidCapabilities);
+    }
+
+    #[test]
     fn reports_duplicate_portable_ids_across_distinct_roots() {
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
@@ -3778,11 +3850,15 @@ mod tests {
                     alias: "first".to_owned(),
                     path: first.path().to_owned(),
                     allow_write: false,
+                    allow_broad: false,
+                    allow_git_write: false,
                 },
                 WorkspaceArgument {
                     alias: "second".to_owned(),
                     path: second.path().to_owned(),
                     allow_write: false,
+                    allow_broad: false,
+                    allow_git_write: false,
                 },
             ],
         })
@@ -3819,11 +3895,15 @@ mod tests {
                     alias: "first".to_owned(),
                     path: first.path().to_owned(),
                     allow_write: false,
+                    allow_broad: false,
+                    allow_git_write: false,
                 },
                 WorkspaceArgument {
                     alias: "second".to_owned(),
                     path: second.path().to_owned(),
                     allow_write: false,
+                    allow_broad: false,
+                    allow_git_write: false,
                 },
             ],
         })
@@ -3882,11 +3962,15 @@ mod tests {
                     alias: "one".to_owned(),
                     path: root.path().to_owned(),
                     allow_write: false,
+                    allow_broad: false,
+                    allow_git_write: false,
                 },
                 WorkspaceArgument {
                     alias: "two".to_owned(),
                     path: nested,
                     allow_write: false,
+                    allow_broad: false,
+                    allow_git_write: false,
                 },
             ],
         }) {
@@ -3942,6 +4026,8 @@ mod tests {
                 alias: "personal".to_owned(),
                 path: temp.path().to_owned(),
                 allow_write: false,
+                allow_broad: false,
+                allow_git_write: false,
             }],
         })
         .unwrap();
@@ -4303,6 +4389,8 @@ mod tests {
                 alias: "personal".to_owned(),
                 path: workspace_root.path().to_owned(),
                 allow_write: false,
+                allow_broad: false,
+                allow_git_write: false,
             }],
         })
         .unwrap();
@@ -4381,6 +4469,8 @@ mod tests {
                 alias: "personal".to_owned(),
                 path: workspace_root.path().to_owned(),
                 allow_write: false,
+                allow_broad: false,
+                allow_git_write: false,
             }],
         })
         .unwrap();
@@ -4425,6 +4515,8 @@ mod tests {
                 alias: "personal".to_owned(),
                 path: workspace_root.path().to_owned(),
                 allow_write: false,
+                allow_broad: false,
+                allow_git_write: false,
             }],
         })
         .unwrap();
@@ -4493,11 +4585,15 @@ mod tests {
                     alias: "reference".to_owned(),
                     path: read_only_root.path().to_owned(),
                     allow_write: false,
+                    allow_broad: false,
+                    allow_git_write: false,
                 },
                 WorkspaceArgument {
                     alias: "personal".to_owned(),
                     path: writable_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 },
             ],
         };
@@ -4545,6 +4641,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -4601,6 +4699,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: false,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -4633,6 +4733,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -4722,6 +4824,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: false,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -4753,6 +4857,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -4840,6 +4946,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: false,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -4876,6 +4984,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -4968,6 +5078,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: false,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -5003,6 +5115,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -5110,6 +5224,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -5182,6 +5298,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: false,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -5216,6 +5334,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -5296,6 +5416,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: read_only_root.path().to_owned(),
                     allow_write: false,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -5335,6 +5457,8 @@ mod tests {
                         alias: "personal".to_owned(),
                         path: workspace_root.path().to_owned(),
                         allow_write: true,
+                        allow_broad: false,
+                        allow_git_write: false,
                     }],
                 },
                 Some(RecoveryLocationPaths {
@@ -5413,6 +5537,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: read_only_root.path().to_owned(),
                     allow_write: false,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -5447,6 +5573,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -5589,6 +5717,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: read_only_root.path().to_owned(),
                     allow_write: false,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -5625,6 +5755,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -5745,6 +5877,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -5839,6 +5973,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: false,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -5878,6 +6014,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -5998,6 +6136,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -6056,6 +6196,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -6111,6 +6253,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -6163,6 +6307,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -6219,6 +6365,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -6256,6 +6404,8 @@ mod tests {
                 alias: "personal".to_owned(),
                 path: workspace_root.path().to_owned(),
                 allow_write: false,
+                allow_broad: false,
+                allow_git_write: false,
             }],
         })
         .unwrap();
@@ -6281,6 +6431,8 @@ mod tests {
                     alias: "personal".to_owned(),
                     path: workspace_root.path().to_owned(),
                     allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -6326,6 +6478,8 @@ mod tests {
                 alias: "personal".to_owned(),
                 path: workspace_root.path().to_owned(),
                 allow_write: false,
+                allow_broad: false,
+                allow_git_write: false,
             }],
         })
         .unwrap();
@@ -6345,6 +6499,8 @@ mod tests {
                 alias: "personal".to_owned(),
                 path: temp.path().to_owned(),
                 allow_write: false,
+                allow_broad: false,
+                allow_git_write: false,
             }],
         })
         .unwrap();
