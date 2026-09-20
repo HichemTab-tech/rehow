@@ -3,7 +3,7 @@
     reason = "the pure Phase 1E-B1 journal boundary is connected to durable I/O in Phase 1E-B2"
 )]
 
-use crate::protocol::{GuideId, OperationId, Revision, Timestamp, WorkspaceId};
+use crate::protocol::{GuideId, OperationId, Revision, Snapshot, Timestamp, WorkspaceId};
 use std::{
     collections::HashSet,
     fmt,
@@ -1915,6 +1915,7 @@ pub(super) fn execute_category_create(
     state_home: &Path,
     runtime_directory: Option<&Path>,
     workspace_id: WorkspaceId,
+    expected_category_snapshot: Snapshot,
     relative_directory: &str,
     operation_id: OperationId,
     created_at: Timestamp,
@@ -1930,6 +1931,22 @@ pub(super) fn execute_category_create(
     let lock = store
         .acquire_lock(runtime_directory)
         .map_err(map_store_category_create)?;
+    if super::current_category_entry_count(root).map_err(map_inspect_category_create)?
+        >= super::CATEGORY_LIMIT
+    {
+        return Err(CategoryCreateStorageError::TooLarge);
+    }
+    let current_root = root
+        .duplicate()
+        .map_err(|_| CategoryCreateStorageError::Io)?;
+    let current =
+        match super::inspect_open_root(current_root).map_err(map_inspect_category_create)? {
+            super::WorkspaceInspection::Compatible(view) => view,
+            _ => return Err(CategoryCreateStorageError::Conflict),
+        };
+    if super::category_inventory_snapshot(&current) != expected_category_snapshot {
+        return Err(CategoryCreateStorageError::Conflict);
+    }
     root.create_category_directory(relative_directory)
         .map_err(map_io_category_create)?;
     let relative_path = format!("{relative_directory}/category.yaml");
@@ -1953,6 +1970,7 @@ pub(super) fn execute_category_create(
         .map_err(|_| CategoryCreateStorageError::Incomplete)?;
     let mut plan = blake3::Hasher::new();
     plan.update(b"rehow-category-create-plan-v1\0");
+    hash_plan_field(&mut plan, expected_category_snapshot.to_string().as_bytes());
     hash_plan_field(&mut plan, relative_path.as_bytes());
     hash_plan_field(&mut plan, descriptor);
     let journal = Journal {
@@ -3380,6 +3398,18 @@ fn map_io_category_create(error: super::linux::MutationIoError) -> CategoryCreat
         super::linux::MutationIoError::Unsupported => CategoryCreateStorageError::Unsupported,
         super::linux::MutationIoError::TooLarge => CategoryCreateStorageError::TooLarge,
         super::linux::MutationIoError::Io => CategoryCreateStorageError::Io,
+    }
+}
+
+fn map_inspect_category_create(error: super::WorkspaceInspectError) -> CategoryCreateStorageError {
+    match error {
+        super::WorkspaceInspectError::ResourceLimit => CategoryCreateStorageError::TooLarge,
+        super::WorkspaceInspectError::ChangedDuringRead => CategoryCreateStorageError::Conflict,
+        super::WorkspaceInspectError::NotFound
+        | super::WorkspaceInspectError::NotDirectory
+        | super::WorkspaceInspectError::PermissionDenied
+        | super::WorkspaceInspectError::UnsafeRoot => CategoryCreateStorageError::Unsafe,
+        super::WorkspaceInspectError::Io => CategoryCreateStorageError::Io,
     }
 }
 

@@ -7,7 +7,7 @@ Last updated: 2026-09-20
 
 ## Purpose and deployment
 
-`rehow-mcp` lets an MCP client work safely with explicitly configured Rehow Workspaces without requiring the desktop app. It links the same application/core crates, schemas, revisions, storage, search, Git policies, and locks as the desktop adapter. Read access is the default; Phase 6C implements an explicit per-alias write grant for canonical draft-Guide creation and complete existing-Guide updates.
+`rehow-mcp` lets an MCP client work safely with explicitly configured Rehow Workspaces without requiring the desktop app. It links the same application/core crates, schemas, revisions, storage, search, Git policies, and locks as the desktop adapter. Read access is the default; Phase 6C implements an explicit per-alias write grant for canonical Category/draft-Guide creation and complete existing-Guide updates.
 
 The server is installed separately and launched with an allowlist, for example:
 
@@ -19,7 +19,7 @@ Each startup root has a unique user-chosen alias. Canonical duplicate/nested/ove
 
 Initial transport is stdio. Remote Streamable HTTP is deferred until authentication, origin, multi-user, and network threat models exist.
 
-The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6C2 exposes the nine Phase 6B reads plus capability-gated `guide_update` and `guide_create`. Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
+The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6C3 exposes the nine Phase 6B reads plus capability-gated `guide_update`, `guide_create`, and `category_create`. Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
 
 ## Trust rules
 
@@ -102,9 +102,9 @@ Arbitrary filesystem discovery and `workspace_open(path)` are intentionally abse
 
 Every Category tool requires `workspaceHandle`; omitted parameters below are shorthand, not session-global selection.
 
-- `categories_list({workspaceHandle, includeArchived?, cursor?, limit?})`
+- `categories_list({workspaceHandle, includeArchived?, cursor?, limit?})` — returns an opaque `categorySnapshot` for the complete valid inventory, independent of pagination/filtering.
 - `category_get({workspaceHandle, categoryId})`
-- `category_create({workspaceHandle, expectedWorkspaceSnapshot, category})`
+- `category_create({workspaceHandle, expectedCategorySnapshot, name, summary?})` — implemented canonical active creation; core owns Category ID, timestamps, directory/path, next order, and status.
 - `category_update({workspaceHandle, categoryId, expectedRevision, patch})`
 - `category_reorder_plan({workspaceHandle, expectedWorkspaceSnapshot, orderedCategoryIds})`
 - `category_reorder({workspaceHandle, planToken})` — requires startup broad capability and out-of-band approval.

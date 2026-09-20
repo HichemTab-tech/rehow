@@ -128,6 +128,7 @@ Milestones:
 - Phase 6B: bounded Category/Guide listing, core-ranked search, typed Guide reads, validation, and refresh (nine read-only tools total).
 - Phase 6C1: explicit per-alias write capability and exact-revision atomic complete-content update for existing Guides, with shared structured errors.
 - Phase 6C2: exact-Category-revision canonical draft Guide creation with core-owned ID/time/path/status/body and no overwrite.
+- Phase 6C3: complete-inventory-snapshot canonical Category creation with core-owned ID/time/path/order/status and lock-scoped raw-entry limit.
 - Later gates: Attachment-metadata and mutation tools.
 - Per-Workspace write/broad/Git capabilities, launch handles, revisions/effect sets, dry-run tokens, and native out-of-band approval companion.
 - Git status/plan/commit/safe sync only after Phase 5 primitives are approved.

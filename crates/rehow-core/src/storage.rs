@@ -49,7 +49,7 @@ compile_error!("Rehow's confined Workspace storage currently requires Linux");
 
 use crate::{
     domain::{Category, Guide, GuideStatus, WorkspaceManifest},
-    protocol::Revision,
+    protocol::{Revision, Snapshot},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -2504,6 +2504,37 @@ impl WorkspaceView {
     }
 }
 
+pub fn category_inventory_snapshot(workspace: &WorkspaceView) -> Snapshot {
+    fn field(hasher: &mut blake3::Hasher, value: &[u8]) {
+        hasher.update(&(value.len() as u64).to_be_bytes());
+        hasher.update(value);
+    }
+
+    let mut categories = workspace.categories.iter().collect::<Vec<_>>();
+    categories
+        .sort_unstable_by(|left, right| left.relative_directory.cmp(&right.relative_directory));
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"rehow-category-inventory-snapshot-v1\0");
+    field(
+        &mut hasher,
+        workspace.manifest.workspace_id().to_string().as_bytes(),
+    );
+    field(
+        &mut hasher,
+        workspace.manifest_revision.to_string().as_bytes(),
+    );
+    hasher.update(&(categories.len() as u64).to_be_bytes());
+    for category in categories {
+        field(&mut hasher, category.relative_directory.as_bytes());
+        field(&mut hasher, category.category.id().to_string().as_bytes());
+        field(
+            &mut hasher,
+            category.descriptor_revision.to_string().as_bytes(),
+        );
+    }
+    Snapshot::from_digest_bytes(*hasher.finalize().as_bytes())
+}
+
 fn git_initialization_marker(
     workspace_id: &str,
     revision: Revision,
@@ -3162,6 +3193,7 @@ pub(crate) fn execute_category_create(
     workspace: &WorkspaceView,
     state_home: &Path,
     runtime_directory: Option<&Path>,
+    expected_category_snapshot: Snapshot,
     relative_directory: &str,
     operation_id: crate::protocol::OperationId,
     created_at: crate::protocol::Timestamp,
@@ -3172,6 +3204,7 @@ pub(crate) fn execute_category_create(
         state_home,
         runtime_directory,
         *workspace.manifest.workspace_id(),
+        expected_category_snapshot,
         relative_directory,
         operation_id,
         created_at,
@@ -3882,6 +3915,24 @@ fn valid_guide_filename(value: &str) -> bool {
     value
         .strip_suffix(".md")
         .is_some_and(valid_category_directory)
+}
+
+fn current_category_entry_count(
+    root: &linux::DirectoryCapability,
+) -> Result<usize, WorkspaceInspectError> {
+    let categories = match root.open_directory("categories") {
+        Ok(directory) => directory,
+        Err(linux::OpenDirectoryError::Missing) => {
+            return Err(WorkspaceInspectError::ChangedDuringRead);
+        }
+        Err(linux::OpenDirectoryError::Unsafe) => {
+            return Err(WorkspaceInspectError::UnsafeRoot);
+        }
+        Err(linux::OpenDirectoryError::Io(error)) => return Err(map_io(error)),
+    };
+    categories
+        .entries(CATEGORY_LIMIT.saturating_add(1))
+        .map(|entries| entries.len())
 }
 
 fn current_guide_candidate_count(

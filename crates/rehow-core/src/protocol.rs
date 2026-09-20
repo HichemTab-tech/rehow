@@ -259,6 +259,59 @@ pub fn guide_create_unavailable_error(request_id: RequestId) -> ErrorDto {
     ))
 }
 
+pub fn category_create_snapshot_conflict_error(
+    request_id: RequestId,
+    expected_snapshot: Snapshot,
+    actual_snapshot: Snapshot,
+) -> ErrorDto {
+    constructed_error(construction::snapshot_conflict(
+        request_id,
+        expected_snapshot,
+        actual_snapshot,
+        BoundedList::try_new(Vec::new(), 0).expect("the fixed empty changed-entity list is valid"),
+    ))
+}
+
+pub fn invalid_category_create_name_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::Name,
+        construction::Reason::InvalidFormat,
+    ))
+}
+
+pub fn invalid_category_create_summary_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::Summary,
+        construction::Reason::InvalidFormat,
+    ))
+}
+
+pub fn category_create_limit_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::workspace_limit_exceeded(
+        request_id,
+        U64Decimal::new(1_000),
+        U64Decimal::new(1_001),
+        WorkspaceLimitScope::Categories,
+    ))
+}
+
+pub fn category_create_busy_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::io_busy(
+        request_id,
+        construction::Operation::CategoryCreate,
+        2_000,
+    ))
+}
+
+pub fn category_create_unavailable_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::workspace_unavailable(
+        request_id,
+        construction::Reason::WorkspaceRootChanged,
+    ))
+}
+
 pub(crate) fn new_workspace_id() -> WorkspaceId {
     WorkspaceId(Uuid::now_v7())
 }
@@ -486,6 +539,12 @@ digest!(Snapshot, "snapshot:v1:");
 digest!(VerificationHash, "verify:v1:");
 
 impl Revision {
+    pub(crate) fn from_digest_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl Snapshot {
     pub(crate) fn from_digest_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }

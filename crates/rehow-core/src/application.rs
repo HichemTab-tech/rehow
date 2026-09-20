@@ -22,19 +22,20 @@ use crate::{
     markdown::{GuideReadinessError, validate_tested_readiness},
     parsing::{parse_guide_source, parse_yaml_document},
     protocol::{
-        AttachmentId, CategoryId, GuideId, OperationId, Revision, Timestamp, current_timestamp,
-        new_attachment_id, new_category_id, new_guide_id, new_operation_id, new_workspace_id,
+        AttachmentId, CategoryId, GuideId, OperationId, Revision, Snapshot, Timestamp,
+        current_timestamp, new_attachment_id, new_category_id, new_guide_id, new_operation_id,
+        new_workspace_id,
     },
     storage::{
         AttachmentSourceState, CategoryCreateStorageError, CategoryRemoveStorageError,
         DocumentCreateError, DocumentRemoveError, DocumentUpdateError, DocumentUpdateRequest,
         EmptyWorkspaceTarget, MultiDocumentUpdateError, WorkspaceInitializeError,
-        WorkspaceInspectError, WorkspaceView, execute_attachment_import,
-        execute_attachment_removal, execute_category_create, execute_category_remove,
-        execute_document_create, execute_document_move, execute_document_remove,
-        execute_document_update, execute_multi_document_update, execute_workspace_initialize,
-        open_initialized_workspace, preview_attachment_import, preview_attachment_removal,
-        refresh_workspace,
+        WorkspaceInspectError, WorkspaceView, category_inventory_snapshot,
+        execute_attachment_import, execute_attachment_removal, execute_category_create,
+        execute_category_remove, execute_document_create, execute_document_move,
+        execute_document_remove, execute_document_update, execute_multi_document_update,
+        execute_workspace_initialize, open_initialized_workspace, preview_attachment_import,
+        preview_attachment_removal, refresh_workspace,
     },
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -112,6 +113,28 @@ pub fn create_category(
     name: &str,
     summary: Option<&str>,
 ) -> Result<CategoryCreateOutcome, CategoryCreateError> {
+    let expected_category_snapshot = category_inventory_snapshot(workspace);
+    create_category_at_snapshot(
+        workspace,
+        state_home,
+        runtime_directory,
+        expected_category_snapshot,
+        name,
+        summary,
+    )
+}
+
+pub fn create_category_at_snapshot(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    expected_category_snapshot: Snapshot,
+    name: &str,
+    summary: Option<&str>,
+) -> Result<CategoryCreateOutcome, CategoryCreateError> {
+    if category_inventory_snapshot(workspace) != expected_category_snapshot {
+        return Err(CategoryCreateError::Conflict);
+    }
     if workspace.categories().len() >= 1_000 {
         return Err(CategoryCreateError::ResourceLimit);
     }
@@ -139,6 +162,7 @@ pub fn create_category(
         workspace,
         state_home,
         runtime_directory,
+        expected_category_snapshot,
         &relative_directory,
         operation_id,
         timestamp,
@@ -3263,6 +3287,36 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn category_creation_rechecks_the_directory_limit_under_the_writer_lock() {
+        let (workspace, state, mut view) = initialized_workspace("category-create-stale-limit");
+        create_category(&mut view, state.path(), None, "Existing", None).unwrap();
+        let expected_snapshot = category_inventory_snapshot(&view);
+        let categories = workspace.path().join("categories");
+        for index in 1..crate::storage::CATEGORY_LIMIT {
+            fs::create_dir(categories.join(format!("external-{index:04}"))).unwrap();
+        }
+
+        assert_eq!(
+            create_category_at_snapshot(
+                &mut view,
+                state.path(),
+                None,
+                expected_snapshot,
+                "Must Not Exist",
+                None,
+            ),
+            Err(CategoryCreateError::ResourceLimit)
+        );
+        let names = fs::read_dir(&categories)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect::<Vec<_>>();
+        assert_eq!(names.len(), crate::storage::CATEGORY_LIMIT);
+        assert!(names.iter().all(|name| !name.starts_with("must-not-exist")));
     }
 
     #[test]
