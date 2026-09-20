@@ -1,4 +1,7 @@
-use crate::{ADAPTER_NAME, ADAPTER_VERSION, LaunchConfig};
+use crate::{
+    ADAPTER_NAME, ADAPTER_VERSION, LaunchConfig,
+    approval_gate::{ApprovalHelperStatus, ApprovalManager},
+};
 use rehow_core::{
     application::{
         CategoryCreateError, CategoryUpdateError, GuideCreateError, GuideEdit, GuideUpdateError,
@@ -130,6 +133,8 @@ pub struct McpServer {
     workspaces: Arc<Vec<ConfiguredWorkspace>>,
     cursor_key: [u8; 32],
     recovery_locations: Option<RecoveryLocations>,
+    _approval_manager: Arc<ApprovalManager>,
+    _approval_status: ApprovalHelperStatus,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -861,11 +866,14 @@ fn open_server_with_recovery(
     cursor_key[..16].copy_from_slice(Uuid::new_v4().as_bytes());
     cursor_key[16..].copy_from_slice(Uuid::new_v4().as_bytes());
 
+    let (approval_manager, approval_status) = ApprovalManager::capture();
     let mut server = McpServer {
         tool_router: ToolRouter::new(),
         workspaces: Arc::new(opened),
         cursor_key,
         recovery_locations,
+        _approval_manager: Arc::new(approval_manager),
+        _approval_status: approval_status,
     };
     server.tool_router = McpServer::tool_router();
     Ok(server)

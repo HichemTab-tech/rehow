@@ -75,6 +75,8 @@ GUI apps may not inherit shell startup `PATH`; Git discovery and smoke tests mus
 
 For the standalone MCP server, use `cargo test -p rehow-mcp --all-features` for the focused gate. Tests exercise both supported protocol lifecycles through the bounded in-memory stdio transport and only temporary Workspace/state roots. The development binary requires one or more explicit `--workspace alias=/absolute/path` arguments and never defaults to the current directory. Add `--allow-write alias` only when deliberately testing the Phase 6C revision/snapshot-bound Category or Guide mutations; it is not implied by `--workspace`.
 
+Ordinary development builds deliberately report the native MCP approval helper as unconfigured. Release packaging must first build `rehow-mcp-approve`, compute its exact lowercase BLAKE3 digest, then compile only `rehow-mcp` with `REHOW_MCP_APPROVAL_HELPER_BLAKE3` set to that digest; the unchanged helper and server are installed as siblings. Phase 7 packaging automation must reproduce and smoke-test this ordering rather than accepting a runtime digest or path.
+
 ## Dependency changes
 
 Workers do not add dependencies. A Planner packet and review must record reason, alternatives, maintenance, license, security/parser/native surface, binary size, and pinned major. Run relevant audits available in the repository; do not silently update unrelated packages.

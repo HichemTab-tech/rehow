@@ -15,8 +15,8 @@ const MAX_SUMMARY_LINES: usize = 32;
 const MAX_LINE_SCALARS: usize = 200;
 const REQUEST_READ_TIMEOUT_MS: libc::c_int = 5_000;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ApprovalKind {
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum ApprovalKind {
     Broad = 1,
     Destructive = 2,
     Tested = 3,
@@ -41,6 +41,10 @@ impl ApprovalKind {
             Self::Tested => "Mark Guide as tested",
             Self::GitWrite => "Git write",
         }
+    }
+
+    const fn as_byte(self) -> u8 {
+        self as u8
     }
 }
 
@@ -236,6 +240,20 @@ fn read_request(
     Ok(ApprovalRequest { kind, summary })
 }
 
+pub(crate) fn encode_approval_request(kind: ApprovalKind, summary: &str) -> io::Result<Vec<u8>> {
+    validate_summary(summary)?;
+    let summary = summary.as_bytes();
+    let length = u32::try_from(summary.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid request"))?;
+    let mut request = Vec::with_capacity(REQUEST_HEADER_BYTES + summary.len());
+    request.extend_from_slice(&REQUEST_MAGIC);
+    request.push(kind.as_byte());
+    request.extend_from_slice(&[0, 0, 0]);
+    request.extend_from_slice(&length.to_be_bytes());
+    request.extend_from_slice(summary);
+    Ok(request)
+}
+
 fn read_exact_bounded(
     reader: &mut impl Read,
     mut destination: &mut [u8],
@@ -274,7 +292,7 @@ fn wait_until_readable(descriptor: RawFd, timeout_ms: libc::c_int) -> io::Result
     }
 }
 
-fn validate_summary(summary: &str) -> io::Result<()> {
+pub(crate) fn validate_summary(summary: &str) -> io::Result<()> {
     let lines: Vec<&str> = summary.lines().collect();
     if lines.is_empty()
         || lines.len() > MAX_SUMMARY_LINES

@@ -1,4 +1,7 @@
 mod approval;
+// The gate is intentionally unreachable from MCP until an operation-specific plan tool lands.
+#[allow(dead_code)]
+mod approval_gate;
 mod cli;
 mod server;
 mod transport;

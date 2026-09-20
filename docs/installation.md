@@ -1,6 +1,6 @@
 # Installation and Desktop Integration
 
-Status: desktop packaging planned; Phase 6D2 MCP development binary available
+Status: desktop packaging planned; Phase 6E1B2 MCP development boundary available
 Last updated: 2026-09-20
 
 ## Supported baseline
@@ -75,7 +75,7 @@ The implemented Phase 6D2 development invocation is:
 cargo run -p rehow-mcp -- --workspace personal=/absolute/path/to/workspace
 ```
 
-Repeat `--workspace alias=/absolute/path` for up to 16 non-overlapping compatible Workspaces. Aliases and random launch handles—not paths—appear in tool results. Without another flag, fourteen tools provide bounded Workspace/Category/Guide/Attachment metadata reads, validation, search, duplicate/related discovery, confined Git status, and refresh. To enable canonical Category creation, Category details/archive/restore, and draft-Guide creation/update/Tag/Alias/Category-change/mark-stale/archive/restore operations, add `--allow-write personal`; this exposes no caller paths, remove/reorder/delete, tested, Attachment bytes, or Git-write operation. Write mode also requires an existing private XDG state base outside every configured Workspace; unsafe state/runtime overlap fails startup. `--allow-broad personal` and `--allow-git-write personal` are implemented as authority declarations, require `--allow-write personal`, and expose no operation until the corresponding plan/native-approval phase is complete. The server supports MCP `2026-07-28` discovery and `2025-11-25` initialization.
+Repeat `--workspace alias=/absolute/path` for up to 16 non-overlapping compatible Workspaces. Aliases and random launch handles—not paths—appear in tool results. Without another flag, fourteen tools provide bounded Workspace/Category/Guide/Attachment metadata reads, validation, search, duplicate/related discovery, confined Git status, and refresh. To enable canonical Category creation, Category details/archive/restore, and draft-Guide creation/update/Tag/Alias/Category-change/mark-stale/archive/restore operations, add `--allow-write personal`; this exposes no caller paths, remove/reorder/delete, tested, Attachment bytes, or Git-write operation. Write mode also requires an existing private XDG state base outside every configured Workspace; unsafe state/runtime overlap fails startup. `--allow-broad personal` and `--allow-git-write personal` are authority declarations, require `--allow-write personal`, and remain inert until operation-specific plan/approval tools land. The server supports MCP `2026-07-28` discovery and `2025-11-25` initialization.
 
 Rehow never edits global MCP client configuration automatically and never asks for an API key. The server has no network listener in the initial release.
 
