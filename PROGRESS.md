@@ -5,11 +5,11 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 6E1A is complete at signed checkpoint `82da5d0`: the standalone MCP server now accepts explicit per-Workspace broad and Git-write startup declarations while exposing no operation that can consume them yet.
+Phase 6E1B1 is complete at signed checkpoint `b4eb876`: the separately packaged native approval helper now has an exact private-pipe protocol, descriptor isolation, bounded spoof-resistant text, direct GTK confirmation, and fail-closed headless behavior. It remains unreachable from MCP.
 
 ## Current task
 
-Freeze and implement Phase 6E1B's fixed standalone native-approval companion and private pipe protocol before adding any destructive, tested, or Git MCP mutation.
+Implement Phase 6E1B2's server-side sibling provenance, held-inode execution, private pipe launcher, and expiring/cancellable approval plans without exposing a mutation tool yet.
 
 ## Overall status
 
@@ -140,17 +140,18 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Completed Phase 6D1 at signed checkpoint `787176c`: `guide_validate`, `guides_find_duplicates`, and `guides_find_related` provide pathless diagnostics and explainable bounded discovery with authenticated pagination, exact candidate/comparison ceilings, and explicit-relationship priority. Full gates, focused correction gates, and one reused independent reviewer pass.
 - Completed Phase 6D2 at signed checkpoint `2477afd`: `attachments_list` returns bounded declared metadata without bytes, and `git_status` reuses the accepted descriptor-confined networkless core reader while omitting paths, URLs, raw output, and credentials. Full gates and the single reused Security Reviewer pass.
 - Completed Phase 6E1A at signed checkpoint `82da5d0`: `--allow-broad` and `--allow-git-write` are explicit per-alias startup grants, require the same alias's write authority through parser and direct-construction paths, report a closed four-capability tuple, and remain inert. Full gates and the single reused Security Reviewer pass.
+- Completed Phase 6E1B1 at signed checkpoint `b4eb876`: `rehow-mcp-approve` accepts only exact fixed pipes and bounded `RHA1` plain text, closes unrelated descriptors, uses direct in-process GTK, and returns no result on malformed, spoofable, stalled, headless, or dialog-error paths. Full gates and the reused Security Reviewer pass after closing `PATH`-fallback and Unicode-invisibility findings.
 
 ## Work in progress
 
-- No Rehow implementation is uncommitted. Phase 6E1A is complete at signed checkpoint `82da5d0`; this ledger update follows it. Untracked `x` remains unrelated and untouched.
+- No Rehow implementation is uncommitted. Phase 6E1B1 is complete at signed checkpoint `b4eb876`; this ledger update follows it. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
 - Workspace adoption/import/migration and Attachment viewing/export/reveal remain incomplete.
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
-- Phase 6: protocol, bounded Workspace/Category/Guide/Attachment/search/validation/discovery/Git-status reads, narrow mutations, and inert explicit write/broad/Git-write startup capabilities are complete at `82da5d0`; native approval, plans, Category reorder/removal, tested approval, Attachment metadata mutation, Git commit/sync, and broader client documentation remain.
+- Phase 6: protocol, bounded reads, narrow mutations, inert explicit startup capabilities, and the isolated native approval endpoint are complete at `b4eb876`; the verified launcher/plan bridge, Category reorder/removal, tested approval, Attachment metadata mutation, Git commit/sync, and broader client documentation remain.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
 ## Known bugs
@@ -274,19 +275,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - Phase 6D1 adds only retained-view reads. Validation omits paths, duplicate discovery stops at exact pair/comparison ceilings, related scoring guarantees explicit links outrank metadata-only similarity, and cursors bind the exact view/query. Independent review found and closed the work-bound, ranking, and title/alias symmetry issues; final verdict is PASS.
 - Phase 6D2 adds only bounded adapters over existing accepted reads. Attachment listing returns validated declared metadata and managed relative paths but no bytes/host authority. Git status stays fixed-executable, descriptor-confined, networkless, config-free, output-bounded, and URL/path/credential-free. Security Reviewer verdict: PASS.
 - Phase 6E1A adds only explicit startup declarations. Unknown, repeated, malformed, and write-less broad/Git-write grants reject startup; direct `LaunchConfig` construction cannot bypass the dependency. No tool consumes either new grant. Security Reviewer verdict: PASS.
+- Phase 6E1B1's helper has no Workspace or mutation authority and is unreachable from MCP. Its exact pipe endpoint closes unrelated descriptors, binds standard streams to `/dev/null`, never resolves a dialog program from `PATH`, and rejects Unicode Format/Default-Ignorable spoofing text. The reused Security Reviewer verdict is PASS after those two correction rounds.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 6E1A reused one existing Security Reviewer only at the completed authority-boundary gate and the verdict is PASS.
+- No active human decision blocker. Per the user's speed/agent preference, routine work uses zero extra agents; Phase 6E1B1 reused one existing Security Reviewer only at the completed authority-boundary gate and the verdict is PASS.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`82da5d0` — signed Phase 6E1A explicit MCP broad and Git-write startup capabilities. This progress-only ledger update follows that implementation commit.
+`b4eb876` — signed Phase 6E1B1 inert native MCP approval helper. This progress-only ledger update follows that implementation commit.
 
 ## Tests last run and results
 
+- 2026-09-20: Phase 6E1B1 checkpoint `b4eb876` passes `pnpm check`, `pnpm test`, `pnpm build`, 39 Vitest tests, 444 core tests with 2 intentional ignores, supporting suites, 25 desktop Rust tests, 42 MCP unit tests, 3 real-helper integration tests, and 1 stdio integration test. Strict all-Workspace Clippy, Cargo formatting, bootstrap/whitespace checks, direct-GTK hostile-`PATH` regression, descriptor inspection, and the reused Security Reviewer pass. The final Unicode correction additionally passed focused helper tests and strict MCP Clippy.
 - 2026-09-20: Phase 6E1A checkpoint `82da5d0` passes `pnpm check`, `pnpm test`, `pnpm build`, 39 Vitest tests, 444 core tests with 2 intentional ignores, supporting contract/API suites, 25 desktop Rust tests, 39 MCP unit tests and 1 real-binary integration test. Strict all-Workspace Clippy, Cargo formatting, bootstrap/whitespace checks, production build, parser/direct-construction capability-escalation regressions, exact unchanged twenty-six-tool schema, and the single reused Security Reviewer pass.
 - 2026-09-20: Phase 6D2 checkpoint `2477afd` passes `pnpm check`, `pnpm test`, `pnpm build`, 39 Vitest tests, 444 core tests with 2 intentional ignores, supporting contract/API suites, 25 desktop Rust tests, 37 MCP unit tests and 1 real-binary integration test. Strict all-Workspace Clippy, Cargo formatting, bootstrap/whitespace checks, exact twenty-six-tool schema, isolated Attachment/Git protocol coverage, URL/path non-disclosure, and the single reused Security Reviewer pass.
 - 2026-09-20: Phase 6D1 checkpoint `787176c` passes `pnpm check`, `pnpm test`, `pnpm build`, 39 Vitest tests, 444 core tests with 2 intentional ignores, supporting contract/API suites, 25 desktop Rust tests, strict all-Workspace Clippy, Cargo formatting, bootstrap/whitespace checks, and the production build. After review corrections, 36 MCP unit tests plus the real-binary integration test pass; exact 10,000-candidate/100,000-comparison exhaustion and explicit-over-metadata/title-alias symmetry regressions pass. Final independent review: PASS.
@@ -557,20 +560,21 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0037, `docs/task-packets/phase-6d1-mcp-guide-discovery.md`, its evidence, pathless Guide validation, bounded exact duplicate discovery, and explainable related ranking implement the twenty-four-tool MCP surface at `787176c`.
 - ADR 0038, `docs/task-packets/phase-6d2-mcp-attachment-git-status.md`, its evidence, bounded Attachment metadata listing, closed Git status mapping, and isolated protocol tests implement the twenty-six-tool MCP surface at `2477afd`.
 - ADR 0039, `docs/task-packets/phase-6e1a-mcp-startup-capabilities.md`, its evidence, strict startup parsing/server invariants, and closed capability reporting implement inert per-Workspace broad/Git-write authority declarations at `82da5d0`.
+- ADR 0040, `docs/task-packets/phase-6e1b1-mcp-approval-helper-endpoint.md`, its evidence, `crates/rehow-mcp/src/approval.rs`, the helper binary, and adversarial process tests implement the still-unreachable native approval endpoint at `b4eb876`.
 
 ## Next recommended action
 
-Freeze Phase 6E1B's exact `rehow-mcp-approve` binary provenance, length-bounded request/result protocol, inherited-descriptor closure, timeout/cancellation, headless refusal, and package/build verification; then implement and adversarially test that helper boundary without exposing a destructive operation.
+Implement Phase 6E1B2: derive and capture the fixed sibling without `PATH`, verify ownership/mode/link/build identity, execute the held inode over private pipes, and bind results to expiring cancellable server-side plans. Expose no mutation tool yet.
 
 ## Recommended agent role and reasoning effort
 
-Architect/Orchestrator locally with `gpt-5.6-sol`, xhigh/high judgment for the new approval trust boundary. Run zero routine agents and reuse at most one Security Reviewer at the completed gate.
+Architect/Orchestrator locally with `gpt-5.6-sol`, xhigh/high judgment. Run zero routine agents and reuse at most one Security Reviewer at the completed Phase 6E1B2 security gate.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read ADRs 0026–0039, `docs/mcp-spec.md`, the Phase 6E1A evidence/packet, and the approval sections of architecture/testing/threat docs.
+2. Read ADRs 0026–0040, `docs/mcp-spec.md`, the Phase 6E1B1 evidence/packet, and the approval sections of architecture/testing/threat docs.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `82da5d0` and `2477afd`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoints `b4eb876` and `82da5d0`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 6E1A as complete. Begin Phase 6E1B by freezing the helper provenance/pipe/expiry protocol before code; add no broad/destructive/tested/Git mutation tool until the approval boundary and adversarial tests pass.
+6. Treat Phase 6E1B1 as complete. Implement Phase 6E1B2's fixed sibling provenance/held-inode launcher and expiring cancellable plans; add no broad/destructive/tested/Git mutation tool until that boundary and adversarial tests pass.
