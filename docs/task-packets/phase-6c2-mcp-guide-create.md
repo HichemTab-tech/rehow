@@ -1,0 +1,17 @@
+# Task Packet: Phase 6C2 revision-bound MCP Guide creation
+
+- **Objective:** Add one capability-gated tool that creates a canonical draft Guide in an active Category at an exact descriptor revision.
+- **Required reasoning level:** high; this adds external create authority and strengthens the shared storage prerequisite check.
+- **Prerequisites:** signed Phase 6C1 checkpoint `13202bd`; ADRs 0009, 0028, and 0029; accepted core canonical Guide emission and absent-only recovery create.
+- **Allowed files or subsystem:** `crates/rehow-core/src/{application,protocol,storage}.rs`, `crates/rehow-core/src/storage/recovery.rs`, MCP server/tests, and directly applicable MCP/security/testing/operations docs.
+- **Relevant specifications and ADRs:** `docs/mcp-spec.md`, `docs/content-model.md`, `docs/error-contract.md`, `docs/threat-model.md`, ADR 0009, ADR 0028, and ADR 0029.
+- **Exact required behavior:** Expose `guide_create(workspaceHandle, categoryId, expectedCategoryRevision, title, summary)` behind the existing alias write grant. Core generates the ID/time/path/draft/frontmatter/starter body and commits one absent-only document. Recheck the Category descriptor revision and current global Guide-candidate cap under the writer lock. Return created ID/revision/draft status, or accurate committed-refresh-required output. Use shared structured errors.
+- **Important states and edge cases:** read-only alias; missing/archived Category; stale retained view; external Category edit before the lock; invalid title/summary; Guide count/resource limit; busy writer; target collision; unsafe storage; interruption; committed refresh failure.
+- **Security constraints:** No caller path, Guide ID, timestamp, body, Tags, aliases, status, verification, YAML, operation ID, shell/process/network, Attachment, Git, broad, lifecycle, or destructive authority. Errors/logs omit paths and content.
+- **Tests to add or update:** exact eleven-tool/schema surface; read-only denial with no recovery state; successful canonical draft creation; core-owned fields and starter body; lock-scoped external Category revision conflict with no Guide write; stale-view 10,000-candidate refusal under the lock; focused/full recovery and protocol gates.
+- **Commands to run:** focused MCP/core tests; `cargo fmt --all --check`; strict all-workspace Clippy; `pnpm check`; `pnpm test`; `pnpm build`; bootstrap and whitespace checks.
+- **Required reviews and artifacts:** one reused Security Reviewer after implementation; ADR, packet, and evidence; no UI/design review because no renderer changes.
+- **Explicit non-goals:** caller-supplied initial body/metadata; Category creation; update batching; move/archive/delete; tested approval; Attachment/Git tools; client configuration changes.
+- **Definition of done:** Creation is impossible without a write grant and exact active Category revision; generated content is canonical draft-only; stale/invalid cases write nothing; recovery behavior remains bounded; full gates and security review pass; docs match code.
+- **Expected commit boundary:** prerequisite-bound core create, public structured-error bridge, MCP tool/schema/tests, ADR/packet/evidence, and aligned docs form one signed checkpoint; progress follows separately.
+- **Conditions requiring escalation:** Category state cannot be rechecked under the writer lock; any caller-controlled path/ID/time/status appears; create can overwrite; committed state is reported ambiguously; shared error parity cannot be maintained.

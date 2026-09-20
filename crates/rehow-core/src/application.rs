@@ -763,6 +763,33 @@ pub fn create_guide(
     title: &str,
     summary: &str,
 ) -> Result<GuideCreateOutcome, GuideCreateError> {
+    let expected_category_revision = workspace
+        .categories()
+        .iter()
+        .find(|loaded| loaded.category().id() == &category_id)
+        .ok_or(GuideCreateError::CategoryNotFound)?
+        .descriptor_revision();
+    create_guide_at_revision(
+        workspace,
+        state_home,
+        runtime_directory,
+        category_id,
+        expected_category_revision,
+        title,
+        summary,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn create_guide_at_revision(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    category_id: CategoryId,
+    expected_category_revision: Revision,
+    title: &str,
+    summary: &str,
+) -> Result<GuideCreateOutcome, GuideCreateError> {
     if workspace
         .categories()
         .iter()
@@ -777,6 +804,9 @@ pub fn create_guide(
         .iter()
         .find(|loaded| loaded.category().id() == &category_id)
         .ok_or(GuideCreateError::CategoryNotFound)?;
+    if category.descriptor_revision() != expected_category_revision {
+        return Err(GuideCreateError::Conflict);
+    }
     if category.category().status() != CategoryStatus::Active {
         return Err(GuideCreateError::CategoryArchived);
     }
@@ -801,10 +831,13 @@ pub fn create_guide(
         }
     })?;
     let relative_path = format!("{relative_directory}/{}", guide_file_name(title, &guide_id));
+    let category_descriptor_path = format!("{relative_directory}/category.yaml");
     let result = execute_document_create(
         workspace,
         state_home,
         runtime_directory,
+        &category_descriptor_path,
+        expected_category_revision,
         &relative_path,
         operation_id,
         timestamp,
@@ -3309,6 +3342,46 @@ mod tests {
             Err(GuideCreateError::CategoryNotFound)
         ));
         assert_eq!(fs::read_dir(category_path).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn guide_creation_rechecks_the_global_candidate_limit_under_the_writer_lock() {
+        let (workspace, state, mut view) = initialized_workspace("guide-create-stale-limit");
+        let category = create_category(&mut view, state.path(), None, "Linux System", None)
+            .unwrap()
+            .category_id();
+        let category_revision = view.categories()[0].descriptor_revision();
+        let category_path = workspace
+            .path()
+            .join(view.categories()[0].relative_directory());
+        for index in 0..crate::storage::GUIDE_COUNT_LIMIT {
+            fs::write(category_path.join(format!("external-{index:05}.md")), []).unwrap();
+        }
+
+        assert_eq!(
+            create_guide_at_revision(
+                &mut view,
+                state.path(),
+                None,
+                category,
+                category_revision,
+                "Must Not Exist",
+                "The retained view is stale at the hard Guide limit.",
+            ),
+            Err(GuideCreateError::ResourceLimit)
+        );
+        let guide_names = fs::read_dir(&category_path)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.ends_with(".md"))
+            .collect::<Vec<_>>();
+        assert_eq!(guide_names.len(), crate::storage::GUIDE_COUNT_LIMIT);
+        assert!(
+            guide_names
+                .iter()
+                .all(|name| !name.starts_with("must-not-exist"))
+        );
     }
 
     #[test]

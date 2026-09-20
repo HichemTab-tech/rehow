@@ -1,6 +1,6 @@
 # Development Guide
 
-Status: active development through Phase 6C1
+Status: active development through Phase 6C2
 Last updated: 2026-09-20
 
 ## Prerequisites
@@ -73,7 +73,7 @@ GUI apps may not inherit shell startup `PATH`; Git discovery and smoke tests mus
 - Test Git config sets local identity in the temp repo and never reads/writes developer repositories.
 - Secret canaries are fake and asserted absent from diagnostics.
 
-For the standalone MCP server, use `cargo test -p rehow-mcp --all-features` for the focused gate. Tests exercise both supported protocol lifecycles through the bounded in-memory stdio transport and only temporary Workspace/state roots. The development binary requires one or more explicit `--workspace alias=/absolute/path` arguments and never defaults to the current directory. Add `--allow-write alias` only when deliberately testing the Phase 6C1 exact-revision Guide update; it is not implied by `--workspace`.
+For the standalone MCP server, use `cargo test -p rehow-mcp --all-features` for the focused gate. Tests exercise both supported protocol lifecycles through the bounded in-memory stdio transport and only temporary Workspace/state roots. The development binary requires one or more explicit `--workspace alias=/absolute/path` arguments and never defaults to the current directory. Add `--allow-write alias` only when deliberately testing the Phase 6C exact-revision Guide create/update tools; it is not implied by `--workspace`.
 
 ## Dependency changes
 

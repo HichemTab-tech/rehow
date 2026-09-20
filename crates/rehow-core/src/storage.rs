@@ -3184,6 +3184,8 @@ pub(crate) fn execute_document_create(
     workspace: &WorkspaceView,
     state_home: &Path,
     runtime_directory: Option<&Path>,
+    prerequisite_path: &str,
+    expected_prerequisite_revision: crate::protocol::Revision,
     relative_path: &str,
     operation_id: crate::protocol::OperationId,
     created_at: crate::protocol::Timestamp,
@@ -3194,6 +3196,8 @@ pub(crate) fn execute_document_create(
         state_home,
         runtime_directory,
         *workspace.manifest.workspace_id(),
+        prerequisite_path,
+        expected_prerequisite_revision,
         relative_path,
         operation_id,
         created_at,
@@ -3878,6 +3882,49 @@ fn valid_guide_filename(value: &str) -> bool {
     value
         .strip_suffix(".md")
         .is_some_and(valid_category_directory)
+}
+
+fn current_guide_candidate_count(
+    root: &linux::DirectoryCapability,
+) -> Result<usize, WorkspaceInspectError> {
+    let categories = match root.open_directory("categories") {
+        Ok(directory) => directory,
+        Err(linux::OpenDirectoryError::Missing) => {
+            return Err(WorkspaceInspectError::ChangedDuringRead);
+        }
+        Err(linux::OpenDirectoryError::Unsafe) => {
+            return Err(WorkspaceInspectError::UnsafeRoot);
+        }
+        Err(linux::OpenDirectoryError::Io(error)) => return Err(map_io(error)),
+    };
+    let category_names = categories.entries(CATEGORY_LIMIT)?;
+    let mut guide_count = 0usize;
+    for category_name in category_names {
+        if !valid_category_directory(&category_name) {
+            continue;
+        }
+        let category = match categories.open_directory(&category_name) {
+            Ok(directory) => directory,
+            Err(linux::OpenDirectoryError::Missing) => {
+                return Err(WorkspaceInspectError::ChangedDuringRead);
+            }
+            Err(linux::OpenDirectoryError::Unsafe) => {
+                return Err(WorkspaceInspectError::UnsafeRoot);
+            }
+            Err(linux::OpenDirectoryError::Io(error)) => return Err(map_io(error)),
+        };
+        for name in category.entries(GUIDE_COUNT_LIMIT.saturating_add(2))? {
+            if name != "category.yaml" && valid_guide_filename(&name) {
+                guide_count = guide_count
+                    .checked_add(1)
+                    .ok_or(WorkspaceInspectError::ResourceLimit)?;
+                if guide_count >= GUIDE_COUNT_LIMIT {
+                    return Ok(guide_count);
+                }
+            }
+        }
+    }
+    Ok(guide_count)
 }
 
 fn add_managed_bytes(total: &mut u64, amount: usize) -> Result<(), WorkspaceInspectError> {

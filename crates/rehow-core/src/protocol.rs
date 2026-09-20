@@ -191,6 +191,74 @@ pub fn guide_update_unavailable_error(request_id: RequestId) -> ErrorDto {
     ))
 }
 
+pub fn guide_create_category_not_found_error(
+    request_id: RequestId,
+    category_id: CategoryId,
+) -> ErrorDto {
+    constructed_error(construction::category_not_found(request_id, category_id))
+}
+
+pub fn guide_create_category_revision_conflict_error(
+    request_id: RequestId,
+    category_id: CategoryId,
+    expected_revision: Revision,
+    actual_revision: Revision,
+) -> ErrorDto {
+    constructed_error(construction::revision_conflict(
+        request_id,
+        PortableEntityId::category(category_id),
+        expected_revision,
+        actual_revision,
+    ))
+}
+
+pub fn guide_create_archived_category_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::CategoryId,
+        construction::Reason::UnsupportedValue,
+    ))
+}
+
+pub fn invalid_guide_create_title_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::Title,
+        construction::Reason::InvalidFormat,
+    ))
+}
+
+pub fn invalid_guide_create_summary_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::Summary,
+        construction::Reason::InvalidFormat,
+    ))
+}
+
+pub fn guide_create_limit_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::Details,
+        construction::Reason::OutOfRange,
+    ))
+}
+
+pub fn guide_create_busy_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::io_busy(
+        request_id,
+        construction::Operation::GuideCreate,
+        2_000,
+    ))
+}
+
+pub fn guide_create_unavailable_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::workspace_unavailable(
+        request_id,
+        construction::Reason::WorkspaceRootChanged,
+    ))
+}
+
 pub(crate) fn new_workspace_id() -> WorkspaceId {
     WorkspaceId(Uuid::now_v7())
 }

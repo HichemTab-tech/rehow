@@ -71,6 +71,8 @@ Phase 6B expands this to an exact nine-tool read-only surface. Focused tests cov
 
 Phase 6C1 adds an exact ten-tool surface. Tests prove separate per-alias startup write authority, read-only byte identity, complete typed Guide updates through real protocol framing, expected-revision conflicts, shared structured domain errors, and recovery-journal reuse. Existing core recovery interruption, unsafe-presentation, unknown-metadata, resource-limit, and tested-to-stale tests remain part of the full gate.
 
+Phase 6C2 adds an exact eleven-tool surface. Tests prove canonical draft-only creation, absence of caller ID/path/time/status/body authority, exact Category descriptor prerequisites, deterministic external Category-change refusal under the writer lock with no Guide write, stale-view refusal at the descriptor-confined 10,000-candidate cap, and accurate committed-refresh reporting. Existing core canonical emission, absent-only create, interruption, confinement, and limit suites remain part of the full gate.
+
 ### End-to-end desktop tests
 
 Use the most stable Tauri/WebDriver-compatible automation available at Phase 2 and retain manual smoke coverage where Linux WebKit automation is incomplete. Tests launch the production-like native app against a temporary Workspace and exercise open/create/search/read/edit/restart/conflict. Never rely exclusively on the Vite browser view because native IPC, CSP, WebKitGTK, window behavior, and file dialogs are product behavior.

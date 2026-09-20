@@ -127,6 +127,7 @@ Milestones:
 - First gate: exact-pinned official `rmcp` 3.4 protocol foundation, Rehow-owned 1 MiB fail-closed stdio framing, MCP `2026-07-28` discovery plus `2025-11-25` initialization, canonical startup root handles, and only `workspaces_list`/`workspace_get`.
 - Phase 6B: bounded Category/Guide listing, core-ranked search, typed Guide reads, validation, and refresh (nine read-only tools total).
 - Phase 6C1: explicit per-alias write capability and exact-revision atomic complete-content update for existing Guides, with shared structured errors.
+- Phase 6C2: exact-Category-revision canonical draft Guide creation with core-owned ID/time/path/status/body and no overwrite.
 - Later gates: Attachment-metadata and mutation tools.
 - Per-Workspace write/broad/Git capabilities, launch handles, revisions/effect sets, dry-run tokens, and native out-of-band approval companion.
 - Git status/plan/commit/safe sync only after Phase 5 primitives are approved.

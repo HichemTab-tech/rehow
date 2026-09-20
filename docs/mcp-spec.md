@@ -7,7 +7,7 @@ Last updated: 2026-09-20
 
 ## Purpose and deployment
 
-`rehow-mcp` lets an MCP client work safely with explicitly configured Rehow Workspaces without requiring the desktop app. It links the same application/core crates, schemas, revisions, storage, search, Git policies, and locks as the desktop adapter. Read access is the default; Phase 6C1 implements only an explicit per-alias write grant for complete existing-Guide updates.
+`rehow-mcp` lets an MCP client work safely with explicitly configured Rehow Workspaces without requiring the desktop app. It links the same application/core crates, schemas, revisions, storage, search, Git policies, and locks as the desktop adapter. Read access is the default; Phase 6C implements an explicit per-alias write grant for canonical draft-Guide creation and complete existing-Guide updates.
 
 The server is installed separately and launched with an allowlist, for example:
 
@@ -19,7 +19,7 @@ Each startup root has a unique user-chosen alias. Canonical duplicate/nested/ove
 
 Initial transport is stdio. Remote Streamable HTTP is deferred until authentication, origin, multi-user, and network threat models exist.
 
-The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6C1 exposes the nine Phase 6B reads plus capability-gated `guide_update`. Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
+The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6C2 exposes the nine Phase 6B reads plus capability-gated `guide_update` and `guide_create`. Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
 
 ## Trust rules
 
@@ -121,7 +121,7 @@ Every Guide tool requires `workspaceHandle`.
 - `guides_list({workspaceHandle, categoryId?, statuses?, tags?, cursor?, limit?})`
 - `guide_get({workspaceHandle, guideId, includeBody?, maxBodyBytes?})`
 - `guides_search({workspaceHandle, query, includeArchived?, categoryIds?, tags?, cursor?, limit?})`
-- `guide_create({workspaceHandle, expectedWorkspaceSnapshot, guide})` — always creates `draft`; a status field is rejected.
+- `guide_create({workspaceHandle, categoryId, expectedCategoryRevision, title, summary})` — implemented canonical draft creation; core owns Guide ID, timestamps, filename/path, status, empty Tags/aliases, and starter body; caller ID/time/path/status/body fields are rejected.
 - `guide_update({workspaceHandle, guideId, expectedRevision, title, summary, tags, aliases, body})` — implemented complete editable-content replacement; 768 KiB body cap; typed fields only; one atomic candidate; verification-relevant edits automatically make tested content stale.
 - `guide_update_title`, `guide_tidy_path`, and `guide_change_category` — explicit operations with expected revision; Category change is a journaled path+frontmatter update; ID unchanged. There is no generic move.
 - `guide_set_tags` / `guide_set_aliases` — complete normalized arrays with expected revision.

@@ -2001,6 +2001,8 @@ pub(super) fn execute_document_create(
     state_home: &Path,
     runtime_directory: Option<&Path>,
     workspace_id: WorkspaceId,
+    prerequisite_path: &str,
+    expected_prerequisite_revision: Revision,
     relative_path: &str,
     operation_id: OperationId,
     created_at: Timestamp,
@@ -2016,6 +2018,26 @@ pub(super) fn execute_document_create(
     let lock = store
         .acquire_lock(runtime_directory)
         .map_err(map_store_document_create)?;
+    let prerequisite = root
+        .open_managed_target(prerequisite_path)
+        .map_err(map_io_document_create)?;
+    let prerequisite = match prerequisite
+        .state(super::GUIDE_LIMIT)
+        .map_err(map_io_document_create)?
+    {
+        super::linux::ManagedState::Missing => return Err(DocumentCreateError::Conflict),
+        super::linux::ManagedState::Regular(state) => state,
+    };
+    if super::document_revision(prerequisite_path, &prerequisite.bytes)
+        != expected_prerequisite_revision
+    {
+        return Err(DocumentCreateError::Conflict);
+    }
+    if super::current_guide_candidate_count(root).map_err(map_inspect_document_create)?
+        >= super::GUIDE_COUNT_LIMIT
+    {
+        return Err(DocumentCreateError::TooLarge);
+    }
     let target = root
         .open_managed_target(relative_path)
         .map_err(map_io_document_create)?;
@@ -2033,6 +2055,11 @@ pub(super) fn execute_document_create(
     let (root_device, root_inode) = root.identity().map_err(map_io_document_create)?;
     let mut plan = blake3::Hasher::new();
     plan.update(b"rehow-document-create-plan-v1\0");
+    hash_plan_field(&mut plan, prerequisite_path.as_bytes());
+    hash_plan_field(
+        &mut plan,
+        expected_prerequisite_revision.to_string().as_bytes(),
+    );
     hash_plan_field(&mut plan, relative_path.as_bytes());
     hash_plan_field(&mut plan, content);
     let journal = Journal {
@@ -3376,6 +3403,18 @@ fn map_io_document_create(error: super::linux::MutationIoError) -> DocumentCreat
         super::linux::MutationIoError::Unsupported => DocumentCreateError::Unsupported,
         super::linux::MutationIoError::TooLarge => DocumentCreateError::TooLarge,
         super::linux::MutationIoError::Io => DocumentCreateError::Io,
+    }
+}
+
+fn map_inspect_document_create(error: super::WorkspaceInspectError) -> DocumentCreateError {
+    match error {
+        super::WorkspaceInspectError::ResourceLimit => DocumentCreateError::TooLarge,
+        super::WorkspaceInspectError::ChangedDuringRead => DocumentCreateError::Conflict,
+        super::WorkspaceInspectError::NotFound
+        | super::WorkspaceInspectError::NotDirectory
+        | super::WorkspaceInspectError::PermissionDenied
+        | super::WorkspaceInspectError::UnsafeRoot => DocumentCreateError::Unsafe,
+        super::WorkspaceInspectError::Io => DocumentCreateError::Io,
     }
 }
 
