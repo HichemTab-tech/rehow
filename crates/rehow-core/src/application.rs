@@ -2132,6 +2132,8 @@ pub fn update_guide_details(
     if destination.category().status() != CategoryStatus::Active {
         return Err(GuideUpdateError::DestinationCategoryArchived);
     }
+    let destination_descriptor_path = format!("{}/category.yaml", destination.relative_directory());
+    let destination_revision = destination.descriptor_revision();
     let filename = source_relative_path
         .rsplit_once('/')
         .map(|(_, filename)| filename)
@@ -2147,6 +2149,8 @@ pub fn update_guide_details(
         &source_relative_path,
         &destination_relative_path,
         expected_revision,
+        &destination_descriptor_path,
+        destination_revision,
         new_operation_id(),
         at,
         |bytes| {
@@ -2205,6 +2209,113 @@ pub fn update_guide_details(
     Ok(GuideUpdateOutcome {
         revision: outcome.revision(),
         changed: true,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn change_guide_category_at_revision(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_id: GuideId,
+    expected_revision: Revision,
+    category_id: CategoryId,
+    expected_category_revision: Revision,
+) -> Result<GuideUpdateOutcome, GuideUpdateError> {
+    let (source_category_id, source_relative_path, current_revision) = workspace
+        .categories()
+        .iter()
+        .find_map(|category| {
+            category
+                .guides()
+                .iter()
+                .find(|guide| guide.guide().id() == &guide_id)
+                .map(|guide| {
+                    (
+                        *category.category().id(),
+                        guide.relative_path().to_owned(),
+                        guide.revision(),
+                    )
+                })
+        })
+        .ok_or(GuideUpdateError::NotFound)?;
+    if current_revision != expected_revision {
+        return Err(GuideUpdateError::RevisionConflict);
+    }
+    let destination = workspace
+        .categories()
+        .iter()
+        .find(|category| category.category().id() == &category_id)
+        .ok_or(GuideUpdateError::DestinationCategoryNotFound)?;
+    if destination.descriptor_revision() != expected_category_revision {
+        return Err(GuideUpdateError::RevisionConflict);
+    }
+    if destination.category().status() != CategoryStatus::Active {
+        return Err(GuideUpdateError::DestinationCategoryArchived);
+    }
+    let filename = source_relative_path
+        .rsplit_once('/')
+        .map(|(_, filename)| filename)
+        .filter(|filename| filename.ends_with(".md") && !filename.is_empty())
+        .ok_or(GuideUpdateError::InvalidGuide)?;
+    let destination_relative_path = format!("{}/{filename}", destination.relative_directory());
+    let destination_descriptor_path = format!("{}/category.yaml", destination.relative_directory());
+    let at = current_timestamp();
+    let stamp = MutationStamp::from_trusted_time(at);
+    let outcome = execute_document_move(
+        workspace,
+        state_home,
+        runtime_directory,
+        &source_relative_path,
+        &destination_relative_path,
+        expected_revision,
+        &destination_descriptor_path,
+        expected_category_revision,
+        new_operation_id(),
+        at,
+        |bytes| {
+            let parsed =
+                parse_guide_source(copy_bytes(bytes)?).map_err(|_| PlanError::InvalidGuide)?;
+            let bound = bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
+            if bound.record().id() != &guide_id
+                || bound.record().category_id() != &source_category_id
+            {
+                return Err(PlanError::InvalidGuide);
+            }
+            apply_guide_mutation(&bound, GuideMutation::ChangeCategory(category_id), &stamp)
+        },
+    )
+    .map_err(map_move_error)?;
+
+    if outcome.changed() && refresh_workspace(workspace).is_err() {
+        return Err(GuideUpdateError::CommittedRefreshRequired {
+            revision: outcome.revision(),
+        });
+    }
+    let mut matches = workspace.categories().iter().flat_map(|category| {
+        category
+            .guides()
+            .iter()
+            .filter(|guide| guide.guide().id() == &guide_id)
+            .map(move |guide| (category, guide))
+    });
+    let Some((loaded_category, loaded_guide)) = matches.next() else {
+        return Err(GuideUpdateError::CommittedRefreshRequired {
+            revision: outcome.revision(),
+        });
+    };
+    if matches.next().is_some()
+        || loaded_category.category().id() != &category_id
+        || loaded_guide.relative_path() != destination_relative_path
+        || loaded_guide.revision() != outcome.revision()
+    {
+        return Err(GuideUpdateError::CommittedRefreshRequired {
+            revision: outcome.revision(),
+        });
+    }
+    Ok(GuideUpdateOutcome {
+        revision: outcome.revision(),
+        changed: outcome.changed(),
     })
 }
 

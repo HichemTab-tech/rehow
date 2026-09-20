@@ -1575,6 +1575,7 @@ pub(crate) struct DocumentUpdateOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DocumentMoveOutcome {
     revision: Revision,
+    changed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1806,6 +1807,10 @@ impl DocumentUpdateOutcome {
 impl DocumentMoveOutcome {
     pub(crate) fn revision(self) -> Revision {
         self.revision
+    }
+
+    pub(crate) fn changed(self) -> bool {
+        self.changed
     }
 }
 
@@ -2849,6 +2854,8 @@ pub(super) fn execute_document_move<E, F>(
     source_relative_path: &str,
     destination_relative_path: &str,
     expected_revision: Revision,
+    prerequisite_path: &str,
+    expected_prerequisite_revision: Revision,
     operation_id: OperationId,
     created_at: Timestamp,
     prepare: F,
@@ -2856,9 +2863,6 @@ pub(super) fn execute_document_move<E, F>(
 where
     F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
 {
-    if source_relative_path == destination_relative_path {
-        return Err(MultiDocumentUpdateError::InvalidPlan);
-    }
     let store = store::RecoveryStore::open(
         state_home,
         workspace_id,
@@ -2869,6 +2873,23 @@ where
     let lock = store
         .acquire_lock(runtime_directory)
         .map_err(map_store_multi)?;
+    let prerequisite = root
+        .open_managed_target(prerequisite_path)
+        .map_err(map_io_multi)?;
+    let prerequisite = match prerequisite
+        .state(super::DESCRIPTOR_LIMIT)
+        .map_err(map_io_multi)?
+    {
+        super::linux::ManagedState::Missing => {
+            return Err(MultiDocumentUpdateError::Conflict);
+        }
+        super::linux::ManagedState::Regular(state) => state,
+    };
+    if super::document_revision(prerequisite_path, &prerequisite.bytes)
+        != expected_prerequisite_revision
+    {
+        return Err(MultiDocumentUpdateError::Conflict);
+    }
     let source = root
         .open_managed_target(source_relative_path)
         .map_err(map_io_multi)?;
@@ -2879,6 +2900,16 @@ where
     let actual_revision = super::document_revision(source_relative_path, &current.bytes);
     if actual_revision != expected_revision {
         return Err(MultiDocumentUpdateError::Conflict);
+    }
+    if source_relative_path == destination_relative_path {
+        let candidate = prepare(&current.bytes).map_err(MultiDocumentUpdateError::Prepare)?;
+        if candidate.as_ref() != current.bytes {
+            return Err(MultiDocumentUpdateError::InvalidPlan);
+        }
+        return Ok(DocumentMoveOutcome {
+            revision: actual_revision,
+            changed: false,
+        });
     }
     let destination = root
         .open_managed_target(destination_relative_path)
@@ -2901,6 +2932,11 @@ where
     let (root_device, root_inode) = root.identity().map_err(map_io_multi)?;
     let mut plan = blake3::Hasher::new();
     plan.update(b"rehow-document-move-plan-v1\0");
+    hash_plan_field(&mut plan, prerequisite_path.as_bytes());
+    hash_plan_field(
+        &mut plan,
+        expected_prerequisite_revision.to_string().as_bytes(),
+    );
     hash_plan_field(&mut plan, source_relative_path.as_bytes());
     hash_plan_field(&mut plan, destination_relative_path.as_bytes());
     hash_plan_field(&mut plan, expected_revision.to_string().as_bytes());
@@ -2957,6 +2993,7 @@ where
     }
     Ok(DocumentMoveOutcome {
         revision: super::document_revision(destination_relative_path, &candidate),
+        changed: true,
     })
 }
 

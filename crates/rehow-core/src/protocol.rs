@@ -192,6 +192,22 @@ pub fn invalid_guide_aliases_error(request_id: RequestId) -> ErrorDto {
     ))
 }
 
+pub fn invalid_guide_category_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::CategoryId,
+        construction::Reason::UnsupportedValue,
+    ))
+}
+
+pub fn guide_change_category_busy_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::io_busy(
+        request_id,
+        construction::Operation::GuideChangeCategory,
+        2_000,
+    ))
+}
+
 pub fn guide_update_busy_error(request_id: RequestId) -> ErrorDto {
     constructed_error(construction::io_busy(
         request_id,
