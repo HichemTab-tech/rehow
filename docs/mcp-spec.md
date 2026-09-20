@@ -19,7 +19,7 @@ Each startup root has a unique user-chosen alias. Canonical duplicate/nested/ove
 
 Initial transport is stdio. Remote Streamable HTTP is deferred until authentication, origin, multi-user, and network threat models exist.
 
-The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6C7 exposes the nine Phase 6B reads plus capability-gated Guide/Category create/update, separate archive/restore, and Guide mark-stale tools (eighteen tools total). Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
+The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6C8 exposes the nine Phase 6B reads plus capability-gated Guide/Category create/update, separate archive/restore, Guide mark-stale, and complete Tag/Alias replacement tools (twenty tools total). Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
 
 ## Trust rules
 
@@ -124,7 +124,7 @@ Every Guide tool requires `workspaceHandle`.
 - `guide_create({workspaceHandle, categoryId, expectedCategoryRevision, title, summary})` — implemented canonical draft creation; core owns Guide ID, timestamps, filename/path, status, empty Tags/aliases, and starter body; caller ID/time/path/status/body fields are rejected.
 - `guide_update({workspaceHandle, guideId, expectedRevision, title, summary, tags, aliases, body})` — implemented complete editable-content replacement; 768 KiB body cap; typed fields only; one atomic candidate; verification-relevant edits automatically make tested content stale.
 - `guide_update_title`, `guide_tidy_path`, and `guide_change_category` — explicit operations with expected revision; Category change is a journaled path+frontmatter update; ID unchanged. There is no generic move.
-- `guide_set_tags` / `guide_set_aliases` — complete normalized arrays with expected revision.
+- `guide_set_tags({workspaceHandle, guideId, expectedRevision, tags})` / `guide_set_aliases({…, aliases})` — implemented complete ordered-array replacement with core limits and Unicode-fold duplicate rejection; tested Guides become stale and unrelated fields remain fixed.
 - `guide_change_status({…, status})` — cannot set `tested` through MCP.
 - `guide_request_tested_approval({workspaceHandle, guideId, expectedRevision})` — readiness check plus pending native approval; no immediate status change.
 - `guide_mark_stale({workspaceHandle, guideId, expectedRevision})` — implemented trust-reducing typed mutation; draft/tested become stale, stale is a no-op, and archived remains archived with stale restore state. Schema v1 has no stale-reason field, so no free-form reason or unknown metadata is accepted.

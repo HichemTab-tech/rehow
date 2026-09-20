@@ -122,6 +122,8 @@ Phase 6C6 adds separate Guide archive and restore, never a caller-supplied gener
 
 Phase 6C7 adds only exact-revision Guide mark-stale. It can reduce trust but cannot select a generic status, assert tested, add a reason/unknown field, or change content/path/Category. Archived Guides retain archived presentation while their core-owned restorable status becomes stale. Existing recovery, confinement, and content-free error controls remain unchanged.
 
+Phase 6C8 adds separate complete Tag and alias replacement at an exact Guide revision. The core alone enforces bounds, Unicode-fold uniqueness, round-trip preservation, and automation trust reduction. Neither schema accepts the other collection or any title, summary, body, path, Category, status, YAML, Attachment, Git, shell, network, broad, or destructive control.
+
 The portable `verify:v1` digest is intentionally unkeyed: it detects instruction-bearing content drift but is not cryptographic proof of which person or program wrote the Markdown. Rehow guarantees that its desktop renderer and MCP APIs cannot assert Tested without native confirmation. A same-user process with direct Workspace filesystem write access can reproduce or replace the declaration and digest and is outside that hard boundary; Workspace permissions, Git review, and visible diagnostics remain the mitigations. A future provenance/signature feature would require a separate portability and key-management decision.
 
 Network/removable filesystems may not honor local atomicity/fsync/watch semantics. Detect known filesystem characteristics where practical, warn that guarantees are degraded, use polling/reconciliation, and do not claim durable atomic behavior that the mount cannot provide.

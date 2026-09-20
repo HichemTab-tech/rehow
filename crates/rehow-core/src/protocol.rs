@@ -176,6 +176,22 @@ pub fn guide_update_body_limit_error(request_id: RequestId) -> ErrorDto {
     ))
 }
 
+pub fn invalid_guide_tags_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::Tags,
+        construction::Reason::InvalidFormat,
+    ))
+}
+
+pub fn invalid_guide_aliases_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::Aliases,
+        construction::Reason::InvalidFormat,
+    ))
+}
+
 pub fn guide_update_busy_error(request_id: RequestId) -> ErrorDto {
     constructed_error(construction::io_busy(
         request_id,

@@ -24,9 +24,9 @@ use rehow_core::{
         invalid_category_create_name_error, invalid_category_create_summary_error,
         invalid_category_lifecycle_error, invalid_category_update_error,
         invalid_category_update_name_error, invalid_category_update_summary_error,
-        invalid_guide_create_summary_error, invalid_guide_create_title_error,
-        invalid_guide_lifecycle_error, invalid_guide_update_error, new_request_id,
-        workspace_write_required_error,
+        invalid_guide_aliases_error, invalid_guide_create_summary_error,
+        invalid_guide_create_title_error, invalid_guide_lifecycle_error, invalid_guide_tags_error,
+        invalid_guide_update_error, new_request_id, workspace_write_required_error,
     },
     search::{MAX_SEARCH_RESULTS, SearchError, search_workspace_filtered},
     storage::{
@@ -315,6 +315,24 @@ struct GuideLifecycleInput {
     expected_revision: String,
 }
 
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GuideTagsInput {
+    workspace_handle: String,
+    guide_id: String,
+    expected_revision: String,
+    tags: Vec<String>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GuideAliasesInput {
+    workspace_handle: String,
+    guide_id: String,
+    expected_revision: String,
+    aliases: Vec<String>,
+}
+
 #[derive(Clone, Copy)]
 enum GuideStatusMutation {
     MarkStale,
@@ -328,6 +346,24 @@ impl GuideStatusMutation {
             Self::MarkStale => GuideEdit::MarkStale,
             Self::Archive => GuideEdit::Archive,
             Self::Restore => GuideEdit::Restore,
+        }
+    }
+}
+
+enum GuideCollectionMutation {
+    Tags(Vec<String>),
+    Aliases(Vec<String>),
+}
+
+impl GuideCollectionMutation {
+    fn is_tags(&self) -> bool {
+        matches!(self, Self::Tags(_))
+    }
+
+    fn edit(self) -> GuideEdit {
+        match self {
+            Self::Tags(values) => GuideEdit::ReplaceTags(values),
+            Self::Aliases(values) => GuideEdit::ReplaceAliases(values),
         }
     }
 }
@@ -1192,6 +1228,146 @@ fn guide_lifecycle(
         GuideStatusMutation::Restore => updated.effective_status() != GuideStatus::Archived,
     };
     if updated.revision() != outcome.revision() || !expected_state {
+        return Err(McpError::internal_error(
+            "Updated Guide state unavailable",
+            None,
+        ));
+    }
+    let output = GuideUpdateOutput {
+        guide_id: guide_id.to_string(),
+        revision: outcome.revision().to_string(),
+        changed: outcome.changed(),
+        refresh_required: false,
+        declared_status: Some(guide_status(updated.guide().declared_status())),
+        effective_status: Some(guide_status(updated.effective_status())),
+        restorable_status: updated
+            .guide()
+            .archive()
+            .map(|archive| restorable_status(archive.archived_from_status())),
+    };
+    serde_json::to_value(output)
+        .map(CallToolResult::structured)
+        .map_err(|_| McpError::internal_error("Tool output unavailable", None))
+}
+
+fn guide_collection_error(
+    request_id: rehow_core::protocol::RequestId,
+    guide_id: GuideId,
+    tags: bool,
+    error: GuideUpdateError,
+) -> ErrorDto {
+    match error {
+        GuideUpdateError::NotFound => guide_not_found_error(request_id, guide_id),
+        GuideUpdateError::Busy => guide_update_busy_error(request_id),
+        GuideUpdateError::RevisionConflict
+        | GuideUpdateError::InvalidGuide
+        | GuideUpdateError::InvalidEdit
+        | GuideUpdateError::NotReady
+        | GuideUpdateError::UnsafeRoundTrip
+        | GuideUpdateError::ResourceLimit
+        | GuideUpdateError::DestinationCategoryNotFound
+        | GuideUpdateError::DestinationCategoryArchived => {
+            if tags {
+                invalid_guide_tags_error(request_id)
+            } else {
+                invalid_guide_aliases_error(request_id)
+            }
+        }
+        GuideUpdateError::UnsafeStorage
+        | GuideUpdateError::UnsupportedFilesystem
+        | GuideUpdateError::Io
+        | GuideUpdateError::CommittedRefreshRequired { .. } => {
+            guide_update_unavailable_error(request_id)
+        }
+    }
+}
+
+fn guide_collection_update(
+    server: &McpServer,
+    workspace_handle: String,
+    guide_id_value: String,
+    expected_revision_value: String,
+    mutation: GuideCollectionMutation,
+) -> Result<CallToolResult, McpError> {
+    let request_id = new_request_id();
+    let workspace = server.workspace(&workspace_handle)?;
+    if !workspace.allow_write {
+        return structured_tool_error(workspace_write_required_error(request_id));
+    }
+    let guide_id = guide_id_value
+        .parse::<GuideId>()
+        .map_err(|_| McpError::invalid_params("invalid Guide ID", None))?;
+    let expected_revision = expected_revision_value
+        .parse::<Revision>()
+        .map_err(|_| McpError::invalid_params("invalid Guide revision", None))?;
+    let Some(recovery) = server.recovery_locations.as_ref() else {
+        return structured_tool_error(guide_update_unavailable_error(request_id));
+    };
+    let mut view = workspace
+        .view
+        .write()
+        .map_err(|_| McpError::internal_error("Workspace view unavailable", None))?;
+    let Some((_, current)) = find_guide(&view, &guide_id) else {
+        return structured_tool_error(guide_not_found_error(request_id, guide_id));
+    };
+    if current.revision() != expected_revision {
+        return structured_tool_error(guide_revision_conflict_error(
+            request_id,
+            guide_id,
+            expected_revision,
+            current.revision(),
+        ));
+    }
+    let tags = mutation.is_tags();
+    let outcome = match update_guide(
+        &mut view,
+        &recovery.state_home.bridge_path,
+        recovery
+            .runtime_directory
+            .as_ref()
+            .map(|directory| directory.bridge_path.as_path()),
+        guide_id,
+        expected_revision,
+        mutation.edit(),
+    ) {
+        Ok(outcome) => outcome,
+        Err(GuideUpdateError::CommittedRefreshRequired { revision }) => {
+            let output = GuideUpdateOutput {
+                guide_id: guide_id.to_string(),
+                revision: revision.to_string(),
+                changed: true,
+                refresh_required: true,
+                declared_status: None,
+                effective_status: None,
+                restorable_status: None,
+            };
+            return serde_json::to_value(output)
+                .map(CallToolResult::structured)
+                .map_err(|_| McpError::internal_error("Tool output unavailable", None));
+        }
+        Err(GuideUpdateError::RevisionConflict) => {
+            if refresh_open_workspace(&mut view).is_ok() {
+                if let Some((_, current)) = find_guide(&view, &guide_id) {
+                    return structured_tool_error(guide_revision_conflict_error(
+                        request_id,
+                        guide_id,
+                        expected_revision,
+                        current.revision(),
+                    ));
+                }
+                return structured_tool_error(guide_not_found_error(request_id, guide_id));
+            }
+            return structured_tool_error(guide_update_unavailable_error(request_id));
+        }
+        Err(error) => {
+            return structured_tool_error(guide_collection_error(
+                request_id, guide_id, tags, error,
+            ));
+        }
+    };
+    let (_, updated) = find_guide(&view, &guide_id)
+        .ok_or_else(|| McpError::internal_error("Updated Guide unavailable", None))?;
+    if updated.revision() != outcome.revision() {
         return Err(McpError::internal_error(
             "Updated Guide state unavailable",
             None,
@@ -2218,6 +2394,42 @@ impl McpServer {
     }
 
     #[tool(
+        name = "guide_set_tags",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<GuideUpdateOutput>(),
+        description = "Replace one Guide's complete ordered Tag list at its exact revision. Requires startup write capability. Tested Guides become stale; no other content or path is changed."
+    )]
+    fn guide_set_tags(
+        &self,
+        Parameters(input): Parameters<GuideTagsInput>,
+    ) -> Result<CallToolResult, McpError> {
+        guide_collection_update(
+            self,
+            input.workspace_handle,
+            input.guide_id,
+            input.expected_revision,
+            GuideCollectionMutation::Tags(input.tags),
+        )
+    }
+
+    #[tool(
+        name = "guide_set_aliases",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<GuideUpdateOutput>(),
+        description = "Replace one Guide's complete ordered alias list at its exact revision. Requires startup write capability. Tested Guides become stale; no other content or path is changed."
+    )]
+    fn guide_set_aliases(
+        &self,
+        Parameters(input): Parameters<GuideAliasesInput>,
+    ) -> Result<CallToolResult, McpError> {
+        guide_collection_update(
+            self,
+            input.workspace_handle,
+            input.guide_id,
+            input.expected_revision,
+            GuideCollectionMutation::Aliases(input.aliases),
+        )
+    }
+
+    #[tool(
         name = "guide_mark_stale",
         output_schema = rmcp::handler::server::tool::schema_for_type::<GuideUpdateOutput>(),
         description = "Mark one Guide stale at its exact revision. Draft and tested Guides become stale; archived Guides remain archived with stale restore state. Requires startup write capability and cannot assert tested status."
@@ -2507,7 +2719,7 @@ mod tests {
             "draft" => return,
             "stale" => "status: stale\n",
             "tested" => {
-                "status: tested\nlast_verified_at: \"2026-09-20T00:00:00Z\"\nverified_content_hash: verify:v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
+                "status: tested\nlast_verified_at: \"2026-09-20T00:00:00Z\"\nverified_content_hash: verify:v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\nfuture_key: keep-me\n"
             }
             "archived" => {
                 "status: archived\narchived_from_status: draft\narchived_at: \"2026-09-20T00:00:00Z\"\n"
@@ -2816,6 +3028,8 @@ mod tests {
                 "guide_get",
                 "guide_mark_stale",
                 "guide_restore",
+                "guide_set_aliases",
+                "guide_set_tags",
                 "guide_update",
                 "guides_list",
                 "guides_search",
@@ -2939,6 +3153,35 @@ mod tests {
                         .get(forbidden)
                         .is_none()
                 );
+            }
+        }
+        for (name, field, other) in [
+            ("guide_set_tags", "tags", "aliases"),
+            ("guide_set_aliases", "aliases", "tags"),
+        ] {
+            let tool = responses[1]["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap();
+            assert!(tool["outputSchema"].is_object());
+            assert!(
+                tool["inputSchema"]["properties"]
+                    .get("expectedRevision")
+                    .is_some()
+            );
+            assert!(tool["inputSchema"]["properties"].get(field).is_some());
+            for forbidden in [
+                other,
+                "title",
+                "summary",
+                "body",
+                "path",
+                "categoryId",
+                "status",
+            ] {
+                assert!(tool["inputSchema"]["properties"].get(forbidden).is_none());
             }
         }
     }
@@ -3904,6 +4147,181 @@ mod tests {
     }
 
     #[test]
+    fn guide_tag_and_alias_replacement_is_exact_narrow_and_trust_reducing() {
+        let read_only_root = tempfile::tempdir().unwrap();
+        let read_only_state = tempfile::tempdir().unwrap();
+        fixture_workspace(read_only_root.path());
+        fixture_guide(read_only_root.path());
+        let guide_path = read_only_root
+            .path()
+            .join("categories/general/0199a1d7-7b0d-7d8e-a38d-f936c5735e12.md");
+        let before = fs::read(&guide_path).unwrap();
+        let read_only = open_server_with_recovery(
+            LaunchConfig {
+                workspaces: vec![WorkspaceArgument {
+                    alias: "personal".to_owned(),
+                    path: read_only_root.path().to_owned(),
+                    allow_write: false,
+                }],
+            },
+            Some(RecoveryLocationPaths {
+                state_home: read_only_state.path().to_owned(),
+                runtime_directory: None,
+            }),
+        )
+        .unwrap();
+        let denied = read_only
+            .guide_set_tags(Parameters(GuideTagsInput {
+                workspace_handle: read_only.workspaces[0].handle.clone(),
+                guide_id: "invalid".to_owned(),
+                expected_revision: "invalid".to_owned(),
+                tags: vec!["ignored".to_owned()],
+            }))
+            .unwrap();
+        assert_eq!(denied.is_error, Some(true));
+        assert_eq!(
+            denied.structured_content.as_ref().unwrap()["code"],
+            "WORKSPACE_READ_ONLY"
+        );
+        assert_eq!(fs::read(&guide_path).unwrap(), before);
+        assert!(!read_only_state.path().join("rehow").exists());
+
+        let workspace_root = tempfile::tempdir().unwrap();
+        let state_root = tempfile::tempdir().unwrap();
+        fixture_workspace(workspace_root.path());
+        fixture_guide_status(workspace_root.path(), "tested");
+        let server = open_server_with_recovery(
+            LaunchConfig {
+                workspaces: vec![WorkspaceArgument {
+                    alias: "personal".to_owned(),
+                    path: workspace_root.path().to_owned(),
+                    allow_write: true,
+                }],
+            },
+            Some(RecoveryLocationPaths {
+                state_home: state_root.path().to_owned(),
+                runtime_directory: None,
+            }),
+        )
+        .unwrap();
+        let guide_id: GuideId = "0199a1d7-7b0d-7d8e-a38d-f936c5735e12".parse().unwrap();
+        let handle = server.workspaces[0].handle.clone();
+        let (original_revision, relative_path, category_id, title, summary, aliases, body) = {
+            let view = server.workspaces[0].view.read().unwrap();
+            let (_, guide) = find_guide(&view, &guide_id).unwrap();
+            (
+                guide.revision(),
+                guide.relative_path().to_owned(),
+                *guide.guide().category_id(),
+                guide.guide().title().to_owned(),
+                guide.guide().summary().to_owned(),
+                guide.guide().aliases().to_vec(),
+                guide.guide().body().to_owned(),
+            )
+        };
+        let tags = server
+            .guide_set_tags(Parameters(GuideTagsInput {
+                workspace_handle: handle.clone(),
+                guide_id: guide_id.to_string(),
+                expected_revision: original_revision.to_string(),
+                tags: vec!["linux".to_owned(), "archive".to_owned()],
+            }))
+            .unwrap();
+        assert_eq!(tags.is_error, Some(false));
+        let tags_output = tags.structured_content.unwrap();
+        assert_eq!(tags_output["changed"], true);
+        assert_eq!(tags_output["declaredStatus"], "stale");
+        let tags_revision: Revision = tags_output["revision"].as_str().unwrap().parse().unwrap();
+        {
+            let view = server.workspaces[0].view.read().unwrap();
+            let (_, guide) = find_guide(&view, &guide_id).unwrap();
+            assert_eq!(guide.guide().tags(), &["linux", "archive"]);
+            assert_eq!(guide.guide().aliases(), aliases);
+            assert_eq!(guide.relative_path(), relative_path);
+            assert_eq!(guide.guide().category_id(), &category_id);
+            assert_eq!(guide.guide().title(), title);
+            assert_eq!(guide.guide().summary(), summary);
+            assert_eq!(guide.guide().body(), body);
+        }
+        assert!(
+            fs::read_to_string(
+                workspace_root
+                    .path()
+                    .join("categories/general/0199a1d7-7b0d-7d8e-a38d-f936c5735e12.md")
+            )
+            .unwrap()
+            .contains("future_key: keep-me")
+        );
+
+        let stale = server
+            .guide_set_aliases(Parameters(GuideAliasesInput {
+                workspace_handle: handle.clone(),
+                guide_id: guide_id.to_string(),
+                expected_revision: original_revision.to_string(),
+                aliases: Vec::new(),
+            }))
+            .unwrap();
+        assert_eq!(stale.is_error, Some(true));
+        assert_eq!(
+            stale.structured_content.as_ref().unwrap()["code"],
+            "REVISION_CONFLICT"
+        );
+
+        let cleared = server
+            .guide_set_aliases(Parameters(GuideAliasesInput {
+                workspace_handle: handle.clone(),
+                guide_id: guide_id.to_string(),
+                expected_revision: tags_revision.to_string(),
+                aliases: Vec::new(),
+            }))
+            .unwrap();
+        assert_eq!(cleared.is_error, Some(false));
+        let cleared_output = cleared.structured_content.unwrap();
+        assert_eq!(cleared_output["changed"], true);
+        let cleared_revision: Revision = cleared_output["revision"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let no_op = server
+            .guide_set_aliases(Parameters(GuideAliasesInput {
+                workspace_handle: handle.clone(),
+                guide_id: guide_id.to_string(),
+                expected_revision: cleared_revision.to_string(),
+                aliases: Vec::new(),
+            }))
+            .unwrap();
+        assert_eq!(no_op.is_error, Some(false));
+        let no_op_output = no_op.structured_content.unwrap();
+        assert_eq!(no_op_output["changed"], false);
+        assert_eq!(no_op_output["revision"], cleared_revision.to_string());
+
+        let path = workspace_root
+            .path()
+            .join("categories/general/0199a1d7-7b0d-7d8e-a38d-f936c5735e12.md");
+        let before_invalid = fs::read(&path).unwrap();
+        let invalid = server
+            .guide_set_tags(Parameters(GuideTagsInput {
+                workspace_handle: handle,
+                guide_id: guide_id.to_string(),
+                expected_revision: cleared_revision.to_string(),
+                tags: vec!["Wayland".to_owned(), "wayland".to_owned()],
+            }))
+            .unwrap();
+        assert_eq!(invalid.is_error, Some(true));
+        assert_eq!(
+            invalid.structured_content.as_ref().unwrap()["details"]["field"],
+            "/tags"
+        );
+        assert_eq!(fs::read(path).unwrap(), before_invalid);
+        let view = server.workspaces[0].view.read().unwrap();
+        let (_, guide) = find_guide(&view, &guide_id).unwrap();
+        assert!(guide.guide().aliases().is_empty());
+        assert_eq!(guide.guide().tags(), &["linux", "archive"]);
+        assert_eq!(guide.guide().body(), body);
+    }
+
+    #[test]
     fn guide_update_requires_capability_and_expected_revision() {
         let workspace_root = tempfile::tempdir().unwrap();
         let state_root = tempfile::tempdir().unwrap();
@@ -4285,6 +4703,67 @@ mod tests {
         )
         .unwrap();
         assert!(bytes.contains("status: stale"));
+    }
+
+    #[tokio::test]
+    async fn guide_set_tags_works_through_the_protocol() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let state_root = tempfile::tempdir().unwrap();
+        fixture_workspace(workspace_root.path());
+        fixture_guide(workspace_root.path());
+        let server = open_server_with_recovery(
+            LaunchConfig {
+                workspaces: vec![WorkspaceArgument {
+                    alias: "personal".to_owned(),
+                    path: workspace_root.path().to_owned(),
+                    allow_write: true,
+                }],
+            },
+            Some(RecoveryLocationPaths {
+                state_home: state_root.path().to_owned(),
+                runtime_directory: None,
+            }),
+        )
+        .unwrap();
+        let handle = server.workspaces[0].handle.clone();
+        let revision = {
+            let view = server.workspaces[0].view.read().unwrap();
+            find_guide(
+                &view,
+                &"0199a1d7-7b0d-7d8e-a38d-f936c5735e12".parse().unwrap(),
+            )
+            .unwrap()
+            .1
+            .revision()
+            .to_string()
+        };
+        let responses = protocol_exchange(
+            server,
+            &[
+                serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
+                serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+                serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"guide_set_tags","arguments":{"workspaceHandle":handle,"guideId":"0199a1d7-7b0d-7d8e-a38d-f936c5735e12","expectedRevision":revision,"tags":["linux","archive"]}}}),
+            ],
+            2,
+        )
+        .await;
+        assert_eq!(responses[1]["result"]["isError"], false);
+        assert_eq!(responses[1]["result"]["structuredContent"]["changed"], true);
+        let reopened = open_server(LaunchConfig {
+            workspaces: vec![WorkspaceArgument {
+                alias: "personal".to_owned(),
+                path: workspace_root.path().to_owned(),
+                allow_write: false,
+            }],
+        })
+        .unwrap();
+        let view = reopened.workspaces[0].view.read().unwrap();
+        let (_, guide) = find_guide(
+            &view,
+            &"0199a1d7-7b0d-7d8e-a38d-f936c5735e12".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(guide.guide().tags(), &["linux", "archive"]);
     }
 
     #[test]

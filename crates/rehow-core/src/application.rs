@@ -1010,6 +1010,8 @@ pub enum GuideEdit {
         tags: Vec<String>,
         aliases: Vec<String>,
     },
+    ReplaceTags(Vec<String>),
+    ReplaceAliases(Vec<String>),
     SetContent {
         title: String,
         summary: String,
@@ -2274,6 +2276,12 @@ pub(crate) fn update_guide_with_context(
                         candidate_bytes = apply_guide_mutation(&candidate_bound, mutation, &stamp)?;
                     }
                     Ok(candidate_bytes)
+                }
+                GuideEdit::ReplaceTags(values) => {
+                    apply_guide_mutation(&bound, GuideMutation::ReplaceTags(values), &stamp)
+                }
+                GuideEdit::ReplaceAliases(values) => {
+                    apply_guide_mutation(&bound, GuideMutation::ReplaceAliases(values), &stamp)
                 }
                 GuideEdit::SetContent {
                     title,
