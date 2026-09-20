@@ -19,7 +19,7 @@ Exact packaging syntax is finalized during Phase 6, but alias and per-Workspace 
 
 Initial transport is stdio. Remote Streamable HTTP is deferred until authentication, origin, multi-user, and network threat models exist.
 
-The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. The first Phase 6A gate exposes only `workspaces_list` and `workspace_get`; all content-list/search and mutation tools remain absent until their pagination, response-bound, and capability gates are accepted. Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
+The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6B exposes the exact nine-tool read-only surface listed below; mutations remain absent. Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
 
 ## Trust rules
 
@@ -87,7 +87,7 @@ RPC/tool-schema failures use MCP protocol errors. Domain failures nest the exact
 
 ### Limits
 
-All list/search tools require/cap `limit` and use cursors. Full Guide reads have configured byte limits and report safe truncation only when the tool explicitly supports it; mutations never accept truncated source. Queries, arrays, strings, metadata depth, response bytes, and execution time are bounded. Exact defaults are frozen with schema tests in Phase 6.
+List/search/validation calls default to 25 results and reject limits outside 1–100. Cursors are versioned, authenticated with a per-launch key, and bound to the offset, tool, filters, launch Workspace handle, and retained view; forgery fails and refresh invalidates old cursors. Guide bodies default to 256 KiB and cannot exceed the canonical 2 MiB limit, truncate only at UTF-8 boundaries, and report total bytes plus truncation. Extracted fenced code is independently capped at 128 blocks and 128 KiB. Search applies Category/Tag eligibility before the 100-result ranking cap.
 
 ## Workspace tools
 
@@ -120,7 +120,7 @@ Every Guide tool requires `workspaceHandle`.
 
 - `guides_list({workspaceHandle, categoryId?, statuses?, tags?, cursor?, limit?})`
 - `guide_get({workspaceHandle, guideId, includeBody?, maxBodyBytes?})`
-- `guides_search({workspaceHandle, query, categoryIds?, tags?, statuses?, cursor?, limit?})`
+- `guides_search({workspaceHandle, query, includeArchived?, categoryIds?, tags?, cursor?, limit?})`
 - `guide_create({workspaceHandle, expectedWorkspaceSnapshot, guide})` — always creates `draft`; a status field is rejected.
 - `guide_update({workspaceHandle, guideId, expectedRevision, patch})` — typed fields only; verification-relevant edits automatically mark tested content stale.
 - `guide_update_title`, `guide_tidy_path`, and `guide_change_category` — explicit operations with expected revision; Category change is a journaled path+frontmatter update; ID unchanged. There is no generic move.
@@ -135,7 +135,7 @@ Every Guide tool requires `workspaceHandle`.
 - `guides_find_duplicates({workspaceHandle, guideId?, cursor?, limit?})`
 - `guides_find_related({workspaceHandle, guideId, cursor?, limit?})`
 
-Read results separate metadata, body, extracted command/path/error fields, diagnostics, and revision. They do not return rendered HTML.
+Read results separate typed metadata, body, bounded fenced-code blocks, diagnostics, and revision. They do not return rendered HTML or Attachment bytes.
 
 ## Attachment metadata tools
 

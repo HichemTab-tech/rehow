@@ -6,7 +6,11 @@ use crate::{
     protocol::{GuideId, Revision},
     storage::{LoadedCategory, LoadedGuide, WorkspaceView},
 };
-use std::{cmp::Reverse, collections::BTreeMap, sync::Arc};
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use unicode_normalization::UnicodeNormalization;
 
 pub const MAX_SEARCH_QUERY_BYTES: usize = 512;
@@ -198,6 +202,7 @@ impl SearchIndex {
         query: &str,
         status_scope: SearchStatusScope,
         limit: usize,
+        allowed_guide_ids: Option<&BTreeSet<GuideId>>,
     ) -> Result<Vec<SearchHit>, SearchError> {
         let parsed = SearchQuery::parse(query)?;
         let limit = limit.min(MAX_SEARCH_RESULTS);
@@ -207,6 +212,9 @@ impl SearchIndex {
         let mut hits: Vec<(SearchHit, &str, &str, &SearchFields)> = Vec::new();
 
         for document in &self.documents {
+            if allowed_guide_ids.is_some_and(|allowed| !allowed.contains(&document.guide_id)) {
+                continue;
+            }
             if !status_scope.includes(document.status) {
                 continue;
             }
@@ -292,7 +300,28 @@ pub fn search_workspace_in_scope(
     status_scope: SearchStatusScope,
     limit: usize,
 ) -> Result<Vec<SearchHit>, SearchError> {
-    workspace.search_index().search(query, status_scope, limit)
+    workspace
+        .search_index()
+        .search(query, status_scope, limit, None)
+}
+
+/// Searches only Guides in the caller-provided allowed set, applying that filter before ranking
+/// and the public result cap. The set carries no filesystem authority.
+pub fn search_workspace_filtered(
+    workspace: &WorkspaceView,
+    query: &str,
+    include_archived: bool,
+    limit: usize,
+    allowed_guide_ids: &BTreeSet<GuideId>,
+) -> Result<Vec<SearchHit>, SearchError> {
+    let status_scope = if include_archived {
+        SearchStatusScope::All
+    } else {
+        SearchStatusScope::Active
+    };
+    workspace
+        .search_index()
+        .search(query, status_scope, limit, Some(allowed_guide_ids))
 }
 
 struct SearchQuery {

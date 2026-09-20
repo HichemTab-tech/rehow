@@ -125,7 +125,8 @@ Milestones:
 - Independently packaged stdio server sharing the application/core crates.
 - Startup-configured Workspace allowlist and read-only default.
 - First gate: exact-pinned official `rmcp` 3.4 protocol foundation, Rehow-owned 1 MiB fail-closed stdio framing, MCP `2026-07-28` discovery plus `2025-11-25` initialization, canonical startup root handles, and only `workspaces_list`/`workspace_get`.
-- Workspace/Category/Guide/search/validation/Attachment-metadata tools.
+- Phase 6B: bounded Category/Guide listing, core-ranked search, typed Guide reads, validation, and refresh (nine read-only tools total).
+- Later gates: Attachment-metadata and mutation tools.
 - Per-Workspace write/broad/Git capabilities, launch handles, revisions/effect sets, dry-run tokens, and native out-of-band approval companion.
 - Git status/plan/commit/safe sync only after Phase 5 primitives are approved.
 - Client configuration/setup docs and end-to-end target AI workflow.

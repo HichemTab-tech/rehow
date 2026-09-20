@@ -60,7 +60,7 @@ Owns Workspace classification, compatibility, schemas, parsing/serialization, un
 
 Owns MCP schema/transport mapping, configured Workspace selection, confirmation semantics, response-size limits, and tool descriptions resistant to prompt-injected content. It delegates all domain work to the core and never exposes generic file or process primitives.
 
-ADR 0026 selects exact-pinned official `rmcp` 3.4 for the current MCP 2026-07-28 discovery lifecycle and 2025-11-25 initialize compatibility. Rehow wraps stdio in its own 1 MiB newline-frame bound because the SDK convenience transport has no finite input limit. Phase 6A opens only startup-configured canonical Workspace roots, issues random per-launch handles, defaults to read-only, and exposes setup/health tools before any content or mutation surface.
+ADR 0026 selects exact-pinned official `rmcp` 3.4 for the current MCP 2026-07-28 discovery lifecycle and 2025-11-25 initialize compatibility. Rehow wraps stdio in its own 1 MiB newline-frame bound because the SDK convenience transport has no finite input limit. Phase 6A opens only startup-configured canonical Workspace roots and issues random per-launch handles. ADR 0027 adds nine total read-only tools with view-bound pagination, core-ranked search, bounded Guide bodies/code blocks, validation, and descriptor-confined refresh; it adds no mutation authority.
 
 ### Contracts
 

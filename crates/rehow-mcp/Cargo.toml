@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 rehow-core = { path = "../rehow-core" }
+blake3 = { version = "=1.8.7", default-features = false, features = ["std", "pure"] }
 futures = { version = "=0.3.34", default-features = false, features = ["async-await", "std"] }
 rmcp = { version = "=3.4.0", default-features = false, features = ["macros", "server"] }
 serde = { version = "=1.0.229", features = ["derive"] }
