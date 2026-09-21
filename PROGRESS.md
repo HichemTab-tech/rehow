@@ -1,15 +1,15 @@
 # Rehow Progress
 
-Last updated: 2026-09-20
+Last updated: 2026-09-21
 State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 6E1B2 is complete at signed checkpoint `b2a5a8b`: the MCP server now captures a build-identified approval-helper sibling into a sealed executable snapshot and owns bounded, expiring, cancellable, single-use approval plans. The gate remains unreachable from MCP.
+Phase 6E2A is complete at signed checkpoint `f89479f`: the MCP server exposes exact Category reorder preview plus handle/token-only native-approved execution, with request cancellation and final writer-lock snapshot revalidation.
 
 ## Current task
 
-Implement the first approval-consuming MCP workflow: preview and execute exact Category reorder plans without granting client-side approval authority.
+Plan Phase 6E2B: safe empty-Category removal through the accepted native approval gate, reusing the existing recoverable core removal boundary without exposing paths or client-side consent authority.
 
 ## Overall status
 
@@ -142,17 +142,18 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Completed Phase 6E1A at signed checkpoint `82da5d0`: `--allow-broad` and `--allow-git-write` are explicit per-alias startup grants, require the same alias's write authority through parser and direct-construction paths, report a closed four-capability tuple, and remain inert. Full gates and the single reused Security Reviewer pass.
 - Completed Phase 6E1B1 at signed checkpoint `b4eb876`: `rehow-mcp-approve` accepts only exact fixed pipes and bounded `RHA1` plain text, closes unrelated descriptors, uses direct in-process GTK, and returns no result on malformed, spoofable, stalled, headless, or dialog-error paths. Full gates and the reused Security Reviewer pass after closing `PATH`-fallback and Unicode-invisibility findings.
 - Completed Phase 6E1B2 at signed checkpoint `b2a5a8b`: the server validates a fixed sibling's ownership/mode/link/build digest, copies it into a sealed executable memfd, launches only that snapshot through private pipes and a minimal environment, and maintains at most 64 exact-bound 90-second single-use plans with cancellation. Full repository gates, focused correction gates, and the reused Security Reviewer pass after closing retained-inode mutation and cancellation-finalization races.
+- Completed Phase 6E2A at signed checkpoint `f89479f`: `category_reorder_plan` validates and binds the exact complete Category order while `category_reorder` accepts only handle+token, obtains native consent, and invokes the recoverable core reorder after cancellation-aware adapter and final writer-lock snapshot checks. The packaged graphical Approve/Cancel smoke, full gate, and reused Security Reviewer pass.
 
 ## Work in progress
 
-- No Rehow implementation is uncommitted. Phase 6E1B2 is complete at signed checkpoint `b2a5a8b`; this ledger update follows it. Untracked `x` remains unrelated and untouched.
+- No Rehow implementation is uncommitted. Phase 6E2A is complete at signed checkpoint `f89479f`; this ledger update follows it. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
 - Workspace adoption/import/migration and Attachment viewing/export/reveal remain incomplete.
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
-- Phase 6: protocol, bounded reads, narrow mutations, explicit startup capabilities, and the sealed native approval launcher/plan gate are complete at `b2a5a8b`; Category reorder/removal, tested approval, Attachment metadata mutation, Git commit/sync, and broader client documentation remain.
+- Phase 6: protocol, bounded reads, narrow mutations, explicit startup capabilities, the sealed native approval launcher, and exact Category reorder are complete at `f89479f`; Category removal, tested approval, Attachment metadata mutation, Git commit/sync, and broader client documentation remain.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
 ## Known bugs
@@ -278,19 +279,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - Phase 6E1A adds only explicit startup declarations. Unknown, repeated, malformed, and write-less broad/Git-write grants reject startup; direct `LaunchConfig` construction cannot bypass the dependency. No tool consumes either new grant. Security Reviewer verdict: PASS.
 - Phase 6E1B1's helper has no Workspace or mutation authority and is unreachable from MCP. Its exact pipe endpoint closes unrelated descriptors, binds standard streams to `/dev/null`, never resolves a dialog program from `PATH`, and rejects Unicode Format/Default-Ignorable spoofing text. The reused Security Reviewer verdict is PASS after those two correction rounds.
 - Phase 6E1B2 keeps the launcher/manager private and unreachable from MCP. The retained helper is an immutable sealed copy verified against the build digest; the final plan decision is linearized with cancellation. Security review found and closed same-inode post-capture mutation and approval-finalization races; the final verdict is PASS.
+- Phase 6E2A exposes the gate only for an exact complete Category reorder plan. SDK cancellation kills/reaps active approval, the core repeats issue-free Workspace/category snapshot validation after preparation at the journal boundary, and only explicit GTK Approve can authorize. Security review found and closed cancellation plus manifest TOCTOU gaps; final verdict: PASS.
 
 ## Blockers and human checkpoints
 
-- No active human decision blocker. Routine work uses zero extra agents; Phase 6E1B2 reused one existing Security Reviewer only at the completed authority-boundary gate and the verdict is PASS.
+- No active human decision blocker. Routine work uses zero extra agents; Phase 6E2A reused one existing Security Reviewer only at the authority-boundary gate and the verdict is PASS. The required packaged graphical Approve/Cancel smoke passed.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`b2a5a8b` — signed Phase 6E1B2 sealed MCP approval launcher and plan manager. This progress-only ledger update follows that implementation commit.
+`f89479f` — signed Phase 6E2A exact native-approved MCP Category reorder. This progress-only ledger update follows that implementation commit.
 
 ## Tests last run and results
 
+- 2026-09-21: Phase 6E2A checkpoint `f89479f` passes 446 core tests with 2 intentional network/performance ignores, 25 desktop Rust tests, 57 MCP unit tests, 3 real-helper integration tests, 1 stdio integration test, and all contract/API suites. Strict all-Workspace Clippy, Cargo formatting, Biome over 56 files, direct installed TypeScript checks, contract drift, 39 Vitest tests, verification vectors, Git credential-proxy smoke, Vite/Cargo production builds, bootstrap, and whitespace checks pass. The release helper digest `f2aa932d…c4c5fa` was embedded in the server; the one-link packaged graphical Approve/Cancel smoke passed exact mutation and byte-identical denial. Security Reviewer verdict: PASS.
 - 2026-09-20: Phase 6E1B2 checkpoint `b2a5a8b` passes the full two-lane repository gate: all-workspace Cargo tests/strict Clippy/formatting and pnpm check/test/build plus bootstrap/whitespace checks. The final security corrections additionally pass 51 MCP unit tests, 3 real-helper integration tests, 1 stdio integration test, strict MCP Clippy, formatting, bootstrap, and whitespace checks. Adversarial coverage includes sealed-snapshot path and same-inode mutation, digest/mode/link rejection, descriptor/environment isolation, result framing, expiry, cancellation, replay, substitution, and the 64-plan cap. Security Reviewer verdict: PASS.
 - 2026-09-20: Phase 6E1B1 checkpoint `b4eb876` passes `pnpm check`, `pnpm test`, `pnpm build`, 39 Vitest tests, 444 core tests with 2 intentional ignores, supporting suites, 25 desktop Rust tests, 42 MCP unit tests, 3 real-helper integration tests, and 1 stdio integration test. Strict all-Workspace Clippy, Cargo formatting, bootstrap/whitespace checks, direct-GTK hostile-`PATH` regression, descriptor inspection, and the reused Security Reviewer pass. The final Unicode correction additionally passed focused helper tests and strict MCP Clippy.
 - 2026-09-20: Phase 6E1A checkpoint `82da5d0` passes `pnpm check`, `pnpm test`, `pnpm build`, 39 Vitest tests, 444 core tests with 2 intentional ignores, supporting contract/API suites, 25 desktop Rust tests, 39 MCP unit tests and 1 real-binary integration test. Strict all-Workspace Clippy, Cargo formatting, bootstrap/whitespace checks, production build, parser/direct-construction capability-escalation regressions, exact unchanged twenty-six-tool schema, and the single reused Security Reviewer pass.
@@ -459,7 +462,7 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Known test failures
 
-None. `pnpm tauri:build` emits the packet-approved informational warning that `dev.rehow.app` ends in macOS's `.app` suffix; Linux no-bundle output succeeds, and identifier review remains available before packaging.
+No product test failure. The current machine exposes pnpm 11.20.0 while the repository pins 11.3.0, so pnpm refuses root wrapper scripts. Per the user instruction not to install or switch Node/pnpm, the final Phase 6E2A JavaScript gate invoked the already-installed local binaries directly; all equivalent checks pass. `pnpm tauri:build` historically emits the packet-approved informational warning that `dev.rehow.app` ends in macOS's `.app` suffix; Linux no-bundle output succeeds.
 
 ## Important files changed
 
@@ -565,10 +568,11 @@ None. `pnpm tauri:build` emits the packet-approved informational warning that `d
 - ADR 0039, `docs/task-packets/phase-6e1a-mcp-startup-capabilities.md`, its evidence, strict startup parsing/server invariants, and closed capability reporting implement inert per-Workspace broad/Git-write authority declarations at `82da5d0`.
 - ADR 0040, `docs/task-packets/phase-6e1b1-mcp-approval-helper-endpoint.md`, its evidence, `crates/rehow-mcp/src/approval.rs`, the helper binary, and adversarial process tests implement the still-unreachable native approval endpoint at `b4eb876`.
 - ADR 0041, `docs/task-packets/phase-6e1b2-mcp-approval-launcher-plans.md`, its evidence, and `crates/rehow-mcp/src/approval_gate.rs` implement the sealed helper launcher and private approval-plan manager at `b2a5a8b`.
+- ADR 0042, `docs/task-packets/phase-6e2a-mcp-category-reorder.md`, its evidence, cancellation/commit-boundary core hardening, the two-tool MCP adapter, explicit native buttons, and the packaged smoke script implement exact approved Category reorder at `f89479f`.
 
 ## Next recommended action
 
-Implement `category_reorder_plan` and `category_reorder` as the first approval-consuming MCP workflow, reusing the accepted exact-inventory core operation and exposing only a plan token to execution.
+Specify Phase 6E2B `category_remove_plan`/`category_remove` around the accepted empty-Category recoverable trash operation. Bind exact revision, manifest/default-Category state, inventory, effect, and native destructive approval before implementation.
 
 ## Recommended agent role and reasoning effort
 
@@ -577,8 +581,8 @@ Architect/Orchestrator locally with `gpt-5.6-sol`, xhigh/high judgment. Run zero
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read ADRs 0026–0041, `docs/mcp-spec.md`, the Phase 6E1B2 evidence/packet, and the approval sections of architecture/testing/threat docs.
+2. Read ADRs 0026–0042, `docs/mcp-spec.md`, the Phase 6E2A evidence/packet, and the approval sections of architecture/testing/threat docs.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `b2a5a8b` and `b4eb876`; the following commit changes only `PROGRESS.md`.
+4. Verify signed checkpoints `f89479f` and `b2a5a8b`; the following commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 6E1B2 as complete. Implement the exact Category reorder plan/execute pair; approval must come only through the sealed native gate and every state/effect must be rechecked immediately before mutation.
+6. Treat Phase 6E2A as complete. Plan the exact empty-Category removal pair next; do not expose paths, generic deletion, cascade behavior, client consent assertions, or unbound effects.
