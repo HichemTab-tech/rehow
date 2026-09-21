@@ -2992,15 +2992,20 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn execute_category_remove(
+pub(crate) fn execute_category_remove<C>(
     workspace: &WorkspaceView,
     state_home: &Path,
     runtime_directory: Option<&Path>,
     relative_directory: &str,
     expected_revision: Revision,
+    expected_category_snapshot: Snapshot,
+    cancelled: &C,
     operation_id: crate::protocol::OperationId,
     created_at: crate::protocol::Timestamp,
-) -> Result<CategoryRemoveStorageOutcome, CategoryRemoveStorageError> {
+) -> Result<CategoryRemoveStorageOutcome, CategoryRemoveStorageError>
+where
+    C: Fn() -> bool,
+{
     recovery::execute_category_remove(
         &workspace._root,
         state_home,
@@ -3008,6 +3013,8 @@ pub(crate) fn execute_category_remove(
         *workspace.manifest.workspace_id(),
         relative_directory,
         expected_revision,
+        expected_category_snapshot,
+        cancelled,
         operation_id,
         created_at,
     )

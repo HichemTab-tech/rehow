@@ -4411,12 +4411,14 @@ fn category_remove_code(error: CategoryRemoveError) -> &'static str {
         CategoryRemoveError::NotFound => "notFound",
         CategoryRemoveError::DefaultCategory => "defaultCategory",
         CategoryRemoveError::NotEmpty => "notEmpty",
+        CategoryRemoveError::Cancelled => "cancelled",
         CategoryRemoveError::RevisionConflict => "revisionConflict",
         CategoryRemoveError::Busy => "busy",
         CategoryRemoveError::UnsafeStorage => "unsafeStorage",
         CategoryRemoveError::UnsupportedFilesystem => "unsupportedFilesystem",
         CategoryRemoveError::ResourceLimit => "resourceLimit",
         CategoryRemoveError::Io => "io",
+        CategoryRemoveError::RecoveryRequired { .. } => "recoveryRequired",
         CategoryRemoveError::CommittedRefreshRequired => "committedRefresh",
     }
 }
@@ -4433,6 +4435,7 @@ fn category_remove_message(error: CategoryRemoveError) -> String {
             "This Category is not empty. Move its Guides or inspect unexpected files before removing it."
                 .to_owned()
         }
+        CategoryRemoveError::Cancelled => "Category removal was cancelled before writing.".to_owned(),
         CategoryRemoveError::RevisionConflict => {
             "This Category changed on disk. Reopen the Workspace before removing it.".to_owned()
         }
@@ -4452,6 +4455,9 @@ fn category_remove_message(error: CategoryRemoveError) -> String {
         CategoryRemoveError::Io => {
             "The Category could not be removed. Check folder access and try again.".to_owned()
         }
+        CategoryRemoveError::RecoveryRequired { operation_id } => format!(
+            "Category removal was interrupted after its descriptor moved to Rehow Trash. Preserve the Workspace and recover operation {operation_id} before editing it."
+        ),
         CategoryRemoveError::CommittedRefreshRequired => {
             "The Category moved to Rehow Trash, but the view could not refresh. Reopen the Workspace."
                 .to_owned()
@@ -4854,7 +4860,7 @@ mod tests {
             GitSyncAncestry, GitSyncError,
         },
         markdown::parse_safe_markdown,
-        protocol::PlanToken,
+        protocol::{OperationId, PlanToken},
     };
     use std::{
         str::FromStr,
@@ -5574,6 +5580,19 @@ mod tests {
         assert_eq!(
             category_remove_message(CategoryRemoveError::DefaultCategory),
             "Choose a different default Category before removing this one."
+        );
+        assert_eq!(
+            category_remove_code(CategoryRemoveError::Cancelled),
+            "cancelled"
+        );
+        let operation_id = OperationId::from_str("0199a1d7-7b0d-7d8e-a38d-f936c5735e20").unwrap();
+        assert_eq!(
+            category_remove_code(CategoryRemoveError::RecoveryRequired { operation_id }),
+            "recoveryRequired"
+        );
+        assert!(
+            category_remove_message(CategoryRemoveError::RecoveryRequired { operation_id })
+                .contains(&operation_id.to_string())
         );
     }
 

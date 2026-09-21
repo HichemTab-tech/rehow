@@ -1,6 +1,6 @@
 # Installation and Desktop Integration
 
-Status: desktop packaging planned; Phase 6E2A MCP Category reorder development boundary available
+Status: desktop packaging planned; Phase 6E2B MCP Category removal development boundary available
 Last updated: 2026-09-21
 
 ## Supported baseline
@@ -75,7 +75,7 @@ The implemented Phase 6D2 development invocation is:
 cargo run -p rehow-mcp -- --workspace personal=/absolute/path/to/workspace
 ```
 
-Repeat `--workspace alias=/absolute/path` for up to 16 non-overlapping compatible Workspaces. Aliases and random launch handles—not paths—appear in tool results. Without another flag, read and preview tools provide bounded Workspace/Category/Guide/Attachment metadata, validation, search, duplicate/related discovery, confined Git status, refresh, and Category-reorder effects. To enable canonical narrow mutations, add `--allow-write personal`. Category reorder additionally requires `--allow-broad personal`, a release build containing the digest-bound sibling helper, and native approval for each exact plan. Write mode requires a private XDG state base outside every configured Workspace; unsafe state/runtime overlap fails startup. `--allow-git-write personal` remains inert until its operation-specific tools land. The server supports MCP `2026-07-28` discovery and `2025-11-25` initialization.
+Repeat `--workspace alias=/absolute/path` for up to 16 non-overlapping compatible Workspaces. Aliases and random launch handles—not paths—appear in tool results. Without another flag, read and preview tools provide bounded Workspace/Category/Guide/Attachment metadata, validation, search, duplicate/related discovery, confined Git status, refresh, and Category reorder/removal effects. To enable canonical narrow mutations, add `--allow-write personal`. Category reorder and empty non-default Category removal additionally require `--allow-broad personal`, a release build containing the digest-bound sibling helper, and native approval for each exact plan. Write mode requires a private XDG state base outside every configured Workspace; unsafe state/runtime overlap fails startup. `--allow-git-write personal` remains inert until its operation-specific tools land. The server supports MCP `2026-07-28` discovery and `2025-11-25` initialization.
 
 Packagers must install `rehow-mcp` and `rehow-mcp-approve` as separate one-link sibling files; Cargo's hard-linked build artifacts are not an install layout and are intentionally rejected by the helper provenance gate.
 

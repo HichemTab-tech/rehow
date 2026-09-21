@@ -209,6 +209,8 @@ If a command does not yet exist, the phase packet states the equivalent and `PRO
 
 Phase 6E2A specifically requires exact public-schema, preview/capability, native-approved execution, JSON-RPC, replay, inherited cancellation, and post-plan external-change tests for the complete Category reorder effect set. These run with temporary Workspaces only; production code retains no approval override.
 
+Phase 6E2B adds exact schema, empty/default/nonempty validation, approval/denial/replay, post-plan drift, real JSON-RPC cancellation, recoverable-trash, and deterministic final manifest-race tests for Category removal. No test uses personal Workspace data, and approval overrides remain test-only.
+
 ## Test result recording
 
 `PROGRESS.md` records date, exact command, pass/fail counts or concise result, relevant environment, known flakes/failures, and commit/tree state. The latest verified commit means all claimed gates ran against that commit; if docs changed afterward, say so explicitly.

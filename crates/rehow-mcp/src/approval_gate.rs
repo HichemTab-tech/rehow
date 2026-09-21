@@ -512,6 +512,13 @@ impl ApprovalManager {
     }
 
     #[cfg(test)]
+    pub(crate) fn denying_for_tests() -> Self {
+        let mut manager = Self::new(None);
+        manager.forced_outcome = Some(HelperOutcome::Denied);
+        manager
+    }
+
+    #[cfg(test)]
     pub(crate) fn waiting_for_cancellation_for_tests(
         started: Arc<Barrier>,
         observed: Arc<AtomicBool>,

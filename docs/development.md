@@ -79,7 +79,11 @@ Ordinary development builds deliberately report the native MCP approval helper a
 
 Phase 6E2A planning remains available in an ordinary development build, but executable Category reorder tokens require that digest-bound sibling. Unit and JSON-RPC tests use a test-only in-memory approval outcome; production code has no such override.
 
+Phase 6E2B Category-removal preview is likewise available without mutation authority. Executable removal tokens require startup write+broad grants and the same packaged helper; the operation is limited to one empty, non-default Category and uses recoverable trash.
+
 After building the helper and digest-bound server, run `node scripts/smoke-mcp-category-reorder.mjs` in a graphical session. The script copies both binaries into a temporary one-link package layout, creates only temporary Workspace/state roots, and requires one explicit **Approve** followed by one explicit **Cancel**; it proves the approved reorder and byte-identical denial path, then removes its temporary data.
+
+For Phase 6E2B run `node scripts/smoke-mcp-category-remove.mjs` with the same package build. It requires one **Approve** and one **Cancel**, proves recoverable removal plus byte-identical denial, and deletes its temporary fixture.
 
 ## Dependency changes
 

@@ -1,0 +1,16 @@
+# Task Packet: Phase 6E2B MCP Category removal
+
+- **Objective:** Expose preview-first, natively approved removal of one exact empty, non-default Category through the standalone MCP server.
+- **Required reasoning level:** high implementation; xhigh security review.
+- **Prerequisites:** Signed Phase 3I core Category removal, Phase 6E1 approval foundation, Phase 6E2A cancellation/final-revalidation pattern, ADRs 0026 and 0039–0043.
+- **Allowed files or subsystem:** `crates/rehow-core/src/{application,protocol,storage}.rs`, `crates/rehow-core/src/storage/recovery.rs`, `crates/rehow-mcp/`, the MCP Category smoke script, Phase 6 MCP/security/testing/development/installation docs, this packet/evidence/ADR, and `PROGRESS.md` after the feature commit.
+- **Relevant specifications and ADRs:** `docs/mcp-spec.md`, `docs/architecture.md`, `docs/threat-model.md`, ADR 0041, ADR 0043.
+- **Exact required behavior:** Plan validates an issue-free exact snapshot, empty/non-default target, and exact revision; it returns exact effects and an executable token only with write+broad authority and trusted helper. Execute accepts only handle+token, consumes it, requests native approval, refreshes/rechecks all bound state, and invokes recoverable core trash removal.
+- **Important states and edge cases:** Read-only/broad-disabled/helper-unavailable preview; malformed IDs/revisions/snapshots/tokens; default or nonempty target; unknown files; denial; expiry; replay; wrong Workspace; request cancellation; external edit; manifest/default race; busy recovery; committed-refresh-required; unsafe storage.
+- **Security constraints:** No client consent assertion, raw path/effect authority, recursive deletion, cascade, shell, arbitrary helper, credential access, or mutation before approval. Token is random, opaque, short-lived, exact-bound, and single-use. Core revalidates after approval under the writer lock and at the journal boundary.
+- **Tests to add or update:** Exact 30-tool schema; approved removal/replay; read-only preview; native denial with byte identity; nonempty/default refusal; post-plan drift; final manifest race; core and real JSON-RPC cancellation; recoverable trash result.
+- **Commands to run:** Focused core/MCP tests and strict Clippy while iterating; before commit run full Cargo tests/Clippy/format, installed local JS checks/tests/build, bootstrap, and whitespace gates.
+- **Explicit non-goals:** Default-Category replacement, nonempty/cascading removal, Guide/Attachment deletion, arbitrary paths, permanent trash purge, Git writes, remote MCP, or changes to Node/pnpm.
+- **Definition of done:** Narrow schemas, safe preview, native-approved execution, stale/replay/cancellation/capability tests, full gate, security review, graphical approve/deny smoke, accurate docs/evidence/progress, and signed checkpoints.
+- **Expected commit boundary:** One signed implementation/docs checkpoint, followed by one signed progress-only checkpoint; Orchestrator owns both.
+- **Conditions requiring escalation:** Consent can be forged/replayed, state cannot be revalidated, removal can cascade or escape recovery, helper packaging identity is absent, destructive smoke requires user interaction, or a genuine human checkpoint occurs.

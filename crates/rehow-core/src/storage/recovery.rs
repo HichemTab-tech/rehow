@@ -1750,12 +1750,14 @@ pub(crate) struct CategoryCreateStorageOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CategoryRemoveStorageError {
     Busy,
+    Cancelled,
     Conflict,
     NotEmpty,
     Unsafe,
     Unsupported,
     TooLarge,
     Io,
+    RecoveryRequired { operation_id: OperationId },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2126,16 +2128,24 @@ pub(super) fn execute_document_create(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn execute_category_remove(
+pub(super) fn execute_category_remove<C>(
     root: &super::linux::DirectoryCapability,
     state_home: &Path,
     runtime_directory: Option<&Path>,
     workspace_id: WorkspaceId,
     relative_directory: &str,
     expected_revision: Revision,
+    expected_category_snapshot: Snapshot,
+    cancelled: &C,
     operation_id: OperationId,
     created_at: Timestamp,
-) -> Result<CategoryRemoveStorageOutcome, CategoryRemoveStorageError> {
+) -> Result<CategoryRemoveStorageOutcome, CategoryRemoveStorageError>
+where
+    C: Fn() -> bool,
+{
+    if cancelled() {
+        return Err(CategoryRemoveStorageError::Cancelled);
+    }
     let Some(directory_name) = relative_directory.strip_prefix("categories/") else {
         return Err(CategoryRemoveStorageError::Unsafe);
     };
@@ -2178,6 +2188,7 @@ pub(super) fn execute_category_remove(
     if super::document_revision(&relative_path, &current.bytes) != expected_revision {
         return Err(CategoryRemoveStorageError::Conflict);
     }
+    validate_category_remove_snapshot(root, expected_category_snapshot, cancelled)?;
     let object_hash = store
         .store_object(&lock, &current.bytes)
         .map_err(map_store_category_remove)?;
@@ -2217,19 +2228,56 @@ pub(super) fn execute_category_remove(
         stage: JournalStage::Prepared,
         completion: false,
     };
+    validate_category_remove_snapshot(root, expected_category_snapshot, cancelled)?;
     let execution = workspace::execute_new_journal(root, &store, &lock, journal.clone());
     if let Err(error) = execution {
-        let committed = store
-            .read_journal(&lock, operation_id)
-            .is_ok_and(|persisted| {
-                committed_matches(&persisted, &journal)
-                    && workspace::resume_journal(root, &store, &lock, operation_id).is_ok()
-            });
+        let persisted = store.read_journal(&lock, operation_id);
+        let committed = persisted.as_ref().is_ok_and(|persisted| {
+            committed_matches(persisted, &journal)
+                && workspace::resume_journal(root, &store, &lock, operation_id).is_ok()
+        });
         if !committed {
+            if persisted.as_ref().is_ok_and(|persisted| {
+                persisted.stage == JournalStage::Conflict
+                    && persisted
+                        .targets
+                        .iter()
+                        .any(|target| target.step != TargetStep::Prepared)
+            }) {
+                return Err(CategoryRemoveStorageError::RecoveryRequired { operation_id });
+            }
             return Err(map_workspace_category_remove(error));
         }
     }
     Ok(CategoryRemoveStorageOutcome)
+}
+
+fn validate_category_remove_snapshot<C>(
+    root: &super::linux::DirectoryCapability,
+    expected: Snapshot,
+    cancelled: &C,
+) -> Result<(), CategoryRemoveStorageError>
+where
+    C: Fn() -> bool,
+{
+    if cancelled() {
+        return Err(CategoryRemoveStorageError::Cancelled);
+    }
+    let current_root = root
+        .duplicate()
+        .map_err(|_| CategoryRemoveStorageError::Io)?;
+    let current =
+        match super::inspect_open_root(current_root).map_err(map_inspect_category_remove)? {
+            super::WorkspaceInspection::Compatible(view) => view,
+            _ => return Err(CategoryRemoveStorageError::Conflict),
+        };
+    if !current.issues().is_empty() || super::category_inventory_snapshot(&current) != expected {
+        return Err(CategoryRemoveStorageError::Conflict);
+    }
+    if cancelled() {
+        return Err(CategoryRemoveStorageError::Cancelled);
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

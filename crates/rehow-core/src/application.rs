@@ -490,12 +490,14 @@ pub enum CategoryRemoveError {
     NotFound,
     DefaultCategory,
     NotEmpty,
+    Cancelled,
     RevisionConflict,
     Busy,
     UnsafeStorage,
     UnsupportedFilesystem,
     ResourceLimit,
     Io,
+    RecoveryRequired { operation_id: OperationId },
     CommittedRefreshRequired,
 }
 
@@ -509,6 +511,38 @@ pub fn remove_category(
     category_id: CategoryId,
     expected_revision: Revision,
 ) -> Result<CategoryRemoveOutcome, CategoryRemoveError> {
+    let expected_category_snapshot = category_inventory_snapshot(workspace);
+    remove_category_at_snapshot(
+        workspace,
+        state_home,
+        runtime_directory,
+        expected_category_snapshot,
+        || false,
+        category_id,
+        expected_revision,
+    )
+}
+
+pub fn remove_category_at_snapshot<C>(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    expected_category_snapshot: Snapshot,
+    cancelled: C,
+    category_id: CategoryId,
+    expected_revision: Revision,
+) -> Result<CategoryRemoveOutcome, CategoryRemoveError>
+where
+    C: Fn() -> bool,
+{
+    if cancelled() {
+        return Err(CategoryRemoveError::Cancelled);
+    }
+    if !workspace.issues().is_empty()
+        || category_inventory_snapshot(workspace) != expected_category_snapshot
+    {
+        return Err(CategoryRemoveError::RevisionConflict);
+    }
     let loaded = workspace
         .categories()
         .iter()
@@ -535,6 +569,8 @@ pub fn remove_category(
         runtime_directory,
         &relative_directory,
         expected_revision,
+        expected_category_snapshot,
+        &cancelled,
         new_operation_id(),
         current_timestamp(),
     )
@@ -553,12 +589,16 @@ pub fn remove_category(
 fn map_category_remove_error(error: CategoryRemoveStorageError) -> CategoryRemoveError {
     match error {
         CategoryRemoveStorageError::Busy => CategoryRemoveError::Busy,
+        CategoryRemoveStorageError::Cancelled => CategoryRemoveError::Cancelled,
         CategoryRemoveStorageError::Conflict => CategoryRemoveError::RevisionConflict,
         CategoryRemoveStorageError::NotEmpty => CategoryRemoveError::NotEmpty,
         CategoryRemoveStorageError::Unsafe => CategoryRemoveError::UnsafeStorage,
         CategoryRemoveStorageError::Unsupported => CategoryRemoveError::UnsupportedFilesystem,
         CategoryRemoveStorageError::TooLarge => CategoryRemoveError::ResourceLimit,
         CategoryRemoveStorageError::Io => CategoryRemoveError::Io,
+        CategoryRemoveStorageError::RecoveryRequired { operation_id } => {
+            CategoryRemoveError::RecoveryRequired { operation_id }
+        }
     }
 }
 
@@ -3315,6 +3355,117 @@ mod tests {
             )
             .unwrap(),
             descriptor
+        );
+    }
+
+    #[test]
+    fn category_remove_honors_cancellation_and_final_manifest_recheck() {
+        let (workspace, state, mut view) = initialized_workspace("category-remove-gates");
+        let removed = create_category(&mut view, state.path(), None, "Remove Me", None).unwrap();
+        let expected_snapshot = category_inventory_snapshot(&view);
+        let relative_directory = view
+            .categories()
+            .iter()
+            .find(|category| category.category().id() == &removed.category_id())
+            .unwrap()
+            .relative_directory()
+            .to_owned();
+        let descriptor = workspace
+            .path()
+            .join(&relative_directory)
+            .join("category.yaml");
+        let before = fs::read(&descriptor).unwrap();
+
+        assert_eq!(
+            remove_category_at_snapshot(
+                &mut view,
+                state.path(),
+                None,
+                expected_snapshot,
+                || true,
+                removed.category_id(),
+                removed.revision(),
+            ),
+            Err(CategoryRemoveError::Cancelled)
+        );
+        assert_eq!(fs::read(&descriptor).unwrap(), before);
+
+        let manifest_path = workspace.path().join("rehow.yaml");
+        let checks = std::cell::Cell::new(0_u8);
+        assert_eq!(
+            remove_category_at_snapshot(
+                &mut view,
+                state.path(),
+                None,
+                expected_snapshot,
+                || {
+                    let check = checks.get();
+                    checks.set(check + 1);
+                    if check == 4 {
+                        let mut manifest = fs::read_to_string(&manifest_path).unwrap();
+                        manifest.push_str("external_key: changed\n");
+                        fs::write(&manifest_path, manifest).unwrap();
+                    }
+                    false
+                },
+                removed.category_id(),
+                removed.revision(),
+            ),
+            Err(CategoryRemoveError::RevisionConflict)
+        );
+        assert_eq!(checks.get(), 5);
+        assert_eq!(fs::read(descriptor).unwrap(), before);
+    }
+
+    #[test]
+    fn category_remove_reports_recovery_when_foreign_content_arrives_after_final_scan() {
+        let (workspace, state, mut view) = initialized_workspace("category-remove-race");
+        let removed = create_category(&mut view, state.path(), None, "Remove Me", None).unwrap();
+        let expected_snapshot = category_inventory_snapshot(&view);
+        let relative_directory = view.categories()[0].relative_directory().to_owned();
+        let descriptor = workspace
+            .path()
+            .join(&relative_directory)
+            .join("category.yaml");
+        let foreign = workspace
+            .path()
+            .join(&relative_directory)
+            .join("external-race.md");
+        let before = fs::read(&descriptor).unwrap();
+        let checks = std::cell::Cell::new(0_u8);
+        let result = remove_category_at_snapshot(
+            &mut view,
+            state.path(),
+            None,
+            expected_snapshot,
+            || {
+                let check = checks.get();
+                checks.set(check + 1);
+                if check == 5 {
+                    fs::write(&foreign, b"external content").unwrap();
+                }
+                false
+            },
+            removed.category_id(),
+            removed.revision(),
+        );
+        let Err(CategoryRemoveError::RecoveryRequired { operation_id }) = result else {
+            panic!("post-mutation conflict must require recovery: {result:?}");
+        };
+        assert_eq!(checks.get(), 6);
+        assert_eq!(fs::read(&foreign).unwrap(), b"external content");
+        assert!(!descriptor.exists());
+        assert_eq!(
+            fs::read(
+                workspace
+                    .path()
+                    .join(".rehow/trash")
+                    .join(operation_id.to_string())
+                    .join(&relative_directory)
+                    .join("category.yaml")
+            )
+            .unwrap(),
+            before
         );
     }
 
