@@ -75,7 +75,11 @@ GUI apps may not inherit shell startup `PATH`; Git discovery and smoke tests mus
 
 For the standalone MCP server, use `cargo test -p rehow-mcp --all-features` for the focused gate. Tests exercise both supported protocol lifecycles through the bounded in-memory stdio transport and only temporary Workspace/state roots. The development binary requires one or more explicit `--workspace alias=/absolute/path` arguments and never defaults to the current directory. Add `--allow-write alias` only when deliberately testing the Phase 6C revision/snapshot-bound Category or Guide mutations; it is not implied by `--workspace`.
 
-Ordinary development builds deliberately report the native MCP approval helper as unconfigured. Release packaging must first build `rehow-mcp-approve`, compute its exact lowercase BLAKE3 digest, then compile only `rehow-mcp` with `REHOW_MCP_APPROVAL_HELPER_BLAKE3` set to that digest; the unchanged helper and server are installed as siblings. Phase 7 packaging automation must reproduce and smoke-test this ordering rather than accepting a runtime digest or path.
+Ordinary development builds deliberately report the native MCP approval helper as unconfigured. Release packaging must first build `rehow-mcp-approve`, compute its exact lowercase BLAKE3 digest, then compile only `rehow-mcp` with `REHOW_MCP_APPROVAL_HELPER_BLAKE3` set to that digest; the unchanged helper and server are installed as one-link siblings. Do not smoke directly from Cargo's hard-linked `target/release` artifacts because the provenance gate intentionally rejects link counts other than one. Phase 7 packaging automation must reproduce and smoke-test this ordering rather than accepting a runtime digest or path.
+
+Phase 6E2A planning remains available in an ordinary development build, but executable Category reorder tokens require that digest-bound sibling. Unit and JSON-RPC tests use a test-only in-memory approval outcome; production code has no such override.
+
+After building the helper and digest-bound server, run `node scripts/smoke-mcp-category-reorder.mjs` in a graphical session. The script copies both binaries into a temporary one-link package layout, creates only temporary Workspace/state roots, and requires one explicit **Approve** followed by one explicit **Cancel**; it proves the approved reorder and byte-identical denial path, then removes its temporary data.
 
 ## Dependency changes
 

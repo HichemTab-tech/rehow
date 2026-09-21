@@ -126,7 +126,7 @@ fn show_native_dialog(label: &str, description: &str) -> Option<bool> {
             std::ptr::null_mut(),
             gtk_sys::GTK_DIALOG_MODAL,
             gtk_sys::GTK_MESSAGE_WARNING,
-            gtk_sys::GTK_BUTTONS_YES_NO,
+            gtk_sys::GTK_BUTTONS_NONE,
             c"%s".as_ptr(),
             label.as_ptr(),
         )
@@ -142,11 +142,26 @@ fn show_native_dialog(label: &str, description: &str) -> Option<bool> {
             c"%s".as_ptr(),
             description.as_ptr(),
         );
+        gtk_sys::gtk_dialog_add_button(
+            dialog.cast(),
+            c"_Cancel".as_ptr(),
+            gtk_sys::GTK_RESPONSE_CANCEL,
+        );
+        gtk_sys::gtk_dialog_add_button(
+            dialog.cast(),
+            c"_Approve".as_ptr(),
+            gtk_sys::GTK_RESPONSE_ACCEPT,
+        );
+        gtk_sys::gtk_dialog_set_default_response(dialog.cast(), gtk_sys::GTK_RESPONSE_CANCEL);
         let response = gtk_sys::gtk_dialog_run(dialog.cast());
         gtk_sys::gtk_widget_destroy(dialog);
         response
     };
-    Some(response == gtk_sys::GTK_RESPONSE_YES)
+    Some(response_is_approval(response))
+}
+
+fn response_is_approval(response: libc::c_int) -> bool {
+    response == gtk_sys::GTK_RESPONSE_ACCEPT
 }
 
 fn valid_pipe(descriptor: RawFd, access: libc::c_int) -> bool {
@@ -442,6 +457,22 @@ mod tests {
         unsafe {
             libc::close(descriptors[0]);
             libc::close(descriptors[1]);
+        }
+    }
+
+    #[test]
+    fn only_the_explicit_approve_response_authorizes() {
+        assert!(response_is_approval(gtk_sys::GTK_RESPONSE_ACCEPT));
+        for response in [
+            gtk_sys::GTK_RESPONSE_CANCEL,
+            gtk_sys::GTK_RESPONSE_DELETE_EVENT,
+            gtk_sys::GTK_RESPONSE_CLOSE,
+            gtk_sys::GTK_RESPONSE_NO,
+            gtk_sys::GTK_RESPONSE_YES,
+            gtk_sys::GTK_RESPONSE_OK,
+            gtk_sys::GTK_RESPONSE_NONE,
+        ] {
+            assert!(!response_is_approval(response));
         }
     }
 }

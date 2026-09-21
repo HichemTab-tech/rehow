@@ -1,4 +1,5 @@
 use crate::approval::{ApprovalKind, encode_approval_request, validate_summary};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use std::{
     collections::HashMap,
     env,
@@ -275,6 +276,7 @@ impl ApprovalOperation {
 pub(crate) struct ApprovalPlanTicket {
     pub(crate) token: String,
     pub(crate) lifetime: Duration,
+    pub(crate) expires_at: Instant,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -308,6 +310,10 @@ struct ApprovalPlan {
 
 pub(crate) struct ApprovalManager {
     helper: Option<ApprovalHelper>,
+    #[cfg(test)]
+    forced_outcome: Option<HelperOutcome>,
+    #[cfg(test)]
+    wait_for_cancellation: Option<(Arc<Barrier>, Arc<AtomicBool>)>,
     plan_key: [u8; 32],
     plans: Mutex<HashMap<String, ApprovalPlan>>,
     #[cfg(test)]
@@ -327,6 +333,10 @@ impl ApprovalManager {
         plan_key[16..].copy_from_slice(Uuid::new_v4().as_bytes());
         Self {
             helper,
+            #[cfg(test)]
+            forced_outcome: None,
+            #[cfg(test)]
+            wait_for_cancellation: None,
             plan_key,
             plans: Mutex::new(HashMap::new()),
             #[cfg(test)]
@@ -343,7 +353,11 @@ impl ApprovalManager {
         summary: &str,
         lifetime: Duration,
     ) -> Result<ApprovalPlanTicket, PlanIssueError> {
-        if self.helper.is_none() {
+        if self.helper.is_none() && !cfg!(test) {
+            return Err(PlanIssueError::Unavailable);
+        }
+        #[cfg(test)]
+        if self.helper.is_none() && self.forced_outcome.is_none() {
             return Err(PlanIssueError::Unavailable);
         }
         if !valid_workspace_handle(workspace_handle)
@@ -363,7 +377,12 @@ impl ApprovalManager {
             return Err(PlanIssueError::Capacity);
         }
         let token = (0..8)
-            .map(|_| format!("approval:v1:{}", Uuid::new_v4().simple()))
+            .map(|_| {
+                let mut random = [0_u8; 32];
+                random[..16].copy_from_slice(Uuid::new_v4().as_bytes());
+                random[16..].copy_from_slice(Uuid::new_v4().as_bytes());
+                format!("plan:v1:{}", URL_SAFE_NO_PAD.encode(random))
+            })
             .find(|token| !plans.contains_key(token))
             .ok_or(PlanIssueError::Capacity)?;
         plans.insert(
@@ -378,7 +397,11 @@ impl ApprovalManager {
                 state: PlanState::Pending,
             },
         );
-        Ok(ApprovalPlanTicket { token, lifetime })
+        Ok(ApprovalPlanTicket {
+            token,
+            lifetime,
+            expires_at,
+        })
     }
 
     pub(crate) fn execute(
@@ -389,9 +412,14 @@ impl ApprovalManager {
         operation: ApprovalOperation,
         binding: &[u8],
     ) -> PlanExecution {
+        #[cfg(not(test))]
         let Some(helper) = self.helper.as_ref() else {
             return PlanExecution::Invalid;
         };
+        #[cfg(test)]
+        if self.helper.is_none() && self.forced_outcome.is_none() {
+            return PlanExecution::Invalid;
+        }
         let now = Instant::now();
         let expected_binding = self.binding_hash(workspace_handle, kind, operation, binding);
         let (summary, expires_at, cancellation) = {
@@ -419,7 +447,24 @@ impl ApprovalManager {
             (plan.summary.clone(), plan.expires_at, cancellation)
         };
 
+        #[cfg(not(test))]
         let outcome = helper.request(kind, &summary, expires_at, &cancellation);
+        #[cfg(test)]
+        let outcome = if let Some((started, observed)) = &self.wait_for_cancellation {
+            started.wait();
+            while !cancellation.load(Ordering::Acquire) && Instant::now() < expires_at {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            observed.store(cancellation.load(Ordering::Acquire), Ordering::Release);
+            HelperOutcome::Denied
+        } else if let Some(outcome) = self.forced_outcome {
+            outcome
+        } else {
+            self.helper
+                .as_ref()
+                .expect("the helper was checked above")
+                .request(kind, &summary, expires_at, &cancellation)
+        };
         #[cfg(test)]
         self.wait_at_finalize_barrier();
         let approved = if let Ok(mut plans) = self.plans.lock() {
@@ -457,6 +502,24 @@ impl ApprovalManager {
             }
             None => false,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn approving_for_tests() -> Self {
+        let mut manager = Self::new(None);
+        manager.forced_outcome = Some(HelperOutcome::Approved);
+        manager
+    }
+
+    #[cfg(test)]
+    pub(crate) fn waiting_for_cancellation_for_tests(
+        started: Arc<Barrier>,
+        observed: Arc<AtomicBool>,
+    ) -> Self {
+        let mut manager = Self::new(None);
+        manager.forced_outcome = Some(HelperOutcome::Denied);
+        manager.wait_for_cancellation = Some((started, observed));
+        manager
     }
 
     fn binding_hash(

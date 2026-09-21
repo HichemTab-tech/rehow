@@ -4296,6 +4296,7 @@ fn category_reorder_code(error: CategoryReorderError) -> &'static str {
     match error {
         CategoryReorderError::InvalidEffectSet => "invalidEffectSet",
         CategoryReorderError::RevisionConflict => "revisionConflict",
+        CategoryReorderError::Cancelled => "cancelled",
         CategoryReorderError::InvalidCategory => "invalidCategory",
         CategoryReorderError::UnsafeRoundTrip => "unsafeRoundTrip",
         CategoryReorderError::Busy => "busy",
@@ -4315,6 +4316,7 @@ fn category_reorder_message(error: CategoryReorderError) -> String {
         CategoryReorderError::RevisionConflict => {
             "A Category changed on disk. Reopen the Workspace before reordering.".to_owned()
         }
+        CategoryReorderError::Cancelled => "The Category reorder was cancelled.".to_owned(),
         CategoryReorderError::InvalidCategory => {
             "A Category is malformed and cannot be reordered safely.".to_owned()
         }

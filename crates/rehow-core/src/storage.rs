@@ -2958,10 +2958,12 @@ pub(crate) fn execute_document_remove(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn execute_multi_document_update<E, F>(
+pub(crate) fn execute_multi_document_update<E, F, C>(
     workspace: &WorkspaceView,
     state_home: &Path,
     runtime_directory: Option<&Path>,
+    expected_category_snapshot: Snapshot,
+    cancelled: &C,
     inventory_directory: &str,
     expected_inventory_entries: &[String],
     requests: &[DocumentUpdateRequest],
@@ -2971,12 +2973,15 @@ pub(crate) fn execute_multi_document_update<E, F>(
 ) -> Result<MultiDocumentUpdateOutcome, MultiDocumentUpdateError<E>>
 where
     F: FnOnce(&[PreparedDocument<'_>]) -> Result<Vec<Box<[u8]>>, E>,
+    C: Fn() -> bool,
 {
     recovery::execute_multi_document_update(
         &workspace._root,
         state_home,
         runtime_directory,
         *workspace.manifest.workspace_id(),
+        expected_category_snapshot,
+        cancelled,
         inventory_directory,
         expected_inventory_entries,
         requests,

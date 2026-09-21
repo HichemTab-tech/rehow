@@ -207,6 +207,8 @@ Screenshot artifacts are stored outside canonical source or in an explicitly doc
 
 If a command does not yet exist, the phase packet states the equivalent and `PROGRESS.md` records the gap. Missing infrastructure cannot be described as passing.
 
+Phase 6E2A specifically requires exact public-schema, preview/capability, native-approved execution, JSON-RPC, replay, inherited cancellation, and post-plan external-change tests for the complete Category reorder effect set. These run with temporary Workspaces only; production code retains no approval override.
+
 ## Test result recording
 
 `PROGRESS.md` records date, exact command, pass/fail counts or concise result, relevant environment, known flakes/failures, and commit/tree state. The latest verified commit means all claimed gates ran against that commit; if docs changed afterward, say so explicitly.

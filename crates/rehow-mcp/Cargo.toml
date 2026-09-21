@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 rehow-core = { path = "../rehow-core" }
+base64 = { version = "=0.23.1", default-features = false, features = ["std"] }
 blake3 = { version = "=1.8.7", default-features = false, features = ["std", "pure"] }
 futures = { version = "=0.3.34", default-features = false, features = ["async-await", "std"] }
 gtk-sys = "=0.18.2"
@@ -15,7 +16,8 @@ rmcp = { version = "=3.4.0", default-features = false, features = ["macros", "se
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
 tokio = { version = "=1.53.1", default-features = false, features = ["io-std", "io-util", "macros", "rt", "sync"] }
-tokio-util = { version = "=0.7.19", default-features = false, features = ["codec"] }
+tokio-util = { version = "=0.7.19", default-features = false, features = ["codec", "rt"] }
+time = { version = "=0.3.55", default-features = false, features = ["std", "formatting"] }
 uuid = { version = "=1.26.0", default-features = false, features = ["std", "v4"] }
 
 [dev-dependencies]

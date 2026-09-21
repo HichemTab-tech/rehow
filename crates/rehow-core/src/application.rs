@@ -277,6 +277,7 @@ impl CategoryOrderRevision {
 pub enum CategoryReorderError {
     InvalidEffectSet,
     RevisionConflict,
+    Cancelled,
     InvalidCategory,
     UnsafeRoundTrip,
     Busy,
@@ -304,7 +305,35 @@ pub fn reorder_categories(
     runtime_directory: Option<&Path>,
     ordered: &[CategoryOrderRevision],
 ) -> Result<CategoryReorderOutcome, CategoryReorderError> {
-    if !workspace.issues().is_empty() || ordered.len() != workspace.categories().len() {
+    let expected_category_snapshot = category_inventory_snapshot(workspace);
+    reorder_categories_at_snapshot(
+        workspace,
+        state_home,
+        runtime_directory,
+        expected_category_snapshot,
+        || false,
+        ordered,
+    )
+}
+
+pub fn reorder_categories_at_snapshot<C>(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    expected_category_snapshot: Snapshot,
+    cancelled: C,
+    ordered: &[CategoryOrderRevision],
+) -> Result<CategoryReorderOutcome, CategoryReorderError>
+where
+    C: Fn() -> bool,
+{
+    if cancelled() {
+        return Err(CategoryReorderError::Cancelled);
+    }
+    if category_inventory_snapshot(workspace) != expected_category_snapshot
+        || !workspace.issues().is_empty()
+        || ordered.len() != workspace.categories().len()
+    {
         return Err(CategoryReorderError::InvalidEffectSet);
     }
     if ordered.is_empty() {
@@ -352,6 +381,8 @@ pub fn reorder_categories(
         workspace,
         state_home,
         runtime_directory,
+        expected_category_snapshot,
+        &cancelled,
         "categories",
         &expected_directories,
         &requests,
@@ -440,6 +471,7 @@ fn map_category_reorder_error(
             CategoryPlanError::InvalidName | CategoryPlanError::InvalidSummary,
         )
         | MultiDocumentUpdateError::InvalidPlan => CategoryReorderError::InvalidEffectSet,
+        MultiDocumentUpdateError::Cancelled => CategoryReorderError::Cancelled,
         MultiDocumentUpdateError::Prepare(CategoryPlanError::UnsafeRoundTrip) => {
             CategoryReorderError::UnsafeRoundTrip
         }
@@ -1748,7 +1780,9 @@ fn map_attachment_import_error(
         )
         | MultiDocumentUpdateError::InvalidPlan => AttachmentImportError::InvalidSource,
         MultiDocumentUpdateError::Busy => AttachmentImportError::Busy,
-        MultiDocumentUpdateError::Conflict => AttachmentImportError::SourceChanged,
+        MultiDocumentUpdateError::Conflict | MultiDocumentUpdateError::Cancelled => {
+            AttachmentImportError::SourceChanged
+        }
         MultiDocumentUpdateError::Unsafe => AttachmentImportError::UnsafeStorage,
         MultiDocumentUpdateError::Unsupported => AttachmentImportError::UnsupportedFilesystem,
         MultiDocumentUpdateError::Io => AttachmentImportError::Io,
@@ -2020,7 +2054,8 @@ fn map_attachment_removal_error(
             | PlanError::DuplicateAttachment,
         )
         | MultiDocumentUpdateError::InvalidPlan
-        | MultiDocumentUpdateError::Conflict => AttachmentRemovalError::AttachmentChanged,
+        | MultiDocumentUpdateError::Conflict
+        | MultiDocumentUpdateError::Cancelled => AttachmentRemovalError::AttachmentChanged,
         MultiDocumentUpdateError::Busy => AttachmentRemovalError::Busy,
         MultiDocumentUpdateError::Unsafe => AttachmentRemovalError::UnsafeStorage,
         MultiDocumentUpdateError::Unsupported => AttachmentRemovalError::UnsupportedFilesystem,
@@ -2529,7 +2564,9 @@ fn map_move_error(error: MultiDocumentUpdateError<PlanError>) -> GuideUpdateErro
         MultiDocumentUpdateError::Prepare(PlanError::ResourceLimit)
         | MultiDocumentUpdateError::TooLarge => GuideUpdateError::ResourceLimit,
         MultiDocumentUpdateError::Busy => GuideUpdateError::Busy,
-        MultiDocumentUpdateError::Conflict => GuideUpdateError::RevisionConflict,
+        MultiDocumentUpdateError::Conflict | MultiDocumentUpdateError::Cancelled => {
+            GuideUpdateError::RevisionConflict
+        }
         MultiDocumentUpdateError::Unsafe => GuideUpdateError::UnsafeStorage,
         MultiDocumentUpdateError::Unsupported => GuideUpdateError::UnsupportedFilesystem,
         MultiDocumentUpdateError::Io => GuideUpdateError::Io,
@@ -3132,6 +3169,107 @@ mod tests {
             reorder_categories(&mut view, state.path(), None, &current),
             Err(CategoryReorderError::RevisionConflict)
         );
+    }
+
+    #[test]
+    fn category_reorder_rechecks_manifest_identity_under_the_writer_lock() {
+        let (workspace, state, mut view) = initialized_workspace("category-reorder-manifest-race");
+        create_category(&mut view, state.path(), None, "One", None).unwrap();
+        create_category(&mut view, state.path(), None, "Two", None).unwrap();
+        let expected_snapshot = category_inventory_snapshot(&view);
+        let ordered = view
+            .categories()
+            .iter()
+            .rev()
+            .map(|category| {
+                CategoryOrderRevision::new(
+                    *category.category().id(),
+                    category.descriptor_revision(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let descriptors = view
+            .categories()
+            .iter()
+            .map(|category| {
+                workspace
+                    .path()
+                    .join(category.relative_directory())
+                    .join("category.yaml")
+            })
+            .collect::<Vec<_>>();
+        let before = descriptors
+            .iter()
+            .map(fs::read)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let manifest_path = workspace.path().join("rehow.yaml");
+        let cancellation_checks = std::cell::Cell::new(0_u8);
+
+        assert_eq!(
+            reorder_categories_at_snapshot(
+                &mut view,
+                state.path(),
+                None,
+                expected_snapshot,
+                || {
+                    let check = cancellation_checks.get();
+                    cancellation_checks.set(check + 1);
+                    if check == 2 {
+                        let mut manifest = fs::read_to_string(&manifest_path).unwrap();
+                        manifest.push_str("external_key: changed\n");
+                        fs::write(&manifest_path, manifest).unwrap();
+                    }
+                    false
+                },
+                &ordered,
+            ),
+            Err(CategoryReorderError::RevisionConflict)
+        );
+        assert_eq!(cancellation_checks.get(), 3);
+        let after = descriptors
+            .iter()
+            .map(fs::read)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn category_reorder_honors_cancellation_before_writing() {
+        let (workspace, state, mut view) = initialized_workspace("category-reorder-cancelled");
+        create_category(&mut view, state.path(), None, "One", None).unwrap();
+        create_category(&mut view, state.path(), None, "Two", None).unwrap();
+        let expected_snapshot = category_inventory_snapshot(&view);
+        let ordered = view
+            .categories()
+            .iter()
+            .rev()
+            .map(|category| {
+                CategoryOrderRevision::new(
+                    *category.category().id(),
+                    category.descriptor_revision(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let descriptor = workspace
+            .path()
+            .join(view.categories()[0].relative_directory())
+            .join("category.yaml");
+        let before = fs::read(&descriptor).unwrap();
+
+        assert_eq!(
+            reorder_categories_at_snapshot(
+                &mut view,
+                state.path(),
+                None,
+                expected_snapshot,
+                || true,
+                &ordered,
+            ),
+            Err(CategoryReorderError::Cancelled)
+        );
+        assert_eq!(fs::read(descriptor).unwrap(), before);
     }
 
     #[test]

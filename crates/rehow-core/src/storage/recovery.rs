@@ -1595,6 +1595,7 @@ pub(crate) struct DocumentRemoveOutcome;
 pub(crate) enum MultiDocumentUpdateError<E> {
     Prepare(E),
     InvalidPlan,
+    Cancelled,
     Busy,
     Conflict,
     Unsafe,
@@ -3101,11 +3102,13 @@ struct CurrentDocument {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn execute_multi_document_update<E, F>(
+pub(super) fn execute_multi_document_update<E, F, C>(
     root: &super::linux::DirectoryCapability,
     state_home: &Path,
     runtime_directory: Option<&Path>,
     workspace_id: WorkspaceId,
+    expected_category_snapshot: Snapshot,
+    cancelled: &C,
     inventory_directory: &str,
     expected_inventory_entries: &[String],
     requests: &[super::DocumentUpdateRequest],
@@ -3115,6 +3118,7 @@ pub(super) fn execute_multi_document_update<E, F>(
 ) -> Result<MultiDocumentUpdateOutcome, MultiDocumentUpdateError<E>>
 where
     F: FnOnce(&[PreparedDocument<'_>]) -> Result<Vec<Box<[u8]>>, E>,
+    C: Fn() -> bool,
 {
     if requests.is_empty() || requests.len() > MAX_TARGETS {
         return Err(MultiDocumentUpdateError::InvalidPlan);
@@ -3129,6 +3133,19 @@ where
     let lock = store
         .acquire_lock(runtime_directory)
         .map_err(map_store_multi)?;
+    if cancelled() {
+        return Err(MultiDocumentUpdateError::Cancelled);
+    }
+    let current_root = root.duplicate().map_err(|_| MultiDocumentUpdateError::Io)?;
+    let current = match super::inspect_open_root(current_root).map_err(map_inspect_multi)? {
+        super::WorkspaceInspection::Compatible(view) => view,
+        _ => return Err(MultiDocumentUpdateError::Conflict),
+    };
+    if !current.issues().is_empty()
+        || super::category_inventory_snapshot(&current) != expected_category_snapshot
+    {
+        return Err(MultiDocumentUpdateError::Conflict);
+    }
     if expected_inventory_entries.len() > MAX_TARGETS {
         return Err(MultiDocumentUpdateError::InvalidPlan);
     }
@@ -3252,6 +3269,22 @@ where
         stage: JournalStage::Prepared,
         completion: false,
     };
+    if cancelled() {
+        return Err(MultiDocumentUpdateError::Cancelled);
+    }
+    let current_root = root.duplicate().map_err(|_| MultiDocumentUpdateError::Io)?;
+    let current = match super::inspect_open_root(current_root).map_err(map_inspect_multi)? {
+        super::WorkspaceInspection::Compatible(view) => view,
+        _ => return Err(MultiDocumentUpdateError::Conflict),
+    };
+    if !current.issues().is_empty()
+        || super::category_inventory_snapshot(&current) != expected_category_snapshot
+    {
+        return Err(MultiDocumentUpdateError::Conflict);
+    }
+    if cancelled() {
+        return Err(MultiDocumentUpdateError::Cancelled);
+    }
     let execution = workspace::execute_new_journal(root, &store, &lock, journal.clone());
     if let Err(error) = execution {
         let committed = store

@@ -142,6 +142,14 @@ pub fn workspace_write_required_error(request_id: RequestId) -> ErrorDto {
     ))
 }
 
+pub fn workspace_broad_required_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::workspace_read_only(
+        request_id,
+        construction::Reason::CapabilityMissing,
+        Some(RequiredCapability::Broad),
+    ))
+}
+
 pub fn guide_not_found_error(request_id: RequestId, guide_id: GuideId) -> ErrorDto {
     constructed_error(construction::guide_not_found(request_id, guide_id))
 }
@@ -388,6 +396,69 @@ pub fn category_create_unavailable_error(request_id: RequestId) -> ErrorDto {
     constructed_error(construction::workspace_unavailable(
         request_id,
         construction::Reason::WorkspaceRootChanged,
+    ))
+}
+
+pub fn category_reorder_invalid_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::Details,
+        construction::Reason::InvalidFormat,
+    ))
+}
+
+pub fn category_reorder_busy_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::io_busy(
+        request_id,
+        construction::Operation::CategoryReorder,
+        2_000,
+    ))
+}
+
+pub fn category_reorder_unavailable_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::workspace_unavailable(
+        request_id,
+        construction::Reason::WorkspaceRootChanged,
+    ))
+}
+
+pub fn category_reorder_plan_stale_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::plan_stale(
+        request_id,
+        construction::Operation::CategoryReorder,
+        BoundedList::try_new(Vec::new(), 0).expect("the fixed empty changed-entity list is valid"),
+    ))
+}
+
+pub fn category_reorder_plan_expired_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::CategoryReorder,
+        construction::Reason::PlanExpired,
+    ))
+}
+
+pub fn category_reorder_plan_replayed_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::CategoryReorder,
+        construction::Reason::PlanReplayed,
+    ))
+}
+
+pub fn category_reorder_plan_scope_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::CategoryReorder,
+        construction::Reason::PlanScopeMismatch,
+    ))
+}
+
+pub fn category_reorder_cancelled_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::CategoryReorder,
+        construction::Reason::PlanStateChanged,
     ))
 }
 
