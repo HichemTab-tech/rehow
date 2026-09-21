@@ -5,11 +5,11 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 6E2C is accepted at signed implementation checkpoint `c4696dc`: the MCP server exposes exact Guide Tested preview plus handle/token-only native-approved execution with core-owned readiness, `verify:v1`, trusted timestamps, and commit-boundary cancellation. The final Security Reviewer correction review is PASS.
+Phase 6E2D1 is implemented at signed checkpoint `a7fb9b7`: the MCP server exposes exact-revision display-title replacement for an already-declared managed Attachment without file/path/hash/size/media-type authority. The non-destructive slice is fully tested; independent security review is batched with the later destructive Attachment removal slice.
 
 ## Current task
 
-Specify the next narrow Phase 6E2D slice for managed Attachment metadata mutations, preserving the existing no-host-path/no-byte-upload boundary and requiring broad/native approval only where the exact operation is destructive.
+Specify and implement Phase 6E2D2: recoverable Attachment removal through dry-run planning, startup broad authority, the sealed native approval helper, exact Guide/Attachment/file binding, and the already-accepted core recovery primitive.
 
 ## Overall status
 
@@ -145,17 +145,18 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Completed Phase 6E2A at signed checkpoint `f89479f`: `category_reorder_plan` validates and binds the exact complete Category order while `category_reorder` accepts only handle+token, obtains native consent, and invokes the recoverable core reorder after cancellation-aware adapter and final writer-lock snapshot checks. The packaged graphical Approve/Cancel smoke, full gate, and reused Security Reviewer pass.
 - Completed Phase 6E2B at signed checkpoint `d1e96f9`: `category_remove_plan` binds one issue-free empty, non-default Category at its exact snapshot/revision, while `category_remove` accepts only handle+token, obtains destructive native approval, and uses recoverable nonrecursive trash. Independent review found a desktop exhaustiveness gap and a post-final-scan recovery-reporting race; both are corrected and fully tested. Packaged graphical Approve/Cancel, all local gates, and the correction-only independent review pass.
 - Completed Phase 6E2C at signed checkpoint `c4696dc`: `guide_tested_plan` binds the exact ready Guide revision and `guide_mark_tested` accepts only handle+token, obtains dedicated native Tested confirmation, and delegates verification hash/timestamps to the core. Scope, expiry, archive, denial, drift, replay, and real JSON-RPC cancellation at the final pre-journal boundary preserve exact bytes. Full gates and the reused Security Reviewer pass after closing missing refusal coverage and current-thread cancellation blocking.
+- Implemented Phase 6E2D1 at signed checkpoint `a7fb9b7`: `attachment_metadata_update` replaces only one existing Attachment title at an exact Guide revision. Its schema cannot provide file-binding fields; the typed planner preserves nested unknown metadata and immutable Attachment fields, stales Tested trust, and makes identical input a no-op. Full gates pass; the batch security verdict remains pending until destructive removal is ready.
 
 ## Work in progress
 
-- No product implementation is uncommitted. Phase 6E2C is accepted at signed `c4696dc`. Untracked `x` remains unrelated and untouched.
+- No product implementation is uncommitted. Phase 6E2D1 is checkpointed at signed `a7fb9b7`; its independent security review is intentionally batched with Phase 6E2D2. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
 - Workspace adoption/import/migration and Attachment viewing/export/reveal remain incomplete.
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
-- Phase 6: protocol, bounded reads, narrow mutations, explicit startup capabilities, the sealed native approval launcher, exact Category reorder/removal, and Guide Tested approval are checkpointed through `c4696dc`; Attachment metadata mutation, Git commit/sync, and broader client documentation remain.
+- Phase 6: protocol, bounded reads, narrow mutations, explicit startup capabilities, the sealed native approval launcher, exact Category reorder/removal, Guide Tested approval, and Attachment title update are checkpointed through `a7fb9b7`; Attachment add/removal, Git commit/sync, and broader client documentation remain.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
 ## Known bugs
@@ -284,19 +285,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - Phase 6E2A exposes the gate only for an exact complete Category reorder plan. SDK cancellation kills/reaps active approval, the core repeats issue-free Workspace/category snapshot validation after preparation at the journal boundary, and only explicit GTK Approve can authorize. Security review found and closed cancellation plus manifest TOCTOU gaps; final verdict: PASS.
 - Phase 6E2B exposes only exact empty, non-default Category removal. The independent reviewer found two issues: desktop cancellation handling was non-exhaustive, and a foreign entry arriving after the final scan could move the descriptor before reporting an ordinary stale plan. The correction adds closed desktop cancellation/recovery handling and operation/path-bound `RECOVERY_REQUIRED`; a deterministic race proves foreign bytes and the exact trashed descriptor both survive. The correction-only independent re-review is PASS.
 - Phase 6E2C exposes only exact ready-Guide Tested approval. Security review found missing operation-level scope/expiry/archive evidence and a blocked cancellation path from synchronous post-approval work on the current-thread runtime. The correction adds those refusal tests, moves revalidation/mutation to blocking work, and proves real JSON-RPC cancellation immediately before journal creation leaves bytes unchanged and creates no journal. Final verdict: PASS with no blocker/high/medium finding.
+- Phase 6E2D1 exposes only one existing Attachment title scalar. The schema omits path/bytes/hash/size/media type/status/consent, the core preserves all file-binding and unknown fields, and no-op/read-only/archived/missing/invalid/stale states fail or preserve bytes. Independent review is pending as part of the combined Attachment mutation gate.
 
 ## Blockers and human checkpoints
 
-- No product decision or manual-test blocker. Routine work uses zero extra agents; the one reused Phase 6E2C Security Reviewer returned PASS and is no longer running. No additional graphical smoke was required because this phase reused the accepted sealed helper and added only a closed Tested operation kind covered by unit/integration tests.
+- No product decision or manual-test blocker. Routine work uses zero extra agents and none is running. One Security Reviewer will be reused only after the destructive Attachment removal boundary is implemented, covering both 6E2D1 and 6E2D2 in one gate.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`c4696dc` — signed and accepted Phase 6E2C native-approved MCP Guide Tested flow. This `PROGRESS.md` update follows it and will be recorded in a separate signed ledger commit.
+`a7fb9b7` — signed Phase 6E2D1 MCP Attachment title-update implementation/docs checkpoint; full gates pass and the combined Attachment security review remains pending. This progress update follows it.
 
 ## Tests last run and results
 
+- 2026-09-21: Phase 6E2D1 checkpoint `a7fb9b7` passes 450 core tests with 2 intentional ignores, 25 desktop Rust tests, 69 MCP unit tests, 3 approval-helper integration tests, 1 stdio integration test, and supporting contract/API suites. Strict workspace Clippy, Cargo formatting/build, Biome, both TypeScript checks, contract/hash vectors, 39 Vitest tests, Git helper/credential smoke, Vite production build, bootstrap, and whitespace checks pass. Bootstrap reports 17 required files, 45 ADRs, and 8 pinned agents.
 - 2026-09-21: Phase 6E2C checkpoint `c4696dc` passes 449 core tests with 2 intentional ignores, 25 desktop Rust tests, 68 MCP unit tests, 3 approval-helper integration tests, 1 stdio integration test, and supporting contract/API suites. Strict workspace Clippy, Cargo formatting/build, Biome over 57 files, direct installed TypeScript checks, contract drift, Guide hash vectors, 39 Vitest tests, Git helper/credential smoke, Vite production build, bootstrap, and whitespace checks pass. Security Reviewer correction verdict: PASS.
 - 2026-09-21: Phase 6E2B checkpoint `d1e96f9` passes 448 core tests with 2 intentional network/performance ignores, 25 desktop Rust tests, 62 MCP unit tests, 3 real-helper integration tests, 1 stdio integration test, and all contract/API suites. Strict all-Workspace Clippy, Cargo formatting, Biome over 57 files, direct installed TypeScript checks, contract drift, 39 Vitest tests, verification vectors, Git helper/credential smoke, Vite/Cargo builds, bootstrap, and whitespace checks pass. The digest-bound release helper is `36b4d779…99cc6d`; the one-link graphical Approve/Cancel smoke passed recoverable removal and byte-identical denial. The correction-only independent review reran focused core/desktop/MCP/cancellation cases and returned PASS.
 - 2026-09-21: Phase 6E2A checkpoint `f89479f` passes 446 core tests with 2 intentional network/performance ignores, 25 desktop Rust tests, 57 MCP unit tests, 3 real-helper integration tests, 1 stdio integration test, and all contract/API suites. Strict all-Workspace Clippy, Cargo formatting, Biome over 56 files, direct installed TypeScript checks, contract drift, 39 Vitest tests, verification vectors, Git credential-proxy smoke, Vite/Cargo production builds, bootstrap, and whitespace checks pass. The release helper digest `f2aa932d…c4c5fa` was embedded in the server; the one-link packaged graphical Approve/Cancel smoke passed exact mutation and byte-identical denial. Security Reviewer verdict: PASS.
@@ -577,20 +580,21 @@ No product test failure. The current machine exposes pnpm 11.20.0 while the repo
 - ADR 0042, `docs/task-packets/phase-6e2a-mcp-category-reorder.md`, its evidence, cancellation/commit-boundary core hardening, the two-tool MCP adapter, explicit native buttons, and the packaged smoke script implement exact approved Category reorder at `f89479f`.
 - ADR 0043, `docs/task-packets/phase-6e2b-mcp-category-remove.md`, its evidence, recovery-required race hardening, two-tool MCP adapter, desktop error closure, and packaged smoke script implement accepted Category removal at `d1e96f9`; final independent correction review: PASS.
 - ADR 0044, `docs/task-packets/phase-6e2c-mcp-guide-tested-approval.md`, its evidence, cancellation-aware recovery boundary, dedicated approval kind, and two-tool MCP adapter implement accepted Guide Tested approval at `c4696dc`; final Security Reviewer correction verdict: PASS.
+- ADR 0045, `docs/task-packets/phase-6e2d1-mcp-attachment-title-update.md`, its evidence, typed nested-scalar mutation, and one-tool MCP adapter implement Attachment title updates at `a7fb9b7`; combined Attachment security review pending.
 
 ## Next recommended action
 
-Define and implement the smallest safe Phase 6E2D managed Attachment metadata slice. Start with exact-revision add/update behavior that references only already managed Attachment IDs; keep raw byte transfer and client-supplied host paths deferred.
+Define and implement Phase 6E2D2 by adapting the accepted native Attachment-removal preview/recovery operation to handle/token-only MCP execution with broad startup authority and sealed native confirmation. Then use one Security Reviewer for the combined 6E2D1–D2 gate.
 
 ## Recommended agent role and reasoning effort
 
-Primary Orchestrator/Architect with zero routine agents. Reuse one Security Reviewer only when the finalized destructive Attachment boundary reaches its mandatory gate.
+Primary Orchestrator/Architect with zero routine agents. Reuse one Security Reviewer only after Phase 6E2D2 implementation and focused gates are ready.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read ADRs 0016, 0026, and 0039–0044 plus the Attachment sections of `docs/content-model.md`, `docs/mcp-spec.md`, and `docs/threat-model.md`.
+2. Read ADRs 0016–0017, 0026, and 0039–0045 plus the Attachment sections of `docs/content-model.md`, `docs/mcp-spec.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `c4696dc`; its following signed ledger commit changes only `PROGRESS.md`.
+4. Verify signed checkpoints `a7fb9b7` and `c4696dc`; the following signed ledger commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 6E2C as accepted. Specify the narrow Phase 6E2D Attachment metadata packet before implementation; do not reopen tested approval or repeat its full gate unless that diff changes.
+6. Treat Phase 6E2C as accepted and 6E2D1 as implemented/pending batch security review. Specify Phase 6E2D2 Attachment removal; do not reopen title update or repeat its full gate unless that diff changes.
