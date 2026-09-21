@@ -9,7 +9,7 @@ Phase 6E2B is accepted at signed implementation checkpoint `d1e96f9`: the MCP se
 
 ## Current task
 
-Specify Phase 6E2C as the narrow MCP tested-approval gate, reusing the sealed native helper and the existing core readiness, exact-revision, verification-hash, and recovery rules without adding generic status authority.
+Implement the approved Phase 6E2C packet: exact Guide tested preview plus handle/token-only native-approved execution with core-owned readiness, verification hash, trusted timestamps, and commit-boundary cancellation.
 
 ## Overall status
 
@@ -147,7 +147,7 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 
 ## Work in progress
 
-- No Rehow implementation is uncommitted. Phase 6E2B is accepted at signed `d1e96f9`; this ledger update records its final review closure. Untracked `x` remains unrelated and untouched.
+- Phase 6E2C planning is in progress; no product implementation is uncommitted. Phase 6E2B is accepted at signed `d1e96f9`. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
@@ -576,17 +576,17 @@ No product test failure. The current machine exposes pnpm 11.20.0 while the repo
 
 ## Next recommended action
 
-Specify Phase 6E2C as the narrow MCP tested-approval flow. Reuse the accepted approval helper/plan manager and existing core Guide readiness/hash/recovery semantics; expose no generic status setter and accept no client assertion of consent.
+Implement `docs/task-packets/phase-6e2c-mcp-guide-tested-approval.md` without expanding its authority. Run focused checks while iterating and the full gate once before the signed implementation checkpoint.
 
 ## Recommended agent role and reasoning effort
 
-Architect/Orchestrator with `gpt-5.6-sol`, xhigh/high for the tested-approval trust boundary; use zero routine agents and one Security Reviewer only at the completed implementation gate.
+Orchestrator/high for implementation with zero routine agents; one Security Reviewer/xhigh only after the implementation and focused gates are ready.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read ADRs 0015, 0026, and 0039–0043, `docs/mcp-spec.md`, and the approval sections of architecture/testing/threat docs.
+2. Read ADRs 0015, 0026, and 0039–0044, `docs/mcp-spec.md`, and `docs/task-packets/phase-6e2c-mcp-guide-tested-approval.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
 4. Verify signed checkpoints `d1e96f9`, `f89479f`, and `b2a5a8b`; signed `844d694` changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 6E2B as accepted. Specify Phase 6E2C tested approval before implementation; do not reopen Category removal or repeat its full gate unless that diff changes.
+6. Treat Phase 6E2B as accepted. Implement the approved Phase 6E2C packet; do not reopen Category removal or repeat its full gate unless that diff changes.

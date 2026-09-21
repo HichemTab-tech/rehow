@@ -126,7 +126,8 @@ Every Guide tool requires `workspaceHandle`.
 - `guide_change_category({workspaceHandle, guideId, expectedRevision, categoryId, expectedCategoryRevision})` — implemented journaled path+frontmatter update; Rust derives both paths, preserves ID/filename/content, and lock-checks the active destination descriptor. Same Category is a verified no-op. `guide_update_title` and `guide_tidy_path` remain later explicit operations; there is no generic move.
 - `guide_set_tags({workspaceHandle, guideId, expectedRevision, tags})` / `guide_set_aliases({…, aliases})` — implemented complete ordered-array replacement with core limits and Unicode-fold duplicate rejection; tested Guides become stale and unrelated fields remain fixed.
 - `guide_change_status({…, status})` — cannot set `tested` through MCP.
-- `guide_request_tested_approval({workspaceHandle, guideId, expectedRevision})` — readiness check plus pending native approval; no immediate status change.
+- `guide_tested_plan({workspaceHandle, guideId, expectedRevision})` — exact-revision readiness preview; an executable token is returned only with startup write authority and the trusted native helper.
+- `guide_mark_tested({workspaceHandle, planToken})` — consumes the single-use token, obtains Tested native approval, rechecks the exact Guide, and lets the core calculate the verification hash and trusted timestamps. The client cannot supply status, consent, hash, time, path, or effects.
 - `guide_mark_stale({workspaceHandle, guideId, expectedRevision})` — implemented trust-reducing typed mutation; draft/tested become stale, stale is a no-op, and archived remains archived with stale restore state. Schema v1 has no stale-reason field, so no free-form reason or unknown metadata is accepted.
 - `guide_archive({workspaceHandle, guideId, expectedRevision})` / `guide_restore(…)` — implemented separate typed lifecycle operations; path/content/Category remain fixed and restore cannot assert tested.
 - `guide_delete_plan({workspaceHandle, guideId, expectedRevision})`
@@ -152,7 +153,7 @@ The server itself launches its fixed, installed `rehow-mcp-approve` sibling over
 
 Phase 6E1B1 implements that child's fixed pipe endpoint and descriptor/text/headless controls. Phase 6E1B2 captures only the fixed sibling whose safe inode matches the build-time package digest, copies it into a sealed immutable executable memfd after stable identity checks, executes the retained snapshot descriptor with `execveat`, supplies only bounded graphical-session environment values, and adds bounded random single-use plans with closed operation kinds, keyed effect bindings, 90-second maximum monotonic expiry, and pending/active cancellation. Phases 6E2A–B expose that gate only for exact Category reorder and empty non-default Category removal; execution accepts no client-supplied effects or approval assertion and rechecks all state after native consent.
 
-For tested approval, the dialog says the user is asserting they personally tried the displayed Guide revision. The core rechecks that revision, readiness, and verification hash immediately before changing status. A verified-content edit later produces effective `stale`.
+For tested approval, the dialog says the user is asserting they personally tried the displayed Guide revision. Phase 6E2C binds the plan to that exact Guide/revision/path/Category, consumes it once, and rechecks the current bytes after approval. The core recalculates readiness and `verify:v1` under the writer lock immediately before changing status. A verification-relevant edit later produces effective `stale`.
 
 ## Plan and confirmation protocol
 

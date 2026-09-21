@@ -40,7 +40,7 @@ The core reparses the current revision under the writer lock, rejects archived o
 
 Approval readiness uses the same bounded CommonMark/GFM parser as rendering. Reserved sections are exact, case-sensitive level-two heading labels after concatenating their rendered text: `Steps`, `Verification`, `Rollback`, and `Troubleshooting`. Inline formatting in a heading does not create a different label. Every reserved label may occur at most once; any duplicate is ambiguous and refuses approval. `Steps` must occur exactly once and contain non-whitespace text or code before the next level-one/two heading or end of body. The other reserved sections are recommended but not required. Rehow does not reorder or synthesize sections.
 
-AI, MCP, import, adoption, and generic mutation APIs cannot invoke this authority. MCP may later create a pending native approval request but cannot mark a Guide tested.
+AI, MCP client assertions, import, adoption, and generic mutation APIs cannot invoke this authority. ADR 0044 permits the trusted standalone MCP adapter to request the same exact-revision transition only after its sealed native helper records explicit human approval; the client still cannot submit Tested state, consent, hash, time, path, or effects.
 
 ### Effective status
 

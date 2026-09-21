@@ -142,6 +142,7 @@ Milestones:
 - Phase 6E1B2: build-digest sibling capture, held-descriptor `execveat`, minimal child environment/private pipes, exact result/exit handling, and bounded expiring/cancellable in-memory plans; still no approval or mutation tool.
 - Phase 6E2A: first approval-consuming operation—exact complete Category reorder preview plus handle/token-only execution with post-approval snapshot/revision revalidation.
 - Phase 6E2B: exact empty, non-default Category removal preview plus handle/token-only recoverable-trash execution with destructive native approval, cancellation, and final writer-lock snapshot revalidation.
+- Phase 6E2C: exact Guide tested preview plus handle/token-only Tested native approval, fresh revision/readiness revalidation, core-owned verification hash/trusted timestamps, and commit-boundary cancellation.
 - Later gates: Attachment-metadata and mutation tools.
 - Per-Workspace write/broad/Git capabilities, launch handles, revisions/effect sets, dry-run tokens, and native out-of-band approval companion.
 - Git status/plan/commit/safe sync only after Phase 5 primitives are approved.
