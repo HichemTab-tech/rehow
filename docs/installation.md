@@ -1,6 +1,6 @@
 # Installation and Desktop Integration
 
-Status: desktop packaging planned; Phase 6E2C MCP Guide Tested approval development boundary available
+Status: desktop packaging planned; Phase 6E2D1 MCP Attachment title update development boundary available
 Last updated: 2026-09-21
 
 ## Supported baseline

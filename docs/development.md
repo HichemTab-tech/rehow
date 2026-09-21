@@ -83,6 +83,8 @@ Phase 6E2B Category-removal preview is likewise available without mutation autho
 
 Phase 6E2C Guide-tested preview is available in read-only sessions. Executable Tested tokens require only the alias's startup write grant plus the trusted helper; broad authority is deliberately irrelevant. The execution call accepts only the handle/token and the core recalculates readiness, verification hash, and timestamps from the exact current bytes.
 
+Phase 6E2D1 adds `attachment_metadata_update` for the title of an already-declared managed Attachment. It requires `--allow-write`; it does not require or consume broad authority and cannot transfer or select files.
+
 After building the helper and digest-bound server, run `node scripts/smoke-mcp-category-reorder.mjs` in a graphical session. The script copies both binaries into a temporary one-link package layout, creates only temporary Workspace/state roots, and requires one explicit **Approve** followed by one explicit **Cancel**; it proves the approved reorder and byte-identical denial path, then removes its temporary data.
 
 For Phase 6E2B run `node scripts/smoke-mcp-category-remove.mjs` with the same package build. It requires one **Approve** and one **Cancel**, proves recoverable removal plus byte-identical denial, and deletes its temporary fixture.

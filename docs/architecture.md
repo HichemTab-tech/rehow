@@ -229,6 +229,8 @@ Phase 6E2B applies the same sealed-plan boundary to one empty, non-default Categ
 
 Phase 6E2C binds one ready Guide's exact revision, managed path, and Category to a Tested plan. Execution accepts only handle+token, uses the dedicated native Tested language, then moves the complete refresh/recheck/core mutation into blocking work so the single-thread stdio runtime can still dispatch cancellation. The core reparses the current bytes, recalculates readiness and `verify:v1`, and journals the trusted transition. Cancellation is checked at the core journal boundary; no generic status/headless client assertion exists.
 
+Phase 6E2D1 adds only an exact-revision typed Attachment-title mutation. The adapter accepts stable IDs and display text; the core edits the required nested title scalar while preserving every file-binding field and unknown entry. File/path/content authority remains absent.
+
 ## Preferences and local state
 
 Recent Workspace paths, window state, theme preference, and opt-in sync schedules are application-local configuration, not portable Workspace content. Store no secrets. Losing preferences must not lose content. Validate restored window geometry against current displays and do not depend on Wayland global positioning.

@@ -213,6 +213,8 @@ Phase 6E2B adds exact schema, empty/default/nonempty validation, approval/denial
 
 Phase 6E2C adds the exact thirty-two-tool schema, readiness/already-Tested/archived validation, write-without-broad capability behavior, native approval/denial/replay/scope/expiry, post-plan drift, core journal-boundary cancellation, deterministic real JSON-RPC cancellation paused before journal creation, and verification-hash/effective-status assertions. Test approval outcomes and the boundary probe remain test-only.
 
+Phase 6E2D1 adds the exact thirty-three-tool schema plus Attachment-title validation, unknown-metadata preservation, immutable path/hash/size/media-type/ID assertions, Tested-to-Stale behavior, read-only refusal, stale revision, missing ID, and byte-identical no-op coverage.
+
 ## Test result recording
 
 `PROGRESS.md` records date, exact command, pass/fail counts or concise result, relevant environment, known flakes/failures, and commit/tree state. The latest verified commit means all claimed gates ran against that commit; if docs changed afterward, say so explicitly.

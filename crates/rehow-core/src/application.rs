@@ -1093,6 +1093,10 @@ pub enum GuideEdit {
         body: Vec<u8>,
     },
     ReplaceBody(Vec<u8>),
+    UpdateAttachmentTitle {
+        attachment_id: AttachmentId,
+        title: String,
+    },
     MarkStale,
     Archive,
     Restore,
@@ -2611,6 +2615,17 @@ pub(crate) fn update_guide_with_context(
                 GuideEdit::ReplaceBody(value) => {
                     apply_guide_mutation(&bound, GuideMutation::ReplaceBody(value), &stamp)
                 }
+                GuideEdit::UpdateAttachmentTitle {
+                    attachment_id,
+                    title,
+                } => apply_guide_mutation(
+                    &bound,
+                    GuideMutation::UpdateAttachmentTitle {
+                        attachment_id,
+                        title,
+                    },
+                    &stamp,
+                ),
                 GuideEdit::MarkStale => {
                     apply_guide_mutation(&bound, GuideMutation::MarkStale, &stamp)
                 }

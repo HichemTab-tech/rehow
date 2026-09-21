@@ -56,6 +56,10 @@ pub(crate) enum GuideMutation {
     ReplaceAliases(Vec<String>),
     ReplaceBody(Vec<u8>),
     AddAttachment(AttachmentInput),
+    UpdateAttachmentTitle {
+        attachment_id: AttachmentId,
+        title: String,
+    },
     RemoveAttachment(AttachmentId),
     MarkTested(VerificationHash),
     MarkStale,
@@ -414,6 +418,12 @@ pub(crate) fn plan_guide_mutation(
         GuideMutation::AddAttachment(attachment) => {
             return plan_add_attachment(bound, attachment, stamp);
         }
+        GuideMutation::UpdateAttachmentTitle {
+            attachment_id,
+            title,
+        } => {
+            return plan_update_attachment_title(bound, attachment_id, title, stamp);
+        }
         GuideMutation::RemoveAttachment(attachment_id) => {
             return plan_remove_attachment(bound, attachment_id, stamp);
         }
@@ -584,6 +594,9 @@ pub(crate) fn plan_guide_mutation(
             lifecycle_edit = GuideLifecycleEdit::Restore(restored_status);
         }
         GuideMutation::AddAttachment(_) => unreachable!("handled before the mutation match"),
+        GuideMutation::UpdateAttachmentTitle { .. } => {
+            unreachable!("handled before the mutation match")
+        }
         GuideMutation::RemoveAttachment(_) => unreachable!("handled before the mutation match"),
     }
 
@@ -1082,6 +1095,271 @@ fn attachment_was_appended(
                 && value.sha256() == expected.sha256
                 && value.size_bytes() == Some(expected.size_bytes)
         })
+}
+
+fn plan_update_attachment_title(
+    bound: &BoundGuide,
+    attachment_id: AttachmentId,
+    title: String,
+    stamp: &MutationStamp,
+) -> Result<MutationOutcome<BoundGuide>, MutationFailure> {
+    let record = bound.record();
+    if record.declared_status() == GuideStatus::Archived {
+        return Err(failure(
+            MutationFailureKind::InvalidTransition,
+            MutationField::Attachments,
+        ));
+    }
+    if !super::valid_text(&title, 200) {
+        return Err(failure(
+            MutationFailureKind::InvalidValue,
+            MutationField::Attachments,
+        ));
+    }
+    let existing = record.attachments().unwrap_or_default();
+    let index = existing
+        .iter()
+        .position(|attachment| attachment.id() == &attachment_id)
+        .ok_or_else(|| {
+            failure(
+                MutationFailureKind::InvalidValue,
+                MutationField::Attachments,
+            )
+        })?;
+    if existing[index].title() == title {
+        return Ok(MutationOutcome::NoOp);
+    }
+    require_proven(
+        bound.parsed().yaml().round_trip_status(),
+        MutationField::Attachments,
+    )?;
+
+    let mut edits = Vec::new();
+    reserve(&mut edits, 4, MutationField::Document)?;
+    replace_attachment_mapping_value(
+        bound,
+        index,
+        existing.len(),
+        "title",
+        emit_yaml_string(&title).map_err(|error| map_emit(error, MutationField::Attachments))?,
+        &mut edits,
+    )?;
+    let mut effects = Vec::new();
+    reserve(&mut effects, 4, MutationField::Document)?;
+    effects.push(MutationEffect::Attachments);
+    let (expected_status, expected_archived_from) =
+        stale_guide_if_required(bound, false, &mut edits, &mut effects)?;
+    let updated_at = max(*record.updated_at(), stamp.at);
+    replace_root_value(
+        bound.parsed().yaml(),
+        bound.source_bytes(),
+        "updated_at",
+        emit_yaml_display(updated_at).map_err(|error| map_emit(error, MutationField::UpdatedAt))?,
+        MutationEffect::UpdatedAt,
+        MutationField::UpdatedAt,
+        &mut edits,
+    )?;
+    effects.push(MutationEffect::UpdatedAt);
+
+    let candidate_bytes = apply_edits(bound.source_bytes(), edits)?;
+    let parsed = parse_guide_source(candidate_bytes).map_err(map_parse)?;
+    let candidate = bind_guide(parsed).map_err(|_| candidate_mismatch(MutationField::Document))?;
+    let actual = candidate.record();
+    let expected_archived_at = record.archive().map(|archive| *archive.archived_at());
+    if actual.id() != record.id()
+        || actual.title() != record.title()
+        || actual.summary() != record.summary()
+        || actual.category_id() != record.category_id()
+        || actual.tags() != record.tags()
+        || actual.aliases() != record.aliases()
+        || actual.declared_status() != expected_status
+        || actual.created_at() != record.created_at()
+        || actual.updated_at() != &updated_at
+        || actual.body() != record.body()
+        || !same_verification(actual, record)
+        || !same_archive(actual, expected_archived_from, expected_archived_at)
+        || !same_nested_except_attachments(actual, record)
+        || !attachment_title_was_updated(actual, record, index, &title)
+        || !same_unknown_root(&candidate, bound)
+        || candidate.unknown_partition().applicability()
+            != bound.unknown_partition().applicability()
+        || candidate.unknown_partition().references() != bound.unknown_partition().references()
+        || candidate.unknown_partition().attachments() != bound.unknown_partition().attachments()
+    {
+        return Err(candidate_mismatch(MutationField::Document));
+    }
+    Ok(MutationOutcome::Candidate(MutationCandidate {
+        bound: candidate,
+        effects: effect_set(&effects)?,
+    }))
+}
+
+fn replace_attachment_mapping_value(
+    bound: &BoundGuide,
+    index: usize,
+    count: usize,
+    key_name: &str,
+    replacement: Box<[u8]>,
+    edits: &mut Vec<Edit>,
+) -> Result<(), MutationFailure> {
+    let artifact = bound.parsed().yaml();
+    let source = bound.source_bytes();
+    let root_entry = artifact
+        .entries()
+        .iter()
+        .find(|entry| {
+            if entry.parent() != artifact.root_id() {
+                return false;
+            }
+            let ReconciledEntryKind::Mapping { key, .. } = entry.kind() else {
+                return false;
+            };
+            artifact.node(key).and_then(|node| node.decoded_scalar()) == Some("attachments")
+        })
+        .ok_or_else(|| {
+            failure(
+                MutationFailureKind::BindingInvariant,
+                MutationField::Attachments,
+            )
+        })?;
+    let ReconciledEntryKind::Mapping { value, .. } = root_entry.kind() else {
+        return Err(failure(
+            MutationFailureKind::BindingInvariant,
+            MutationField::Attachments,
+        ));
+    };
+    let sequence = artifact.node(value).ok_or_else(|| {
+        failure(
+            MutationFailureKind::BindingInvariant,
+            MutationField::Attachments,
+        )
+    })?;
+    if sequence.collection_style() != Some(CollectionPresentationStyle::Block)
+        || sequence.entries().len() != count
+    {
+        return Err(failure(
+            MutationFailureKind::PresentationUnsafe,
+            MutationField::Attachments,
+        ));
+    }
+    let item_entry = sequence
+        .entries()
+        .get(index)
+        .and_then(|entry_id| artifact.entry(*entry_id))
+        .ok_or_else(|| {
+            failure(
+                MutationFailureKind::BindingInvariant,
+                MutationField::Attachments,
+            )
+        })?;
+    let ReconciledEntryKind::Sequence { value } = item_entry.kind() else {
+        return Err(failure(
+            MutationFailureKind::PresentationUnsafe,
+            MutationField::Attachments,
+        ));
+    };
+    let mapping = artifact.node(value).ok_or_else(|| {
+        failure(
+            MutationFailureKind::BindingInvariant,
+            MutationField::Attachments,
+        )
+    })?;
+    if mapping.collection_style() != Some(CollectionPresentationStyle::Block) {
+        return Err(failure(
+            MutationFailureKind::PresentationUnsafe,
+            MutationField::Attachments,
+        ));
+    }
+    let entry = mapping
+        .entries()
+        .iter()
+        .filter_map(|entry_id| artifact.entry(*entry_id))
+        .find(|entry| {
+            let ReconciledEntryKind::Mapping { key, .. } = entry.kind() else {
+                return false;
+            };
+            artifact.node(key).and_then(|node| node.decoded_scalar()) == Some(key_name)
+        })
+        .ok_or_else(|| {
+            failure(
+                MutationFailureKind::BindingInvariant,
+                MutationField::Attachments,
+            )
+        })?;
+    let ReconciledEntryKind::Mapping { value, .. } = entry.kind() else {
+        return Err(failure(
+            MutationFailureKind::BindingInvariant,
+            MutationField::Attachments,
+        ));
+    };
+    let node = artifact.node(value).ok_or_else(|| {
+        failure(
+            MutationFailureKind::BindingInvariant,
+            MutationField::Attachments,
+        )
+    })?;
+    let NodePresentation::Concrete {
+        whole_file_range, ..
+    } = node.presentation()
+    else {
+        return Err(failure(
+            MutationFailureKind::PresentationUnsafe,
+            MutationField::Attachments,
+        ));
+    };
+    let start = whole_file_range.start().get() as usize;
+    let end = whole_file_range.end().get() as usize;
+    if artifact.comments().iter().any(|comment| {
+        let range = comment.file_range();
+        ranges_overlap(
+            start,
+            end,
+            range.start().get() as usize,
+            range.end().get() as usize,
+        )
+    }) {
+        return Err(failure(
+            MutationFailureKind::CommentUnsafe,
+            MutationField::Attachments,
+        ));
+    }
+    push_edit(
+        source,
+        start,
+        end,
+        replacement,
+        MutationEffect::Attachments,
+        MutationField::Attachments,
+        edits,
+    )
+}
+
+fn attachment_title_was_updated(
+    actual: &super::Guide,
+    previous: &super::Guide,
+    changed: usize,
+    expected_title: &str,
+) -> bool {
+    let actual = actual.attachments().unwrap_or_default();
+    let previous = previous.attachments().unwrap_or_default();
+    actual.len() == previous.len()
+        && actual
+            .iter()
+            .zip(previous)
+            .enumerate()
+            .all(|(index, (left, right))| {
+                left.id() == right.id()
+                    && left.path() == right.path()
+                    && left.title()
+                        == if index == changed {
+                            expected_title
+                        } else {
+                            right.title()
+                        }
+                    && left.media_type() == right.media_type()
+                    && left.sha256() == right.sha256()
+                    && left.size_bytes() == right.size_bytes()
+            })
 }
 
 fn plan_remove_attachment(
@@ -2721,6 +2999,95 @@ mod tests {
             !core::str::from_utf8(empty.bound().source_bytes())
                 .unwrap()
                 .contains("attachments:")
+        );
+    }
+
+    #[test]
+    fn attachment_title_update_is_narrow_preserves_unknowns_and_stales_tested_guides() {
+        let attachment_id = AttachmentId::from_str("0199a264-ef5f-73b4-a238-a71ba1509898").unwrap();
+        let extra = format!(
+            "attachments:\n  - id: {attachment_id}\n    path: attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/file.txt\n    title: Old title\n    media_type: text/plain\n    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n    size_bytes: 5\n    future_attachment: keep-me\nlast_verified_at: 2026-09-05T10:00:00Z\nverified_content_hash: verify:v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
+        );
+        let original = guide(&guide_base("tested", &extra), "Body\n");
+        let stamp = MutationStamp::from_trusted_time(timestamp("2026-09-05T11:00:00Z"));
+        let MutationOutcome::Candidate(candidate) = plan_guide_mutation(
+            &original,
+            GuideMutation::UpdateAttachmentTitle {
+                attachment_id,
+                title: "Useful notes".into(),
+            },
+            &stamp,
+        )
+        .unwrap_or_else(|_| panic!("update Attachment title")) else {
+            panic!("candidate")
+        };
+        let attachment = &candidate.bound().record().attachments().unwrap()[0];
+        assert_eq!(attachment.title(), "Useful notes");
+        assert_eq!(
+            attachment.path(),
+            original.record().attachments().unwrap()[0].path()
+        );
+        assert_eq!(
+            attachment.sha256(),
+            original.record().attachments().unwrap()[0].sha256()
+        );
+        assert_eq!(
+            candidate.bound().record().declared_status(),
+            GuideStatus::Stale
+        );
+        let source = core::str::from_utf8(candidate.bound().source_bytes()).unwrap();
+        assert!(source.contains("future_attachment: keep-me"));
+        assert!(source.contains("future: {nested: [1]}"));
+        assert!(matches!(
+            plan_guide_mutation(
+                candidate.bound(),
+                GuideMutation::UpdateAttachmentTitle {
+                    attachment_id,
+                    title: "Useful notes".into(),
+                },
+                &stamp,
+            ),
+            Ok(MutationOutcome::NoOp)
+        ));
+        assert!(
+            plan_guide_mutation(
+                &original,
+                GuideMutation::UpdateAttachmentTitle {
+                    attachment_id,
+                    title: " leading".into(),
+                },
+                &stamp,
+            )
+            .is_err()
+        );
+
+        let missing = AttachmentId::from_str("0199a264-ef5f-73b4-a238-a71ba1509899").unwrap();
+        assert!(
+            plan_guide_mutation(
+                &original,
+                GuideMutation::UpdateAttachmentTitle {
+                    attachment_id: missing,
+                    title: "Missing".into(),
+                },
+                &stamp,
+            )
+            .is_err()
+        );
+
+        let archived_extra = format!(
+            "attachments:\n  - id: {attachment_id}\n    path: attachments/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/file.txt\n    title: Old title\n    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\narchived_from_status: draft\narchived_at: 2026-09-05T10:00:00Z\n"
+        );
+        let archived = guide(&guide_base("archived", &archived_extra), "Body\n");
+        assert!(
+            plan_guide_mutation(
+                &archived,
+                GuideMutation::UpdateAttachmentTitle {
+                    attachment_id,
+                    title: "Blocked".into(),
+                },
+                &stamp,
+            )
+            .is_err()
         );
     }
 }
