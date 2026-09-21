@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 6E2B is accepted at signed implementation checkpoint `d1e96f9`: the MCP server exposes exact empty, non-default Category removal preview plus handle/token-only native-approved recoverable execution. The final independent correction review is PASS.
+Phase 6E2C is accepted at signed implementation checkpoint `c4696dc`: the MCP server exposes exact Guide Tested preview plus handle/token-only native-approved execution with core-owned readiness, `verify:v1`, trusted timestamps, and commit-boundary cancellation. The final Security Reviewer correction review is PASS.
 
 ## Current task
 
-Implement the approved Phase 6E2C packet: exact Guide tested preview plus handle/token-only native-approved execution with core-owned readiness, verification hash, trusted timestamps, and commit-boundary cancellation.
+Specify the next narrow Phase 6E2D slice for managed Attachment metadata mutations, preserving the existing no-host-path/no-byte-upload boundary and requiring broad/native approval only where the exact operation is destructive.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace; manage Categories and Guides; search; use confined Git workflows; and use the standalone MCP server for bounded reads plus explicitly granted draft-Guide creation and existing-Guide updates. Attachment viewing/export/reveal and remaining MCP mutation/Git tools remain incomplete.
+In progress. A user can open or initialize a Workspace; manage Categories and Guides; search; use confined Git workflows; and use the standalone MCP server for bounded reads, narrow Guide/Category mutations, native-approved Category reorder/removal, and explicit Guide Tested confirmation. Attachment viewing/export/reveal and remaining MCP Attachment/Git mutation tools remain incomplete.
 
 ## Completed work
 
@@ -144,17 +144,18 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Completed Phase 6E1B2 at signed checkpoint `b2a5a8b`: the server validates a fixed sibling's ownership/mode/link/build digest, copies it into a sealed executable memfd, launches only that snapshot through private pipes and a minimal environment, and maintains at most 64 exact-bound 90-second single-use plans with cancellation. Full repository gates, focused correction gates, and the reused Security Reviewer pass after closing retained-inode mutation and cancellation-finalization races.
 - Completed Phase 6E2A at signed checkpoint `f89479f`: `category_reorder_plan` validates and binds the exact complete Category order while `category_reorder` accepts only handle+token, obtains native consent, and invokes the recoverable core reorder after cancellation-aware adapter and final writer-lock snapshot checks. The packaged graphical Approve/Cancel smoke, full gate, and reused Security Reviewer pass.
 - Completed Phase 6E2B at signed checkpoint `d1e96f9`: `category_remove_plan` binds one issue-free empty, non-default Category at its exact snapshot/revision, while `category_remove` accepts only handle+token, obtains destructive native approval, and uses recoverable nonrecursive trash. Independent review found a desktop exhaustiveness gap and a post-final-scan recovery-reporting race; both are corrected and fully tested. Packaged graphical Approve/Cancel, all local gates, and the correction-only independent review pass.
+- Completed Phase 6E2C at signed checkpoint `c4696dc`: `guide_tested_plan` binds the exact ready Guide revision and `guide_mark_tested` accepts only handle+token, obtains dedicated native Tested confirmation, and delegates verification hash/timestamps to the core. Scope, expiry, archive, denial, drift, replay, and real JSON-RPC cancellation at the final pre-journal boundary preserve exact bytes. Full gates and the reused Security Reviewer pass after closing missing refusal coverage and current-thread cancellation blocking.
 
 ## Work in progress
 
-- Phase 6E2C planning is in progress; no product implementation is uncommitted. Phase 6E2B is accepted at signed `d1e96f9`. Untracked `x` remains unrelated and untouched.
+- No product implementation is uncommitted. Phase 6E2C is accepted at signed `c4696dc`. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
 - Workspace adoption/import/migration and Attachment viewing/export/reveal remain incomplete.
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
-- Phase 6: protocol, bounded reads, narrow mutations, explicit startup capabilities, the sealed native approval launcher, exact Category reorder, and accepted Category removal are checkpointed through `d1e96f9`; tested approval, Attachment metadata mutation, Git commit/sync, and broader client documentation remain.
+- Phase 6: protocol, bounded reads, narrow mutations, explicit startup capabilities, the sealed native approval launcher, exact Category reorder/removal, and Guide Tested approval are checkpointed through `c4696dc`; Attachment metadata mutation, Git commit/sync, and broader client documentation remain.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
 ## Known bugs
@@ -282,19 +283,21 @@ No known regression in accepted phases. If the process is killed after the initi
 - Phase 6E1B2 keeps the launcher/manager private and unreachable from MCP. The retained helper is an immutable sealed copy verified against the build digest; the final plan decision is linearized with cancellation. Security review found and closed same-inode post-capture mutation and approval-finalization races; the final verdict is PASS.
 - Phase 6E2A exposes the gate only for an exact complete Category reorder plan. SDK cancellation kills/reaps active approval, the core repeats issue-free Workspace/category snapshot validation after preparation at the journal boundary, and only explicit GTK Approve can authorize. Security review found and closed cancellation plus manifest TOCTOU gaps; final verdict: PASS.
 - Phase 6E2B exposes only exact empty, non-default Category removal. The independent reviewer found two issues: desktop cancellation handling was non-exhaustive, and a foreign entry arriving after the final scan could move the descriptor before reporting an ordinary stale plan. The correction adds closed desktop cancellation/recovery handling and operation/path-bound `RECOVERY_REQUIRED`; a deterministic race proves foreign bytes and the exact trashed descriptor both survive. The correction-only independent re-review is PASS.
+- Phase 6E2C exposes only exact ready-Guide Tested approval. Security review found missing operation-level scope/expiry/archive evidence and a blocked cancellation path from synchronous post-approval work on the current-thread runtime. The correction adds those refusal tests, moves revalidation/mutation to blocking work, and proves real JSON-RPC cancellation immediately before journal creation leaves bytes unchanged and creates no journal. Final verdict: PASS with no blocker/high/medium finding.
 
 ## Blockers and human checkpoints
 
-- No product decision or manual-test blocker. Routine work uses zero extra agents; the single correction-only Security Reviewer returned PASS and is no longer needed. The required packaged graphical Approve/Cancel smoke passed.
+- No product decision or manual-test blocker. Routine work uses zero extra agents; the one reused Phase 6E2C Security Reviewer returned PASS and is no longer running. No additional graphical smoke was required because this phase reused the accepted sealed helper and added only a closed Tested operation kind covered by unit/integration tests.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`d1e96f9` — signed and accepted Phase 6E2B recoverable native-approved MCP Category removal. Signed ledger commit `844d694` follows it and only records the previously pending state.
+`c4696dc` — signed and accepted Phase 6E2C native-approved MCP Guide Tested flow. This `PROGRESS.md` update follows it and will be recorded in a separate signed ledger commit.
 
 ## Tests last run and results
 
+- 2026-09-21: Phase 6E2C checkpoint `c4696dc` passes 449 core tests with 2 intentional ignores, 25 desktop Rust tests, 68 MCP unit tests, 3 approval-helper integration tests, 1 stdio integration test, and supporting contract/API suites. Strict workspace Clippy, Cargo formatting/build, Biome over 57 files, direct installed TypeScript checks, contract drift, Guide hash vectors, 39 Vitest tests, Git helper/credential smoke, Vite production build, bootstrap, and whitespace checks pass. Security Reviewer correction verdict: PASS.
 - 2026-09-21: Phase 6E2B checkpoint `d1e96f9` passes 448 core tests with 2 intentional network/performance ignores, 25 desktop Rust tests, 62 MCP unit tests, 3 real-helper integration tests, 1 stdio integration test, and all contract/API suites. Strict all-Workspace Clippy, Cargo formatting, Biome over 57 files, direct installed TypeScript checks, contract drift, 39 Vitest tests, verification vectors, Git helper/credential smoke, Vite/Cargo builds, bootstrap, and whitespace checks pass. The digest-bound release helper is `36b4d779…99cc6d`; the one-link graphical Approve/Cancel smoke passed recoverable removal and byte-identical denial. The correction-only independent review reran focused core/desktop/MCP/cancellation cases and returned PASS.
 - 2026-09-21: Phase 6E2A checkpoint `f89479f` passes 446 core tests with 2 intentional network/performance ignores, 25 desktop Rust tests, 57 MCP unit tests, 3 real-helper integration tests, 1 stdio integration test, and all contract/API suites. Strict all-Workspace Clippy, Cargo formatting, Biome over 56 files, direct installed TypeScript checks, contract drift, 39 Vitest tests, verification vectors, Git credential-proxy smoke, Vite/Cargo production builds, bootstrap, and whitespace checks pass. The release helper digest `f2aa932d…c4c5fa` was embedded in the server; the one-link packaged graphical Approve/Cancel smoke passed exact mutation and byte-identical denial. Security Reviewer verdict: PASS.
 - 2026-09-20: Phase 6E1B2 checkpoint `b2a5a8b` passes the full two-lane repository gate: all-workspace Cargo tests/strict Clippy/formatting and pnpm check/test/build plus bootstrap/whitespace checks. The final security corrections additionally pass 51 MCP unit tests, 3 real-helper integration tests, 1 stdio integration test, strict MCP Clippy, formatting, bootstrap, and whitespace checks. Adversarial coverage includes sealed-snapshot path and same-inode mutation, digest/mode/link rejection, descriptor/environment isolation, result framing, expiry, cancellation, replay, substitution, and the 64-plan cap. Security Reviewer verdict: PASS.
@@ -573,20 +576,21 @@ No product test failure. The current machine exposes pnpm 11.20.0 while the repo
 - ADR 0041, `docs/task-packets/phase-6e1b2-mcp-approval-launcher-plans.md`, its evidence, and `crates/rehow-mcp/src/approval_gate.rs` implement the sealed helper launcher and private approval-plan manager at `b2a5a8b`.
 - ADR 0042, `docs/task-packets/phase-6e2a-mcp-category-reorder.md`, its evidence, cancellation/commit-boundary core hardening, the two-tool MCP adapter, explicit native buttons, and the packaged smoke script implement exact approved Category reorder at `f89479f`.
 - ADR 0043, `docs/task-packets/phase-6e2b-mcp-category-remove.md`, its evidence, recovery-required race hardening, two-tool MCP adapter, desktop error closure, and packaged smoke script implement accepted Category removal at `d1e96f9`; final independent correction review: PASS.
+- ADR 0044, `docs/task-packets/phase-6e2c-mcp-guide-tested-approval.md`, its evidence, cancellation-aware recovery boundary, dedicated approval kind, and two-tool MCP adapter implement accepted Guide Tested approval at `c4696dc`; final Security Reviewer correction verdict: PASS.
 
 ## Next recommended action
 
-Implement `docs/task-packets/phase-6e2c-mcp-guide-tested-approval.md` without expanding its authority. Run focused checks while iterating and the full gate once before the signed implementation checkpoint.
+Define and implement the smallest safe Phase 6E2D managed Attachment metadata slice. Start with exact-revision add/update behavior that references only already managed Attachment IDs; keep raw byte transfer and client-supplied host paths deferred.
 
 ## Recommended agent role and reasoning effort
 
-Orchestrator/high for implementation with zero routine agents; one Security Reviewer/xhigh only after the implementation and focused gates are ready.
+Primary Orchestrator/Architect with zero routine agents. Reuse one Security Reviewer only when the finalized destructive Attachment boundary reaches its mandatory gate.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read ADRs 0015, 0026, and 0039–0044, `docs/mcp-spec.md`, and `docs/task-packets/phase-6e2c-mcp-guide-tested-approval.md`.
+2. Read ADRs 0016, 0026, and 0039–0044 plus the Attachment sections of `docs/content-model.md`, `docs/mcp-spec.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `d1e96f9`, `f89479f`, and `b2a5a8b`; signed `844d694` changes only `PROGRESS.md`.
+4. Verify signed checkpoint `c4696dc`; its following signed ledger commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 6E2B as accepted. Implement the approved Phase 6E2C packet; do not reopen Category removal or repeat its full gate unless that diff changes.
+6. Treat Phase 6E2C as accepted. Specify the narrow Phase 6E2D Attachment metadata packet before implementation; do not reopen tested approval or repeat its full gate unless that diff changes.
