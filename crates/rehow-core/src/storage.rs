@@ -9,10 +9,10 @@ mod watch;
 
 pub(crate) use recovery::{
     AttachmentImportPreview, AttachmentImportStorageOutcome, AttachmentRemovalPreview,
-    AttachmentRemovalStorageOutcome, AttachmentSourceState, CategoryCreateStorageError,
-    CategoryCreateStorageOutcome, CategoryRemoveStorageError, CategoryRemoveStorageOutcome,
-    DocumentCreateError, DocumentCreateOutcome, DocumentMoveOutcome, DocumentRemoveError,
-    DocumentRemoveOutcome, DocumentUpdateError, DocumentUpdateOutcome,
+    AttachmentRemovalStorageOutcome, AttachmentSourceState, CancellableDocumentUpdateError,
+    CategoryCreateStorageError, CategoryCreateStorageOutcome, CategoryRemoveStorageError,
+    CategoryRemoveStorageOutcome, DocumentCreateError, DocumentCreateOutcome, DocumentMoveOutcome,
+    DocumentRemoveError, DocumentRemoveOutcome, DocumentUpdateError, DocumentUpdateOutcome,
     GitCloneMaterializationSource, GitCloneMaterializationStorageError,
     GitCloneMaterializationStorageOutcome, GitClonePackSource, GitCloneStaging,
     GitCloneStagingError, GitSyncMaterializationCurrent, GitSyncMaterializationSource,
@@ -2739,6 +2739,37 @@ where
         None,
         operation_id,
         created_at,
+        prepare,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_document_update_cancellable<E, F, C>(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    relative_path: &str,
+    expected_revision: Revision,
+    operation_id: crate::protocol::OperationId,
+    created_at: crate::protocol::Timestamp,
+    cancelled: &C,
+    prepare: F,
+) -> Result<DocumentUpdateOutcome, CancellableDocumentUpdateError<E>>
+where
+    F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
+    C: Fn() -> bool,
+{
+    recovery::execute_document_update_cancellable(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        relative_path,
+        expected_revision,
+        None,
+        operation_id,
+        created_at,
+        cancelled,
         prepare,
     )
 }

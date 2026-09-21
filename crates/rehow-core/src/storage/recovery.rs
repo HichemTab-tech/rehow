@@ -1567,6 +1567,18 @@ pub(crate) enum DocumentUpdateError<E> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CancellableDocumentUpdateError<E> {
+    Cancelled,
+    Update(DocumentUpdateError<E>),
+}
+
+impl<E> From<DocumentUpdateError<E>> for CancellableDocumentUpdateError<E> {
+    fn from(error: DocumentUpdateError<E>) -> Self {
+        Self::Update(error)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DocumentUpdateOutcome {
     revision: Revision,
     changed: bool,
@@ -2296,6 +2308,48 @@ pub(super) fn execute_document_update<E, F>(
 where
     F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
 {
+    match execute_document_update_cancellable(
+        root,
+        state_home,
+        runtime_directory,
+        workspace_id,
+        relative_path,
+        expected_revision,
+        expected_category_snapshot,
+        operation_id,
+        created_at,
+        &|| false,
+        prepare,
+    ) {
+        Ok(outcome) => Ok(outcome),
+        Err(CancellableDocumentUpdateError::Update(error)) => Err(error),
+        Err(CancellableDocumentUpdateError::Cancelled) => {
+            unreachable!("the non-cancellable document update never cancels")
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_document_update_cancellable<E, F, C>(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    relative_path: &str,
+    expected_revision: Revision,
+    expected_category_snapshot: Option<Snapshot>,
+    operation_id: OperationId,
+    created_at: Timestamp,
+    cancelled: &C,
+    prepare: F,
+) -> Result<DocumentUpdateOutcome, CancellableDocumentUpdateError<E>>
+where
+    F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
+    C: Fn() -> bool,
+{
+    if cancelled() {
+        return Err(CancellableDocumentUpdateError::Cancelled);
+    }
     let store = store::RecoveryStore::open(
         state_home,
         workspace_id,
@@ -2306,28 +2360,34 @@ where
     let lock = store
         .acquire_lock(runtime_directory)
         .map_err(map_store_update)?;
+    if cancelled() {
+        return Err(CancellableDocumentUpdateError::Cancelled);
+    }
     if let Some(expected_snapshot) = expected_category_snapshot {
         let current_root = root.duplicate().map_err(|_| DocumentUpdateError::Io)?;
         let current = match super::inspect_open_root(current_root).map_err(map_inspect_update)? {
             super::WorkspaceInspection::Compatible(view) => view,
-            _ => return Err(DocumentUpdateError::Conflict),
+            _ => return Err(DocumentUpdateError::Conflict.into()),
         };
         if super::category_inventory_snapshot(&current) != expected_snapshot {
-            return Err(DocumentUpdateError::Conflict);
+            return Err(DocumentUpdateError::Conflict.into());
         }
     }
     let target = root
         .open_managed_target(relative_path)
         .map_err(map_io_update)?;
     let current = match target.state(super::GUIDE_LIMIT).map_err(map_io_update)? {
-        super::linux::ManagedState::Missing => return Err(DocumentUpdateError::Conflict),
+        super::linux::ManagedState::Missing => return Err(DocumentUpdateError::Conflict.into()),
         super::linux::ManagedState::Regular(state) => state,
     };
     let actual_revision = super::document_revision(relative_path, &current.bytes);
     if actual_revision != expected_revision {
-        return Err(DocumentUpdateError::Conflict);
+        return Err(DocumentUpdateError::Conflict.into());
     }
     let candidate = prepare(&current.bytes).map_err(DocumentUpdateError::Prepare)?;
+    if cancelled() {
+        return Err(CancellableDocumentUpdateError::Cancelled);
+    }
     if candidate.as_ref() == current.bytes {
         return Ok(DocumentUpdateOutcome {
             revision: actual_revision,
@@ -2379,6 +2439,9 @@ where
         stage: JournalStage::Prepared,
         completion: false,
     };
+    if cancelled() {
+        return Err(CancellableDocumentUpdateError::Cancelled);
+    }
     let execution = workspace::execute_new_journal(root, &store, &lock, journal.clone());
     if let Err(error) = execution {
         let committed = store
@@ -2388,7 +2451,7 @@ where
                     && workspace::resume_journal(root, &store, &lock, operation_id).is_ok()
             });
         if !committed {
-            return Err(map_workspace_update(error));
+            return Err(map_workspace_update(error).into());
         }
     }
     Ok(DocumentUpdateOutcome {

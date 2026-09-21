@@ -270,6 +270,61 @@ pub fn guide_lifecycle_unavailable_error(request_id: RequestId) -> ErrorDto {
     ))
 }
 
+pub fn guide_tested_busy_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::io_busy(
+        request_id,
+        construction::Operation::GuideChangeStatus,
+        2_000,
+    ))
+}
+
+pub fn guide_tested_unavailable_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::workspace_unavailable(
+        request_id,
+        construction::Reason::WorkspaceRootChanged,
+    ))
+}
+
+pub fn guide_tested_plan_stale_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::plan_stale(
+        request_id,
+        construction::Operation::GuideChangeStatus,
+        BoundedList::try_new(Vec::new(), 0).expect("the fixed empty changed-entity list is valid"),
+    ))
+}
+
+pub fn guide_tested_plan_expired_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::GuideChangeStatus,
+        construction::Reason::PlanExpired,
+    ))
+}
+
+pub fn guide_tested_plan_replayed_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::GuideChangeStatus,
+        construction::Reason::PlanReplayed,
+    ))
+}
+
+pub fn guide_tested_plan_scope_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::GuideChangeStatus,
+        construction::Reason::PlanScopeMismatch,
+    ))
+}
+
+pub fn guide_tested_cancelled_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::GuideChangeStatus,
+        construction::Reason::PlanStateChanged,
+    ))
+}
+
 pub fn guide_create_category_not_found_error(
     request_id: RequestId,
     category_id: CategoryId,

@@ -336,6 +336,26 @@ fn forbidden_summary_character(character: char) -> bool {
         || (character as u32) & 0xffff >= 0xfffe
 }
 
+pub(crate) fn safe_summary_line(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_control()
+                || is_invisible_or_format_character(character)
+                || matches!(
+                    character,
+                    '\u{2028}'..='\u{2029}' | '\u{fdd0}'..='\u{fdef}'
+                )
+                || (character as u32) & 0xffff >= 0xfffe
+            {
+                '\u{fffd}'
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
 fn is_invisible_or_format_character(character: char) -> bool {
     // This is the complete union of Unicode 16's Format (Cf) characters and
     // Default_Ignorable_Code_Point ranges. Keeping the table explicit avoids
@@ -441,6 +461,13 @@ mod tests {
         for bytes in cases {
             assert!(read_request(&mut Cursor::new(bytes), None).is_err());
         }
+    }
+
+    #[test]
+    fn summary_line_display_copy_neutralizes_every_rejected_scalar_class() {
+        let safe = safe_summary_line("Title\nwith\u{00ad}hidden\u{202e}text\u{fdd0}\u{10ffff}");
+        assert_eq!(safe.chars().filter(|value| *value == '\u{fffd}').count(), 5);
+        assert!(validate_summary(&safe).is_ok());
     }
 
     #[test]

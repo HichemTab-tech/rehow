@@ -27,13 +27,14 @@ use crate::{
         new_workspace_id,
     },
     storage::{
-        AttachmentSourceState, CategoryCreateStorageError, CategoryRemoveStorageError,
-        DocumentCreateError, DocumentRemoveError, DocumentUpdateError, DocumentUpdateRequest,
-        EmptyWorkspaceTarget, MultiDocumentUpdateError, WorkspaceInitializeError,
-        WorkspaceInspectError, WorkspaceView, category_inventory_snapshot,
-        execute_attachment_import, execute_attachment_removal, execute_category_create,
-        execute_category_document_update, execute_category_remove, execute_document_create,
-        execute_document_move, execute_document_remove, execute_document_update,
+        AttachmentSourceState, CancellableDocumentUpdateError, CategoryCreateStorageError,
+        CategoryRemoveStorageError, DocumentCreateError, DocumentRemoveError, DocumentUpdateError,
+        DocumentUpdateRequest, EmptyWorkspaceTarget, MultiDocumentUpdateError,
+        WorkspaceInitializeError, WorkspaceInspectError, WorkspaceView,
+        category_inventory_snapshot, execute_attachment_import, execute_attachment_removal,
+        execute_category_create, execute_category_document_update, execute_category_remove,
+        execute_document_create, execute_document_move, execute_document_remove,
+        execute_document_update, execute_document_update_cancellable,
         execute_multi_document_update, execute_workspace_initialize, open_initialized_workspace,
         preview_attachment_import, preview_attachment_removal, refresh_workspace,
     },
@@ -1116,6 +1117,19 @@ pub enum GuideUpdateError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GuideTestedApprovalError {
+    AlreadyTested,
+    Cancelled,
+    Update(GuideUpdateError),
+}
+
+impl From<GuideUpdateError> for GuideTestedApprovalError {
+    fn from(error: GuideUpdateError) -> Self {
+        Self::Update(error)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GuideRemoveError {
     NotFound,
     HasAttachments,
@@ -1246,6 +1260,67 @@ pub fn confirm_and_approve_guide_tested<W: HasWindowHandle + HasDisplayHandle + 
     )
 }
 
+pub fn validate_guide_tested_approval(
+    workspace: &WorkspaceView,
+    guide_id: GuideId,
+    expected_revision: Revision,
+) -> Result<(), GuideTestedApprovalError> {
+    let loaded = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides())
+        .find(|guide| guide.guide().id() == &guide_id)
+        .ok_or(GuideUpdateError::NotFound)?;
+    if loaded.revision() != expected_revision {
+        return Err(GuideUpdateError::RevisionConflict.into());
+    }
+    if loaded.effective_status() == crate::domain::GuideStatus::Archived {
+        return Err(GuideUpdateError::InvalidEdit.into());
+    }
+    if loaded.effective_status() == crate::domain::GuideStatus::Tested {
+        return Err(GuideTestedApprovalError::AlreadyTested);
+    }
+    let body =
+        core::str::from_utf8(loaded.guide().body()).map_err(|_| GuideUpdateError::InvalidGuide)?;
+    validate_tested_readiness(body).map_err(|error| match error {
+        GuideReadinessError::MissingSteps
+        | GuideReadinessError::EmptySteps
+        | GuideReadinessError::DuplicateReservedHeading => {
+            GuideTestedApprovalError::Update(GuideUpdateError::NotReady)
+        }
+        GuideReadinessError::ParseLimit => {
+            GuideTestedApprovalError::Update(GuideUpdateError::ResourceLimit)
+        }
+    })
+}
+
+pub fn approve_guide_tested_after_native_confirmation<C>(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_id: GuideId,
+    expected_revision: Revision,
+    cancelled: C,
+) -> Result<GuideUpdateOutcome, GuideTestedApprovalError>
+where
+    C: Fn() -> bool,
+{
+    if cancelled() {
+        return Err(GuideTestedApprovalError::Cancelled);
+    }
+    validate_guide_tested_approval(workspace, guide_id, expected_revision)?;
+    approve_guide_tested_with_context_and_cancellation(
+        workspace,
+        state_home,
+        runtime_directory,
+        guide_id,
+        expected_revision,
+        new_operation_id(),
+        current_timestamp(),
+        &cancelled,
+    )
+}
+
 fn guide_tested_confirmation(title: &str, guide_id: &str) -> String {
     let safe_title = title
         .chars()
@@ -1277,6 +1352,39 @@ fn approve_guide_tested_with_context(
     operation_id: OperationId,
     at: Timestamp,
 ) -> Result<GuideUpdateOutcome, GuideUpdateError> {
+    match approve_guide_tested_with_context_and_cancellation(
+        workspace,
+        state_home,
+        runtime_directory,
+        guide_id,
+        expected_revision,
+        operation_id,
+        at,
+        &|| false,
+    ) {
+        Ok(outcome) => Ok(outcome),
+        Err(GuideTestedApprovalError::Update(error)) => Err(error),
+        Err(GuideTestedApprovalError::AlreadyTested) => unreachable!("mutation owns no preview"),
+        Err(GuideTestedApprovalError::Cancelled) => {
+            unreachable!("the desktop transition never cancels after confirmation")
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn approve_guide_tested_with_context_and_cancellation<C>(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_id: GuideId,
+    expected_revision: Revision,
+    operation_id: OperationId,
+    at: Timestamp,
+    cancelled: &C,
+) -> Result<GuideUpdateOutcome, GuideTestedApprovalError>
+where
+    C: Fn() -> bool,
+{
     let loaded = workspace
         .categories()
         .iter()
@@ -1284,12 +1392,12 @@ fn approve_guide_tested_with_context(
         .find(|(_, guide)| guide.guide().id() == &guide_id)
         .ok_or(GuideUpdateError::NotFound)?;
     if loaded.1.revision() != expected_revision {
-        return Err(GuideUpdateError::RevisionConflict);
+        return Err(GuideUpdateError::RevisionConflict.into());
     }
     let relative_path = loaded.1.relative_path().to_owned();
     let category_id = *loaded.0.category().id();
     let stamp = MutationStamp::from_trusted_time(at);
-    let outcome = execute_document_update(
+    let outcome = execute_document_update_cancellable(
         workspace,
         state_home,
         runtime_directory,
@@ -1297,6 +1405,7 @@ fn approve_guide_tested_with_context(
         expected_revision,
         operation_id,
         at,
+        cancelled,
         |bytes| {
             let parsed =
                 parse_guide_source(copy_bytes(bytes)?).map_err(|_| PlanError::InvalidGuide)?;
@@ -1319,11 +1428,12 @@ fn approve_guide_tested_with_context(
             apply_guide_mutation(&bound, GuideMutation::MarkTested(hash), &stamp)
         },
     )
-    .map_err(map_update_error)?;
+    .map_err(map_cancellable_update_error)?;
     if outcome.changed() && refresh_workspace(workspace).is_err() {
         return Err(GuideUpdateError::CommittedRefreshRequired {
             revision: outcome.revision(),
-        });
+        }
+        .into());
     }
     Ok(GuideUpdateOutcome {
         revision: outcome.revision(),
@@ -2586,6 +2696,17 @@ fn map_update_error(error: DocumentUpdateError<PlanError>) -> GuideUpdateError {
         DocumentUpdateError::Unsafe => GuideUpdateError::UnsafeStorage,
         DocumentUpdateError::Unsupported => GuideUpdateError::UnsupportedFilesystem,
         DocumentUpdateError::Io => GuideUpdateError::Io,
+    }
+}
+
+fn map_cancellable_update_error(
+    error: CancellableDocumentUpdateError<PlanError>,
+) -> GuideTestedApprovalError {
+    match error {
+        CancellableDocumentUpdateError::Cancelled => GuideTestedApprovalError::Cancelled,
+        CancellableDocumentUpdateError::Update(error) => {
+            GuideTestedApprovalError::Update(map_update_error(error))
+        }
     }
 }
 
@@ -4053,6 +4174,48 @@ mod tests {
         assert_eq!(
             reopened.categories()[0].guides()[0].effective_status(),
             GuideStatus::Tested
+        );
+    }
+
+    #[test]
+    fn adapter_tested_approval_validates_and_cancels_before_the_journal_boundary() {
+        let (workspace, state, mut view) = fixture("tested-adapter-cancel", GUIDE);
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let expected = revision(&view);
+        validate_guide_tested_approval(&view, guide_id, expected).unwrap();
+        let before = fs::read(workspace.path().join(GUIDE_PATH)).unwrap();
+        let checks = std::cell::Cell::new(0_u8);
+        assert_eq!(
+            approve_guide_tested_after_native_confirmation(
+                &mut view,
+                state.path(),
+                None,
+                guide_id,
+                expected,
+                || {
+                    let next = checks.get() + 1;
+                    checks.set(next);
+                    next >= 4
+                },
+            ),
+            Err(GuideTestedApprovalError::Cancelled)
+        );
+        assert_eq!(fs::read(workspace.path().join(GUIDE_PATH)).unwrap(), before);
+        assert_eq!(revision(&view), expected);
+
+        let approved = approve_guide_tested_after_native_confirmation(
+            &mut view,
+            state.path(),
+            None,
+            guide_id,
+            expected,
+            || false,
+        )
+        .unwrap();
+        assert!(approved.changed());
+        assert_eq!(
+            validate_guide_tested_approval(&view, guide_id, approved.revision()),
+            Err(GuideTestedApprovalError::AlreadyTested)
         );
     }
 

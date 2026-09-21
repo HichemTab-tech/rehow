@@ -221,11 +221,13 @@ The desktop offers Active, Tested, Draft, Stale, Archived, and All scopes. Tauri
 
 The server is a separate executable using stdio by default. Stdout is protocol-only; diagnostics go to stderr with redaction. Each launch entry has a unique alias, canonical non-overlapping root, and per-Workspace read/write/destructive/Git capability. Duplicate aliases, roots, nested roots, and ambiguous portable Workspace IDs are rejected/reported. Tools use a random launch-scoped handle; `workspace_id` remains metadata, never authority.
 
-All tools use JSON-schema-compatible request/response types and the shared `ErrorDto` in `docs/error-contract.md`. Read payloads are bounded/paginated. Mutations require expected revisions; broad/destructive operations require capability plus dry-run and a short-lived token bound to launch handle/root identity, operation, effect set, and revisions. MCP can request, but cannot itself complete, a `tested` transition. See `docs/mcp-spec.md`.
+All tools use JSON-schema-compatible request/response types and the shared `ErrorDto` in `docs/error-contract.md`. Read payloads are bounded/paginated. Mutations require expected revisions; broad/destructive operations require capability plus dry-run and a short-lived token bound to launch handle/root identity, operation, effect set, and revisions. An MCP client cannot assert `tested`; the trusted server adapter may complete the transition only after the sealed native helper records explicit user approval. See `docs/mcp-spec.md`.
 
 Phase 6E2A is the first operation-specific approval consumer. A private complete Category-order plan binds every descriptor revision and the Category snapshot; only the sealed native helper can approve it, and the server refreshes and rechecks all effects before invoking the existing atomic recovery mutation.
 
 Phase 6E2B applies the same sealed-plan boundary to one empty, non-default Category. The plan privately binds its resolved directory and exact snapshot/revision; execution has no caller-selected target and reuses nonrecursive recoverable trash. Default reassignment and cascading removal remain outside the operation.
+
+Phase 6E2C binds one ready Guide's exact revision, managed path, and Category to a Tested plan. Execution accepts only handle+token, uses the dedicated native Tested language, then moves the complete refresh/recheck/core mutation into blocking work so the single-thread stdio runtime can still dispatch cancellation. The core reparses the current bytes, recalculates readiness and `verify:v1`, and journals the trusted transition. Cancellation is checked at the core journal boundary; no generic status/headless client assertion exists.
 
 ## Preferences and local state
 

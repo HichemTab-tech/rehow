@@ -211,6 +211,8 @@ Phase 6E2A specifically requires exact public-schema, preview/capability, native
 
 Phase 6E2B adds exact schema, empty/default/nonempty validation, approval/denial/replay, post-plan drift, real JSON-RPC cancellation, recoverable-trash, and deterministic final manifest-race tests for Category removal. No test uses personal Workspace data, and approval overrides remain test-only.
 
+Phase 6E2C adds the exact thirty-two-tool schema, readiness/already-Tested/archived validation, write-without-broad capability behavior, native approval/denial/replay/scope/expiry, post-plan drift, core journal-boundary cancellation, deterministic real JSON-RPC cancellation paused before journal creation, and verification-hash/effective-status assertions. Test approval outcomes and the boundary probe remain test-only.
+
 ## Test result recording
 
 `PROGRESS.md` records date, exact command, pass/fail counts or concise result, relevant environment, known flakes/failures, and commit/tree state. The latest verified commit means all claimed gates ran against that commit; if docs changed afterward, say so explicitly.
