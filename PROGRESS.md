@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 7A Linux development packaging is implemented and verified locally plus in an ephemeral Debian 13 container; graphical and oldest-baseline release qualification remain open.
+Phase 7A Linux development packaging is implemented and verified locally plus in ephemeral Debian 13 and Fedora 44 containers; graphical and oldest-baseline release qualification remain open.
 
 ## Current task
 
-Qualify the RPM package and graphical application-menu launch on representative clean systems without changing the host package database.
+Qualify graphical application-menu launch on representative clean systems and select/test the oldest supported build baseline.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7A produces locally smoke-tested `.deb` and `.rpm` development packages containing the desktop app, Git helpers, standalone 45-tool MCP server, approval helper, desktop entry, and original icon set. Debian 13 dependency-resolving install and package-owned uninstall preserve unrelated Workspace bytes. RPM installation, graphical clean-machine menu launch, oldest baseline, runtime matrix, release identity/version/license/signing, and final qualification remain incomplete.
+Phase 6 is complete. Phase 7A produces locally smoke-tested `.deb` and `.rpm` development packages containing the desktop app, Git helpers, standalone 45-tool MCP server, approval helper, desktop entry, and original icon set. Debian 13 and Fedora 44 dependency-resolving install/package-owned uninstall checks preserve unrelated Workspace bytes. Graphical clean-machine menu launch, oldest baseline, runtime matrix, release identity/version/license/signing, and final qualification remain incomplete.
 
 ## Completed work
 
@@ -152,10 +152,11 @@ Phase 6 is complete. Phase 7A produces locally smoke-tested `.deb` and `.rpm` de
 - Implemented and accepted Phase 6E2D3: `attachment_candidates_list` discovers only safe undeclared files under one exact Guide directory and issues bounded five-minute process-local tokens; `attachment_metadata_add` consumes a Workspace/root/Guide/revision-bound token, revalidates exact identity and content under the writer lock, and atomically adds core-owned metadata without changing file bytes. The 45-tool schema, full gate, and Security Reviewer correction recheck pass.
 - Implemented Phase 7A at signed checkpoint `d4ceffc`: Tauri produces `.deb` and `.rpm` packages containing `rehow`, both fixed Git helpers, `rehow-mcp`, `rehow-mcp-approve`, a non-terminal Utility desktop entry, and original 32/128/256/512 px icons. Extraction smoke tests verify modes, one-link layout, desktop fields, dimensions, embedded approval-helper digest, and MCP startup refusal without configuration.
 - Qualified the `.deb` at signed evidence checkpoint `e8726c6`: an ephemeral Debian 13 container resolved and configured Rehow's GTK/WebKit dependencies, while a separate network-disabled unpack/remove run verified package-owned files were removed and an unrelated Workspace sentinel remained unchanged. No host package was installed.
+- Qualified the `.rpm` at signed evidence checkpoint `586e3cc`: an ephemeral Fedora 44 container resolved and installed the complete GTK/WebKit runtime, verified all binaries, dynamic links, desktop metadata, and MCP refusal, then removed Rehow while preserving an unrelated Workspace sentinel. No host package was installed.
 
 ## Work in progress
 
-- Only this progress-ledger update is intentionally uncommitted. Phase 7A packaging is checkpointed at signed `d4ceffc`, current-host runtime evidence at signed `92b492f`, and Debian qualification at signed `e8726c6`. Untracked `x` remains unrelated and untouched.
+- Only this progress-ledger update is intentionally uncommitted. Phase 7A packaging is checkpointed at signed `d4ceffc`, current-host runtime evidence at signed `92b492f`, Debian qualification at signed `e8726c6`, and Fedora qualification at signed `586e3cc`. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
@@ -306,10 +307,11 @@ No known regression in accepted phases. On the current development host, default
 
 ## Latest verified commit
 
-`e8726c6` — signed Debian 13 install/uninstall qualification evidence following Phase 7A implementation and runtime-smoke checkpoints; its configured signature verifies. This progress-ledger update follows that commit.
+`586e3cc` — signed Fedora 44 RPM install/uninstall qualification evidence following Phase 7A implementation, runtime, and Debian checkpoints; its configured signature verifies. This progress-ledger update follows that commit.
 
 ## Tests last run and results
 
+- 2026-09-22: The signed Fedora qualification checkpoint `586e3cc` records a fresh Fedora 44 container installing the development RPM plus 154 required GTK/WebKit/runtime dependencies with weak dependencies disabled. Installed RPM/binaries, complete dynamic linkage, desktop metadata, empty-configuration MCP refusal, DNF removal, and preservation of an unrelated Workspace sentinel all pass. The ephemeral container was removed automatically; the base image remains in Docker's local cache. No host package was installed.
 - 2026-09-22: The signed Debian qualification checkpoint `e8726c6` records an ephemeral Debian 13 `apt-get install --no-install-recommends` reaching successful `Setting up rehow (0.0.0)` after resolving GTK/WebKit dependencies. A separate network-disabled clean-container unpack/remove smoke verified the five installed executables, desktop entry, package removal, and preservation of an unrelated Workspace sentinel. The first post-install harness assertion had a shell-quoting error after successful installation; it is documented rather than misreported as a product failure. No host package was installed.
 - 2026-09-22: Phase 7A checkpoint `d4ceffc` passed a real `pnpm tauri:build`, producing `.deb` and `.rpm` development packages. `scripts/test-linux-bundles.sh` passed for both extracted artifacts, including five one-link executables, desktop entry, four icon sizes, exact embedded approval-helper digest, and empty-configuration MCP refusal. `pnpm check`, Bootstrap validation, visual inspection of 512/32 px icons, and whitespace checks pass. Current-host runtime evidence at signed `92b492f` records default-Wayland failure, targeted DMABUF-disabled Wayland success, and X11 liveness with GBM warnings. Temporary smoke state was deleted. No package, Node version, pnpm version, or dependency was installed or switched; both commit signatures verify.
 - 2026-09-22: Phase 6E2D3 checkpoint `36b175e` passes `pnpm check`, `pnpm test`, `pnpm test:integration`, `pnpm build`, 39 Vitest tests, 455 core tests (453 pass and 2 intentional network/performance ignores), 18 error-contract tests, 13 protocol tests, public-API/trybuild and unknown-YAML suites, 25 desktop Rust tests, 92 MCP unit tests, 3 approval-helper integration tests, and 1 stdio integration test. Strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, Bootstrap validation (17 required files, 49 ADRs, 8 pinned agents), contract drift, production build, and whitespace checks pass on the existing Node 26.2.0/pnpm 11.3.0 toolchain. The 45-tool schema and adversarial candidate confinement/filtering, capability, drift, expiry, scope, replay/eviction, trust, preservation, and disclosure cases pass. The single Security Reviewer correction verdict is PASS with no blocker/high/medium finding.
@@ -610,7 +612,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Next recommended action
 
-Qualify the RPM package in an ephemeral Fedora-family environment, then perform a graphical application-menu smoke where a clean compositor/session is available; keep release identity/version/license unchanged.
+Perform a graphical application-menu smoke where a clean compositor/session is available, then test the chosen oldest supported build baseline; keep release identity/version/license unchanged.
 
 ## Recommended agent role and reasoning effort
 
@@ -621,7 +623,7 @@ Primary Orchestrator with zero routine agents. Use one specialist only for a man
 1. Read `AGENTS.md` and this file.
 2. Read `docs/installation.md`, the Phase 7 section of `docs/implementation-plan.md`, and applicable packaging ADRs.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed Phase 7A packaging checkpoint `d4ceffc`, runtime-evidence checkpoint `92b492f`, Debian qualification `e8726c6`, and the following progress-ledger commit; do not touch unrelated untracked `x`.
+4. Verify signed Phase 7A packaging checkpoint `d4ceffc`, runtime evidence `92b492f`, Debian qualification `e8726c6`, Fedora qualification `586e3cc`, and the following progress-ledger commit; do not touch unrelated untracked `x`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
 7. Continue Phase 7 with focused package/runtime checks; do not choose the production identifier, release version, license, or publication policy without the required human decision.
