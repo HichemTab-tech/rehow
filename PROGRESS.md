@@ -5,11 +5,11 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 6E3A is accepted at signed `ac76863`: the complete consolidated gate passes and the correction-only Security Reviewer verdict is PASS.
+Phase 6E3A is accepted at signed `ac76863`. Phase 6E3B safe MCP Git synchronization is architecturally specified by ADR 0048 and ready for direct implementation after its planning checkpoint.
 
 ## Current task
 
-Specify the next narrow Phase 6 MCP Git-sync slice from the already accepted Phase 5D core, then implement it through the same focused-test/single-gate workflow.
+Commit the Phase 6E3B ADR/task packet, then implement it directly with focused tests, one complete gate, and one Security Reviewer pass.
 
 ## Overall status
 
@@ -151,7 +151,7 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 
 ## Work in progress
 
-- No product implementation is uncommitted. Phase 6E3A is checkpointed at signed `ac76863`; this progress/ADR closure follows that commit. Untracked `x` remains unrelated and untouched.
+- Phase 6E3B planning docs are the only intended uncommitted change. Phase 6E3A remains accepted at signed `ac76863`. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
@@ -589,21 +589,22 @@ No product test failure. The repository now pins the unchanged installed pnpm 11
 - ADR 0045, `docs/task-packets/phase-6e2d1-mcp-attachment-title-update.md`, its evidence, typed nested-scalar mutation, and one-tool MCP adapter implement Attachment title updates at `a7fb9b7`.
 - ADR 0046, `docs/task-packets/phase-6e2d2-mcp-attachment-removal.md`, its evidence, source-identity-bound core recovery correction, two-tool MCP adapter, desktop recovery closure, and unchanged-host-toolchain reconciliation implement recoverable Attachment removal at signed `4d349ff`; full gates and the final correction-only Security Reviewer verdict pass.
 - ADR 0047, `docs/task-packets/phase-6e3a-mcp-git-commit.md`, its evidence, the exact recovery/cancellation core additions, and the four-tool adapter implement accepted managed Git commit/recovery at signed `ac76863`; final Security Reviewer verdict: PASS.
+- ADR 0048 and `docs/task-packets/phase-6e3b-mcp-safe-git-sync.md` freeze the next narrow slice: approve before remote/credential inspection, bind an exact `pull` or `push` classification, approve mutation separately, and recover only the exact internally selected pull intent. This is planning only; no MCP sync tool is yet exposed.
 
 ## Next recommended action
 
-Specify the next narrow MCP safe-sync slice by adapting the accepted Phase 5D core without exposing URLs, credentials, refs, paths, raw Git, reset/rebase/stash, force push, or automatic conflict resolution.
+Commit ADR 0048 and `docs/task-packets/phase-6e3b-mcp-safe-git-sync.md`, then implement the packet directly.
 
 ## Recommended agent role and reasoning effort
 
-Primary Orchestrator/Architect with zero routine agents. Use one Security Reviewer only after the next Git-mutation focused gate is green.
+Primary Orchestrator/Architect with zero routine agents. Use one Security Reviewer only after the Phase 6E3B focused gate is green.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read ADRs 0021–0024, 0026, and 0039–0047 plus the Git sections of `docs/mcp-spec.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
+2. Read ADRs 0021–0026 and 0039–0048 plus the Git sections of `docs/mcp-spec.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `ac76863`; the following signed ledger commit records its accepted state.
+4. Verify signed checkpoints `ac76863` and `42d690f`; the next signed checkpoint contains only Phase 6E3B planning/docs.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6E3A as accepted; its full gate and final correction-only Security Reviewer verdict pass.
-7. Plan the next narrow MCP safe-sync slice from the accepted Phase 5D core; keep arbitrary Git, user-selected refs/paths, credential material, unsafe history changes, and new dependencies out of scope.
+7. Execute `docs/task-packets/phase-6e3b-mcp-safe-git-sync.md`; keep arbitrary Git, user-selected refs/paths, credential material, unsafe history changes, and new dependencies out of scope.

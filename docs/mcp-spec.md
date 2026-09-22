@@ -184,8 +184,10 @@ Availability follows the approved Phase 5 core:
 - `git_commit({workspaceHandle, planToken})` — implemented; consumes the token, requires sealed native Git-write approval, and publishes through the accepted recoverable core intent without push or network.
 - `git_commit_recovery_plan({workspaceHandle})` — implemented; atomically excludes overlapping planning, captures the core's opaque selector for the exact pending operation, and exposes no operation identifier.
 - `git_commit_recover({workspaceHandle, planToken})` — implemented; separately approves and resumes only that exact internally selected publication, refusing replacement by a later operation.
-- `git_sync_plan({workspaceHandle, expectedGitState, direction})`
-- `git_sync({workspaceHandle, planToken})`
+- `git_sync_plan({workspaceHandle, expectedGitState, direction})` — Phase 6E3B contract: `direction` is exactly `pull` or `push`; native approval precedes network/credential use; the result is path/URL/OID/credential-free and yields an executable token only for a clean remote fast-forward pull or proven local-ahead push.
+- `git_sync({workspaceHandle, planToken})` — Phase 6E3B contract: separately approves and consumes the exact retained direction/classification; it can only invoke the accepted fast-forward pull or ordinary non-force push.
+- `git_sync_recovery_plan({workspaceHandle})` — Phase 6E3B contract: captures the exact internally pending pull-publication operation without exposing its identifier.
+- `git_sync_recover({workspaceHandle, planToken})` — Phase 6E3B contract: separately approves and resumes only that exact pull publication.
 
 The server exposes no generic Git arguments, refspecs, paths, environment, credentials, or raw output. Git mutation tools do not exist until their Phase 5 ADR and malicious-repository gate pass, and then require per-Workspace Git startup capability plus native out-of-band approval. Sync never lets Git directly rewrite active content without validated/journaled core materialization, and never force-pushes, resets, rebases, stashes, discards, or auto-resolves. Authentication requirements are reported without soliciting secrets.
 
