@@ -79,6 +79,8 @@ Authenticated HTTPS supports a trusted self-contained system helper or the exact
 - Core UI does not require WebGL. If WebKitGTK graphics issues occur, show targeted diagnostics rather than setting global environment workarounds unconditionally.
 - Document troubleshooting in order: current system packages/drivers; then narrowly scoped `__NV_DISABLE_EXPLICIT_SYNC`; then `WEBKIT_DISABLE_DMABUF_RENDERER`; last resort `WEBKIT_DISABLE_COMPOSITING_MODE`, only where the official Tauri guidance applies.
 
+On the 2026-09-22 development host, a normal Wayland launch exited with a GDK protocol error while `WEBKIT_DISABLE_DMABUF_RENDERER=1 rehow` stayed alive cleanly for the five-second smoke window. An X11 launch also stayed alive but logged GBM allocation warnings. This is environment evidence, not a global launcher default: keep the workaround scoped to an affected invocation while driver/WebKitGTK qualification remains open.
+
 ## Upgrades and schema compatibility
 
 - Package upgrades replace application files, never Workspace content.

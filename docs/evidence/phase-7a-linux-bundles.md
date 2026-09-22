@@ -28,6 +28,16 @@ The extraction test verifies executable mode/link count, desktop-entry fields, i
 
 The 512 px source and 32 px rendered asset were visually inspected. The open reference notebook and rust return/bookmark mark remain recognizable at launcher size without text, glow, or gradient styling.
 
+## Current-host runtime smoke
+
+The release binary was launched with isolated repository-local XDG config/cache/data/state directories:
+
+- default Wayland: exited with `Gdk-Message: Error 71 (Protocol error) dispatching to Wayland display`;
+- Wayland with `WEBKIT_DISABLE_DMABUF_RENDERER=1`: remained alive for the five-second smoke window with no stderr;
+- X11: remained alive for the five-second smoke window and logged two GBM allocation warnings.
+
+The exact temporary smoke directories were deleted afterward. No package was installed. This proves the binary reaches a live desktop window path on the current host, but does not satisfy the clean-machine or multi-compositor gate.
+
 ## Open release gates
 
 - Clean-machine install/menu-launch/uninstall testing on the chosen oldest supported baseline.
