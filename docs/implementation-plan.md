@@ -150,7 +150,7 @@ Milestones:
 - Later gate: Attachment metadata add only after an already-managed-file discovery contract exists.
 - Per-Workspace write/broad/Git capabilities, launch handles, revisions/effect sets, dry-run tokens, and native out-of-band approval companion.
 - Git status/plan/commit/safe sync only after Phase 5 primitives are approved.
-- Client configuration/setup docs and end-to-end target AI workflow.
+- Client configuration/setup docs and end-to-end target AI workflow (implemented in `docs/mcp-setup.md`).
 
 Gate:
 

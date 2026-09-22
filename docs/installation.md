@@ -1,7 +1,7 @@
 # Installation and Desktop Integration
 
-Status: desktop packaging planned; Phase 6E3B MCP managed Git commit and safe synchronization development boundary available
-Last updated: 2026-09-21
+Status: desktop packaging planned; MCP development contract implemented through Phase 6E3B
+Last updated: 2026-09-22
 
 ## Supported baseline
 
@@ -67,15 +67,15 @@ The final instructions must use current Omarchy/Hyprland guidance and tell the u
 
 ## MCP installation plan
 
-`rehow-mcp` is a separate executable/package entry point. It runs without the desktop over stdio and receives uniquely aliased Workspace roots in the MCP client's user-controlled configuration. Installation docs provide copyable examples for supported clients, read-only default, per-alias `--allow-write`/`--allow-broad`/`--allow-git-write`, the fixed server-launched native `rehow-mcp-approve` companion, headless limitations, version check, stderr logging, and removal.
+`rehow-mcp` is a separate executable/package entry point. It runs without the desktop over stdio and receives uniquely aliased Workspace roots in the MCP client's user-controlled configuration. Copyable Codex and generic local-client examples, capability profiles, verification, troubleshooting, removal, and the end-to-end “Add this to Rehow” workflow are in `docs/mcp-setup.md`.
 
-The implemented Phase 6D2 development invocation is:
+The read-only development invocation is:
 
 ```sh
 cargo run -p rehow-mcp -- --workspace personal=/absolute/path/to/workspace
 ```
 
-Repeat `--workspace alias=/absolute/path` for up to 16 non-overlapping compatible Workspaces. Aliases and random launch handles—not paths—appear in tool results. Without another flag, read and preview tools provide bounded Workspace/Category/Guide/Attachment metadata, validation, search, duplicate/related discovery, confined Git status, refresh, and Category reorder/removal effects. To enable canonical narrow mutations, add `--allow-write personal`. Category reorder and empty non-default Category removal additionally require `--allow-broad personal`, a release build containing the digest-bound sibling helper, and native approval for each exact plan. Write mode requires a private XDG state base outside every configured Workspace; unsafe state/runtime overlap fails startup. `--allow-git-write personal` remains inert until its operation-specific tools land. The server supports MCP `2026-07-28` discovery and `2025-11-25` initialization.
+Repeat `--workspace alias=/absolute/path` for up to 16 non-overlapping compatible Workspaces. Aliases and random launch handles—not paths—appear in tool results. Without another flag, read and preview tools provide bounded Workspace/Category/Guide/Attachment metadata, validation, search, duplicate/related discovery, confined Git status, refresh, and safe effect previews. `--allow-write personal` enables typed narrow mutations. `--allow-broad personal` additionally enables native-approved Category reorder/removal and Attachment removal. `--allow-git-write personal` additionally enables native-approved managed-only commit and separately approved safe sync/recovery. Broad and Git grants each require the matching write grant. Write mode requires a private XDG state base outside every configured Workspace; unsafe state/runtime overlap fails startup. The server supports MCP `2026-07-28` discovery and `2025-11-25` initialization.
 
 Packagers must install `rehow-mcp` and `rehow-mcp-approve` as separate one-link sibling files; Cargo's hard-linked build artifacts are not an install layout and are intentionally rejected by the helper provenance gate.
 

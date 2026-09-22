@@ -3,7 +3,7 @@
 Status: required Phase 6 contract; current protocol baseline refreshed for 2026-07-28
 Transport: local stdio
 Protocol: MCP 2026-07-28 plus 2025-11-25 compatibility
-Last updated: 2026-09-20
+Last updated: 2026-09-22
 
 ## Purpose and deployment
 
@@ -199,7 +199,7 @@ The server exposes no generic Git arguments, refspecs, paths, environment, crede
 4. It updates with current Guide revision or creates a `draft`.
 5. It calls `guide_validate` and reports `changeSummary` exactly.
 6. User tries the instructions outside Rehow.
-7. AI calls `guide_request_tested_approval` only after the user says they tried it; the Guide changes only if the user separately confirms the native approval dialog for that exact revision.
+7. Only after the user says that exact revision worked, AI calls `guide_tested_plan`; the Guide changes only after the user separately confirms the native dialog and AI calls `guide_mark_tested` with that single-use token.
 
 ## Testing obligations
 
@@ -216,4 +216,4 @@ The server exposes no generic Git arguments, refspecs, paths, environment, crede
 
 ## Client configuration and versioning
 
-Installation docs will provide examples for supported MCP clients without modifying global client config automatically. The executable and tool schemas are semantically versioned. Workspace schema compatibility and server version are returned by `workspace_get`. Breaking tool/schema changes require a new major server contract and migration notes; content schema remains independently versioned.
+`docs/mcp-setup.md` provides copyable Codex and generic local-client examples, least-authority profiles, connection verification, troubleshooting/removal, and the end-to-end target workflow without modifying client configuration automatically. The executable and tool schemas are semantically versioned. Workspace schema compatibility and server version are returned by the MCP handshake and `workspace_get`. Breaking tool/schema changes require a new major server contract and migration notes; content schema remains independently versioned.

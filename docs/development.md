@@ -1,7 +1,7 @@
 # Development Guide
 
-Status: active development through Phase 6D2
-Last updated: 2026-09-20
+Status: active development through Phase 6E3B
+Last updated: 2026-09-22
 
 ## Prerequisites
 
@@ -85,7 +85,9 @@ Phase 6E2C Guide-tested preview is available in read-only sessions. Executable T
 
 Phase 6E2D1 adds `attachment_metadata_update` for the title of an already-declared managed Attachment. It requires `--allow-write`; it does not require or consume broad authority and cannot transfer or select files.
 
-Phase 6E2D2 adds `attachment_remove_plan` and `attachment_remove`. Planning works without mutation authority; executable tokens require both `--allow-write=<alias>` and `--allow-broad=<alias>` plus the trusted packaged approval helper and retained recovery directories.
+Phase 6E2D2 adds `attachment_remove_plan` and `attachment_remove`. Planning works without mutation authority; executable tokens require both `--allow-write <alias>` and `--allow-broad <alias>` plus the trusted packaged approval helper and retained recovery directories.
+
+Current client configuration and the exact target AI workflow are documented in `docs/mcp-setup.md`. Keep those examples synchronized with the strict CLI parser and real tool names.
 
 After building the helper and digest-bound server, run `node scripts/smoke-mcp-category-reorder.mjs` in a graphical session. The script copies both binaries into a temporary one-link package layout, creates only temporary Workspace/state roots, and requires one explicit **Approve** followed by one explicit **Cancel**; it proves the approved reorder and byte-identical denial path, then removes its temporary data.
 
