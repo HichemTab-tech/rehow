@@ -15,6 +15,8 @@ Initial package priority:
 
 Relevant Tauri references: [Linux prerequisites](https://v2.tauri.app/start/prerequisites/), [AppImage distribution](https://v2.tauri.app/distribute/appimage/), and [Linux graphics diagnostics](https://v2.tauri.app/develop/debug/linux-graphics/).
 
+The development `.deb` has completed dependency-resolving install and package-owned uninstall checks in an ephemeral Debian 13 container. This is compatibility evidence, not the minimum supported baseline; graphical menu launch and an older baseline remain release gates.
+
 ## Development packages
 
 Build both native Linux packages with the repository's active Node, pnpm, and Rust toolchain:
