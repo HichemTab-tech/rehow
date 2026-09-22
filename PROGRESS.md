@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 6E2D3 managed Attachment discovery/metadata add is implemented, security-accepted, and fully verified. Phase 6 is complete.
+Phase 7A Linux development packaging is implemented and locally verified; clean-machine release qualification remains open.
 
 ## Current task
 
-Create the signed Phase 6E2D3 implementation checkpoint, then begin the next ready installation/desktop-integration task.
+Perform the smallest clean-machine install/menu-launch/uninstall qualification slice for the development packages.
 
 ## Overall status
 
-Phase 6 complete. A user can open or initialize a Workspace; manage Categories and Guides; search; use confined Git workflows; and use the standalone 45-tool MCP server for bounded reads, narrow Guide/Category/Attachment mutations, explicit Guide Tested confirmation, managed-only Git commit/recovery, and safe Git sync/recovery. Workspace adoption/import/migration, Attachment viewing/export/reveal, and final Linux packaging remain incomplete.
+Phase 6 is complete. Phase 7A now produces locally smoke-tested `.deb` and `.rpm` development packages containing the desktop app, Git helpers, standalone 45-tool MCP server, approval helper, desktop entry, and original icon set. Clean-machine installation/menu launch, runtime matrix, release identity/version/license/signing, and final qualification remain incomplete.
 
 ## Completed work
 
@@ -150,10 +150,11 @@ Phase 6 complete. A user can open or initialize a Workspace; manage Categories a
 - Implemented and accepted Phase 6E3A at signed checkpoint `ac76863`: `git_status` supplies opaque process-local stale-state binding; four closed tools plan/apply/recover managed-only unsigned commits behind startup write+Git-write authority and sealed native approval. Exact recovery-operation binding, final pre-intent protocol cancellation, and a full-lifecycle per-Workspace reservation close replacement and overlapping-candidate races. The full gate and correction-only Security Reviewer pass.
 - Implemented and accepted Phase 6E3B at signed checkpoint `02c5946`: four closed sync/recovery tools require startup Git-write authority, approval before network/authentication use, a second mutation approval, exact retained safe pull/push classification, shared commit/sync exclusion, and exact pathless pull recovery. Uncertain push publication returns a distinct bounded warning. The complete gate and Security Reviewer correction recheck pass.
 - Implemented and accepted Phase 6E2D3: `attachment_candidates_list` discovers only safe undeclared files under one exact Guide directory and issues bounded five-minute process-local tokens; `attachment_metadata_add` consumes a Workspace/root/Guide/revision-bound token, revalidates exact identity and content under the writer lock, and atomically adds core-owned metadata without changing file bytes. The 45-tool schema, full gate, and Security Reviewer correction recheck pass.
+- Implemented Phase 7A at signed checkpoint `d4ceffc`: Tauri produces `.deb` and `.rpm` packages containing `rehow`, both fixed Git helpers, `rehow-mcp`, `rehow-mcp-approve`, a non-terminal Utility desktop entry, and original 32/128/256/512 px icons. Extraction smoke tests verify modes, one-link layout, desktop fields, dimensions, embedded approval-helper digest, and MCP startup refusal without configuration.
 
 ## Work in progress
 
-- Only this progress-ledger update is intentionally uncommitted. Phase 6E2D3 is checkpointed at signed `36b175e`. Untracked `x` remains unrelated and untouched.
+- Only this progress-ledger update is intentionally uncommitted. Phase 7A is checkpointed at signed `d4ceffc`. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
@@ -161,7 +162,7 @@ Phase 6 complete. A user can open or initialize a Workspace; manage Categories a
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
 - Phase 6: complete, including the final managed Attachment discovery/metadata-add mutation.
-- Phase 7: Linux packaging, desktop integration, cross-environment hardening.
+- Phase 7: development `.deb`/`.rpm` packaging is implemented; clean-machine installation, desktop runtime matrix, upgrade/uninstall qualification, release metadata/signing, and final audits remain.
 
 ## Known bugs
 
@@ -304,10 +305,11 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Latest verified commit
 
-`36b175e` — signed Phase 6E2D3 managed Attachment discovery/metadata-add implementation and evidence checkpoint; its configured signature verifies. This progress-ledger update follows that commit.
+`d4ceffc` — signed Phase 7A Linux development bundle implementation, documentation, icon, and evidence checkpoint; its configured signature verifies. This progress-ledger update follows that commit.
 
 ## Tests last run and results
 
+- 2026-09-22: Phase 7A checkpoint `d4ceffc` passed a real `pnpm tauri:build`, producing `.deb` and `.rpm` development packages. `scripts/test-linux-bundles.sh` passed for both extracted artifacts, including five one-link executables, desktop entry, four icon sizes, exact embedded approval-helper digest, and empty-configuration MCP refusal. `pnpm check`, Bootstrap validation, visual inspection of 512/32 px icons, and whitespace checks pass. No package, Node version, pnpm version, or dependency was installed or switched; the commit signature verifies.
 - 2026-09-22: Phase 6E2D3 checkpoint `36b175e` passes `pnpm check`, `pnpm test`, `pnpm test:integration`, `pnpm build`, 39 Vitest tests, 455 core tests (453 pass and 2 intentional network/performance ignores), 18 error-contract tests, 13 protocol tests, public-API/trybuild and unknown-YAML suites, 25 desktop Rust tests, 92 MCP unit tests, 3 approval-helper integration tests, and 1 stdio integration test. Strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, Bootstrap validation (17 required files, 49 ADRs, 8 pinned agents), contract drift, production build, and whitespace checks pass on the existing Node 26.2.0/pnpm 11.3.0 toolchain. The 45-tool schema and adversarial candidate confinement/filtering, capability, drift, expiry, scope, replay/eviction, trust, preservation, and disclosure cases pass. The single Security Reviewer correction verdict is PASS with no blocker/high/medium finding.
 - 2026-09-22: Phase 6E2D3 planning/toolchain checkpoint `1f83118` passes `pnpm check`, contract drift/type/Biome checks, Bootstrap validation (17 required files, 49 ADRs, 8 pinned agents), and whitespace checks on the existing active Node 26.2.0/pnpm 11.3.0 pair. No runtime/package manager was installed or switched.
 - 2026-09-22: MCP setup/workflow checkpoint `ea3009c` passes exact real-tool-name/CLI-flag source checks, Codex CLI add/remove help checks, Bootstrap validation (17 required files, 48 ADRs, 8 pinned agents), and whitespace checks. `pnpm check` could not start because the host now exposes Node 26.8.1/pnpm 11.3.0 instead of the repository-required 26.2.0/11.20.0; no install, switch, or pin change was attempted. The preceding accepted code checkpoint's complete gate remains authoritative.
@@ -490,6 +492,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Important files changed
 
+- Phase 7A: `apps/desktop/src-tauri/tauri.conf.json`, `apps/desktop/src-tauri/icons/rehow-*.png`, `scripts/prepare-release-binaries.sh`, `scripts/test-linux-bundles.sh`, `scripts/blake3-file.mjs`, `docs/installation.md`, and `docs/evidence/phase-7a-linux-bundles.md` implement and document development `.deb`/`.rpm` bundles.
 - `AGENTS.md`, `PROGRESS.md`
 - `.codex/config.toml`, `.codex/agents/*.toml`
 - `.codex/skills/web-design-guidelines/SKILL.md`
@@ -605,18 +608,18 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Next recommended action
 
-Begin the next ready Phase 7 Linux installation/desktop-integration task; retain zero routine agents and use a specialist only at a mandatory acceptance gate.
+Run a clean-machine install/menu-launch/uninstall smoke on the eventual supported baseline, then record the runtime matrix without changing release identity/version/license prematurely.
 
 ## Recommended agent role and reasoning effort
 
-Primary Orchestrator/Architect with zero routine agents. Use one specialist only when the next mandatory gate requires it.
+Primary Orchestrator with zero routine agents. Use one specialist only for a mandatory final acceptance gate.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read `docs/installation.md`, the Phase 7 section of `docs/implementation-plan.md`, and applicable packaging ADRs.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed Phase 6 checkpoint `36b175e` and the following progress-ledger commit; do not touch unrelated untracked `x`.
+4. Verify signed Phase 7A packaging checkpoint `d4ceffc` and the following progress-ledger commit; do not touch unrelated untracked `x`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 6E3A as accepted; its full gate and final correction-only Security Reviewer verdict pass.
-7. Execute the Phase 6E2D3 packet directly; keep host paths, arbitrary filesystem access, raw bytes, file mutation, and new dependencies out of scope.
+6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
+7. Continue Phase 7 with focused package/runtime checks; do not choose the production identifier, release version, license, or publication policy without the required human decision.
