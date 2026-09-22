@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 7A Linux development packaging is implemented with a verified Ubuntu 24.04/glibc 2.39 floor plus Debian 13 and Fedora 44 package journeys; graphical release qualification remains open.
+Phase 7A Linux development packaging is implemented with a verified Ubuntu 24.04/glibc 2.39 floor, Debian/Fedora package journeys, and a packaged Wayland menu-launch smoke. External clean-graphical qualification remains open.
 
 ## Current task
 
-Qualify graphical application-menu launch and the Wayland/WebKitGTK behavior on representative clean systems.
+Return to the largest incomplete product requirement: safe copy import of an ordinary Markdown collection into a new Workspace.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7A produces locally smoke-tested `.deb` and `.rpm` development packages containing the desktop app, Git helpers, standalone 45-tool MCP server, approval helper, desktop entry, and original icon set. Ubuntu 24.04, Debian 13, and Fedora 44 install/package-owned uninstall journeys pass and preserve unrelated Workspace bytes; an automated guard caps all packaged executables at glibc 2.39. Graphical clean-machine menu launch, runtime matrix, release identity/version/license/signing, and final qualification remain incomplete.
+Phase 6 is complete. Phase 7A produces verified `.deb` and `.rpm` development packages; Ubuntu 24.04, Debian 13, Fedora 44, ABI-floor, current-host runtime, and packaged menu-resolution checks pass. A second clean graphical compositor plus release identity/version/license/signing remain open. Product completion still requires Workspace copy import/migration foundations and Attachment viewing/export/reveal.
 
 ## Completed work
 
@@ -154,10 +154,11 @@ Phase 6 is complete. Phase 7A produces locally smoke-tested `.deb` and `.rpm` de
 - Qualified the `.deb` at signed evidence checkpoint `e8726c6`: an ephemeral Debian 13 container resolved and configured Rehow's GTK/WebKit dependencies, while a separate network-disabled unpack/remove run verified package-owned files were removed and an unrelated Workspace sentinel remained unchanged. No host package was installed.
 - Qualified the `.rpm` at signed evidence checkpoint `586e3cc`: an ephemeral Fedora 44 container resolved and installed the complete GTK/WebKit runtime, verified all binaries, dynamic links, desktop metadata, and MCP refusal, then removed Rehow while preserving an unrelated Workspace sentinel. No host package was installed.
 - Established the oldest current binary baseline at signed checkpoint `7932118`: a complete Ubuntu 24.04 install/link/MCP/remove journey passes, all five executables require at most glibc 2.39, and both package formats now fail their smoke gate if a future executable raises that ABI floor.
+- Verified packaged application-menu resolution at signed evidence checkpoint `bd6eb20`: `gtk-launch Rehow` resolved the extracted package's desktop entry and kept the packaged binary alive on the current Wayland session with the documented host-scoped DMABUF workaround; stdout/stderr were empty and the exact temporary tree/process were removed.
 
 ## Work in progress
 
-- Only this progress-ledger update is intentionally uncommitted. Phase 7A packaging and environment/ABI qualification are signed through `7932118`. Untracked `x` remains unrelated and untouched.
+- Only this progress-ledger update is intentionally uncommitted. Phase 7A packaging, environment/ABI, and packaged-menu evidence are signed through `bd6eb20`. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
@@ -308,10 +309,11 @@ No known regression in accepted phases. On the current development host, default
 
 ## Latest verified commit
 
-`7932118` — signed Ubuntu 24.04/glibc 2.39 baseline and enforcing package-smoke checkpoint; its configured signature verifies. This progress-ledger update follows that commit.
+`bd6eb20` — signed packaged Wayland application-menu launch evidence following the ABI-enforcing package checkpoint; its configured signature verifies. This progress-ledger update follows that commit.
 
 ## Tests last run and results
 
+- 2026-09-22: Signed checkpoint `bd6eb20` records a package-extracted `gtk-launch Rehow` smoke on the current Wayland session. With the already diagnosed invocation-scoped `WEBKIT_DISABLE_DMABUF_RENDERER=1`, the packaged process remained alive for three seconds with empty stdout/stderr; the exact process and ignored temporary tree were removed. No package was installed.
 - 2026-09-22: Checkpoint `7932118` passes a complete ephemeral Ubuntu 24.04 package install, installed-status check, all-five-executable check, desktop dynamic-link check, empty-configuration MCP refusal, package removal, and unrelated Workspace-sentinel preservation. Direct and extracted `.deb`/`.rpm` ABI inspection reports `GLIBC_2.39` for Rehow/Git helpers/MCP and `GLIBC_2.34` for the approval helper. The enforcing bundle smoke, `pnpm check`, whitespace check, and signed-commit verification pass. No host package or Node/pnpm version was installed or switched.
 - 2026-09-22: The signed Fedora qualification checkpoint `586e3cc` records a fresh Fedora 44 container installing the development RPM plus 154 required GTK/WebKit/runtime dependencies with weak dependencies disabled. Installed RPM/binaries, complete dynamic linkage, desktop metadata, empty-configuration MCP refusal, DNF removal, and preservation of an unrelated Workspace sentinel all pass. The ephemeral container was removed automatically; the base image remains in Docker's local cache. No host package was installed.
 - 2026-09-22: The signed Debian qualification checkpoint `e8726c6` records an ephemeral Debian 13 `apt-get install --no-install-recommends` reaching successful `Setting up rehow (0.0.0)` after resolving GTK/WebKit dependencies. A separate network-disabled clean-container unpack/remove smoke verified the five installed executables, desktop entry, package removal, and preservation of an unrelated Workspace sentinel. The first post-install harness assertion had a shell-quoting error after successful installation; it is documented rather than misreported as a product failure. No host package was installed.
@@ -614,7 +616,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Next recommended action
 
-Perform a graphical application-menu smoke on a clean compositor/session, then finish the Wayland/X11/WebKitGTK matrix; keep release identity/version/license unchanged.
+Specify and implement copy import for ordinary Markdown into a new Workspace; leave source bytes untouched and defer in-place adoption. Return to the external clean-graphical matrix at the final release gate.
 
 ## Recommended agent role and reasoning effort
 
@@ -625,7 +627,7 @@ Primary Orchestrator with zero routine agents. Use one specialist only for a man
 1. Read `AGENTS.md` and this file.
 2. Read `docs/installation.md`, the Phase 7 section of `docs/implementation-plan.md`, and applicable packaging ADRs.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed Phase 7A packaging checkpoint `d4ceffc`, environment evidence through ABI guard `7932118`, and the following progress-ledger commit; do not touch unrelated untracked `x`.
+4. Verify signed Phase 7A packaging and menu evidence through `bd6eb20` plus the following progress-ledger commit; do not touch unrelated untracked `x`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
-7. Continue Phase 7 with focused package/runtime checks; do not choose the production identifier, release version, license, or publication policy without the required human decision.
+7. Implement copy import as a separate preview/apply boundary; keep source content read-only, reject symlink/path races, create only draft Guides, and defer in-place adoption.
