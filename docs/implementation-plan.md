@@ -145,6 +145,7 @@ Milestones:
 - Phase 6E2C: exact Guide tested preview plus handle/token-only Tested native approval, fresh revision/readiness revalidation, core-owned verification hash/trusted timestamps, and commit-boundary cancellation.
 - Phase 6E2D1: exact-revision replacement of one declared managed Attachment display title, with no file/path/hash/size/media-type authority.
 - Phase 6E2D2: exact Attachment removal preview plus handle/token-only destructive native approval and recoverable metadata/file trash execution.
+- Phase 6E3A: managed-only local Git commit planning, native Git-write approval, single-use publication, and explicit pathless interrupted-publication recovery by adapting the accepted Phase 5C core.
 - Later gate: Attachment metadata add only after an already-managed-file discovery contract exists.
 - Per-Workspace write/broad/Git capabilities, launch handles, revisions/effect sets, dry-run tokens, and native out-of-band approval companion.
 - Git status/plan/commit/safe sync only after Phase 5 primitives are approved.

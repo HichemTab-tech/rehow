@@ -5,11 +5,11 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 6E2D2 implementation is checkpointed at signed `4d349ff`: MCP now supports exact Attachment title update and native-approved recoverable Attachment removal. Full gates pass. Combined security review found four issues; all are corrected and tested, but the review process exhausted external credits before emitting its formal final PASS.
+Phase 6E2D2 implementation is checkpointed at signed `4d349ff`: MCP now supports exact Attachment title update and native-approved recoverable Attachment removal. Full gates pass. Combined security review found four issues; all are corrected and tested, but the review process exhausted external credits before emitting its formal final PASS. Phase 6E3A managed Git commit is specified in ADR 0047 and an implementation-ready packet; no new Git authority is implemented yet.
 
 ## Current task
 
-Close the formal combined Phase 6E2D1–D2 Security Reviewer verdict when reviewer capacity is available; otherwise preserve the verified checkpoint and prepare the next Phase 6 packet without widening authority.
+Close the formal combined Phase 6E2D1–D2 Security Reviewer verdict when reviewer capacity is available, then execute the ready Phase 6E3A MCP managed-Git-commit packet.
 
 ## Overall status
 
@@ -585,10 +585,11 @@ No product test failure. The repository now pins the unchanged installed pnpm 11
 - ADR 0044, `docs/task-packets/phase-6e2c-mcp-guide-tested-approval.md`, its evidence, cancellation-aware recovery boundary, dedicated approval kind, and two-tool MCP adapter implement accepted Guide Tested approval at `c4696dc`; final Security Reviewer correction verdict: PASS.
 - ADR 0045, `docs/task-packets/phase-6e2d1-mcp-attachment-title-update.md`, its evidence, typed nested-scalar mutation, and one-tool MCP adapter implement Attachment title updates at `a7fb9b7`; only formal combined review closure remains pending.
 - ADR 0046, `docs/task-packets/phase-6e2d2-mcp-attachment-removal.md`, its evidence, source-identity-bound core recovery correction, two-tool MCP adapter, desktop recovery closure, and unchanged-host-toolchain reconciliation implement recoverable Attachment removal at signed `4d349ff`; full gates pass and only the formal final combined security verdict remains open after reviewer credit exhaustion.
+- ADR 0047 and `docs/task-packets/phase-6e3a-mcp-git-commit.md` freeze the next narrow slice: reuse the accepted core managed-only commit/recovery lifecycle through startup Git-write authority, exact process-local state binding, sealed native approval, and closed pathless MCP schemas. This is planning only; no Git mutation tool is yet exposed.
 
 ## Next recommended action
 
-When reviewer capacity is available, request a correction-only Security Reviewer verdict for the refreshed portable Workspace-ID binding at `4d349ff`; do not repeat implementation or the full gate unless the diff changes. If review remains unavailable, preserve this checkpoint and prepare the next exact Phase 6 packet without integrating new authority into the pending gate.
+Request the correction-only Security Reviewer verdict for the refreshed portable Workspace-ID binding at `4d349ff`. After PASS, implement `docs/task-packets/phase-6e3a-mcp-git-commit.md` directly with focused tests, then one full gate before its signed checkpoint.
 
 ## Recommended agent role and reasoning effort
 
@@ -597,8 +598,9 @@ Primary Orchestrator/Architect with zero routine agents. Reuse the existing Secu
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read ADRs 0016–0017, 0026, and 0039–0046 plus the Attachment sections of `docs/content-model.md`, `docs/mcp-spec.md`, and `docs/threat-model.md`.
+2. Read ADRs 0021–0024, 0026, and 0039–0047 plus the Git sections of `docs/mcp-spec.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
 4. Verify signed checkpoints `4d349ff`, `a7fb9b7`, and `c4696dc`; the following signed ledger commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6E2D2 implementation/full gates as complete but its formal combined security verdict as pending solely because reviewer credits were exhausted. Do not reopen the implementation or repeat its full gate unless the diff changes; request only the correction verdict when capacity returns.
+7. After that verdict passes, execute `docs/task-packets/phase-6e3a-mcp-git-commit.md`; keep sync, network, credentials, arbitrary Git, and new dependencies out of scope.
