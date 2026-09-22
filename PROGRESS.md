@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 7A Linux development packaging is implemented with a verified Ubuntu 24.04/glibc 2.39 floor, Debian/Fedora package journeys, and a packaged Wayland menu-launch smoke. External clean-graphical qualification remains open.
+Phase 2C ordinary-Markdown copy import is active. Its read-only source preview is implemented and verified; destination selection and apply are next. Phase 7A packaging remains qualified through the current-host menu smoke.
 
 ## Current task
 
-Return to the largest incomplete product requirement: safe copy import of an ordinary Markdown collection into a new Workspace.
+Implement descriptor-confined destination selection and copy imported Markdown into a new Workspace as draft Guides.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7A produces verified `.deb` and `.rpm` development packages; Ubuntu 24.04, Debian 13, Fedora 44, ABI-floor, current-host runtime, and packaged menu-resolution checks pass. A second clean graphical compositor plus release identity/version/license/signing remain open. Product completion still requires Workspace copy import/migration foundations and Attachment viewing/export/reveal.
+Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Phase 2C now safely previews ordinary Markdown collections without exposing paths or modifying sources. Product completion still requires import apply/recovery, migration foundations, Attachment viewing/export/reveal, and final release qualification.
 
 ## Completed work
 
@@ -155,14 +155,15 @@ Phase 6 is complete. Phase 7A produces verified `.deb` and `.rpm` development pa
 - Qualified the `.rpm` at signed evidence checkpoint `586e3cc`: an ephemeral Fedora 44 container resolved and installed the complete GTK/WebKit runtime, verified all binaries, dynamic links, desktop metadata, and MCP refusal, then removed Rehow while preserving an unrelated Workspace sentinel. No host package was installed.
 - Established the oldest current binary baseline at signed checkpoint `7932118`: a complete Ubuntu 24.04 install/link/MCP/remove journey passes, all five executables require at most glibc 2.39, and both package formats now fail their smoke gate if a future executable raises that ABI floor.
 - Verified packaged application-menu resolution at signed evidence checkpoint `bd6eb20`: `gtk-launch Rehow` resolved the extracted package's desktop entry and kept the packaged binary alive on the current Wayland session with the documented host-scoped DMABUF workaround; stdout/stderr were empty and the exact temporary tree/process were removed.
+- Implemented descriptor-retained ordinary-Markdown import preview at signed checkpoint `3e33e89`: deterministic bounded scanning rejects links/special/malformed/oversized content, reports normalization without changing sources, returns only inert relative labels, and presents an accessible cancelable Reference Desk review state.
 
 ## Work in progress
 
-- Only this progress-ledger update is intentionally uncommitted. Phase 7A packaging, environment/ABI, and packaged-menu evidence are signed through `bd6eb20`. Untracked `x` remains unrelated and untouched.
+- Only this progress-ledger update is intentionally uncommitted. The import preview is signed through `3e33e89`; destination/apply is not implemented. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
-- Workspace adoption/import/migration and Attachment viewing/export/reveal remain incomplete.
+- Markdown copy-import destination/apply, Workspace adoption/migration, and Attachment viewing/export/reveal remain incomplete.
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
 - Phase 6: complete, including the final managed Attachment discovery/metadata-add mutation.
@@ -309,10 +310,11 @@ No known regression in accepted phases. On the current development host, default
 
 ## Latest verified commit
 
-`bd6eb20` — signed packaged Wayland application-menu launch evidence following the ABI-enforcing package checkpoint; its configured signature verifies. This progress-ledger update follows that commit.
+`3e33e89` — signed descriptor-confined Markdown import preview implementation and evidence; its configured signature verifies. This progress-ledger update follows that commit.
 
 ## Tests last run and results
 
+- 2026-09-22: Phase 2C preview checkpoint `3e33e89` passes 26 core storage tests, the native closed/pathless payload test, 40 Vitest tests, `pnpm check`, strict core/desktop all-target/all-feature Clippy, Cargo/Biome formatting, Bootstrap validation (17 required files, 50 ADRs, 8 pinned agents), and whitespace checks. Symlink, hardlink, FIFO, malformed content, normalization, depth, hostile-label, source-preservation, and zero-accepted-file cases pass. No Node/pnpm installation or switch occurred.
 - 2026-09-22: Signed checkpoint `bd6eb20` records a package-extracted `gtk-launch Rehow` smoke on the current Wayland session. With the already diagnosed invocation-scoped `WEBKIT_DISABLE_DMABUF_RENDERER=1`, the packaged process remained alive for three seconds with empty stdout/stderr; the exact process and ignored temporary tree were removed. No package was installed.
 - 2026-09-22: Checkpoint `7932118` passes a complete ephemeral Ubuntu 24.04 package install, installed-status check, all-five-executable check, desktop dynamic-link check, empty-configuration MCP refusal, package removal, and unrelated Workspace-sentinel preservation. Direct and extracted `.deb`/`.rpm` ABI inspection reports `GLIBC_2.39` for Rehow/Git helpers/MCP and `GLIBC_2.34` for the approval helper. The enforcing bundle smoke, `pnpm check`, whitespace check, and signed-commit verification pass. No host package or Node/pnpm version was installed or switched.
 - 2026-09-22: The signed Fedora qualification checkpoint `586e3cc` records a fresh Fedora 44 container installing the development RPM plus 154 required GTK/WebKit/runtime dependencies with weak dependencies disabled. Installed RPM/binaries, complete dynamic linkage, desktop metadata, empty-configuration MCP refusal, DNF removal, and preservation of an unrelated Workspace sentinel all pass. The ephemeral container was removed automatically; the base image remains in Docker's local cache. No host package was installed.
@@ -500,6 +502,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Important files changed
 
+- Phase 2C preview: ADR 0050, `docs/task-packets/phase-2c-markdown-import-preview.md`, `docs/evidence/phase-2c-markdown-import-preview.md`, core storage scanning, the native selection capability/payload, and the Reference Desk review UI are checkpointed at `3e33e89`.
 - Phase 7A: `apps/desktop/src-tauri/tauri.conf.json`, `apps/desktop/src-tauri/icons/rehow-*.png`, `scripts/prepare-release-binaries.sh`, `scripts/test-linux-bundles.sh`, `scripts/blake3-file.mjs`, `docs/installation.md`, and `docs/evidence/phase-7a-linux-bundles.md` implement and document development `.deb`/`.rpm` bundles.
 - `AGENTS.md`, `PROGRESS.md`
 - `.codex/config.toml`, `.codex/agents/*.toml`
@@ -616,7 +619,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Next recommended action
 
-Specify and implement copy import for ordinary Markdown into a new Workspace; leave source bytes untouched and defer in-place adoption. Return to the external clean-graphical matrix at the final release gate.
+Implement destination selection and apply for the accepted Markdown preview: revalidate and retain bounded normalized source bodies, initialize a new Workspace and Category, create draft Guides with valid-prefix recovery, and leave all source bytes untouched.
 
 ## Recommended agent role and reasoning effort
 
@@ -625,9 +628,9 @@ Primary Orchestrator with zero routine agents. Use one specialist only for a man
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read `docs/installation.md`, the Phase 7 section of `docs/implementation-plan.md`, and applicable packaging ADRs.
+2. Read ADR 0050, `docs/task-packets/phase-2c-markdown-import-preview.md`, and `docs/evidence/phase-2c-markdown-import-preview.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed Phase 7A packaging and menu evidence through `bd6eb20` plus the following progress-ledger commit; do not touch unrelated untracked `x`.
+4. Verify signed import-preview checkpoint `3e33e89` plus the following progress-ledger commit; do not touch unrelated untracked `x`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
-7. Implement copy import as a separate preview/apply boundary; keep source content read-only, reject symlink/path races, create only draft Guides, and defer in-place adoption.
+7. Implement the separate destination/apply boundary; keep source content read-only, reject symlink/path races, create only draft Guides, preserve a valid destination prefix after interruption, and defer in-place adoption.
