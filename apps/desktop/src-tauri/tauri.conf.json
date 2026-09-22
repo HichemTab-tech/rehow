@@ -1,11 +1,16 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Rehow",
+  "mainBinaryName": "rehow",
   "version": "0.0.0",
   "identifier": "dev.rehow.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build",
+    "beforeBundleCommand": {
+      "script": "scripts/prepare-release-binaries.sh",
+      "cwd": "../../.."
+    },
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },
@@ -25,5 +30,35 @@
       "capabilities": ["main"]
     }
   },
-  "bundle": { "active": false, "icon": [] }
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "rpm"],
+    "category": "Utility",
+    "shortDescription": "Remember how you did it.",
+    "longDescription": "A local-first desktop knowledge tool for preserving and finding repeatable technical Guides.",
+    "icon": [
+      "icons/rehow-32.png",
+      "icons/rehow-128.png",
+      "icons/rehow-256.png",
+      "icons/rehow-512.png"
+    ],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/bin/rehow-git-ssh": "../../../target/release/rehow-git-ssh",
+          "/usr/bin/rehow-git-credential": "../../../target/release/rehow-git-credential",
+          "/usr/bin/rehow-mcp": "../../../target/release/rehow-mcp",
+          "/usr/bin/rehow-mcp-approve": "../../../target/release/rehow-mcp-approve"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/bin/rehow-git-ssh": "../../../target/release/rehow-git-ssh",
+          "/usr/bin/rehow-git-credential": "../../../target/release/rehow-git-credential",
+          "/usr/bin/rehow-mcp": "../../../target/release/rehow-mcp",
+          "/usr/bin/rehow-mcp-approve": "../../../target/release/rehow-mcp-approve"
+        }
+      }
+    }
+  }
 }

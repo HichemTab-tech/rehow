@@ -1,6 +1,6 @@
 # Installation and Desktop Integration
 
-Status: desktop packaging planned; MCP development contract implemented through Phase 6E3B
+Status: development `.deb`/`.rpm` bundles implemented and smoke-tested; clean-machine release qualification remains open
 Last updated: 2026-09-22
 
 ## Supported baseline
@@ -15,14 +15,49 @@ Initial package priority:
 
 Relevant Tauri references: [Linux prerequisites](https://v2.tauri.app/start/prerequisites/), [AppImage distribution](https://v2.tauri.app/distribute/appimage/), and [Linux graphics diagnostics](https://v2.tauri.app/develop/debug/linux-graphics/).
 
-## Desktop application install plan
+## Development packages
+
+Build both native Linux packages with the repository's active Node, pnpm, and Rust toolchain:
+
+```sh
+pnpm tauri:build
+```
+
+This produces development-version artifacts under:
+
+- `target/release/bundle/deb/Rehow_0.0.0_amd64.deb`
+- `target/release/bundle/rpm/Rehow-0.0.0-1.x86_64.rpm`
+
+The bundle hook builds the desktop binary, fixed Git helpers, standalone MCP server, and graphical MCP approval helper. It embeds the exact approval-helper BLAKE3 digest into `rehow-mcp`; the package smoke test verifies that binding and the one-link executable layout:
+
+```sh
+scripts/test-linux-bundles.sh
+```
+
+Version `0.0.0` identifies these as development artifacts, not a public release. Release version, production application identifier, license, signing, and publication require explicit decisions before distribution.
+
+## Desktop application installation
 
 Packages install:
 
 - versioned Rehow binary and runtime resources;
-- application icon at standard hicolor sizes plus scalable source;
+- application icon at 32, 128, 256, and 512 px hicolor sizes;
 - `rehow.desktop` with `Type=Application`, `Name=Rehow`, `Exec=rehow`, `Icon=rehow`, appropriate Knowledge/Utility categories, and no terminal;
-- license and package metadata.
+- package metadata; a license file will be included after the project license is chosen.
+
+Install a locally built package using the system package manager, which may request the user's normal authorization:
+
+```sh
+sudo apt install ./target/release/bundle/deb/Rehow_0.0.0_amd64.deb
+```
+
+or:
+
+```sh
+sudo dnf install ./target/release/bundle/rpm/Rehow-0.0.0-1.x86_64.rpm
+```
+
+No install is performed by the build or smoke-test scripts.
 
 User Workspaces are never placed inside the application installation directory. Default preferences/cache/state follow XDG locations. Uninstall removes application-owned binaries/launchers/cache only; it preserves every user-selected Workspace and asks before removing local recovery state.
 
@@ -32,7 +67,7 @@ Prefer user-level installation when the package format supports it without weake
 
 Package metadata must declare the exact WebKitGTK 4.1, GTK, SSL, and other runtime libraries produced by the Tauri bundler/build baseline. Linux Git operations require root-owned `/usr/bin/git` and `/usr/bin/bwrap`; authenticated SSH clone, sync, and push additionally require root-owned `/usr/bin/ssh` plus a safe launch-inherited agent and trusted `known_hosts`. Missing tools or trust keep Rehow content usable and produce closed Git-unavailable guidance. Development-only packages are in `docs/development.md`. Do not tell users to install a permanently running Node server for the desktop application.
 
-Desktop packaging must place the fixed `rehow-git-ssh` and `rehow-git-credential` binaries beside the application executable as non-writable one-link executables. Rehow does not install, enable, or alter a user's credential helper; it may use only an already configured helper that passes the documented provenance gate.
+The implemented `.deb` and `.rpm` place fixed `rehow-git-ssh` and `rehow-git-credential` binaries beside the application executable as one-link executables. Rehow does not install, enable, or alter a user's credential helper; it may use only an already configured helper that passes the documented provenance gate.
 
 Authenticated HTTPS supports a trusted self-contained system helper or the exact `gh auth git-credential` configuration. The `gh` path requires its ordinary private `hosts.yml`; keyring/libsecret mediation is not yet supported. Rehow never asks for or stores a token.
 
@@ -82,6 +117,20 @@ Packagers must install `rehow-mcp` and `rehow-mcp-approve` as separate one-link 
 Rehow never edits global MCP client configuration automatically and never asks for an API key. The server has no network listener in the initial release.
 
 ## Uninstall behavior
+
+Remove the native package with the same package manager used to install it:
+
+```sh
+sudo apt remove rehow
+```
+
+or:
+
+```sh
+sudo dnf remove Rehow
+```
+
+Package removal deletes installed application/MCP binaries, desktop entry, and packaged icons. It does not delete any user-selected Workspace. Application preferences, cache, logs, and recovery state are outside the package payload and should be reviewed separately before manual removal.
 
 Document separately:
 

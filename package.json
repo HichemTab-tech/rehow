@@ -15,7 +15,7 @@
     "test:integration": "pnpm check:engines && pnpm contracts:check",
     "build": "pnpm check:engines && pnpm contracts:check && pnpm --filter @rehow/contracts build && pnpm --filter @rehow/desktop build && cargo build --workspace --locked",
     "tauri:dev": "pnpm check:engines && scripts/prepare-git-ssh-helper.sh dev && pnpm --filter @rehow/desktop tauri dev",
-    "tauri:build": "pnpm check:engines && scripts/prepare-git-ssh-helper.sh release && pnpm --filter @rehow/desktop tauri build --no-bundle",
+    "tauri:build": "pnpm check:engines && pnpm --filter @rehow/desktop tauri build",
     "contracts:generate": "scripts/generate-contracts.sh",
     "contracts:check": "scripts/check-contracts.sh",
     "format": "biome format --write . && cargo fmt --all"
