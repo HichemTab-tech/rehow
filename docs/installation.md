@@ -83,6 +83,8 @@ Authenticated HTTPS supports a trusted self-contained system helper or the exact
 
 On the 2026-09-22 development host, a normal Wayland launch exited with a GDK protocol error while `WEBKIT_DISABLE_DMABUF_RENDERER=1 rehow` stayed alive cleanly for the five-second smoke window. An X11 launch also stayed alive but logged GBM allocation warnings. This is environment evidence, not a global launcher default: keep the workaround scoped to an affected invocation while driver/WebKitGTK qualification remains open.
 
+The packaged `.desktop` entry was also launched successfully through `gtk-launch Rehow` on that Wayland session with the same scoped workaround. This verifies menu resolution without installing the package on the host; it does not replace clean graphical testing on another compositor.
+
 ## Upgrades and schema compatibility
 
 - Package upgrades replace application files, never Workspace content.

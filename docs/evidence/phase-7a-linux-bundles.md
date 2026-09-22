@@ -67,6 +67,12 @@ All five packaged executables were inspected with `readelf --version-info`. The 
 
 Phase 7 therefore sets Ubuntu 24.04 / glibc 2.39 as the oldest supported binary baseline for the current artifacts. Debian 12 and Ubuntu 22.04 are not advertised for these builds. `scripts/check-linux-abi-floor.sh` is invoked for every executable extracted from both package formats and fails if a future build raises the floor above `GLIBC_2.39`.
 
+## Packaged application-menu launch
+
+The `.deb` was extracted to an ignored temporary tree and exposed through temporary `PATH`/`XDG_DATA_DIRS`. On the current Wayland session, `gtk-launch Rehow` resolved the packaged `Rehow.desktop`, started the packaged `/usr/bin/rehow` payload, and kept it alive through the three-second smoke window with empty stdout/stderr when the host-specific `WEBKIT_DISABLE_DMABUF_RENDERER=1` workaround was scoped to that invocation. The exact process was terminated and the temporary tree deleted.
+
+This verifies the packaged desktop ID, `Exec`, runtime lookup, and icon-data layout through the application-menu launch mechanism on the current host. A second clean graphical compositor remains part of the final runtime matrix.
+
 ## Open release gates
 
 - Clean-machine install/menu-launch/uninstall testing on the chosen oldest supported baseline.
