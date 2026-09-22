@@ -876,6 +876,30 @@ pub struct GitCommitRecoveryPlan {
     operation_id: OperationId,
 }
 
+/// Opaque, single-use authority for resuming one exact interrupted sync
+/// publication. A later recovery record cannot be substituted for the one
+/// observed while this plan was created.
+pub struct GitSyncRecoveryPlan {
+    token: PlanToken,
+    operation_id: OperationId,
+}
+
+impl GitSyncRecoveryPlan {
+    pub fn token(&self) -> &PlanToken {
+        &self.token
+    }
+}
+
+impl fmt::Debug for GitSyncRecoveryPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitSyncRecoveryPlan")
+            .field("token", &"<redacted>")
+            .field("operation_id", &"<redacted>")
+            .finish()
+    }
+}
+
 impl GitCommitRecoveryPlan {
     pub fn token(&self) -> &PlanToken {
         &self.token
@@ -3111,6 +3135,44 @@ pub fn resume_pending_git_sync_publication(
         fresh,
         GitSyncPublicationOutcome {
             operation_id,
+            changed: true,
+        },
+    ))
+}
+
+pub fn plan_git_sync_recovery(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+) -> Result<GitSyncRecoveryPlan, GitSyncError> {
+    let operation_id = pending_git_sync_recovery_at(workspace, state_home, runtime_directory)
+        .map_err(map_commit_plan_to_sync)?
+        .ok_or(GitSyncError::InvalidConfiguration)?;
+    let mut random = [0_u8; 32];
+    fill_random(&mut random).map_err(|_| GitSyncError::Io)?;
+    Ok(GitSyncRecoveryPlan {
+        token: PlanToken::from_random_bytes(random),
+        operation_id,
+    })
+}
+
+pub fn resume_planned_git_sync_publication(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    plan: GitSyncRecoveryPlan,
+) -> Result<(Box<WorkspaceView>, GitSyncPublicationOutcome), GitSyncError> {
+    let current = pending_git_sync_recovery_at(workspace, state_home, runtime_directory)
+        .map_err(map_commit_plan_to_sync)?
+        .ok_or(GitSyncError::InvalidConfiguration)?;
+    if current != plan.operation_id {
+        return Err(GitSyncError::PlanStale);
+    }
+    let fresh = resume_git_sync_publication(workspace, state_home, runtime_directory, current)?;
+    Ok((
+        fresh,
+        GitSyncPublicationOutcome {
+            operation_id: current,
             changed: true,
         },
     ))
@@ -17543,6 +17605,39 @@ mod tests {
             session.read_sync_intent(operation_id).unwrap().stage,
             GitSyncIntentStage::Complete
         );
+    }
+
+    #[test]
+    fn sync_recovery_plan_is_bound_to_the_exact_interrupted_operation() {
+        let (_temp, state, workspace, classification, _) =
+            clean_sync_publication_fixture("Exact recovery");
+        set_git_commit_metadata_fault(GitCommitMetadataFault::IndexPublished);
+        assert!(apply_git_sync_fast_forward(&workspace, &state.0, None, classification).is_err());
+        let current = pending_git_sync_recovery_at(&workspace, &state.0, None)
+            .unwrap()
+            .unwrap();
+        let mut random = [0_u8; 32];
+        fill_random(&mut random).unwrap();
+        let wrong = GitSyncRecoveryPlan {
+            token: PlanToken::from_random_bytes(random),
+            operation_id: new_operation_id(),
+        };
+        assert_ne!(wrong.operation_id, current);
+        assert_eq!(
+            resume_planned_git_sync_publication(&workspace, &state.0, None, wrong)
+                .err()
+                .unwrap(),
+            GitSyncError::PlanStale
+        );
+        assert_eq!(
+            pending_git_sync_recovery_at(&workspace, &state.0, None).unwrap(),
+            Some(current)
+        );
+        let correct = plan_git_sync_recovery(&workspace, &state.0, None).unwrap();
+        let (fresh, outcome) =
+            resume_planned_git_sync_publication(&workspace, &state.0, None, correct).unwrap();
+        assert_eq!(fresh.manifest().name(), "Exact recovery");
+        assert_eq!(outcome.operation_id, current);
     }
 
     #[test]

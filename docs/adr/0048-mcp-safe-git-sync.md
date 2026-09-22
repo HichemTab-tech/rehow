@@ -1,6 +1,6 @@
 # ADR 0048: MCP safe Git synchronization
 
-- Status: Accepted for Phase 6E3B planning; implementation not yet accepted
+- Status: Accepted and implemented
 - Date: 2026-09-22
 
 ## Context

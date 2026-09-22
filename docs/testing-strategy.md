@@ -219,6 +219,8 @@ Phase 6E2D2 expands the exact schema to thirty-five tools and covers capability-
 
 Phase 6E3A expands the exact schema to thirty-nine tools. Focused coverage binds opaque `gitState`, startup write+Git-write authority, normalized messages, closed plan/apply/recovery inputs, single-use approval, unrelated-file preservation, managed-only publication, no-recovery refusal, non-disclosure, atomic per-Workspace normal/recovery exclusion across planning and active execution, exact interrupted-operation recovery binding, and real JSON-RPC cancellation at the final pre-intent boundary. The accepted core commit/recovery adversarial suite remains mandatory. The complete gate and Security Reviewer acceptance remain mandatory before checkpoint.
 
+Phase 6E3B expands the exact schema to forty-three tools. Focused coverage requires the closed pull/push direction matrix, inspection denial before network, real JSON-RPC cancellation propagation to the core network boundary, shared commit/sync lifecycle exclusion, safe schema/non-disclosure checks, and exact interrupted-pull recovery binding. The already accepted core HTTPS/SSH inspection, classification, fast-forward publication, push postflight, authentication, hostile remote, and recovery suites remain mandatory; the final repository gate and Security Reviewer acceptance are required before checkpoint.
+
 ## Test result recording
 
 `PROGRESS.md` records date, exact command, pass/fail counts or concise result, relevant environment, known flakes/failures, and commit/tree state. The latest verified commit means all claimed gates ran against that commit; if docs changed afterward, say so explicitly.

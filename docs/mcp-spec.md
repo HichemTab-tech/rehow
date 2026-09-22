@@ -19,7 +19,7 @@ Each startup root has a unique user-chosen alias. Canonical duplicate/nested/ove
 
 Initial transport is stdio. Remote Streamable HTTP is deferred until authentication, origin, multi-user, and network threat models exist.
 
-The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6E3A exposes thirty-nine tools, including exact Category reorder/removal, Guide Tested preview/execution, bounded Attachment listing/title update/removal, confined Git-status reads, and native-approved managed-only Git commit/recovery. Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
+The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6E3B exposes forty-three tools, including exact Category reorder/removal, Guide Tested preview/execution, bounded Attachment listing/title update/removal, confined Git-status reads, native-approved managed-only Git commit/recovery, and separately approved safe Git synchronization/recovery. Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
 
 ## Trust rules
 
@@ -184,10 +184,10 @@ Availability follows the approved Phase 5 core:
 - `git_commit({workspaceHandle, planToken})` — implemented; consumes the token, requires sealed native Git-write approval, and publishes through the accepted recoverable core intent without push or network.
 - `git_commit_recovery_plan({workspaceHandle})` — implemented; atomically excludes overlapping planning, captures the core's opaque selector for the exact pending operation, and exposes no operation identifier.
 - `git_commit_recover({workspaceHandle, planToken})` — implemented; separately approves and resumes only that exact internally selected publication, refusing replacement by a later operation.
-- `git_sync_plan({workspaceHandle, expectedGitState, direction})` — Phase 6E3B contract: `direction` is exactly `pull` or `push`; native approval precedes network/credential use; the result is path/URL/OID/credential-free and yields an executable token only for a clean remote fast-forward pull or proven local-ahead push.
-- `git_sync({workspaceHandle, planToken})` — Phase 6E3B contract: separately approves and consumes the exact retained direction/classification; it can only invoke the accepted fast-forward pull or ordinary non-force push.
-- `git_sync_recovery_plan({workspaceHandle})` — Phase 6E3B contract: captures the exact internally pending pull-publication operation without exposing its identifier.
-- `git_sync_recover({workspaceHandle, planToken})` — Phase 6E3B contract: separately approves and resumes only that exact pull publication.
+- `git_sync_plan({workspaceHandle, expectedGitState, direction})` — implemented; `direction` is exactly `pull` or `push`, native approval precedes network/credential use, JSON-RPC cancellation reaches the core network boundary, and the path/URL/OID/credential-free result yields an executable token only for a clean remote fast-forward pull or proven local-ahead push.
+- `git_sync({workspaceHandle, planToken})` — implemented; separately approves and consumes the exact retained direction/classification, invoking only the accepted fast-forward pull or ordinary non-force push.
+- `git_sync_recovery_plan({workspaceHandle})` — implemented; captures an opaque selector for the exact internally pending pull-publication operation without exposing its identifier.
+- `git_sync_recover({workspaceHandle, planToken})` — implemented; separately approves and resumes only that exact pull publication without network access.
 
 The server exposes no generic Git arguments, refspecs, paths, environment, credentials, or raw output. Git mutation tools do not exist until their Phase 5 ADR and malicious-repository gate pass, and then require per-Workspace Git startup capability plus native out-of-band approval. Sync never lets Git directly rewrite active content without validated/journaled core materialization, and never force-pushes, resets, rebases, stashes, discards, or auto-resolves. Authentication requirements are reported without soliciting secrets.
 

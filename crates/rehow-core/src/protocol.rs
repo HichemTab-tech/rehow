@@ -193,8 +193,8 @@ pub fn git_commit_busy_error(request_id: RequestId) -> ErrorDto {
 pub fn git_commit_unavailable_error(request_id: RequestId) -> ErrorDto {
     constructed_error(construction::git_unavailable(
         request_id,
-        BoundedList::try_new(Vec::new(), 0)
-            .expect("the fixed empty Git search-source list is valid"),
+        BoundedList::try_new(vec![GitSearchSourceKind::System], 1)
+            .expect("the fixed Git search-source list is valid"),
     ))
 }
 
@@ -206,11 +206,10 @@ pub fn git_commit_unsafe_error(request_id: RequestId) -> ErrorDto {
 }
 
 pub fn git_commit_conflict_error(request_id: RequestId) -> ErrorDto {
-    constructed_error(construction::git_conflict(
+    constructed_error(construction::git_failed(
         request_id,
-        GitConflictKind::Unknown,
-        BoundedList::try_new(Vec::new(), 0)
-            .expect("the fixed empty Git conflict path list is valid"),
+        construction::GitOperation::Commit,
+        GitExitKind::ExitStatus,
     ))
 }
 
@@ -258,6 +257,89 @@ pub fn git_commit_cancelled_error(request_id: RequestId) -> ErrorDto {
     constructed_error(construction::confirmation_invalid(
         request_id,
         construction::Operation::GitCommit,
+        construction::Reason::PlanStateChanged,
+    ))
+}
+
+pub fn git_sync_busy_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::io_busy(
+        request_id,
+        construction::Operation::GitSync,
+        2_000,
+    ))
+}
+
+pub fn git_sync_unavailable_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::git_unavailable(
+        request_id,
+        BoundedList::try_new(vec![GitSearchSourceKind::System], 1)
+            .expect("the fixed Git search-source list is valid"),
+    ))
+}
+
+pub fn git_sync_unsafe_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::git_unsafe_repository(
+        request_id,
+        construction::Reason::RepositoryLayoutUnsupported,
+    ))
+}
+
+pub fn git_sync_conflict_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::git_failed(
+        request_id,
+        construction::GitOperation::Sync,
+        GitExitKind::ExitStatus,
+    ))
+}
+
+pub fn git_sync_failed_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::git_failed(
+        request_id,
+        construction::GitOperation::Sync,
+        GitExitKind::ExitStatus,
+    ))
+}
+
+pub fn git_sync_remote_state_uncertain_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::git_remote_state_uncertain(request_id))
+}
+
+pub fn git_sync_plan_stale_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::plan_stale(
+        request_id,
+        construction::Operation::GitSync,
+        BoundedList::try_new(Vec::new(), 0).expect("the fixed empty changed-entity list is valid"),
+    ))
+}
+
+pub fn git_sync_plan_expired_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::GitSync,
+        construction::Reason::PlanExpired,
+    ))
+}
+
+pub fn git_sync_plan_replayed_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::GitSync,
+        construction::Reason::PlanReplayed,
+    ))
+}
+
+pub fn git_sync_plan_scope_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::GitSync,
+        construction::Reason::PlanScopeMismatch,
+    ))
+}
+
+pub fn git_sync_cancelled_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::GitSync,
         construction::Reason::PlanStateChanged,
     ))
 }
