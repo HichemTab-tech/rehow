@@ -48,6 +48,19 @@ An existing Debian 13 (Trixie) development-container image was run ephemerally a
 
 This establishes Debian 13 installation/dependency resolution and package-owned uninstall behavior. It does not establish the oldest supported Debian baseline or graphical application-menu launch because the clean container has no compositor/session bus.
 
+## Fedora clean-container package smoke
+
+A fresh official Fedora 44 container was run ephemerally as root with the `.rpm` bind-mounted read-only. DNF installed Rehow with weak dependencies disabled, resolving 154 GTK/WebKit/runtime dependencies. Verification passed for:
+
+- the installed RPM record and all five executable entries;
+- complete desktop binary dynamic linkage;
+- desktop `Exec` and icon fields;
+- standalone MCP refusal without a configured Workspace;
+- DNF removal of Rehow-owned binaries; and
+- byte-identical preservation of an unrelated Workspace sentinel.
+
+The container was removed automatically. The Fedora 44 base image remains in Docker's ordinary local image cache. No host package was installed. As with Debian, a headless container does not prove graphical application-menu launch.
+
 ## Open release gates
 
 - Clean-machine install/menu-launch/uninstall testing on the chosen oldest supported baseline.
