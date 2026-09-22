@@ -143,7 +143,8 @@ Read results separate typed metadata, body, bounded fenced-code blocks, diagnost
 - `attachments_list({workspaceHandle, guideId})` — implemented bounded declared metadata plus exact Guide revision; no Attachment bytes or host-path authority.
 - `attachment_metadata_update({workspaceHandle, guideId, expectedRevision, attachmentId, title})` — implemented exact-revision display-title replacement for an already-declared managed Attachment. It cannot change the path, bytes, hash, size, media type, ID, or status.
 - `attachment_remove_plan({workspaceHandle, guideId, expectedRevision, attachmentId})` / `attachment_remove({workspaceHandle, planToken})` — implemented exact file/metadata preview and handle/token-only destructive native-approved recoverable trash. Planning is read-only; execution requires startup write+broad authority.
-- `attachment_metadata_add` remains deferred until an already-managed-file discovery contract exists.
+- `attachment_candidates_list({workspaceHandle, guideId, cursor?, limit?})` — Phase 6E2D3 contract: descriptor-confined discovery of safe undeclared regular files already under that Guide's Attachment directory. Returns only Guide revision plus paginated opaque short-lived candidate tokens, untrusted filenames, and decimal sizes; no path, bytes, hash, or file identity.
+- `attachment_metadata_add({workspaceHandle, guideId, expectedRevision, candidateToken, title})` — Phase 6E2D3 contract: consumes one exact scoped candidate under startup write authority; core revalidates bytes/identity and owns ID/path/hash/size/time. It never moves or changes the file and makes Tested stale.
 
 Raw arbitrary attachment upload/download through MCP is deferred. If later approved, it must use bounded protocol resources, content hashes, regular-file-only confined storage, and separate threat review. A tool cannot attach a host path supplied in its arguments.
 

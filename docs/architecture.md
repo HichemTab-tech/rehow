@@ -240,7 +240,7 @@ Recent Workspace paths, window state, theme preference, and opt-in sync schedule
 ## Dependency and platform policy
 
 - Pin major versions and commit lockfiles. Review generated shadcn source.
-- Use the user-approved installed host toolchain—currently Node 26.2.0 and pnpm 11.20.0—without installing or switching it, with React 19, Vite 8, Vitest 5, Tailwind 4, and Tauri 2 major lines; exact dependency versions are captured by manifests and lockfiles.
+- Use the user-approved installed host toolchain—currently Node 26.2.0 and pnpm 11.3.0—without installing or switching it, with React 19, Vite 8, Vitest 5, Tailwind 4, and Tauri 2 major lines; exact dependency versions are captured by manifests and lockfiles.
 - Use Rust stable pinned in `rust-toolchain.toml` once the oldest supported Tauri/plugin floor is validated.
 - Linux uses WebKitGTK 4.1. Avoid essential UI that depends on bleeding-edge CSS or WebGL. Test oldest supported distro plus GNOME/KDE/wlroots Wayland and X11.
 - Normal decorated/resizable windows only in v1; Wayland does not provide reliable global window coordinates or all always-on-top/effect behavior.

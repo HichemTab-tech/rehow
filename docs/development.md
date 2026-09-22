@@ -7,7 +7,7 @@ Last updated: 2026-09-22
 
 - Git 2.x.
 - Node 26.2.0, using the version already available on the project host by explicit user direction.
-- pnpm 11.20.0, using the version currently available on the project host without installing or switching it, and pinned through the root `packageManager`.
+- pnpm 11.3.0, using the version currently available on the project host without installing or switching it, and pinned through the root `packageManager`.
 - Current stable Rust toolchain pinned by `rust-toolchain.toml` once scaffolded. Available bootstrap host: Cargo/Rust 1.98.0.
 - Linux Tauri/WebKitGTK build dependencies for the distribution.
 
