@@ -9,17 +9,17 @@ mod watch;
 
 pub(crate) use recovery::{
     AttachmentImportPreview, AttachmentImportStorageOutcome, AttachmentRemovalPreview,
-    AttachmentRemovalStorageOutcome, AttachmentSourceState, CancellableDocumentUpdateError,
-    CategoryCreateStorageError, CategoryCreateStorageOutcome, CategoryRemoveStorageError,
-    CategoryRemoveStorageOutcome, DocumentCreateError, DocumentCreateOutcome, DocumentMoveOutcome,
-    DocumentRemoveError, DocumentRemoveOutcome, DocumentUpdateError, DocumentUpdateOutcome,
-    GitCloneMaterializationSource, GitCloneMaterializationStorageError,
-    GitCloneMaterializationStorageOutcome, GitClonePackSource, GitCloneStaging,
-    GitCloneStagingError, GitSyncMaterializationCurrent, GitSyncMaterializationSource,
-    GitSyncMaterializationStorageError, GitSyncMaterializationStorageOutcome,
-    GitSyncPreparedMaterialization, MultiDocumentUpdateError, MultiDocumentUpdateOutcome,
-    PreparedDocument, WorkspaceInitializeError, WorkspaceInitializeOutcome,
-    create_git_clone_staging,
+    AttachmentRemovalStorageError, AttachmentRemovalStorageOutcome, AttachmentSourceState,
+    CancellableDocumentUpdateError, CategoryCreateStorageError, CategoryCreateStorageOutcome,
+    CategoryRemoveStorageError, CategoryRemoveStorageOutcome, DocumentCreateError,
+    DocumentCreateOutcome, DocumentMoveOutcome, DocumentRemoveError, DocumentRemoveOutcome,
+    DocumentUpdateError, DocumentUpdateOutcome, GitCloneMaterializationSource,
+    GitCloneMaterializationStorageError, GitCloneMaterializationStorageOutcome, GitClonePackSource,
+    GitCloneStaging, GitCloneStagingError, GitSyncMaterializationCurrent,
+    GitSyncMaterializationSource, GitSyncMaterializationStorageError,
+    GitSyncMaterializationStorageOutcome, GitSyncPreparedMaterialization, MultiDocumentUpdateError,
+    MultiDocumentUpdateOutcome, PreparedDocument, WorkspaceInitializeError,
+    WorkspaceInitializeOutcome, create_git_clone_staging,
 };
 pub use watch::{WorkspaceWatchError, WorkspaceWatchSignal, WorkspaceWatcher};
 
@@ -41,7 +41,8 @@ pub(crate) use linux::{
 
 #[cfg(test)]
 pub(crate) use recovery::{
-    WorkspaceFault, set_git_sync_fail_after_directory_preparation, set_workspace_fault,
+    WorkspaceFault, set_attachment_before_move_hook, set_git_sync_fail_after_directory_preparation,
+    set_workspace_fault,
 };
 
 #[cfg(not(target_os = "linux"))]
@@ -2905,7 +2906,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn execute_attachment_removal<E, F>(
+pub(crate) fn execute_attachment_removal<E, F, C>(
     workspace: &WorkspaceView,
     state_home: &Path,
     runtime_directory: Option<&Path>,
@@ -2914,10 +2915,12 @@ pub(crate) fn execute_attachment_removal<E, F>(
     operation_id: crate::protocol::OperationId,
     created_at: crate::protocol::Timestamp,
     approved: &AttachmentRemovalPreview,
+    cancelled: &C,
     prepare: F,
-) -> Result<AttachmentRemovalStorageOutcome, MultiDocumentUpdateError<E>>
+) -> Result<AttachmentRemovalStorageOutcome, AttachmentRemovalStorageError<E>>
 where
     F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
+    C: Fn() -> bool,
 {
     recovery::execute_attachment_removal(
         &workspace._root,
@@ -2929,6 +2932,7 @@ where
         operation_id,
         created_at,
         approved,
+        cancelled,
         prepare,
     )
 }
@@ -4193,6 +4197,8 @@ mod linux {
     pub(super) enum AttachmentState {
         Missing,
         Regular {
+            device: u64,
+            inode: u64,
             object_hash: [u8; 32],
             sha256: [u8; 32],
             revision: Revision,
@@ -7066,6 +7072,8 @@ mod linux {
                 return Err(MutationIoError::Unsafe);
             }
             Ok(AttachmentState::Regular {
+                device: after.dev(),
+                inode: after.ino(),
                 object_hash: *object.finalize().as_bytes(),
                 sha256: sha256.finalize().into(),
                 revision: Revision::from_digest_bytes(*revision.finalize().as_bytes()),

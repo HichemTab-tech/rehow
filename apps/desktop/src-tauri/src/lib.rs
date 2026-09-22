@@ -3540,12 +3540,14 @@ fn attachment_removal_code(error: AttachmentRemovalError) -> &'static str {
         AttachmentRemovalError::RevisionConflict => "revisionConflict",
         AttachmentRemovalError::GuideArchived => "guideArchived",
         AttachmentRemovalError::AttachmentChanged => "attachmentChanged",
+        AttachmentRemovalError::Cancelled => "cancelled",
         AttachmentRemovalError::UnsafeRoundTrip => "unsafeRoundTrip",
         AttachmentRemovalError::Busy => "busy",
         AttachmentRemovalError::UnsafeStorage => "unsafeStorage",
         AttachmentRemovalError::UnsupportedFilesystem => "unsupportedFilesystem",
         AttachmentRemovalError::ResourceLimit => "resourceLimit",
         AttachmentRemovalError::Io => "io",
+        AttachmentRemovalError::RecoveryRequired { .. } => "recoveryRequired",
         AttachmentRemovalError::CommittedRefreshRequired { .. } => "committedRefresh",
     }
 }
@@ -3566,6 +3568,7 @@ fn attachment_removal_message(error: AttachmentRemovalError) -> String {
             "The Guide or Attachment changed. Refresh and inspect it before trying again."
                 .to_owned()
         }
+        AttachmentRemovalError::Cancelled => "Attachment removal was cancelled.".to_owned(),
         AttachmentRemovalError::UnsafeRoundTrip => {
             "This Guide’s formatting cannot be updated safely. Simplify its Attachment metadata first."
                 .to_owned()
@@ -3585,6 +3588,9 @@ fn attachment_removal_message(error: AttachmentRemovalError) -> String {
         AttachmentRemovalError::Io => {
             "The Attachment could not be removed. Check file access and try again.".to_owned()
         }
+        AttachmentRemovalError::RecoveryRequired { operation_id } => format!(
+            "Attachment removal was interrupted after a recoverable change. Reopen the Workspace and inspect recovery operation {operation_id}."
+        ),
         AttachmentRemovalError::CommittedRefreshRequired { .. } => {
             "The Attachment was removed, but Rehow could not refresh it. Reopen the Workspace."
                 .to_owned()

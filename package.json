@@ -1,13 +1,13 @@
 {
   "name": "rehow",
   "private": true,
-  "packageManager": "pnpm@11.3.0",
+  "packageManager": "pnpm@11.20.0",
   "engines": {
     "node": "26.2.0",
-    "pnpm": "11.3.0"
+    "pnpm": "11.20.0"
   },
   "scripts": {
-    "check:engines": "node -e \"const { execFileSync } = require('node:child_process'); if (process.version !== 'v26.2.0') process.exit(1); if (execFileSync('pnpm', ['--version'], { encoding: 'utf8' }).trim() !== '11.3.0') process.exit(1)\"",
+    "check:engines": "node -e \"const { execFileSync } = require('node:child_process'); if (process.version !== 'v26.2.0') process.exit(1); if (execFileSync('pnpm', ['--version'], { encoding: 'utf8' }).trim() !== '11.20.0') process.exit(1)\"",
     "check": "pnpm check:engines && biome check . && pnpm --filter @rehow/desktop typecheck && pnpm --filter @rehow/contracts typecheck && pnpm contracts:check",
     "test": "pnpm check:engines && pnpm test:verification-vectors && pnpm --filter @rehow/desktop test && scripts/prepare-git-ssh-helper.sh dev && scripts/test-git-credential-proxy.sh && cargo test --workspace --all-targets --locked",
     "test:ssh": "pnpm check:engines && scripts/prepare-git-ssh-helper.sh dev && cargo test -p rehow-core authenticated_ssh_clone_and_sync_use_only_sealed_launch_resources --locked",

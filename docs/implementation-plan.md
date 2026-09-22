@@ -144,7 +144,8 @@ Milestones:
 - Phase 6E2B: exact empty, non-default Category removal preview plus handle/token-only recoverable-trash execution with destructive native approval, cancellation, and final writer-lock snapshot revalidation.
 - Phase 6E2C: exact Guide tested preview plus handle/token-only Tested native approval, fresh revision/readiness revalidation, core-owned verification hash/trusted timestamps, and commit-boundary cancellation.
 - Phase 6E2D1: exact-revision replacement of one declared managed Attachment display title, with no file/path/hash/size/media-type authority.
-- Later gates: Attachment metadata add plus native-approved recoverable removal.
+- Phase 6E2D2: exact Attachment removal preview plus handle/token-only destructive native approval and recoverable metadata/file trash execution.
+- Later gate: Attachment metadata add only after an already-managed-file discovery contract exists.
 - Per-Workspace write/broad/Git capabilities, launch handles, revisions/effect sets, dry-run tokens, and native out-of-band approval companion.
 - Git status/plan/commit/safe sync only after Phase 5 primitives are approved.
 - Client configuration/setup docs and end-to-end target AI workflow.

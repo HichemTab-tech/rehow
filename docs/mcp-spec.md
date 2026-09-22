@@ -19,7 +19,7 @@ Each startup root has a unique user-chosen alias. Canonical duplicate/nested/ove
 
 Initial transport is stdio. Remote Streamable HTTP is deferred until authentication, origin, multi-user, and network threat models exist.
 
-The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6E2D1 exposes thirty-three tools, including exact Category reorder/removal, Guide Tested preview/execution, bounded Attachment listing/title update, and confined Git-status reads. Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
+The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6E2D2 exposes thirty-five tools, including exact Category reorder/removal, Guide Tested preview/execution, bounded Attachment listing/title update/removal, and confined Git-status reads. Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
 
 ## Trust rules
 
@@ -142,7 +142,8 @@ Read results separate typed metadata, body, bounded fenced-code blocks, diagnost
 
 - `attachments_list({workspaceHandle, guideId})` — implemented bounded declared metadata plus exact Guide revision; no Attachment bytes or host-path authority.
 - `attachment_metadata_update({workspaceHandle, guideId, expectedRevision, attachmentId, title})` — implemented exact-revision display-title replacement for an already-declared managed Attachment. It cannot change the path, bytes, hash, size, media type, ID, or status.
-- `attachment_metadata_add/remove_plan/remove` remain later gates and may operate only on Guide metadata plus already managed Attachment IDs.
+- `attachment_remove_plan({workspaceHandle, guideId, expectedRevision, attachmentId})` / `attachment_remove({workspaceHandle, planToken})` — implemented exact file/metadata preview and handle/token-only destructive native-approved recoverable trash. Planning is read-only; execution requires startup write+broad authority.
+- `attachment_metadata_add` remains deferred until an already-managed-file discovery contract exists.
 
 Raw arbitrary attachment upload/download through MCP is deferred. If later approved, it must use bounded protocol resources, content hashes, regular-file-only confined storage, and separate threat review. A tool cannot attach a host path supplied in its arguments.
 

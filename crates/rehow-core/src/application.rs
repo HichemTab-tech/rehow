@@ -27,10 +27,10 @@ use crate::{
         new_workspace_id,
     },
     storage::{
-        AttachmentSourceState, CancellableDocumentUpdateError, CategoryCreateStorageError,
-        CategoryRemoveStorageError, DocumentCreateError, DocumentRemoveError, DocumentUpdateError,
-        DocumentUpdateRequest, EmptyWorkspaceTarget, MultiDocumentUpdateError,
-        WorkspaceInitializeError, WorkspaceInspectError, WorkspaceView,
+        AttachmentRemovalStorageError, AttachmentSourceState, CancellableDocumentUpdateError,
+        CategoryCreateStorageError, CategoryRemoveStorageError, DocumentCreateError,
+        DocumentRemoveError, DocumentUpdateError, DocumentUpdateRequest, EmptyWorkspaceTarget,
+        MultiDocumentUpdateError, WorkspaceInitializeError, WorkspaceInspectError, WorkspaceView,
         category_inventory_snapshot, execute_attachment_import, execute_attachment_removal,
         execute_category_create, execute_category_document_update, execute_category_remove,
         execute_document_create, execute_document_move, execute_document_remove,
@@ -1956,24 +1956,71 @@ pub enum AttachmentRemovalError {
     RevisionConflict,
     GuideArchived,
     AttachmentChanged,
+    Cancelled,
     UnsafeRoundTrip,
     Busy,
     UnsafeStorage,
     UnsupportedFilesystem,
     ResourceLimit,
     Io,
+    RecoveryRequired { operation_id: OperationId },
     CommittedRefreshRequired { revision: Revision },
 }
 
-pub fn confirm_and_remove_attachment<W: HasWindowHandle + HasDisplayHandle + ?Sized>(
-    parent: &W,
-    workspace: &mut WorkspaceView,
+pub struct AttachmentRemovalApproval {
+    guide_id: GuideId,
+    category_id: CategoryId,
+    attachment_id: AttachmentId,
+    expected_revision: Revision,
+    guide_title: String,
+    category_name: String,
+    attachment_title: String,
+    guide_relative_path: String,
+    attachment_path: String,
+    attachment_sha256: String,
+    attachment_size: Option<u64>,
+    at: Timestamp,
+    preview: crate::storage::AttachmentRemovalPreview,
+}
+
+impl AttachmentRemovalApproval {
+    pub fn guide_title(&self) -> &str {
+        &self.guide_title
+    }
+
+    pub fn category_name(&self) -> &str {
+        &self.category_name
+    }
+
+    pub fn attachment_title(&self) -> &str {
+        &self.attachment_title
+    }
+
+    pub fn attachment_path(&self) -> &str {
+        &self.attachment_path
+    }
+
+    pub fn guide_relative_path(&self) -> &str {
+        &self.guide_relative_path
+    }
+
+    pub fn size(&self) -> u64 {
+        self.preview.size()
+    }
+
+    pub fn effect_binding_hash(&self) -> [u8; 32] {
+        self.preview.effect_binding_hash()
+    }
+}
+
+pub fn validate_attachment_removal_approval(
+    workspace: &WorkspaceView,
     state_home: &Path,
     runtime_directory: Option<&Path>,
     guide_id: GuideId,
     attachment_id: AttachmentId,
     expected_revision: Revision,
-) -> Result<AttachmentRemovalOutcome, AttachmentRemovalError> {
+) -> Result<AttachmentRemovalApproval, AttachmentRemovalError> {
     let (category, loaded) = workspace
         .categories()
         .iter()
@@ -2002,7 +2049,7 @@ pub fn confirm_and_remove_attachment<W: HasWindowHandle + HasDisplayHandle + ?Si
     let attachment_sha256 = attachment.sha256().to_owned();
     let declared_sha256 =
         decode_sha256(&attachment_sha256).ok_or(AttachmentRemovalError::AttachmentChanged)?;
-    let declared_size = attachment.size_bytes();
+    let attachment_size = attachment.size_bytes();
     let at = current_timestamp();
     let stamp = MutationStamp::from_trusted_time(at);
     let preview = preview_attachment_removal(
@@ -2013,7 +2060,7 @@ pub fn confirm_and_remove_attachment<W: HasWindowHandle + HasDisplayHandle + ?Si
         expected_revision,
         &attachment_path,
         declared_sha256,
-        declared_size,
+        attachment_size,
         |bytes| {
             prepare_attachment_removal_candidate(
                 bytes,
@@ -2022,23 +2069,57 @@ pub fn confirm_and_remove_attachment<W: HasWindowHandle + HasDisplayHandle + ?Si
                 attachment_id,
                 &attachment_path,
                 &attachment_sha256,
-                declared_size,
+                attachment_size,
                 &stamp,
             )
         },
     )
-    .map_err(map_attachment_removal_error)?;
+    .map_err(|error| map_attachment_removal_error(error.into()))?;
+    Ok(AttachmentRemovalApproval {
+        guide_id,
+        category_id,
+        attachment_id,
+        expected_revision,
+        guide_title,
+        category_name,
+        attachment_title,
+        guide_relative_path,
+        attachment_path,
+        attachment_sha256,
+        attachment_size,
+        at,
+        preview,
+    })
+}
+
+pub fn confirm_and_remove_attachment<W: HasWindowHandle + HasDisplayHandle + ?Sized>(
+    parent: &W,
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_id: GuideId,
+    attachment_id: AttachmentId,
+    expected_revision: Revision,
+) -> Result<AttachmentRemovalOutcome, AttachmentRemovalError> {
+    let approval = validate_attachment_removal_approval(
+        workspace,
+        state_home,
+        runtime_directory,
+        guide_id,
+        attachment_id,
+        expected_revision,
+    )?;
     let confirmed = rfd::MessageDialog::new()
         .set_parent(parent)
         .set_level(rfd::MessageLevel::Warning)
         .set_title("Remove Attachment?")
         .set_description(format!(
             "Guide: {}\nCategory: {}\nGuide ID: {guide_id}\nAttachment: {}\nAttachment ID: {attachment_id}\nPath: {}\nSize: {}\n\nRehow will remove this Attachment from the Guide and move its file to recoverable Workspace trash.",
-            safe_dialog_text(&guide_title),
-            safe_dialog_text(&category_name),
-            safe_dialog_text(&attachment_title),
-            preview.relative_path(),
-            display_byte_size(preview.size()),
+            safe_dialog_text(approval.guide_title()),
+            safe_dialog_text(approval.category_name()),
+            safe_dialog_text(approval.attachment_title()),
+            approval.attachment_path(),
+            display_byte_size(approval.size()),
         ))
         .set_buttons(rfd::MessageButtons::YesNo)
         .show()
@@ -2046,19 +2127,42 @@ pub fn confirm_and_remove_attachment<W: HasWindowHandle + HasDisplayHandle + ?Si
     if !confirmed {
         return Ok(AttachmentRemovalOutcome::Cancelled);
     }
+    approve_attachment_removal_after_native_confirmation(
+        workspace,
+        state_home,
+        runtime_directory,
+        approval,
+        || false,
+    )
+}
+
+pub fn approve_attachment_removal_after_native_confirmation<C>(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    approval: AttachmentRemovalApproval,
+    cancelled: C,
+) -> Result<AttachmentRemovalOutcome, AttachmentRemovalError>
+where
+    C: Fn() -> bool,
+{
+    if cancelled() {
+        return Err(AttachmentRemovalError::Cancelled);
+    }
     execute_approved_attachment_removal(
         workspace,
         state_home,
         runtime_directory,
-        guide_id,
-        category_id,
-        attachment_id,
-        expected_revision,
-        &attachment_path,
-        &attachment_sha256,
-        declared_size,
-        at,
-        &preview,
+        approval.guide_id,
+        approval.category_id,
+        approval.attachment_id,
+        approval.expected_revision,
+        &approval.attachment_path,
+        &approval.attachment_sha256,
+        approval.attachment_size,
+        approval.at,
+        &approval.preview,
+        &cancelled,
         new_operation_id(),
     )
 }
@@ -2077,6 +2181,7 @@ fn execute_approved_attachment_removal(
     attachment_size: Option<u64>,
     at: Timestamp,
     preview: &crate::storage::AttachmentRemovalPreview,
+    cancelled: &impl Fn() -> bool,
     operation_id: OperationId,
 ) -> Result<AttachmentRemovalOutcome, AttachmentRemovalError> {
     let loaded = workspace
@@ -2099,6 +2204,7 @@ fn execute_approved_attachment_removal(
         operation_id,
         at,
         preview,
+        cancelled,
         |bytes| {
             prepare_attachment_removal_candidate(
                 bytes,
@@ -2192,8 +2298,14 @@ fn decode_sha256(value: &str) -> Option<[u8; 32]> {
 }
 
 fn map_attachment_removal_error(
-    error: MultiDocumentUpdateError<PlanError>,
+    error: AttachmentRemovalStorageError<PlanError>,
 ) -> AttachmentRemovalError {
+    let error = match error {
+        AttachmentRemovalStorageError::Mutation(error) => error,
+        AttachmentRemovalStorageError::RecoveryRequired { operation_id } => {
+            return AttachmentRemovalError::RecoveryRequired { operation_id };
+        }
+    };
     match error {
         MultiDocumentUpdateError::Prepare(PlanError::UnsafeRoundTrip) => {
             AttachmentRemovalError::UnsafeRoundTrip
@@ -2208,8 +2320,8 @@ fn map_attachment_removal_error(
             | PlanError::DuplicateAttachment,
         )
         | MultiDocumentUpdateError::InvalidPlan
-        | MultiDocumentUpdateError::Conflict
-        | MultiDocumentUpdateError::Cancelled => AttachmentRemovalError::AttachmentChanged,
+        | MultiDocumentUpdateError::Conflict => AttachmentRemovalError::AttachmentChanged,
+        MultiDocumentUpdateError::Cancelled => AttachmentRemovalError::Cancelled,
         MultiDocumentUpdateError::Busy => AttachmentRemovalError::Busy,
         MultiDocumentUpdateError::Unsafe => AttachmentRemovalError::UnsafeStorage,
         MultiDocumentUpdateError::Unsupported => AttachmentRemovalError::UnsupportedFilesystem,
@@ -5381,6 +5493,7 @@ mod tests {
                 Some(content.len() as u64),
                 at(),
                 &preview,
+                &|| false,
                 operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e43"),
             ),
             Err(AttachmentRemovalError::AttachmentChanged)
@@ -5455,6 +5568,7 @@ mod tests {
                 Some(content.len() as u64),
                 at(),
                 &preview,
+                &|| false,
                 collision_operation,
             ),
             Err(AttachmentRemovalError::AttachmentChanged)
@@ -5482,6 +5596,7 @@ mod tests {
             Some(content.len() as u64),
             at(),
             &preview,
+            &|| false,
             operation_id,
         )
         .unwrap();
@@ -5503,6 +5618,94 @@ mod tests {
         assert!(updated.contains("future_key: keep-me"));
         assert!(!updated.contains("future_attachment: keep-until-removed"));
         assert!(attachment_directory.is_dir());
+    }
+
+    #[test]
+    fn attachment_removal_reports_recovery_when_path_is_swapped_during_displacement() {
+        use sha2::Digest;
+
+        for (label, replacement) in [
+            (
+                "different-inode-different-bytes",
+                b"hostile replacement\n".as_slice(),
+            ),
+            (
+                "different-inode-same-bytes",
+                b"approved attachment\n".as_slice(),
+            ),
+        ] {
+            let content = b"approved attachment\n";
+            let attachment_id =
+                AttachmentId::from_str("0199a264-ef5f-73b4-a238-a71ba1509921").unwrap();
+            let sha256 = sha2::Sha256::digest(content)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let attachment_path = format!("attachments/{GUIDE_ID}/race.txt");
+            let guide = GUIDE.replacen(
+                "status: draft\n",
+                &format!(
+                    "attachments:\n  - id: {attachment_id}\n    path: {attachment_path}\n    title: Race\n    sha256: {sha256}\n    size_bytes: {}\nstatus: draft\n",
+                    content.len()
+                ),
+                1,
+            );
+            let (workspace, state, mut view) = fixture(label, &guide);
+            let attachment_directory = workspace.path().join(format!("attachments/{GUIDE_ID}"));
+            fs::create_dir_all(&attachment_directory).unwrap();
+            fs::set_permissions(
+                workspace.path().join("attachments"),
+                fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
+            fs::set_permissions(&attachment_directory, fs::Permissions::from_mode(0o700)).unwrap();
+            let attachment_file = workspace.path().join(&attachment_path);
+            fs::write(&attachment_file, content).unwrap();
+            fs::set_permissions(&attachment_file, fs::Permissions::from_mode(0o600)).unwrap();
+            refresh_workspace(&mut view).unwrap();
+            let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+            let approval = validate_attachment_removal_approval(
+                &view,
+                state.path(),
+                None,
+                guide_id,
+                attachment_id,
+                revision(&view),
+            )
+            .unwrap();
+            let replacement_path = attachment_directory.join("replacement.tmp");
+            let displaced_path = attachment_directory.join("externally-displaced.tmp");
+            fs::write(&replacement_path, replacement).unwrap();
+            fs::set_permissions(&replacement_path, fs::Permissions::from_mode(0o600)).unwrap();
+            let hook_source = attachment_file.clone();
+            let hook_replacement = replacement_path.clone();
+            let hook_displaced = displaced_path.clone();
+            crate::storage::set_attachment_before_move_hook(move || {
+                fs::rename(&hook_source, &hook_displaced).unwrap();
+                fs::rename(&hook_replacement, &hook_source).unwrap();
+            });
+            let result = approve_attachment_removal_after_native_confirmation(
+                &mut view,
+                state.path(),
+                None,
+                approval,
+                || false,
+            );
+            let Err(AttachmentRemovalError::RecoveryRequired { operation_id }) = result else {
+                panic!("expected recovery-required outcome, got {result:?}");
+            };
+            assert_eq!(fs::read(&displaced_path).unwrap(), content);
+            let held_name = format!(
+                ".rehow-held-{}",
+                &blake3::hash(attachment_path.as_bytes()).to_hex()[..16]
+            );
+            let held = workspace.path().join(format!(
+                ".rehow/trash/{operation_id}/attachments/{GUIDE_ID}/{held_name}"
+            ));
+            assert_eq!(fs::read(held).unwrap(), replacement);
+            let guide_bytes = fs::read_to_string(workspace.path().join(GUIDE_PATH)).unwrap();
+            assert!(!guide_bytes.contains(&attachment_id.to_string()));
+        }
     }
 
     #[test]

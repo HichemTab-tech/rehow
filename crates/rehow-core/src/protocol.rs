@@ -154,6 +154,18 @@ pub fn guide_not_found_error(request_id: RequestId, guide_id: GuideId) -> ErrorD
     constructed_error(construction::guide_not_found(request_id, guide_id))
 }
 
+pub fn attachment_not_found_error(
+    request_id: RequestId,
+    attachment_id: AttachmentId,
+    guide_id: GuideId,
+) -> ErrorDto {
+    constructed_error(construction::attachment_not_found(
+        request_id,
+        attachment_id,
+        guide_id,
+    ))
+}
+
 pub fn guide_revision_conflict_error(
     request_id: RequestId,
     guide_id: GuideId,
@@ -591,6 +603,84 @@ pub fn category_remove_recovery_required_error(
         construction::Reason::JournalStateAmbiguous,
         BoundedList::try_new(vec![relative_path], 1)
             .expect("the fixed single affected path is bounded"),
+    ))
+}
+
+pub fn attachment_remove_invalid_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::Attachments,
+        construction::Reason::UnsupportedValue,
+    ))
+}
+
+pub fn attachment_remove_busy_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::io_busy(
+        request_id,
+        construction::Operation::AttachmentRemove,
+        2_000,
+    ))
+}
+
+pub fn attachment_remove_unavailable_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::workspace_unavailable(
+        request_id,
+        construction::Reason::WorkspaceRootChanged,
+    ))
+}
+
+pub fn attachment_remove_plan_stale_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::plan_stale(
+        request_id,
+        construction::Operation::AttachmentRemove,
+        BoundedList::try_new(Vec::new(), 0).expect("the fixed empty changed-entity list is valid"),
+    ))
+}
+
+pub fn attachment_remove_plan_expired_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::AttachmentRemove,
+        construction::Reason::PlanExpired,
+    ))
+}
+
+pub fn attachment_remove_plan_replayed_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::AttachmentRemove,
+        construction::Reason::PlanReplayed,
+    ))
+}
+
+pub fn attachment_remove_plan_scope_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::AttachmentRemove,
+        construction::Reason::PlanScopeMismatch,
+    ))
+}
+
+pub fn attachment_remove_cancelled_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::AttachmentRemove,
+        construction::Reason::PlanStateChanged,
+    ))
+}
+
+pub fn attachment_remove_recovery_required_error(
+    request_id: RequestId,
+    operation_id: OperationId,
+    guide_relative_path: SafeRelativePath,
+    attachment_relative_path: SafeRelativePath,
+) -> ErrorDto {
+    constructed_error(construction::recovery_required(
+        request_id,
+        operation_id,
+        construction::Reason::JournalStateAmbiguous,
+        BoundedList::try_new(vec![guide_relative_path, attachment_relative_path], 2)
+            .expect("the fixed pair of affected paths is bounded"),
     ))
 }
 

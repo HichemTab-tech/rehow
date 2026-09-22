@@ -18,6 +18,8 @@ mod store;
 mod workspace;
 
 #[cfg(test)]
+pub(crate) use workspace::set_attachment_before_move_hook;
+#[cfg(test)]
 pub(crate) use workspace::{WorkspaceFault, set_workspace_fault};
 
 #[cfg(test)]
@@ -1331,6 +1333,7 @@ fn push_git_sync_deletion(
             object_hash,
             mode,
             destination: format!(".rehow/trash/{operation_id}/{}", existing.relative_path),
+            source_identity: None,
         },
         temp_name: format!(".rehow-tmp-{operation_id}-{}", targets.len()),
         step: TargetStep::Prepared,
@@ -1631,6 +1634,17 @@ pub(crate) struct AttachmentRemovalStorageOutcome {
     revision: Revision,
 }
 
+pub(crate) enum AttachmentRemovalStorageError<E> {
+    Mutation(MultiDocumentUpdateError<E>),
+    RecoveryRequired { operation_id: OperationId },
+}
+
+impl<E> From<MultiDocumentUpdateError<E>> for AttachmentRemovalStorageError<E> {
+    fn from(error: MultiDocumentUpdateError<E>) -> Self {
+        Self::Mutation(error)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AttachmentSourceState {
     device: u64,
@@ -1691,6 +1705,8 @@ pub(crate) struct AttachmentRemovalPreview {
     sha256: [u8; 32],
     size: u64,
     mode: u32,
+    device: u64,
+    inode: u64,
 }
 
 impl AttachmentRemovalPreview {
@@ -1704,6 +1720,24 @@ impl AttachmentRemovalPreview {
 
     pub(crate) fn size(&self) -> u64 {
         self.size
+    }
+
+    pub(crate) fn effect_binding_hash(&self) -> [u8; 32] {
+        let mut binding = blake3::Hasher::new();
+        binding.update(b"rehow-attachment-removal-preview-v1\0");
+        hash_plan_field(&mut binding, self.relative_path.as_bytes());
+        hash_plan_field(&mut binding, self.guide_revision.to_string().as_bytes());
+        hash_plan_field(
+            &mut binding,
+            self.attachment_revision.to_string().as_bytes(),
+        );
+        binding.update(&self.object_hash);
+        binding.update(&self.sha256);
+        binding.update(&self.size.to_be_bytes());
+        binding.update(&self.mode.to_be_bytes());
+        binding.update(&self.device.to_be_bytes());
+        binding.update(&self.inode.to_be_bytes());
+        *binding.finalize().as_bytes()
     }
 }
 
@@ -2233,6 +2267,7 @@ where
                 object_hash,
                 mode: current.mode,
                 destination,
+                source_identity: None,
             },
             temp_name: format!(".rehow-tmp-{operation_id}"),
             step: TargetStep::Prepared,
@@ -2742,6 +2777,8 @@ where
         .open_managed_target(attachment_relative_path)
         .map_err(map_io_multi)?;
     let super::linux::AttachmentState::Regular {
+        device,
+        inode,
         object_hash,
         sha256,
         revision,
@@ -2764,11 +2801,13 @@ where
         sha256,
         size,
         mode,
+        device,
+        inode,
     })
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn execute_attachment_removal<E, F>(
+pub(super) fn execute_attachment_removal<E, F, C>(
     root: &super::linux::DirectoryCapability,
     state_home: &Path,
     runtime_directory: Option<&Path>,
@@ -2778,10 +2817,12 @@ pub(super) fn execute_attachment_removal<E, F>(
     operation_id: OperationId,
     created_at: Timestamp,
     approved: &AttachmentRemovalPreview,
+    cancelled: &C,
     prepare: F,
-) -> Result<AttachmentRemovalStorageOutcome, MultiDocumentUpdateError<E>>
+) -> Result<AttachmentRemovalStorageOutcome, AttachmentRemovalStorageError<E>>
 where
     F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
+    C: Fn() -> bool,
 {
     const ATTACHMENT_LIMIT: u64 = 64 * 1024 * 1024;
 
@@ -2795,6 +2836,9 @@ where
     let lock = store
         .acquire_lock(runtime_directory)
         .map_err(map_store_multi)?;
+    if cancelled() {
+        return Err(MultiDocumentUpdateError::Cancelled.into());
+    }
     let guide_target = root
         .open_managed_target(guide_relative_path)
         .map_err(map_io_multi)?;
@@ -2802,17 +2846,22 @@ where
         .state(super::GUIDE_LIMIT)
         .map_err(map_io_multi)?
     {
-        super::linux::ManagedState::Missing => return Err(MultiDocumentUpdateError::Conflict),
+        super::linux::ManagedState::Missing => {
+            return Err(MultiDocumentUpdateError::Conflict.into());
+        }
         super::linux::ManagedState::Regular(state) => state,
     };
     if super::document_revision(guide_relative_path, &current.bytes) != expected_guide_revision {
-        return Err(MultiDocumentUpdateError::Conflict);
+        return Err(MultiDocumentUpdateError::Conflict.into());
     }
     let candidate = prepare(&current.bytes).map_err(MultiDocumentUpdateError::Prepare)?;
+    if cancelled() {
+        return Err(MultiDocumentUpdateError::Cancelled.into());
+    }
     if candidate.as_ref() == current.bytes
         || super::document_revision(guide_relative_path, &candidate) != approved.guide_revision
     {
-        return Err(MultiDocumentUpdateError::InvalidPlan);
+        return Err(MultiDocumentUpdateError::InvalidPlan.into());
     }
     let attachment = root
         .open_managed_target(&approved.relative_path)
@@ -2821,6 +2870,8 @@ where
         .attachment_state(&approved.relative_path, ATTACHMENT_LIMIT)
         .map_err(map_io_multi)?
         != (super::linux::AttachmentState::Regular {
+            device: approved.device,
+            inode: approved.inode,
             object_hash: approved.object_hash,
             sha256: approved.sha256,
             revision: approved.attachment_revision,
@@ -2828,7 +2879,7 @@ where
             mode: approved.mode,
         })
     {
-        return Err(MultiDocumentUpdateError::Conflict);
+        return Err(MultiDocumentUpdateError::Conflict.into());
     }
     let destination = format!(".rehow/trash/{operation_id}/{}", approved.relative_path);
     let trash_target = root
@@ -2840,7 +2891,7 @@ where
             .map_err(map_io_multi)?,
         super::linux::AttachmentState::Missing
     ) {
-        return Err(MultiDocumentUpdateError::Conflict);
+        return Err(MultiDocumentUpdateError::Conflict.into());
     }
     trash_target.sync_directory().map_err(map_io_multi)?;
     let (root_device, root_inode) = root.identity().map_err(map_io_multi)?;
@@ -2859,6 +2910,9 @@ where
             .metadata()
             .map_err(|_| MultiDocumentUpdateError::Io)?,
     );
+    if source_state.device != approved.device || source_state.inode != approved.inode {
+        return Err(MultiDocumentUpdateError::Conflict.into());
+    }
     let streamed = store
         .store_streamed_object(
             &lock,
@@ -2872,6 +2926,18 @@ where
             },
         )
         .map_err(map_store_multi)?;
+    if cancelled() {
+        if streamed.created
+            && store
+                .journal_missing(&lock, operation_id)
+                .map_err(map_store_multi)?
+        {
+            store
+                .remove_created_object(&lock, &streamed.object_hash)
+                .map_err(map_store_multi)?;
+        }
+        return Err(MultiDocumentUpdateError::Cancelled.into());
+    }
     let mut plan = blake3::Hasher::new();
     plan.update(b"rehow-attachment-removal-plan-v1\0");
     hash_plan_field(&mut plan, guide_relative_path.as_bytes());
@@ -2923,6 +2989,7 @@ where
                     object_hash: streamed.object_hash,
                     mode: approved.mode,
                     destination,
+                    source_identity: Some((approved.device, approved.inode)),
                 },
                 temp_name: format!(".rehow-tmp-{operation_id}-attachment"),
                 step: TargetStep::Prepared,
@@ -2931,6 +2998,18 @@ where
         stage: JournalStage::Prepared,
         completion: false,
     };
+    if cancelled() {
+        if streamed.created
+            && store
+                .journal_missing(&lock, operation_id)
+                .map_err(map_store_multi)?
+        {
+            store
+                .remove_created_object(&lock, &streamed.object_hash)
+                .map_err(map_store_multi)?;
+        }
+        return Err(MultiDocumentUpdateError::Cancelled.into());
+    }
     let execution = workspace::execute_new_journal(root, &store, &lock, journal.clone());
     if let Err(error) = execution {
         let committed = store
@@ -2949,7 +3028,19 @@ where
                     .remove_created_object(&lock, &streamed.object_hash)
                     .map_err(map_store_multi)?;
             }
-            return Err(map_workspace_multi(error));
+            if store
+                .read_journal(&lock, operation_id)
+                .is_ok_and(|persisted| {
+                    persisted.stage == JournalStage::Conflict
+                        && persisted
+                            .targets
+                            .iter()
+                            .any(|target| target.step != TargetStep::Prepared)
+                })
+            {
+                return Err(AttachmentRemovalStorageError::RecoveryRequired { operation_id });
+            }
+            return Err(map_workspace_multi(error).into());
         }
     }
     Ok(AttachmentRemovalStorageOutcome {
@@ -3183,6 +3274,7 @@ pub(super) fn execute_document_remove(
                 object_hash,
                 mode: current.mode,
                 destination,
+                source_identity: None,
             },
             temp_name: format!(".rehow-tmp-{operation_id}"),
             step: TargetStep::Prepared,
@@ -3779,6 +3871,7 @@ pub(crate) enum IntendedState {
         object_hash: ContentHash,
         mode: u32,
         destination: String,
+        source_identity: Option<(u64, u64)>,
     },
 }
 
@@ -4721,8 +4814,9 @@ impl IntendedState {
                 object_hash,
                 mode,
                 destination,
+                source_identity,
             } => {
-                writer.map(4)?;
+                writer.map(if source_identity.is_some() { 6 } else { 4 })?;
                 writer.key(0)?;
                 writer.uint(2)?;
                 writer.key(1)?;
@@ -4730,7 +4824,14 @@ impl IntendedState {
                 writer.key(2)?;
                 writer.uint(u64::from(*mode))?;
                 writer.key(3)?;
-                writer.text(destination)
+                writer.text(destination)?;
+                if let Some((device, inode)) = source_identity {
+                    writer.key(4)?;
+                    writer.uint(*device)?;
+                    writer.key(5)?;
+                    writer.uint(*inode)?;
+                }
+                Ok(())
             }
         }
     }
@@ -4747,17 +4848,27 @@ impl IntendedState {
                 let mode = reader.mode()?;
                 Ok(Self::Object { object_hash, mode })
             }
-            (4, 2) => {
+            (4 | 6, 2) => {
                 reader.key(1)?;
                 let object_hash = reader.hash()?;
                 reader.key(2)?;
                 let mode = reader.mode()?;
                 reader.key(3)?;
                 let destination = reader.owned_text(MAX_PATH_BYTES)?;
+                let source_identity = if length == 6 {
+                    reader.key(4)?;
+                    let device = reader.uint()?;
+                    reader.key(5)?;
+                    let inode = reader.uint()?;
+                    Some((device, inode))
+                } else {
+                    None
+                };
                 Ok(Self::Trash {
                     object_hash,
                     mode,
                     destination,
+                    source_identity,
                 })
             }
             _ => Err(JournalCodecError::Invalid),
@@ -5469,6 +5580,7 @@ mod tests {
             destination:
                 ".rehow/trash/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/categories/linux/guide.md"
                     .to_owned(),
+            source_identity: None,
         };
         assert_eq!(journal.encode(), Err(JournalCodecError::Invalid));
         journal = sample();
@@ -5484,12 +5596,14 @@ mod tests {
             destination:
                 ".rehow/trash/0199a1d7-7b0d-7d8e-a38d-f936c5735e11/categories/linux/guide.md"
                     .to_owned(),
+            source_identity: None,
         };
         assert_eq!(journal.encode(), Err(JournalCodecError::Invalid));
         journal.targets[0].intended = IntendedState::Trash {
             object_hash: [0x44; 32],
             mode: 0o600,
             destination: ".rehow/trash/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/rehow.yaml".to_owned(),
+            source_identity: None,
         };
         assert_eq!(journal.encode(), Err(JournalCodecError::Invalid));
 
@@ -5626,6 +5740,7 @@ mod tests {
                     object_hash: [0x44; 32],
                     mode: 0o640,
                     destination: ".rehow/trash/0199a1d7-7b0d-7d8e-a38d-f936c5735e10/categories/linux/guide.md".to_owned(),
+                    source_identity: None,
                 },
             ),
         ];

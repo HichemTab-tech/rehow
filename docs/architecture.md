@@ -231,6 +231,8 @@ Phase 6E2C binds one ready Guide's exact revision, managed path, and Category to
 
 Phase 6E2D1 adds only an exact-revision typed Attachment-title mutation. The adapter accepts stable IDs and display text; the core edits the required nested title scalar while preserving every file-binding field and unknown entry. File/path/content authority remains absent.
 
+Phase 6E2D2 reuses the accepted native Attachment-removal preview and recovery journal through an opaque core approval object. The MCP plan binds its core effect hash to stable Workspace/Guide/Attachment identities; execution accepts only handle+token and runs revalidation/streamed recovery off the protocol runtime. Cancellation linearizes immediately before journal creation.
+
 ## Preferences and local state
 
 Recent Workspace paths, window state, theme preference, and opt-in sync schedules are application-local configuration, not portable Workspace content. Store no secrets. Losing preferences must not lose content. Validate restored window geometry against current displays and do not depend on Wayland global positioning.
@@ -238,7 +240,7 @@ Recent Workspace paths, window state, theme preference, and opt-in sync schedule
 ## Dependency and platform policy
 
 - Pin major versions and commit lockfiles. Review generated shadcn source.
-- Use the user-approved installed host toolchain—currently Node 26.2.0 and pnpm 11.3.0—without installing or switching it, with React 19, Vite 8, Vitest 5, Tailwind 4, and Tauri 2 major lines; exact dependency versions are captured by manifests and lockfiles.
+- Use the user-approved installed host toolchain—currently Node 26.2.0 and pnpm 11.20.0—without installing or switching it, with React 19, Vite 8, Vitest 5, Tailwind 4, and Tauri 2 major lines; exact dependency versions are captured by manifests and lockfiles.
 - Use Rust stable pinned in `rust-toolchain.toml` once the oldest supported Tauri/plugin floor is validated.
 - Linux uses WebKitGTK 4.1. Avoid essential UI that depends on bleeding-edge CSS or WebGL. Test oldest supported distro plus GNOME/KDE/wlroots Wayland and X11.
 - Normal decorated/resizable windows only in v1; Wayland does not provide reliable global window coordinates or all always-on-top/effect behavior.

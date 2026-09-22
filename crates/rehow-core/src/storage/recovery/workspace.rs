@@ -22,11 +22,26 @@ pub(crate) enum WorkspaceFault {
 #[cfg(test)]
 thread_local! {
     static WORKSPACE_FAULT: std::cell::Cell<Option<WorkspaceFault>> = const { std::cell::Cell::new(None) };
+    static ATTACHMENT_BEFORE_MOVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
 pub(crate) fn set_workspace_fault(fault: WorkspaceFault) {
     WORKSPACE_FAULT.set(Some(fault));
+}
+
+#[cfg(test)]
+pub(crate) fn set_attachment_before_move_hook(hook: impl FnOnce() + 'static) {
+    ATTACHMENT_BEFORE_MOVE_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
+fn run_attachment_before_move_hook() {
+    ATTACHMENT_BEFORE_MOVE_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -243,9 +258,33 @@ fn attachment_state_matches(
     )
 }
 
+fn attachment_source_matches(
+    state: &AttachmentState,
+    revision: crate::protocol::Revision,
+    object_hash: &[u8; 32],
+    mode: u32,
+    source_identity: Option<(u64, u64)>,
+) -> bool {
+    attachment_state_matches(state, revision, object_hash, mode)
+        && source_identity.is_none_or(|(expected_device, expected_inode)| {
+            matches!(
+                state,
+                AttachmentState::Regular { device, inode, .. }
+                    if *device == expected_device && *inode == expected_inode
+            )
+        })
+}
+
+struct AttachmentExpectation {
+    revision: crate::protocol::Revision,
+    object_hash: [u8; 32],
+    mode: u32,
+    source_identity: Option<(u64, u64)>,
+}
+
 fn attachment_expected(
     target: &super::Target,
-) -> Result<(crate::protocol::Revision, [u8; 32], u32), WorkspaceMutationError> {
+) -> Result<AttachmentExpectation, WorkspaceMutationError> {
     let ExpectedState::Existing {
         revision,
         object_hash,
@@ -257,6 +296,7 @@ fn attachment_expected(
     let IntendedState::Trash {
         object_hash: intended_hash,
         mode: intended_mode,
+        source_identity,
         ..
     } = target.intended
     else {
@@ -265,7 +305,12 @@ fn attachment_expected(
     if intended_hash != object_hash || intended_mode != mode {
         return Err(WorkspaceMutationError::Conflict);
     }
-    Ok((revision, object_hash, mode))
+    Ok(AttachmentExpectation {
+        revision,
+        object_hash,
+        mode,
+        source_identity,
+    })
 }
 
 pub(super) fn remove_object(
@@ -369,7 +414,12 @@ fn trash_attachment(
 ) -> Result<(), WorkspaceMutationError> {
     const ATTACHMENT_LIMIT: u64 = 64 * 1024 * 1024;
 
-    let (revision, object_hash, mode) = attachment_expected(target_record)?;
+    let AttachmentExpectation {
+        revision,
+        object_hash,
+        mode,
+        source_identity,
+    } = attachment_expected(target_record)?;
     let IntendedState::Trash { destination, .. } = &target_record.intended else {
         return Err(WorkspaceMutationError::Conflict);
     };
@@ -409,16 +459,43 @@ fn trash_attachment(
         .attachment_state(&target_record.relative_path, ATTACHMENT_LIMIT)
         .map_err(map_io)?
     {
-        AttachmentState::Missing => {}
-        state if attachment_state_matches(&state, revision, &object_hash, mode) => {
+        AttachmentState::Missing => {
+            if !attachment_source_matches(
+                &holding
+                    .attachment_state(&target_record.relative_path, ATTACHMENT_LIMIT)
+                    .map_err(map_io)?,
+                revision,
+                &object_hash,
+                mode,
+                source_identity,
+            ) {
+                return Err(WorkspaceMutationError::Conflict);
+            }
+        }
+        state
+            if attachment_source_matches(&state, revision, &object_hash, mode, source_identity) =>
+        {
             if holding.hashed_state(ATTACHMENT_LIMIT).map_err(map_io)? != HashedState::Missing {
                 return Err(WorkspaceMutationError::Conflict);
             }
             fail(WorkspaceFaultPoint::BeforeLiveRename)?;
+            #[cfg(test)]
+            run_attachment_before_move_hook();
             target.move_to(&holding).map_err(map_io)?;
             fail(WorkspaceFaultPoint::AfterLiveRenameBeforeSync)?;
             target.sync_directory().map_err(map_io)?;
             holding.sync_directory().map_err(map_io)?;
+            if !attachment_source_matches(
+                &holding
+                    .attachment_state(&target_record.relative_path, ATTACHMENT_LIMIT)
+                    .map_err(map_io)?,
+                revision,
+                &object_hash,
+                mode,
+                source_identity,
+            ) {
+                return Err(WorkspaceMutationError::Conflict);
+            }
         }
         _ => return Err(WorkspaceMutationError::Conflict),
     }
@@ -452,6 +529,17 @@ fn trash_attachment(
             mode,
         })
     {
+        return Err(WorkspaceMutationError::Conflict);
+    }
+    if !attachment_source_matches(
+        &holding
+            .attachment_state(&target_record.relative_path, ATTACHMENT_LIMIT)
+            .map_err(map_io)?,
+        revision,
+        &object_hash,
+        mode,
+        source_identity,
+    ) {
         return Err(WorkspaceMutationError::Conflict);
     }
     target.sync_directory().map_err(map_io)?;
@@ -761,6 +849,7 @@ fn apply_prepared_target(
             object_hash,
             mode,
             destination,
+            ..
         } => {
             if is_attachment_trash_target(target) {
                 return trash_attachment(root, store, lock, target);
@@ -827,7 +916,12 @@ fn verify_applied_target(
     if is_attachment_trash_target(target) {
         const ATTACHMENT_LIMIT: u64 = 64 * 1024 * 1024;
 
-        let (revision, object_hash, mode) = attachment_expected(target)?;
+        let AttachmentExpectation {
+            revision,
+            object_hash,
+            mode,
+            ..
+        } = attachment_expected(target)?;
         let IntendedState::Trash { destination, .. } = &target.intended else {
             return Err(WorkspaceMutationError::Conflict);
         };
@@ -858,6 +952,7 @@ fn verify_applied_target(
         destination,
         object_hash,
         mode,
+        ..
     } = &target.intended
         && let Some(relative_directory) = target.relative_path.strip_suffix("/category.yaml")
         && relative_directory.starts_with("categories/")
@@ -945,6 +1040,7 @@ fn verify_applied_target(
             destination,
             object_hash,
             mode,
+            ..
         } => {
             let Some((old, old_mode)) = expected else {
                 return Err(WorkspaceMutationError::Conflict);
@@ -1120,6 +1216,7 @@ fn cleanup_committed(
                 destination,
                 object_hash: intended_hash,
                 mode: intended_mode,
+                ..
             } => {
                 if intended_hash != object_hash || intended_mode != mode {
                     return Err(WorkspaceMutationError::Conflict);
@@ -1266,7 +1363,7 @@ mod tests {
     use std::{
         fs::{self, OpenOptions},
         io::{Seek, SeekFrom, Write},
-        os::unix::fs::{PermissionsExt, symlink},
+        os::unix::fs::{MetadataExt, PermissionsExt, symlink},
         path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},
     };
@@ -1376,6 +1473,7 @@ mod tests {
                         destination: format!(
                             ".rehow/trash/{operation_id}/categories/linux/guide.md"
                         ),
+                        source_identity: None,
                     }
                 } else {
                     IntendedState::Absent
@@ -2057,6 +2155,10 @@ mod tests {
                         object_hash: attachment_hash,
                         mode: 0o600,
                         destination: destination.clone(),
+                        source_identity: Some({
+                            let metadata = held_open.metadata().unwrap();
+                            (metadata.dev(), metadata.ino())
+                        }),
                     },
                     temp_name: ".rehow-tmp-attachment-trash".to_owned(),
                     step: TargetStep::Prepared,

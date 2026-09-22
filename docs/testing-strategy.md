@@ -215,6 +215,8 @@ Phase 6E2C adds the exact thirty-two-tool schema, readiness/already-Tested/archi
 
 Phase 6E2D1 adds the exact thirty-three-tool schema plus Attachment-title validation, unknown-metadata preservation, immutable path/hash/size/media-type/ID assertions, Tested-to-Stale behavior, read-only refusal, stale revision, missing ID, and byte-identical no-op coverage.
 
+Phase 6E2D2 expands the exact schema to thirty-five tools and covers capability-only previews, native denial, single-use replay, scope/expiry/archive/missing/drift refusal, exact recoverable trash bytes, unknown-metadata/trust behavior inherited from core, and deterministic real-protocol cancellation at the final pre-journal check.
+
 ## Test result recording
 
 `PROGRESS.md` records date, exact command, pass/fail counts or concise result, relevant environment, known flakes/failures, and commit/tree state. The latest verified commit means all claimed gates ran against that commit; if docs changed afterward, say so explicitly.

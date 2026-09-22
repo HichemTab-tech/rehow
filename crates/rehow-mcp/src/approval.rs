@@ -356,6 +356,19 @@ pub(crate) fn safe_summary_line(value: &str) -> String {
         .collect()
 }
 
+pub(crate) fn safe_summary_excerpt(value: &str, maximum_scalars: usize) -> String {
+    let safe = safe_summary_line(value);
+    if safe.chars().count() <= maximum_scalars {
+        return safe;
+    }
+    let retained = maximum_scalars.saturating_sub(1);
+    let mut excerpt = safe.chars().take(retained).collect::<String>();
+    if maximum_scalars > 0 {
+        excerpt.push('…');
+    }
+    excerpt
+}
+
 fn is_invisible_or_format_character(character: char) -> bool {
     // This is the complete union of Unicode 16's Format (Cf) characters and
     // Default_Ignorable_Code_Point ranges. Keeping the table explicit avoids
@@ -468,6 +481,14 @@ mod tests {
         let safe = safe_summary_line("Title\nwith\u{00ad}hidden\u{202e}text\u{fdd0}\u{10ffff}");
         assert_eq!(safe.chars().filter(|value| *value == '\u{fffd}').count(), 5);
         assert!(validate_summary(&safe).is_ok());
+    }
+
+    #[test]
+    fn summary_excerpt_is_scalar_bounded_and_discloses_truncation() {
+        let excerpt = safe_summary_excerpt(&format!("{}\u{202e}", "a".repeat(240)), 180);
+        assert_eq!(excerpt.chars().count(), 180);
+        assert!(excerpt.ends_with('…'));
+        assert!(!excerpt.contains('\u{202e}'));
     }
 
     #[test]
