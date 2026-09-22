@@ -5,11 +5,11 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 6E3B safe MCP Git synchronization is accepted at signed `02c5946`. MCP client/setup and target-workflow documentation is complete at signed `ea3009c`.
+Phase 6E3B safe MCP Git synchronization and client/setup documentation are accepted. Phase 6E2D3 managed Attachment discovery/metadata add is specified at signed `1f83118` and ready for direct implementation.
 
 ## Current task
 
-Architect the confined managed-file discovery contract required before MCP Attachment metadata add.
+Implement `docs/task-packets/phase-6e2d3-mcp-attachment-metadata-add.md` directly with focused core/MCP tests.
 
 ## Overall status
 
@@ -152,7 +152,7 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 
 ## Work in progress
 
-- Only this progress-ledger update is intentionally uncommitted. MCP setup/workflow docs are checkpointed at signed `ea3009c`. Untracked `x` remains unrelated and untouched.
+- Only this progress-ledger update is intentionally uncommitted. Phase 6E2D3 architecture/task packet and current host-tool guard are checkpointed at signed `1f83118`. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
@@ -296,16 +296,17 @@ No known regression in accepted phases. If the process is killed after the initi
 ## Blockers and human checkpoints
 
 - No product decision, security-review, or manual-test blocker. Routine work uses zero extra agents; one specialist is used only at mandatory acceptance gates.
-- The host toolchain changed after the accepted Phase 6E3B gate: `/usr/bin/node` now reports 26.8.1 and `/usr/bin/pnpm` 11.3.0, while repository policy requires 26.2.0/11.20.0. Per user direction, no install or version switch was attempted. This blocks pnpm commands on the current host but did not block the documentation-only `ea3009c` checkpoint.
+- The active existing host tools are Node 26.2.0 and pnpm 11.3.0. The repository guard now matches that pair per user direction; no install or version switch was performed, and `pnpm check` passes.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`ea3009c` — signed MCP setup/workflow documentation checkpoint; its configured signature verifies. This progress-ledger update follows that commit.
+`1f83118` — signed Phase 6E2D3 architecture/task-packet and host-tool guard checkpoint; its configured signature verifies. This progress-ledger update follows that commit.
 
 ## Tests last run and results
 
+- 2026-09-22: Phase 6E2D3 planning/toolchain checkpoint `1f83118` passes `pnpm check`, contract drift/type/Biome checks, Bootstrap validation (17 required files, 49 ADRs, 8 pinned agents), and whitespace checks on the existing active Node 26.2.0/pnpm 11.3.0 pair. No runtime/package manager was installed or switched.
 - 2026-09-22: MCP setup/workflow checkpoint `ea3009c` passes exact real-tool-name/CLI-flag source checks, Codex CLI add/remove help checks, Bootstrap validation (17 required files, 48 ADRs, 8 pinned agents), and whitespace checks. `pnpm check` could not start because the host now exposes Node 26.8.1/pnpm 11.3.0 instead of the repository-required 26.2.0/11.20.0; no install, switch, or pin change was attempted. The preceding accepted code checkpoint's complete gate remains authoritative.
 - 2026-09-22: Phase 6E3B checkpoint `02c5946` passes `pnpm check`, `pnpm test`, `pnpm build`, 39 Vitest tests, 455 core tests (453 pass and 2 intentional network/performance ignores), 18 error-contract tests, 13 protocol tests, public-API/trybuild and unknown-YAML suites, 25 desktop Rust tests, 89 MCP unit tests, 3 approval-helper integration tests, and 1 stdio integration test. Strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, Bootstrap validation (17 required files, 48 ADRs, 8 pinned agents), contract drift, production build, and whitespace checks pass on unchanged installed Node 26.2.0/pnpm 11.20.0. Coverage includes the forty-three-tool schema, startup/helper and safe-action matrices, exact host/auth-policy consent, URL/secret non-disclosure, denial before network/mutation, cancellation/shutdown, exact recovery, shared lifecycle exclusion, and distinct uncertain-push reporting. Security Reviewer verdict: PASS.
 - 2026-09-22: Phase 6E3A checkpoint `ac76863` passes `pnpm check`, `pnpm test`, `pnpm build`, 39 Vitest tests, 452 core tests with 2 intentional network/performance ignores, 25 desktop Rust tests, 80 MCP unit tests, 3 approval-helper integration tests, 1 stdio integration test, and all protocol/API/contract suites. Strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, Bootstrap validation (17 required files, 47 ADRs, 8 pinned agents), and whitespace checks pass on unchanged installed Node 26.2.0/pnpm 11.20.0. Exact recovery replacement, final-boundary real JSON-RPC cancellation, and concurrent active-execution planning refusal regressions pass. Security Reviewer verdict: PASS.
@@ -596,10 +597,11 @@ No product test failure. The repository now pins the unchanged installed pnpm 11
 - ADR 0047, `docs/task-packets/phase-6e3a-mcp-git-commit.md`, its evidence, the exact recovery/cancellation core additions, and the four-tool adapter implement accepted managed Git commit/recovery at signed `ac76863`; final Security Reviewer verdict: PASS.
 - ADR 0048, `docs/task-packets/phase-6e3b-mcp-safe-git-sync.md`, and `docs/evidence/phase-6e3b-mcp-safe-git-sync.md` define and evidence the accepted forty-three-tool boundary at `02c5946`: approval before remote/credential inspection, exact retained `pull`/`push` classification, separate mutation approval, shared commit/sync exclusion, exact internally selected pull recovery, and distinct uncertain-push reporting.
 - `docs/mcp-setup.md`, aligned installation/development/specification text, real Codex CLI/config syntax, least-authority profiles, verification/troubleshooting, and the exact “Add this to Rehow” lifecycle complete the Phase 6 client/setup documentation at signed `ea3009c`.
+- ADR 0049 and `docs/task-packets/phase-6e2d3-mcp-attachment-metadata-add.md` specify the final Phase 6 mutation at signed `1f83118`: descriptor-confined orphan-file discovery, opaque bounded candidate tokens, exact core revalidation, core-owned metadata, and no caller path/bytes/file mutation.
 
 ## Next recommended action
 
-Architect the managed-file discovery and Attachment metadata-add contract; it must not accept a host path or create arbitrary file access.
+Implement Phase 6E2D3 directly; begin with core candidate discovery/revalidation, then add the two closed MCP tools and focused tests.
 
 ## Recommended agent role and reasoning effort
 
@@ -608,9 +610,9 @@ Primary Orchestrator/Architect with zero routine agents. Use one specialist only
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read `docs/mcp-spec.md`, `docs/content-model.md`, `docs/threat-model.md`, ADRs 0016/0017/0038/0045/0046, and the existing Attachment inventory/import code.
+2. Read ADR 0049 and `docs/task-packets/phase-6e2d3-mcp-attachment-metadata-add.md`, then the existing Attachment inventory/import code.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `02c5946` and `ea3009c`; only a later progress-ledger commit may follow them.
+4. Verify signed checkpoints `ea3009c` and `1f83118`; only a later progress-ledger commit may follow them.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6E3A as accepted; its full gate and final correction-only Security Reviewer verdict pass.
-7. Treat Phase 6E3B and MCP client/setup docs as accepted. Specify managed-file discovery before exposing Attachment metadata add; keep host paths, arbitrary filesystem access, raw bytes, and new dependencies out of scope.
+7. Execute the Phase 6E2D3 packet directly; keep host paths, arbitrary filesystem access, raw bytes, file mutation, and new dependencies out of scope.
