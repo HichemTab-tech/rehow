@@ -5,11 +5,11 @@ Last updated: 2026-09-22
 
 ## Supported baseline
 
-Rehow is Linux-first and targets a normal resizable, decorated desktop window on Wayland and X11. The exact minimum distributions are finalized from packaged production tests. Tauri v2 uses the system WebKitGTK 4.1 webview on Linux, so release builds must run on an old-enough supported build image to preserve glibc compatibility.
+Rehow is Linux-first and targets a normal resizable, decorated desktop window on Wayland and X11. Current x86_64 development packages require glibc 2.39 or newer and use the system WebKitGTK 4.1 webview. Ubuntu 24.04 is the oldest verified binary baseline; Debian 13 and Fedora 44 package journeys also pass. Debian 12 and Ubuntu 22.04 are not supported by the current artifacts.
 
 Initial package priority:
 
-1. Native `.deb` and `.rpm` packages built/tested on the documented oldest baseline.
+1. Native `.deb` and `.rpm` packages with an enforced glibc 2.39 ABI ceiling and install tests on the documented baseline/families.
 2. AppImage only after independent Wayland/XWayland and upgrade/uninstall testing.
 3. An Arch user package recipe may follow, but Rehow will not modify Omarchy-managed files.
 

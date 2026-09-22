@@ -61,6 +61,12 @@ A fresh official Fedora 44 container was run ephemerally as root with the `.rpm`
 
 The container was removed automatically. The Fedora 44 base image remains in Docker's ordinary local image cache. No host package was installed. As with Debian, a headless container does not prove graphical application-menu launch.
 
+## Oldest supported binary baseline
+
+All five packaged executables were inspected with `readelf --version-info`. The desktop, both Git helpers, and MCP server require at most `GLIBC_2.39`; the approval helper requires `GLIBC_2.34`. A package install/link/remove journey passes on Ubuntu 24.04 with glibc 2.39.
+
+Phase 7 therefore sets Ubuntu 24.04 / glibc 2.39 as the oldest supported binary baseline for the current artifacts. Debian 12 and Ubuntu 22.04 are not advertised for these builds. `scripts/check-linux-abi-floor.sh` is invoked for every executable extracted from both package formats and fails if a future build raises the floor above `GLIBC_2.39`.
+
 ## Open release gates
 
 - Clean-machine install/menu-launch/uninstall testing on the chosen oldest supported baseline.

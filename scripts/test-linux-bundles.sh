@@ -23,6 +23,13 @@ for package_root in "$smoke_root/deb" "$smoke_root/rpm"; do
     test "$(stat -c '%a' "$binary_path")" = "755"
   done
 
+  scripts/check-linux-abi-floor.sh \
+    "$package_root/usr/bin/rehow" \
+    "$package_root/usr/bin/rehow-git-ssh" \
+    "$package_root/usr/bin/rehow-git-credential" \
+    "$package_root/usr/bin/rehow-mcp" \
+    "$package_root/usr/bin/rehow-mcp-approve"
+
   desktop_file="$package_root/usr/share/applications/Rehow.desktop"
   grep -Fxq 'Type=Application' "$desktop_file"
   grep -Fxq 'Name=Rehow' "$desktop_file"
