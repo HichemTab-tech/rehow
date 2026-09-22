@@ -831,6 +831,37 @@ pub fn attachment_remove_plan_stale_error(request_id: RequestId) -> ErrorDto {
     ))
 }
 
+pub fn attachment_add_plan_stale_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::plan_stale(
+        request_id,
+        construction::Operation::AttachmentAdd,
+        BoundedList::try_new(Vec::new(), 0).expect("the fixed empty changed-entity list is valid"),
+    ))
+}
+
+pub fn attachment_add_invalid_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::Attachments,
+        construction::Reason::UnsupportedValue,
+    ))
+}
+
+pub fn attachment_add_busy_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::io_busy(
+        request_id,
+        construction::Operation::AttachmentAdd,
+        2_000,
+    ))
+}
+
+pub fn attachment_add_unavailable_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::workspace_unavailable(
+        request_id,
+        construction::Reason::WorkspaceRootChanged,
+    ))
+}
+
 pub fn attachment_remove_plan_expired_error(request_id: RequestId) -> ErrorDto {
     constructed_error(construction::confirmation_invalid(
         request_id,

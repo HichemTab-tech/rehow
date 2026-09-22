@@ -30,11 +30,13 @@ use crate::{
         AttachmentRemovalStorageError, AttachmentSourceState, CancellableDocumentUpdateError,
         CategoryCreateStorageError, CategoryRemoveStorageError, DocumentCreateError,
         DocumentRemoveError, DocumentUpdateError, DocumentUpdateRequest, EmptyWorkspaceTarget,
-        MultiDocumentUpdateError, WorkspaceInitializeError, WorkspaceInspectError, WorkspaceView,
-        category_inventory_snapshot, execute_attachment_import, execute_attachment_removal,
-        execute_category_create, execute_category_document_update, execute_category_remove,
-        execute_document_create, execute_document_move, execute_document_remove,
-        execute_document_update, execute_document_update_cancellable,
+        ManagedAttachmentCandidate as StorageManagedAttachmentCandidate, MultiDocumentUpdateError,
+        WorkspaceInitializeError, WorkspaceInspectError, WorkspaceView,
+        category_inventory_snapshot, discover_managed_attachment_candidates,
+        execute_attachment_import, execute_attachment_removal, execute_category_create,
+        execute_category_document_update, execute_category_remove, execute_document_create,
+        execute_document_move, execute_document_remove, execute_document_update,
+        execute_document_update_cancellable, execute_managed_attachment_add,
         execute_multi_document_update, execute_workspace_initialize, open_initialized_workspace,
         preview_attachment_import, preview_attachment_removal, refresh_workspace,
     },
@@ -1941,6 +1943,291 @@ fn map_attachment_import_error(
         MultiDocumentUpdateError::Unsupported => AttachmentImportError::UnsupportedFilesystem,
         MultiDocumentUpdateError::Io => AttachmentImportError::Io,
     }
+}
+
+pub struct ManagedAttachmentCandidate {
+    inner: StorageManagedAttachmentCandidate,
+}
+
+impl std::fmt::Debug for ManagedAttachmentCandidate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ManagedAttachmentCandidate")
+            .field("size", &self.inner.size())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ManagedAttachmentCandidate {
+    pub fn name(&self) -> &str {
+        self.inner.filename()
+    }
+
+    pub fn size_bytes(&self) -> u64 {
+        self.inner.size()
+    }
+}
+
+pub struct ManagedAttachmentDiscovery {
+    revision: Revision,
+    candidates: Vec<ManagedAttachmentCandidate>,
+}
+
+impl ManagedAttachmentDiscovery {
+    pub fn revision(&self) -> Revision {
+        self.revision
+    }
+
+    pub fn candidates(&self) -> &[ManagedAttachmentCandidate] {
+        &self.candidates
+    }
+
+    pub fn into_candidates(self) -> Vec<ManagedAttachmentCandidate> {
+        self.candidates
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagedAttachmentDiscoveryError {
+    GuideNotFound,
+    GuideArchived,
+    UnsafeStorage,
+    ResourceLimit,
+    ChangedDuringRead,
+    Io,
+}
+
+pub fn list_managed_attachment_candidates(
+    workspace: &WorkspaceView,
+    guide_id: GuideId,
+) -> Result<ManagedAttachmentDiscovery, ManagedAttachmentDiscoveryError> {
+    let (_, loaded) = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides().iter().map(move |guide| (category, guide)))
+        .find(|(_, guide)| guide.guide().id() == &guide_id)
+        .ok_or(ManagedAttachmentDiscoveryError::GuideNotFound)?;
+    if loaded.effective_status() == crate::domain::GuideStatus::Archived {
+        return Err(ManagedAttachmentDiscoveryError::GuideArchived);
+    }
+    let declared = loaded
+        .guide()
+        .attachments()
+        .unwrap_or_default()
+        .iter()
+        .map(|attachment| attachment.path().to_owned())
+        .collect::<HashSet<_>>();
+    let candidates = discover_managed_attachment_candidates(workspace, guide_id, &declared)
+        .map_err(|error| match error {
+            WorkspaceInspectError::ResourceLimit => ManagedAttachmentDiscoveryError::ResourceLimit,
+            WorkspaceInspectError::ChangedDuringRead => {
+                ManagedAttachmentDiscoveryError::ChangedDuringRead
+            }
+            WorkspaceInspectError::NotFound
+            | WorkspaceInspectError::NotDirectory
+            | WorkspaceInspectError::PermissionDenied
+            | WorkspaceInspectError::UnsafeRoot => ManagedAttachmentDiscoveryError::UnsafeStorage,
+            WorkspaceInspectError::Io => ManagedAttachmentDiscoveryError::Io,
+        })?
+        .into_iter()
+        .map(|inner| ManagedAttachmentCandidate { inner })
+        .collect();
+    Ok(ManagedAttachmentDiscovery {
+        revision: loaded.revision(),
+        candidates,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ManagedAttachmentAddOutcome {
+    attachment_id: AttachmentId,
+    revision: Revision,
+}
+
+impl ManagedAttachmentAddOutcome {
+    pub fn attachment_id(self) -> AttachmentId {
+        self.attachment_id
+    }
+
+    pub fn revision(self) -> Revision {
+        self.revision
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagedAttachmentAddError {
+    GuideNotFound,
+    RevisionConflict,
+    GuideArchived,
+    CandidateChanged,
+    AttachmentLimit,
+    DuplicateAttachment,
+    InvalidTitle,
+    UnsafeRoundTrip,
+    Busy,
+    UnsafeStorage,
+    UnsupportedFilesystem,
+    ResourceLimit,
+    Io,
+    CommittedRefreshRequired {
+        attachment_id: AttachmentId,
+        revision: Revision,
+    },
+}
+
+pub fn add_managed_attachment_metadata(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    guide_id: GuideId,
+    expected_revision: Revision,
+    candidate: ManagedAttachmentCandidate,
+    title: String,
+) -> Result<ManagedAttachmentAddOutcome, ManagedAttachmentAddError> {
+    if !candidate.inner.matches_workspace(workspace) || candidate.inner.guide_id() != guide_id {
+        return Err(ManagedAttachmentAddError::CandidateChanged);
+    }
+    let expected_attachment_path = format!("attachments/{guide_id}/{}", candidate.inner.filename());
+    let (category, loaded) = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides().iter().map(move |guide| (category, guide)))
+        .find(|(_, guide)| guide.guide().id() == &guide_id)
+        .ok_or(ManagedAttachmentAddError::GuideNotFound)?;
+    if loaded.revision() != expected_revision {
+        return Err(ManagedAttachmentAddError::RevisionConflict);
+    }
+    if loaded.effective_status() == crate::domain::GuideStatus::Archived {
+        return Err(ManagedAttachmentAddError::GuideArchived);
+    }
+    let relative_path = loaded.relative_path().to_owned();
+    let category_id = *category.category().id();
+    let attachment_id = new_attachment_id();
+    let at = current_timestamp();
+    let stamp = MutationStamp::from_trusted_time(at);
+    let outcome = execute_managed_attachment_add(
+        workspace,
+        state_home,
+        runtime_directory,
+        &relative_path,
+        guide_id,
+        expected_revision,
+        &candidate.inner,
+        new_operation_id(),
+        at,
+        |bytes, filename, sha256, size| {
+            prepare_managed_attachment_candidate(
+                bytes,
+                guide_id,
+                category_id,
+                attachment_id,
+                filename,
+                &title,
+                sha256,
+                size,
+                &stamp,
+            )
+        },
+    )
+    .map_err(|error| match error {
+        DocumentUpdateError::Prepare(PlanError::AttachmentLimit) => {
+            ManagedAttachmentAddError::AttachmentLimit
+        }
+        DocumentUpdateError::Prepare(PlanError::DuplicateAttachment) => {
+            ManagedAttachmentAddError::DuplicateAttachment
+        }
+        DocumentUpdateError::Prepare(PlanError::InvalidEdit) => {
+            ManagedAttachmentAddError::InvalidTitle
+        }
+        DocumentUpdateError::Prepare(PlanError::UnsafeRoundTrip) => {
+            ManagedAttachmentAddError::UnsafeRoundTrip
+        }
+        DocumentUpdateError::Prepare(PlanError::ResourceLimit) | DocumentUpdateError::TooLarge => {
+            ManagedAttachmentAddError::ResourceLimit
+        }
+        DocumentUpdateError::Prepare(PlanError::InvalidGuide | PlanError::NotReady) => {
+            ManagedAttachmentAddError::CandidateChanged
+        }
+        DocumentUpdateError::Conflict => ManagedAttachmentAddError::CandidateChanged,
+        DocumentUpdateError::Busy => ManagedAttachmentAddError::Busy,
+        DocumentUpdateError::Unsafe => ManagedAttachmentAddError::UnsafeStorage,
+        DocumentUpdateError::Unsupported => ManagedAttachmentAddError::UnsupportedFilesystem,
+        DocumentUpdateError::Io => ManagedAttachmentAddError::Io,
+    })?;
+    if refresh_workspace(workspace).is_err()
+        || workspace
+            .issues()
+            .iter()
+            .any(|issue| issue.relative_path() == expected_attachment_path)
+        || !workspace
+            .categories()
+            .iter()
+            .flat_map(|category| category.guides())
+            .any(|guide| {
+                guide.guide().id() == &guide_id
+                    && guide.revision() == outcome.revision()
+                    && guide.guide().attachments().is_some_and(|attachments| {
+                        attachments.iter().any(|attachment| {
+                            attachment.id() == &attachment_id
+                                && attachment.path() == expected_attachment_path
+                        })
+                    })
+            })
+    {
+        return Err(ManagedAttachmentAddError::CommittedRefreshRequired {
+            attachment_id,
+            revision: outcome.revision(),
+        });
+    }
+    Ok(ManagedAttachmentAddOutcome {
+        attachment_id,
+        revision: outcome.revision(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_managed_attachment_candidate(
+    bytes: &[u8],
+    guide_id: GuideId,
+    category_id: CategoryId,
+    attachment_id: AttachmentId,
+    filename: &str,
+    title: &str,
+    sha256: [u8; 32],
+    size: u64,
+    stamp: &MutationStamp,
+) -> Result<Box<[u8]>, PlanError> {
+    let path = format!("attachments/{guide_id}/{filename}");
+    let parsed = parse_guide_source(copy_bytes(bytes)?).map_err(|_| PlanError::InvalidGuide)?;
+    let bound = bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
+    if bound.record().id() != &guide_id || bound.record().category_id() != &category_id {
+        return Err(PlanError::InvalidGuide);
+    }
+    let attachments = bound.record().attachments().unwrap_or_default();
+    if attachments.len() >= 256 {
+        return Err(PlanError::AttachmentLimit);
+    }
+    let sha256 = sha256
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if attachments
+        .iter()
+        .any(|attachment| attachment.sha256() == sha256)
+    {
+        return Err(PlanError::DuplicateAttachment);
+    }
+    apply_guide_mutation(
+        &bound,
+        GuideMutation::AddAttachment(AttachmentInput {
+            id: attachment_id,
+            path,
+            title: title.to_owned(),
+            sha256,
+            size_bytes: size,
+        }),
+        stamp,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

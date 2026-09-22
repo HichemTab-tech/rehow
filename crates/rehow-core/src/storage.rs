@@ -2623,6 +2623,47 @@ pub(crate) const MANAGED_BYTES_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
 pub(crate) const ATTACHMENT_COUNT_LIMIT: usize = 10_000;
 const ATTACHMENT_FILE_LIMIT: u64 = 64 * 1024 * 1024;
 pub(crate) const ATTACHMENT_BYTES_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
+
+#[derive(Clone)]
+pub(crate) struct ManagedAttachmentCandidate {
+    workspace_id: crate::protocol::WorkspaceId,
+    root_hash: [u8; 32],
+    capability_hash: [u8; 32],
+    guide_id: crate::protocol::GuideId,
+    filename: String,
+    state: AttachmentSourceState,
+    sha256: [u8; 32],
+    size: u64,
+}
+
+impl std::fmt::Debug for ManagedAttachmentCandidate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ManagedAttachmentCandidate")
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ManagedAttachmentCandidate {
+    pub(crate) fn matches_workspace(&self, workspace: &WorkspaceView) -> bool {
+        self.workspace_id == *workspace.manifest.workspace_id()
+            && self.root_hash == workspace._root.root_hash()
+            && self.capability_hash == workspace._root.capability_hash()
+    }
+
+    pub(crate) fn guide_id(&self) -> crate::protocol::GuideId {
+        self.guide_id
+    }
+
+    pub(crate) fn filename(&self) -> &str {
+        &self.filename
+    }
+
+    pub(crate) fn size(&self) -> u64 {
+        self.size
+    }
+}
 const ISSUE_LIMIT: usize = 10_000;
 const GIT_ANCESTOR_LIMIT: usize = 64;
 
@@ -2745,6 +2786,138 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_managed_attachment_add<E, F>(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    relative_path: &str,
+    guide_id: crate::protocol::GuideId,
+    expected_revision: Revision,
+    candidate: &ManagedAttachmentCandidate,
+    operation_id: crate::protocol::OperationId,
+    created_at: crate::protocol::Timestamp,
+    prepare: F,
+) -> Result<DocumentUpdateOutcome, DocumentUpdateError<E>>
+where
+    F: FnOnce(&[u8], &str, [u8; 32], u64) -> Result<Box<[u8]>, E>,
+{
+    let checked_filename = candidate.filename.clone();
+    let prepared_filename = candidate.filename.clone();
+    let expected_state = candidate.state;
+    let expected_sha256 = candidate.sha256;
+    let expected_size = candidate.size;
+    recovery::execute_document_update_checked(
+        &workspace._root,
+        state_home,
+        runtime_directory,
+        *workspace.manifest.workspace_id(),
+        relative_path,
+        expected_revision,
+        operation_id,
+        created_at,
+        move |root| {
+            verify_managed_attachment_candidate(
+                root,
+                guide_id,
+                &checked_filename,
+                expected_state,
+                expected_sha256,
+                expected_size,
+            )
+        },
+        move |bytes| prepare(bytes, &prepared_filename, expected_sha256, expected_size),
+    )
+}
+
+pub(crate) fn discover_managed_attachment_candidates(
+    workspace: &WorkspaceView,
+    guide_id: crate::protocol::GuideId,
+    declared_paths: &HashSet<String>,
+) -> Result<Vec<ManagedAttachmentCandidate>, WorkspaceInspectError> {
+    let attachments = match workspace._root.open_directory("attachments") {
+        Ok(directory) => directory,
+        Err(linux::OpenDirectoryError::Missing) => return Ok(Vec::new()),
+        Err(linux::OpenDirectoryError::Unsafe) => return Err(WorkspaceInspectError::UnsafeRoot),
+        Err(linux::OpenDirectoryError::Io(error)) => return Err(map_io(error)),
+    };
+    let directory = match attachments.open_directory(&guide_id.to_string()) {
+        Ok(directory) => directory,
+        Err(linux::OpenDirectoryError::Missing) => return Ok(Vec::new()),
+        Err(linux::OpenDirectoryError::Unsafe) => return Err(WorkspaceInspectError::UnsafeRoot),
+        Err(linux::OpenDirectoryError::Io(error)) => return Err(map_io(error)),
+    };
+    let mut filenames = directory.entries(ATTACHMENT_COUNT_LIMIT)?;
+    filenames.sort_unstable();
+    let mut aggregate = 0_u64;
+    let mut candidates = Vec::new();
+    for filename in filenames {
+        if !valid_attachment_filename(&filename) {
+            continue;
+        }
+        let streamed = match directory.hash_attachment(
+            &filename,
+            ATTACHMENT_FILE_LIMIT,
+            ATTACHMENT_BYTES_LIMIT.saturating_sub(aggregate),
+        ) {
+            Ok(streamed) => streamed,
+            Err(linux::AttachmentReadError::Unsafe | linux::AttachmentReadError::TooLarge(_)) => {
+                continue;
+            }
+            Err(linux::AttachmentReadError::AggregateLimit) => {
+                return Err(WorkspaceInspectError::ResourceLimit);
+            }
+            Err(linux::AttachmentReadError::Changed) => {
+                return Err(WorkspaceInspectError::ChangedDuringRead);
+            }
+            Err(linux::AttachmentReadError::Io(error)) => return Err(map_io(error)),
+        };
+        add_attachment_bytes(&mut aggregate, streamed.size)?;
+        let relative_path = format!("attachments/{guide_id}/{filename}");
+        if declared_paths.contains(&relative_path) {
+            continue;
+        }
+        candidates
+            .try_reserve(1)
+            .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
+        candidates.push(ManagedAttachmentCandidate {
+            workspace_id: *workspace.manifest.workspace_id(),
+            root_hash: workspace._root.root_hash(),
+            capability_hash: workspace._root.capability_hash(),
+            guide_id,
+            filename,
+            state: streamed.state,
+            sha256: streamed.sha256,
+            size: streamed.size,
+        });
+    }
+    Ok(candidates)
+}
+
+fn verify_managed_attachment_candidate(
+    root: &linux::DirectoryCapability,
+    guide_id: crate::protocol::GuideId,
+    filename: &str,
+    expected_state: AttachmentSourceState,
+    expected_sha256: [u8; 32],
+    expected_size: u64,
+) -> bool {
+    let Ok(attachments) = root.open_directory("attachments") else {
+        return false;
+    };
+    let Ok(directory) = attachments.open_directory(&guide_id.to_string()) else {
+        return false;
+    };
+    let Ok(streamed) =
+        directory.hash_attachment(filename, ATTACHMENT_FILE_LIMIT, ATTACHMENT_BYTES_LIMIT)
+    else {
+        return false;
+    };
+    streamed.state == expected_state
+        && streamed.sha256 == expected_sha256
+        && streamed.size == expected_size
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_document_update_cancellable<E, F, C>(
     workspace: &WorkspaceView,
     state_home: &Path,
@@ -2760,6 +2933,10 @@ where
     F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
     C: Fn() -> bool,
 {
+    fn check(_: &linux::DirectoryCapability) -> bool {
+        true
+    }
+    let mut check = check;
     recovery::execute_document_update_cancellable(
         &workspace._root,
         state_home,
@@ -2771,6 +2948,7 @@ where
         operation_id,
         created_at,
         cancelled,
+        &mut check,
         prepare,
     )
 }
@@ -4112,8 +4290,8 @@ fn map_io(error: std::io::Error) -> WorkspaceInspectError {
 #[cfg(target_os = "linux")]
 mod linux {
     use super::{
-        GitCloneMaterializationStorageError, GitClonePackSource, GitInitializeStorageError,
-        WorkspaceInspectError,
+        AttachmentSourceState, GitCloneMaterializationStorageError, GitClonePackSource,
+        GitInitializeStorageError, WorkspaceInspectError,
     };
     use crate::protocol::Revision;
     use std::{
@@ -4156,6 +4334,7 @@ mod linux {
     }
 
     pub(super) struct StreamedAttachment {
+        pub(super) state: AttachmentSourceState,
         pub(super) size: u64,
         pub(super) sha256: [u8; 32],
     }
@@ -4673,6 +4852,7 @@ mod linux {
                 return Err(AttachmentReadError::Changed);
             }
             Ok(StreamedAttachment {
+                state: AttachmentSourceState::capture(&final_metadata),
                 size,
                 sha256: hasher.finalize().into(),
             })

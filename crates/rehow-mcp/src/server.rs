@@ -10,12 +10,14 @@ use rehow_core::{
         AttachmentRemovalApproval, AttachmentRemovalError, AttachmentRemovalOutcome,
         CategoryCreateError, CategoryOrderRevision, CategoryRemoveError, CategoryReorderError,
         CategoryUpdateError, GuideCreateError, GuideEdit, GuideTestedApprovalError,
-        GuideUpdateError, approve_attachment_removal_after_native_confirmation,
+        GuideUpdateError, ManagedAttachmentAddError, ManagedAttachmentCandidate,
+        ManagedAttachmentDiscoveryError, add_managed_attachment_metadata,
+        approve_attachment_removal_after_native_confirmation,
         approve_guide_tested_after_native_confirmation, change_guide_category_at_revision,
-        create_category_at_snapshot, create_guide_at_revision, refresh_open_workspace,
-        remove_category_at_snapshot, reorder_categories_at_snapshot, set_category_archived,
-        update_category_details, update_guide, validate_attachment_removal_approval,
-        validate_guide_tested_approval,
+        create_category_at_snapshot, create_guide_at_revision, list_managed_attachment_candidates,
+        refresh_open_workspace, remove_category_at_snapshot, reorder_categories_at_snapshot,
+        set_category_archived, update_category_details, update_guide,
+        validate_attachment_removal_approval, validate_guide_tested_approval,
     },
     domain::{CategoryStatus, GuideStatus, RestorableGuideStatus},
     git::{
@@ -36,7 +38,9 @@ use rehow_core::{
     markdown::{MAX_MARKDOWN_BYTES, SafeMarkdownContainer, SafeMarkdownEvent, parse_safe_markdown},
     protocol::{
         AttachmentId, CategoryId, ErrorDto, GuideId, PlanToken, Revision, SafeRelativePath,
-        Snapshot, attachment_not_found_error, attachment_remove_busy_error,
+        Snapshot, attachment_add_busy_error, attachment_add_invalid_error,
+        attachment_add_plan_stale_error, attachment_add_unavailable_error,
+        attachment_not_found_error, attachment_remove_busy_error,
         attachment_remove_cancelled_error, attachment_remove_invalid_error,
         attachment_remove_plan_expired_error, attachment_remove_plan_replayed_error,
         attachment_remove_plan_scope_error, attachment_remove_plan_stale_error,
@@ -272,6 +276,7 @@ pub struct McpServer {
     category_reorder_plans: Arc<Mutex<HashMap<String, CategoryReorderPlan>>>,
     category_remove_plans: Arc<Mutex<HashMap<String, CategoryRemovePlan>>>,
     guide_tested_plans: Arc<Mutex<HashMap<String, GuideTestedPlan>>>,
+    attachment_candidates: Arc<Mutex<HashMap<String, StoredAttachmentCandidate>>>,
     attachment_remove_plans: Arc<Mutex<HashMap<String, AttachmentRemovePlan>>>,
     git_commit_plans: Arc<GitCommitPlanStore>,
     git_commit_recovery_plans: Arc<Mutex<HashMap<String, McpGitCommitRecoveryPlan>>>,
@@ -516,6 +521,25 @@ struct GuideValidateInput {
 struct AttachmentsListInput {
     workspace_handle: String,
     guide_id: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AttachmentCandidatesListInput {
+    workspace_handle: String,
+    guide_id: String,
+    cursor: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AttachmentMetadataAddInput {
+    workspace_handle: String,
+    guide_id: String,
+    expected_revision: String,
+    candidate_token: String,
+    title: String,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -1097,6 +1121,14 @@ struct McpGitCommitRecoveryPlan {
     _reservation: GitLifecycleReservation,
 }
 
+struct StoredAttachmentCandidate {
+    workspace_handle: String,
+    guide_id: GuideId,
+    guide_revision: Revision,
+    expires_at: Instant,
+    candidate: ManagedAttachmentCandidate,
+}
+
 struct StoredGitSyncPlan {
     workspace_handle: String,
     workspace_id: String,
@@ -1335,6 +1367,34 @@ struct AttachmentsListOutput {
     guide_id: String,
     guide_revision: String,
     attachments: Vec<AttachmentOutput>,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentCandidateOutput {
+    candidate_token: String,
+    name: String,
+    size_bytes: String,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentCandidatesListOutput {
+    guide_id: String,
+    guide_revision: String,
+    candidates: Vec<AttachmentCandidateOutput>,
+    next_cursor: Option<String>,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentMetadataAddOutput {
+    guide_id: String,
+    attachment_id: String,
+    revision: String,
+    refresh_required: bool,
+    declared_status: Option<&'static str>,
+    effective_status: Option<&'static str>,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -1658,6 +1718,7 @@ fn open_server_with_recovery(
         category_reorder_plans: Arc::new(Mutex::new(HashMap::new())),
         category_remove_plans: Arc::new(Mutex::new(HashMap::new())),
         guide_tested_plans: Arc::new(Mutex::new(HashMap::new())),
+        attachment_candidates: Arc::new(Mutex::new(HashMap::new())),
         attachment_remove_plans: Arc::new(Mutex::new(HashMap::new())),
         git_commit_plans: Arc::new(GitCommitPlanStore::default()),
         git_commit_recovery_plans: Arc::new(Mutex::new(HashMap::new())),
@@ -2874,6 +2935,217 @@ fn attachment_title_update(
             .guide()
             .archive()
             .map(|archive| restorable_status(archive.archived_from_status())),
+    })
+    .map(CallToolResult::structured)
+    .map_err(|_| McpError::internal_error("Tool output unavailable", None))
+}
+
+fn attachment_candidates_list(
+    server: &McpServer,
+    input: AttachmentCandidatesListInput,
+) -> Result<Json<AttachmentCandidatesListOutput>, McpError> {
+    const CANDIDATE_TTL: Duration = Duration::from_secs(5 * 60);
+    const CANDIDATE_CAPACITY: usize = 256;
+
+    let guide_id = input
+        .guide_id
+        .parse::<GuideId>()
+        .map_err(|_| McpError::invalid_params("invalid Guide ID", None))?;
+    let workspace = server.workspace(&input.workspace_handle)?;
+    let view = McpServer::read_view(workspace)?;
+    let discovery =
+        list_managed_attachment_candidates(&view, guide_id).map_err(|error| match error {
+            ManagedAttachmentDiscoveryError::GuideNotFound => {
+                McpError::invalid_params("Guide not found", None)
+            }
+            ManagedAttachmentDiscoveryError::GuideArchived => {
+                McpError::invalid_params("Guide is archived", None)
+            }
+            ManagedAttachmentDiscoveryError::UnsafeStorage
+            | ManagedAttachmentDiscoveryError::ResourceLimit
+            | ManagedAttachmentDiscoveryError::ChangedDuringRead
+            | ManagedAttachmentDiscoveryError::Io => {
+                McpError::internal_error("Attachment candidates unavailable", None)
+            }
+        })?;
+    let revision = discovery.revision();
+    let candidates = discovery.into_candidates();
+    let mut binding = format!("{}\0{guide_id}\0{revision}\0", input.workspace_handle);
+    for candidate in &candidates {
+        binding.push_str(candidate.name());
+        binding.push('\0');
+        binding.push_str(&candidate.size_bytes().to_string());
+        binding.push('\0');
+    }
+    let binding = fingerprint(binding.as_bytes());
+    let (start, end, next_cursor) = page_bounds(
+        &server.cursor_key,
+        "attachment-candidates",
+        &binding,
+        input.cursor.as_deref(),
+        input.limit,
+        candidates.len(),
+    )?;
+    let now = Instant::now();
+    let mut cache = server
+        .attachment_candidates
+        .lock()
+        .map_err(|_| McpError::internal_error("Attachment candidate cache unavailable", None))?;
+    cache.retain(|_, stored| stored.expires_at > now);
+    let selected = end.saturating_sub(start);
+    while cache.len().saturating_add(selected) > CANDIDATE_CAPACITY {
+        let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, stored)| stored.expires_at)
+            .map(|(token, _)| token.clone())
+        else {
+            break;
+        };
+        cache.remove(&oldest);
+    }
+    let mut output = Vec::with_capacity(selected);
+    for candidate in candidates
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, candidate)| (start..end).contains(&index).then_some(candidate))
+    {
+        let token = loop {
+            let token = format!("attachment-candidate:v1:{}", Uuid::new_v4().simple());
+            if !cache.contains_key(&token) {
+                break token;
+            }
+        };
+        output.push(AttachmentCandidateOutput {
+            candidate_token: token.clone(),
+            name: candidate.name().to_owned(),
+            size_bytes: candidate.size_bytes().to_string(),
+        });
+        cache.insert(
+            token,
+            StoredAttachmentCandidate {
+                workspace_handle: input.workspace_handle.clone(),
+                guide_id,
+                guide_revision: revision,
+                expires_at: now + CANDIDATE_TTL,
+                candidate,
+            },
+        );
+    }
+    Ok(Json(AttachmentCandidatesListOutput {
+        guide_id: guide_id.to_string(),
+        guide_revision: revision.to_string(),
+        candidates: output,
+        next_cursor,
+    }))
+}
+
+fn attachment_metadata_add(
+    server: &McpServer,
+    input: AttachmentMetadataAddInput,
+) -> Result<CallToolResult, McpError> {
+    let request_id = new_request_id();
+    let workspace = server.workspace(&input.workspace_handle)?;
+    if !workspace.allow_write {
+        return structured_tool_error(workspace_write_required_error(request_id));
+    }
+    let guide_id = input
+        .guide_id
+        .parse::<GuideId>()
+        .map_err(|_| McpError::invalid_params("invalid Guide ID", None))?;
+    let expected_revision = input
+        .expected_revision
+        .parse::<Revision>()
+        .map_err(|_| McpError::invalid_params("invalid Guide revision", None))?;
+    if input.candidate_token.len() > 128 {
+        return structured_tool_error(attachment_add_plan_stale_error(request_id));
+    }
+    let stored = server
+        .attachment_candidates
+        .lock()
+        .map_err(|_| McpError::internal_error("Attachment candidate cache unavailable", None))?
+        .remove(&input.candidate_token);
+    let Some(stored) = stored else {
+        return structured_tool_error(attachment_add_plan_stale_error(request_id));
+    };
+    if stored.expires_at <= Instant::now()
+        || stored.workspace_handle != input.workspace_handle
+        || stored.guide_id != guide_id
+        || stored.guide_revision != expected_revision
+    {
+        return structured_tool_error(attachment_add_plan_stale_error(request_id));
+    }
+    let Some(recovery) = server.recovery_locations.as_ref() else {
+        return structured_tool_error(attachment_add_unavailable_error(request_id));
+    };
+    let mut view = workspace
+        .view
+        .write()
+        .map_err(|_| McpError::internal_error("Workspace view unavailable", None))?;
+    let outcome = match add_managed_attachment_metadata(
+        &mut view,
+        &recovery.state_home.bridge_path,
+        recovery
+            .runtime_directory
+            .as_ref()
+            .map(|directory| directory.bridge_path.as_path()),
+        guide_id,
+        expected_revision,
+        stored.candidate,
+        input.title,
+    ) {
+        Ok(outcome) => outcome,
+        Err(ManagedAttachmentAddError::CommittedRefreshRequired {
+            attachment_id,
+            revision,
+        }) => {
+            return serde_json::to_value(AttachmentMetadataAddOutput {
+                guide_id: guide_id.to_string(),
+                attachment_id: attachment_id.to_string(),
+                revision: revision.to_string(),
+                refresh_required: true,
+                declared_status: None,
+                effective_status: None,
+            })
+            .map(CallToolResult::structured)
+            .map_err(|_| McpError::internal_error("Tool output unavailable", None));
+        }
+        Err(ManagedAttachmentAddError::GuideNotFound) => {
+            return structured_tool_error(guide_not_found_error(request_id, guide_id));
+        }
+        Err(ManagedAttachmentAddError::RevisionConflict) => {
+            return structured_tool_error(attachment_add_plan_stale_error(request_id));
+        }
+        Err(ManagedAttachmentAddError::CandidateChanged) => {
+            return structured_tool_error(attachment_add_plan_stale_error(request_id));
+        }
+        Err(ManagedAttachmentAddError::Busy) => {
+            return structured_tool_error(attachment_add_busy_error(request_id));
+        }
+        Err(
+            ManagedAttachmentAddError::GuideArchived
+            | ManagedAttachmentAddError::AttachmentLimit
+            | ManagedAttachmentAddError::DuplicateAttachment
+            | ManagedAttachmentAddError::InvalidTitle
+            | ManagedAttachmentAddError::UnsafeRoundTrip,
+        ) => return structured_tool_error(attachment_add_invalid_error(request_id)),
+        Err(ManagedAttachmentAddError::ResourceLimit) => {
+            return structured_tool_error(invalid_guide_update_error(request_id));
+        }
+        Err(
+            ManagedAttachmentAddError::UnsafeStorage
+            | ManagedAttachmentAddError::UnsupportedFilesystem
+            | ManagedAttachmentAddError::Io,
+        ) => return structured_tool_error(attachment_add_unavailable_error(request_id)),
+    };
+    let (_, updated) = find_guide(&view, &guide_id)
+        .ok_or_else(|| McpError::internal_error("Updated Guide unavailable", None))?;
+    serde_json::to_value(AttachmentMetadataAddOutput {
+        guide_id: guide_id.to_string(),
+        attachment_id: outcome.attachment_id().to_string(),
+        revision: outcome.revision().to_string(),
+        refresh_required: false,
+        declared_status: Some(guide_status(updated.guide().declared_status())),
+        effective_status: Some(guide_status(updated.effective_status())),
     })
     .map(CallToolResult::structured)
     .map_err(|_| McpError::internal_error("Tool output unavailable", None))
@@ -8046,6 +8318,29 @@ impl McpServer {
     }
 
     #[tool(
+        name = "attachment_candidates_list",
+        description = "List safe undeclared regular files already inside one Guide's managed Attachment directory. Names are untrusted display text; opaque short-lived tokens are the only add authority. No host paths, bytes, or hashes are returned."
+    )]
+    fn attachment_candidates_list(
+        &self,
+        Parameters(input): Parameters<AttachmentCandidatesListInput>,
+    ) -> Result<Json<AttachmentCandidatesListOutput>, McpError> {
+        attachment_candidates_list(self, input)
+    }
+
+    #[tool(
+        name = "attachment_metadata_add",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<AttachmentMetadataAddOutput>(),
+        description = "Register one short-lived managed Attachment candidate at the exact Guide revision. Requires startup write capability. Rehow revalidates the exact confined file and generates its ID, path, hash, size, and timestamp; file bytes and name are unchanged."
+    )]
+    fn attachment_metadata_add(
+        &self,
+        Parameters(input): Parameters<AttachmentMetadataAddInput>,
+    ) -> Result<CallToolResult, McpError> {
+        attachment_metadata_add(self, input)
+    }
+
+    #[tool(
         name = "attachment_metadata_update",
         output_schema = rmcp::handler::server::tool::schema_for_type::<GuideUpdateOutput>(),
         description = "Replace one declared managed Attachment's display title at the exact Guide revision. Requires startup write capability. It cannot change the Attachment path, bytes, hash, size, media type, or ID; Tested Guides become stale."
@@ -8862,6 +9157,342 @@ mod tests {
         fs::write(root.join("local-note.txt"), b"untracked\n").unwrap();
     }
 
+    #[test]
+    fn managed_attachment_candidates_are_confined_single_use_and_recoverable() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        fixture_workspace(root.path());
+        fixture_guide(root.path());
+        let guide_id = "0199a1d7-7b0d-7d8e-a38d-f936c5735e12";
+        let directory = root.path().join(format!("attachments/{guide_id}"));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("notes.txt"), b"managed candidate").unwrap();
+        symlink("/etc/passwd", directory.join("escape.txt")).unwrap();
+        fs::write(root.path().join("hardlink-source"), b"linked").unwrap();
+        fs::hard_link(
+            root.path().join("hardlink-source"),
+            directory.join("linked.txt"),
+        )
+        .unwrap();
+        let fifo =
+            std::ffi::CString::new(directory.join("pipe").as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: `fifo` is a valid NUL-terminated path in the temporary Workspace.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        File::create(directory.join("oversize.bin"))
+            .unwrap()
+            .set_len(64 * 1024 * 1024 + 1)
+            .unwrap();
+        let server = open_server_with_recovery(
+            LaunchConfig {
+                workspaces: vec![WorkspaceArgument {
+                    alias: "personal".to_owned(),
+                    path: root.path().to_owned(),
+                    allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
+                }],
+            },
+            Some(RecoveryLocationPaths {
+                state_home: state.path().to_owned(),
+                runtime_directory: None,
+            }),
+        )
+        .unwrap();
+        let handle = server.workspaces[0].handle.clone();
+        let listed = attachment_candidates_list(
+            &server,
+            AttachmentCandidatesListInput {
+                workspace_handle: handle.clone(),
+                guide_id: guide_id.to_owned(),
+                cursor: None,
+                limit: Some(10),
+            },
+        )
+        .unwrap()
+        .0;
+        assert_eq!(listed.candidates.len(), 1);
+        assert_eq!(listed.candidates[0].name, "notes.txt");
+        let serialized = serde_json::to_string(&listed).unwrap();
+        assert!(!serialized.contains("/etc/passwd"));
+        assert!(!serialized.contains("sha256"));
+        assert!(!serialized.contains("managed candidate"));
+        let token = listed.candidates[0].candidate_token.clone();
+        let added = attachment_metadata_add(
+            &server,
+            AttachmentMetadataAddInput {
+                workspace_handle: handle.clone(),
+                guide_id: guide_id.to_owned(),
+                expected_revision: listed.guide_revision.clone(),
+                candidate_token: token.clone(),
+                title: "Troubleshooting notes".to_owned(),
+            },
+        )
+        .unwrap();
+        let added_json = added.structured_content.unwrap();
+        assert_eq!(added_json["refreshRequired"], false);
+        let guide = fs::read_to_string(
+            root.path()
+                .join(format!("categories/general/{guide_id}.md")),
+        )
+        .unwrap();
+        assert!(guide.contains(&format!("attachments/{guide_id}/notes.txt")));
+        assert!(guide.contains("Troubleshooting notes"));
+        assert_eq!(
+            fs::read(directory.join("notes.txt")).unwrap(),
+            b"managed candidate"
+        );
+
+        let replay = attachment_metadata_add(
+            &server,
+            AttachmentMetadataAddInput {
+                workspace_handle: handle,
+                guide_id: guide_id.to_owned(),
+                expected_revision: listed.guide_revision,
+                candidate_token: token,
+                title: "Replay".to_owned(),
+            },
+        )
+        .unwrap();
+        assert_eq!(replay.structured_content.unwrap()["code"], "PLAN_STALE");
+    }
+
+    #[test]
+    fn managed_attachment_tokens_refuse_capability_drift_expiry_scope_and_eviction() {
+        let root = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        fixture_workspace(root.path());
+        fixture_guide(root.path());
+        let guide_id = "0199a1d7-7b0d-7d8e-a38d-f936c5735e12";
+        let directory = root.path().join(format!("attachments/{guide_id}"));
+        fs::create_dir_all(&directory).unwrap();
+        for name in ["drift", "expired", "scope", "evicted"] {
+            fs::write(directory.join(format!("{name}.txt")), name.as_bytes()).unwrap();
+        }
+
+        let read_only = open_server(LaunchConfig {
+            workspaces: vec![WorkspaceArgument {
+                alias: "read-only".to_owned(),
+                path: root.path().to_owned(),
+                allow_write: false,
+                allow_broad: false,
+                allow_git_write: false,
+            }],
+        })
+        .unwrap();
+        let read_handle = read_only.workspaces[0].handle.clone();
+        let read_list = attachment_candidates_list(
+            &read_only,
+            AttachmentCandidatesListInput {
+                workspace_handle: read_handle.clone(),
+                guide_id: guide_id.to_owned(),
+                cursor: None,
+                limit: Some(10),
+            },
+        )
+        .unwrap()
+        .0;
+        let refused = attachment_metadata_add(
+            &read_only,
+            AttachmentMetadataAddInput {
+                workspace_handle: read_handle,
+                guide_id: guide_id.to_owned(),
+                expected_revision: read_list.guide_revision,
+                candidate_token: read_list.candidates[0].candidate_token.clone(),
+                title: "Denied".to_owned(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            refused.structured_content.unwrap()["code"],
+            "WORKSPACE_READ_ONLY"
+        );
+
+        let server = open_server_with_recovery(
+            LaunchConfig {
+                workspaces: vec![WorkspaceArgument {
+                    alias: "personal".to_owned(),
+                    path: root.path().to_owned(),
+                    allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
+                }],
+            },
+            Some(RecoveryLocationPaths {
+                state_home: state.path().to_owned(),
+                runtime_directory: None,
+            }),
+        )
+        .unwrap();
+        let handle = server.workspaces[0].handle.clone();
+        let listed = attachment_candidates_list(
+            &server,
+            AttachmentCandidatesListInput {
+                workspace_handle: handle.clone(),
+                guide_id: guide_id.to_owned(),
+                cursor: None,
+                limit: Some(10),
+            },
+        )
+        .unwrap()
+        .0;
+        let tokens = listed
+            .candidates
+            .iter()
+            .map(|candidate| (candidate.name.clone(), candidate.candidate_token.clone()))
+            .collect::<HashMap<_, _>>();
+
+        fs::write(directory.join("drift.txt"), b"changed").unwrap();
+        {
+            let mut cache = server.attachment_candidates.lock().unwrap();
+            cache.get_mut(&tokens["expired.txt"]).unwrap().expires_at = Instant::now();
+            cache
+                .get_mut(&tokens["scope.txt"])
+                .unwrap()
+                .workspace_handle = "other".to_owned();
+            cache.remove(&tokens["evicted.txt"]);
+        }
+        for name in ["drift.txt", "expired.txt", "scope.txt", "evicted.txt"] {
+            let result = attachment_metadata_add(
+                &server,
+                AttachmentMetadataAddInput {
+                    workspace_handle: handle.clone(),
+                    guide_id: guide_id.to_owned(),
+                    expected_revision: listed.guide_revision.clone(),
+                    candidate_token: tokens[name].clone(),
+                    title: "Refused".to_owned(),
+                },
+            )
+            .unwrap();
+            assert_eq!(result.structured_content.unwrap()["code"], "PLAN_STALE");
+        }
+    }
+
+    #[test]
+    fn managed_attachment_add_stales_tested_preserves_unknowns_and_refuses_duplicates() {
+        let root = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        fixture_workspace(root.path());
+        fixture_guide_status(root.path(), "tested");
+        let guide_id = "0199a1d7-7b0d-7d8e-a38d-f936c5735e12";
+        let directory = root.path().join(format!("attachments/{guide_id}"));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("tested.txt"), b"same content").unwrap();
+        let server = open_server_with_recovery(
+            LaunchConfig {
+                workspaces: vec![WorkspaceArgument {
+                    alias: "personal".to_owned(),
+                    path: root.path().to_owned(),
+                    allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: false,
+                }],
+            },
+            Some(RecoveryLocationPaths {
+                state_home: state.path().to_owned(),
+                runtime_directory: None,
+            }),
+        )
+        .unwrap();
+        let handle = server.workspaces[0].handle.clone();
+        let listed = attachment_candidates_list(
+            &server,
+            AttachmentCandidatesListInput {
+                workspace_handle: handle.clone(),
+                guide_id: guide_id.to_owned(),
+                cursor: None,
+                limit: None,
+            },
+        )
+        .unwrap()
+        .0;
+        let result = attachment_metadata_add(
+            &server,
+            AttachmentMetadataAddInput {
+                workspace_handle: handle.clone(),
+                guide_id: guide_id.to_owned(),
+                expected_revision: listed.guide_revision,
+                candidate_token: listed.candidates[0].candidate_token.clone(),
+                title: "Tested candidate".to_owned(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            result.structured_content.as_ref().unwrap()["declaredStatus"],
+            "stale"
+        );
+        let guide_path = root
+            .path()
+            .join(format!("categories/general/{guide_id}.md"));
+        let guide = fs::read_to_string(&guide_path).unwrap();
+        assert!(guide.contains("future_key: keep-me"));
+        assert!(guide.contains("status: stale"));
+
+        fs::write(directory.join("duplicate.txt"), b"same content").unwrap();
+        let duplicate = attachment_candidates_list(
+            &server,
+            AttachmentCandidatesListInput {
+                workspace_handle: handle.clone(),
+                guide_id: guide_id.to_owned(),
+                cursor: None,
+                limit: None,
+            },
+        )
+        .unwrap()
+        .0;
+        let duplicate_candidate = duplicate
+            .candidates
+            .iter()
+            .find(|candidate| candidate.name == "duplicate.txt")
+            .unwrap();
+        let refused = attachment_metadata_add(
+            &server,
+            AttachmentMetadataAddInput {
+                workspace_handle: handle,
+                guide_id: guide_id.to_owned(),
+                expected_revision: duplicate.guide_revision,
+                candidate_token: duplicate_candidate.candidate_token.clone(),
+                title: "Duplicate".to_owned(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            refused.structured_content.unwrap()["code"],
+            "INVALID_ARGUMENT"
+        );
+
+        let archived_root = tempfile::tempdir().unwrap();
+        fixture_workspace(archived_root.path());
+        fixture_guide_status(archived_root.path(), "archived");
+        let archived_directory = archived_root.path().join(format!("attachments/{guide_id}"));
+        fs::create_dir_all(&archived_directory).unwrap();
+        fs::write(archived_directory.join("hidden.txt"), b"hidden").unwrap();
+        let archived_server = open_server(LaunchConfig {
+            workspaces: vec![WorkspaceArgument {
+                alias: "archived".to_owned(),
+                path: archived_root.path().to_owned(),
+                allow_write: false,
+                allow_broad: false,
+                allow_git_write: false,
+            }],
+        })
+        .unwrap();
+        let error = match attachment_candidates_list(
+            &archived_server,
+            AttachmentCandidatesListInput {
+                workspace_handle: archived_server.workspaces[0].handle.clone(),
+                guide_id: guide_id.to_owned(),
+                cursor: None,
+                limit: None,
+            },
+        ) {
+            Ok(_) => panic!("archived Guide candidate discovery must be refused"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code.0, -32602);
+    }
+
     fn fixture_git_stdout(root: &std::path::Path, arguments: &[&str]) -> String {
         let output = Command::new("/usr/bin/git")
             .current_dir(root)
@@ -9391,6 +10022,8 @@ mod tests {
         assert_eq!(
             names,
             [
+                "attachment_candidates_list",
+                "attachment_metadata_add",
                 "attachment_metadata_update",
                 "attachment_remove",
                 "attachment_remove_plan",
@@ -9953,6 +10586,62 @@ mod tests {
         ] {
             assert!(
                 attachment_update["inputSchema"]["properties"]
+                    .get(forbidden)
+                    .is_none()
+            );
+        }
+        let candidate_list = responses[1]["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "attachment_candidates_list")
+            .unwrap();
+        for required in ["workspaceHandle", "guideId"] {
+            assert!(
+                candidate_list["inputSchema"]["properties"]
+                    .get(required)
+                    .is_some()
+            );
+        }
+        for forbidden in ["path", "bytes", "sha256", "sizeBytes", "status"] {
+            assert!(
+                candidate_list["inputSchema"]["properties"]
+                    .get(forbidden)
+                    .is_none()
+            );
+        }
+        let attachment_add = responses[1]["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "attachment_metadata_add")
+            .unwrap();
+        for required in [
+            "workspaceHandle",
+            "guideId",
+            "expectedRevision",
+            "candidateToken",
+            "title",
+        ] {
+            assert!(
+                attachment_add["inputSchema"]["properties"]
+                    .get(required)
+                    .is_some()
+            );
+        }
+        for forbidden in [
+            "path",
+            "bytes",
+            "sha256",
+            "sizeBytes",
+            "attachmentId",
+            "createdAt",
+            "mediaType",
+            "status",
+            "approved",
+        ] {
+            assert!(
+                attachment_add["inputSchema"]["properties"]
                     .get(forbidden)
                     .is_none()
             );

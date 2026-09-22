@@ -2343,6 +2343,10 @@ pub(super) fn execute_document_update<E, F>(
 where
     F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
 {
+    fn check(_: &super::linux::DirectoryCapability) -> bool {
+        true
+    }
+    let mut check = check;
     match execute_document_update_cancellable(
         root,
         state_home,
@@ -2354,6 +2358,7 @@ where
         operation_id,
         created_at,
         &|| false,
+        &mut check,
         prepare,
     ) {
         Ok(outcome) => Ok(outcome),
@@ -2365,7 +2370,46 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn execute_document_update_cancellable<E, F, C>(
+pub(super) fn execute_document_update_checked<E, F, V>(
+    root: &super::linux::DirectoryCapability,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_id: WorkspaceId,
+    relative_path: &str,
+    expected_revision: Revision,
+    operation_id: OperationId,
+    created_at: Timestamp,
+    mut check: V,
+    prepare: F,
+) -> Result<DocumentUpdateOutcome, DocumentUpdateError<E>>
+where
+    F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
+    V: FnMut(&super::linux::DirectoryCapability) -> bool,
+{
+    match execute_document_update_cancellable(
+        root,
+        state_home,
+        runtime_directory,
+        workspace_id,
+        relative_path,
+        expected_revision,
+        None,
+        operation_id,
+        created_at,
+        &|| false,
+        &mut check,
+        prepare,
+    ) {
+        Ok(outcome) => Ok(outcome),
+        Err(CancellableDocumentUpdateError::Update(error)) => Err(error),
+        Err(CancellableDocumentUpdateError::Cancelled) => {
+            unreachable!("the checked document update never cancels")
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_document_update_cancellable<E, F, C, V>(
     root: &super::linux::DirectoryCapability,
     state_home: &Path,
     runtime_directory: Option<&Path>,
@@ -2376,11 +2420,13 @@ pub(super) fn execute_document_update_cancellable<E, F, C>(
     operation_id: OperationId,
     created_at: Timestamp,
     cancelled: &C,
+    check: &mut V,
     prepare: F,
 ) -> Result<DocumentUpdateOutcome, CancellableDocumentUpdateError<E>>
 where
     F: FnOnce(&[u8]) -> Result<Box<[u8]>, E>,
     C: Fn() -> bool,
+    V: FnMut(&super::linux::DirectoryCapability) -> bool,
 {
     if cancelled() {
         return Err(CancellableDocumentUpdateError::Cancelled);
@@ -2395,6 +2441,9 @@ where
     let lock = store
         .acquire_lock(runtime_directory)
         .map_err(map_store_update)?;
+    if !check(root) {
+        return Err(DocumentUpdateError::Conflict.into());
+    }
     if cancelled() {
         return Err(CancellableDocumentUpdateError::Cancelled);
     }
@@ -2476,6 +2525,9 @@ where
     };
     if cancelled() {
         return Err(CancellableDocumentUpdateError::Cancelled);
+    }
+    if !check(root) {
+        return Err(DocumentUpdateError::Conflict.into());
     }
     let execution = workspace::execute_new_journal(root, &store, &lock, journal.clone());
     if let Err(error) = execution {

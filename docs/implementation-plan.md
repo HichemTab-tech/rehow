@@ -147,7 +147,7 @@ Milestones:
 - Phase 6E2D2: exact Attachment removal preview plus handle/token-only destructive native approval and recoverable metadata/file trash execution.
 - Phase 6E3A: managed-only local Git commit planning, native Git-write approval, single-use publication, and explicit pathless interrupted-publication recovery by adapting the accepted Phase 5C core.
 - Phase 6E3B: direction-bound safe Git inspection with approval before network/credential use, a second approval for exact fast-forward pull or ordinary local-ahead push, and exact pathless interrupted-pull recovery by adapting the accepted Phase 5D core.
-- Phase 6E2D3: descriptor-confined discovery of already-managed orphan files plus exact-revision Attachment metadata add through opaque short-lived candidate tokens; no caller path or bytes (specified by ADR 0049).
+- Phase 6E2D3: descriptor-confined discovery of already-managed orphan files plus exact-revision Attachment metadata add through opaque short-lived candidate tokens; no caller path or bytes (implemented under ADR 0049).
 - Per-Workspace write/broad/Git capabilities, launch handles, revisions/effect sets, dry-run tokens, and native out-of-band approval companion.
 - Git status/plan/commit/safe sync only after Phase 5 primitives are approved.
 - Client configuration/setup docs and end-to-end target AI workflow (implemented in `docs/mcp-setup.md`).
