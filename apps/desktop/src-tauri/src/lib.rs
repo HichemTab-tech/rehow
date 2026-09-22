@@ -35,8 +35,9 @@ use rehow_core::{
     protocol::{AttachmentId, CategoryId, GuideId, PlanToken, Revision},
     search::{SearchHit, SearchStatusScope, search_workspace_in_scope},
     storage::{
-        EmptyWorkspaceTarget, WorkspaceFolderFacts, WorkspaceInspection, WorkspaceView,
-        WorkspaceWatchSignal, WorkspaceWatcher, inspect_workspace,
+        EmptyWorkspaceTarget, MarkdownCollectionSource, MarkdownImportPreview,
+        WorkspaceFolderFacts, WorkspaceInspection, WorkspaceView, WorkspaceWatchSignal,
+        WorkspaceWatcher, inspect_workspace,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -63,6 +64,7 @@ struct DesktopState {
     ssh_proxy_provenance: rehow_core::git::GitSshProxyProvenance,
     workspace: Mutex<Option<DesktopWorkspace>>,
     pending_empty: Mutex<Option<PendingWorkspace>>,
+    pending_markdown_import: Mutex<Option<MarkdownCollectionSource>>,
     pending_git_init: Mutex<Option<(PlanToken, GitInitPlan)>>,
     pending_git_remote: Mutex<Option<(PlanToken, GitRemotePlan)>>,
     git_commit: Mutex<GitCommitLifecycle>,
@@ -82,6 +84,7 @@ impl Default for DesktopState {
             ssh_proxy_provenance: capture_git_ssh_proxy_provenance(),
             workspace: Mutex::default(),
             pending_empty: Mutex::default(),
+            pending_markdown_import: Mutex::default(),
             pending_git_init: Mutex::default(),
             pending_git_remote: Mutex::default(),
             git_commit: Mutex::default(),
@@ -229,6 +232,7 @@ enum OpenWorkspaceResult {
     },
     OrdinaryMarkdown {
         facts: FolderFactsPayload,
+        preview: MarkdownImportPreviewPayload,
     },
     UnrelatedNonempty {
         facts: FolderFactsPayload,
@@ -237,6 +241,48 @@ enum OpenWorkspaceResult {
         reason: &'static str,
         facts: FolderFactsPayload,
     },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MarkdownImportPreviewPayload {
+    included: usize,
+    normalization_required: usize,
+    excluded_non_markdown: usize,
+    malformed_or_unsafe: usize,
+    oversized: usize,
+    aggregate_bytes: String,
+    entries: Vec<MarkdownImportPreviewEntryPayload>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MarkdownImportPreviewEntryPayload {
+    display_path: String,
+    size: String,
+    normalization_required: bool,
+}
+
+impl From<MarkdownImportPreview> for MarkdownImportPreviewPayload {
+    fn from(preview: MarkdownImportPreview) -> Self {
+        Self {
+            included: preview.included(),
+            normalization_required: preview.normalization_required(),
+            excluded_non_markdown: preview.excluded_non_markdown(),
+            malformed_or_unsafe: preview.malformed_or_unsafe(),
+            oversized: preview.oversized(),
+            aggregate_bytes: preview.aggregate_bytes().to_string(),
+            entries: preview
+                .entries()
+                .iter()
+                .map(|entry| MarkdownImportPreviewEntryPayload {
+                    display_path: entry.display_path().to_owned(),
+                    size: entry.size().to_string(),
+                    normalization_required: entry.normalization_required(),
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -4683,6 +4729,10 @@ fn cancel_selected_workspace_initialization(
         .pending_empty
         .lock()
         .map_err(|_| "Workspace selection is unavailable".to_owned())? = None;
+    *state
+        .pending_markdown_import
+        .lock()
+        .map_err(|_| "Markdown import selection is unavailable".to_owned())? = None;
     Ok(())
 }
 
@@ -4731,6 +4781,10 @@ fn choose_workspace(
         .pending_empty
         .lock()
         .map_err(|_| "Workspace selection is unavailable".to_owned())? = None;
+    *state
+        .pending_markdown_import
+        .lock()
+        .map_err(|_| "Markdown import selection is unavailable".to_owned())? = None;
     match inspection {
         WorkspaceInspection::Empty(target) => {
             *state
@@ -4760,8 +4814,20 @@ fn choose_workspace(
         WorkspaceInspection::NewerUnsupported { version } => {
             Ok(OpenWorkspaceResult::NewerUnsupported { version, facts })
         }
-        WorkspaceInspection::OrdinaryMarkdown => {
-            Ok(OpenWorkspaceResult::OrdinaryMarkdown { facts })
+        WorkspaceInspection::OrdinaryMarkdown(source) => {
+            let preview = source.preview().map_err(|error| error.to_string())?;
+            *state
+                .workspace
+                .lock()
+                .map_err(|_| "Workspace session is unavailable".to_owned())? = None;
+            *state
+                .pending_markdown_import
+                .lock()
+                .map_err(|_| "Markdown import selection is unavailable".to_owned())? = Some(source);
+            Ok(OpenWorkspaceResult::OrdinaryMarkdown {
+                facts,
+                preview: preview.into(),
+            })
         }
         WorkspaceInspection::UnrelatedNonempty => {
             Ok(OpenWorkspaceResult::UnrelatedNonempty { facts })
@@ -4837,15 +4903,15 @@ mod tests {
         GitInitResultPayload, GitPushResultPayload, GitRemotePlanPayload, GitRemoteResultPayload,
         GitSyncApplyResultPayload, GitSyncCancelError, GitSyncCancelResultPayload,
         GitSyncInspectionPayload, GitSyncLifecycle, GitSyncRecoveryResultPayload, GuideBodyPayload,
-        GuidePayload, PendingGitPlanError, SearchHighlightPayload, SearchHitPayload,
-        WorkspacePayload, WorkspaceWatchEventPayload, attachment_removal_code,
-        attachment_removal_message, category_create_code, category_create_message,
-        category_remove_code, category_remove_message, category_reorder_code,
-        category_reorder_message, category_update_code, category_update_message, empty_git_payload,
-        git_clone_apply_code, git_clone_apply_message, git_clone_code,
-        git_clone_completion_confirmation, git_clone_confirmation_fields,
-        git_clone_materialize_code, git_clone_materialize_message, git_clone_message,
-        git_commit_code, git_commit_confirmation_fields, git_commit_message,
+        GuidePayload, MarkdownImportPreviewEntryPayload, MarkdownImportPreviewPayload,
+        PendingGitPlanError, SearchHighlightPayload, SearchHitPayload, WorkspacePayload,
+        WorkspaceWatchEventPayload, attachment_removal_code, attachment_removal_message,
+        category_create_code, category_create_message, category_remove_code,
+        category_remove_message, category_reorder_code, category_reorder_message,
+        category_update_code, category_update_message, empty_git_payload, git_clone_apply_code,
+        git_clone_apply_message, git_clone_code, git_clone_completion_confirmation,
+        git_clone_confirmation_fields, git_clone_materialize_code, git_clone_materialize_message,
+        git_clone_message, git_commit_code, git_commit_confirmation_fields, git_commit_message,
         git_commit_message_input_allowed, git_commit_recovery_confirmation, git_init_code,
         git_init_confirmation, git_init_message, git_push_ancestry_allowed,
         git_push_confirmation_fields, git_remote_code, git_remote_confirmation_fields,
@@ -4883,6 +4949,30 @@ mod tests {
     #[test]
     fn application_name_is_stable() {
         assert_eq!(APPLICATION_NAME, "Rehow");
+    }
+
+    #[test]
+    fn markdown_import_preview_payload_is_closed_and_pathless() {
+        let value = serde_json::to_value(MarkdownImportPreviewPayload {
+            included: 1,
+            normalization_required: 1,
+            excluded_non_markdown: 2,
+            malformed_or_unsafe: 3,
+            oversized: 4,
+            aggregate_bytes: "12".to_owned(),
+            entries: vec![MarkdownImportPreviewEntryPayload {
+                display_path: "notes/linux.md".to_owned(),
+                size: "12".to_owned(),
+                normalization_required: true,
+            }],
+        })
+        .unwrap();
+
+        assert_eq!(value.as_object().unwrap().len(), 7);
+        assert_eq!(value["entries"][0].as_object().unwrap().len(), 3);
+        assert!(value.get("sourcePath").is_none());
+        assert!(value.get("destinationPath").is_none());
+        assert!(!value.to_string().contains("/home/"));
     }
 
     #[test]

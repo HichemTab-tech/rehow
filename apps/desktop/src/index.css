@@ -826,6 +826,80 @@ kbd {
   flex-wrap: wrap;
   gap: 6px;
 }
+.empty-results.has-import-preview {
+  width: min(100%, 550px);
+  max-width: 550px;
+}
+.markdown-import-preview {
+  width: 100%;
+  margin-top: 7px;
+  text-align: left;
+}
+.markdown-import-preview h3 {
+  margin: 0 0 8px;
+  color: var(--text);
+  font-size: 13px;
+}
+.markdown-import-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0 0 10px;
+  background: var(--divider);
+  border: 1px solid var(--divider);
+}
+.markdown-import-summary-item {
+  display: grid;
+  gap: 2px;
+  padding: 7px;
+  background: var(--surface);
+}
+.markdown-import-summary dt {
+  font-size: 11px;
+}
+.markdown-import-summary dd {
+  margin: 0;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+.markdown-import-file-list {
+  max-height: 224px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  border-block: 1px solid var(--divider);
+  list-style: none;
+}
+.markdown-import-file-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 2px;
+  border-bottom: 1px solid var(--divider);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.markdown-import-file-row:last-child {
+  border-bottom: 0;
+}
+.markdown-import-file-path {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.markdown-import-normalize-label {
+  flex: none;
+  color: var(--warning);
+  font: inherit;
+}
+.markdown-import-preview > p {
+  margin: 7px 0 0;
+}
+@media (max-width: 42rem) {
+  .markdown-import-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 .workspace-setup {
   display: grid;
   width: min(100%, 320px);

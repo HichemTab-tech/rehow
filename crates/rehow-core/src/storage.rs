@@ -2122,9 +2122,81 @@ pub enum WorkspaceInspection {
     Empty(EmptyWorkspaceTarget),
     Compatible(Box<WorkspaceView>),
     NewerUnsupported { version: u32 },
-    OrdinaryMarkdown,
+    OrdinaryMarkdown(MarkdownCollectionSource),
     UnrelatedNonempty,
     Malformed { reason: MalformedWorkspaceReason },
+}
+
+pub struct MarkdownCollectionSource {
+    root: linux::DirectoryCapability,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct MarkdownImportPreviewEntry {
+    display_path: String,
+    size: u64,
+    normalization_required: bool,
+}
+
+impl MarkdownImportPreviewEntry {
+    pub fn display_path(&self) -> &str {
+        &self.display_path
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub fn normalization_required(&self) -> bool {
+        self.normalization_required
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct MarkdownImportPreview {
+    included: usize,
+    normalization_required: usize,
+    excluded_non_markdown: usize,
+    malformed_or_unsafe: usize,
+    oversized: usize,
+    aggregate_bytes: u64,
+    entries: Vec<MarkdownImportPreviewEntry>,
+}
+
+impl MarkdownImportPreview {
+    pub fn included(&self) -> usize {
+        self.included
+    }
+
+    pub fn normalization_required(&self) -> usize {
+        self.normalization_required
+    }
+
+    pub fn excluded_non_markdown(&self) -> usize {
+        self.excluded_non_markdown
+    }
+
+    pub fn malformed_or_unsafe(&self) -> usize {
+        self.malformed_or_unsafe
+    }
+
+    pub fn oversized(&self) -> usize {
+        self.oversized
+    }
+
+    pub fn aggregate_bytes(&self) -> u64 {
+        self.aggregate_bytes
+    }
+
+    pub fn entries(&self) -> &[MarkdownImportPreviewEntry] {
+        &self.entries
+    }
+}
+
+impl MarkdownCollectionSource {
+    pub fn preview(&self) -> Result<MarkdownImportPreview, WorkspaceInspectError> {
+        preview_markdown_collection(&self.root)
+    }
 }
 
 pub struct EmptyWorkspaceTarget {
@@ -2618,6 +2690,11 @@ impl std::error::Error for WorkspaceInspectError {}
 const DESCRIPTOR_LIMIT: usize = 256 * 1024;
 const GUIDE_LIMIT: usize = 2 * 1024 * 1024;
 pub(crate) const CATEGORY_LIMIT: usize = 1_000;
+const IMPORT_SOURCE_LIMIT: usize = GUIDE_LIMIT - 4 * 1024;
+const IMPORT_AGGREGATE_LIMIT: u64 = 50 * 1024 * 1024;
+const IMPORT_ENTRY_LIMIT: usize = 20_000;
+const IMPORT_GUIDE_LIMIT: usize = 10_000;
+const IMPORT_PREVIEW_ROW_LIMIT: usize = 100;
 pub(crate) const GUIDE_COUNT_LIMIT: usize = 10_000;
 pub(crate) const MANAGED_BYTES_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
 pub(crate) const ATTACHMENT_COUNT_LIMIT: usize = 10_000;
@@ -3538,7 +3615,7 @@ fn inspect_open_root_with_index(
         let mut remaining_entries = 20_000usize.saturating_sub(root_entries.len());
         return Ok(
             if contains_safe_markdown(&root, &root_entries, 4, &mut remaining_entries)? {
-                WorkspaceInspection::OrdinaryMarkdown
+                WorkspaceInspection::OrdinaryMarkdown(MarkdownCollectionSource { root })
             } else {
                 WorkspaceInspection::UnrelatedNonempty
             },
@@ -4117,6 +4194,183 @@ fn apply_git_marker(
             facts.git_probe_complete = false;
         }
     }
+}
+
+fn preview_markdown_collection(
+    root: &linux::DirectoryCapability,
+) -> Result<MarkdownImportPreview, WorkspaceInspectError> {
+    let mut names = root.entries(IMPORT_ENTRY_LIMIT)?;
+    names.sort_unstable();
+    let mut remaining_entries = IMPORT_ENTRY_LIMIT.saturating_sub(names.len());
+    let mut preview = MarkdownImportPreview {
+        included: 0,
+        normalization_required: 0,
+        excluded_non_markdown: 0,
+        malformed_or_unsafe: 0,
+        oversized: 0,
+        aggregate_bytes: 0,
+        entries: Vec::new(),
+    };
+    preview
+        .entries
+        .try_reserve_exact(IMPORT_PREVIEW_ROW_LIMIT)
+        .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
+    scan_markdown_import_directory(root, &names, "", 0, &mut remaining_entries, &mut preview)?;
+    Ok(preview)
+}
+
+fn scan_markdown_import_directory(
+    directory: &linux::DirectoryCapability,
+    names: &[String],
+    prefix: &str,
+    depth: usize,
+    remaining_entries: &mut usize,
+    preview: &mut MarkdownImportPreview,
+) -> Result<(), WorkspaceInspectError> {
+    for name in names {
+        let relative_path = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}/{name}")
+        };
+
+        if name.ends_with(".md") {
+            match directory.read_regular(name, IMPORT_SOURCE_LIMIT) {
+                Ok(bytes) => {
+                    let Ok((_, normalization_required)) = normalize_import_markdown(&bytes) else {
+                        preview.malformed_or_unsafe = preview
+                            .malformed_or_unsafe
+                            .checked_add(1)
+                            .ok_or(WorkspaceInspectError::ResourceLimit)?;
+                        continue;
+                    };
+                    if preview.included >= IMPORT_GUIDE_LIMIT {
+                        return Err(WorkspaceInspectError::ResourceLimit);
+                    }
+                    let size = u64::try_from(bytes.len())
+                        .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
+                    preview.aggregate_bytes = preview
+                        .aggregate_bytes
+                        .checked_add(size)
+                        .ok_or(WorkspaceInspectError::ResourceLimit)?;
+                    if preview.aggregate_bytes > IMPORT_AGGREGATE_LIMIT {
+                        return Err(WorkspaceInspectError::ResourceLimit);
+                    }
+                    preview.included += 1;
+                    if normalization_required {
+                        preview.normalization_required += 1;
+                    }
+                    if preview.entries.len() < IMPORT_PREVIEW_ROW_LIMIT {
+                        preview.entries.push(MarkdownImportPreviewEntry {
+                            display_path: inert_relative_display(&relative_path),
+                            size,
+                            normalization_required,
+                        });
+                    }
+                    continue;
+                }
+                Err(linux::EntryReadError::TooLarge) => {
+                    preview.oversized = preview
+                        .oversized
+                        .checked_add(1)
+                        .ok_or(WorkspaceInspectError::ResourceLimit)?;
+                    continue;
+                }
+                Err(linux::EntryReadError::Changed) => {
+                    return Err(WorkspaceInspectError::ChangedDuringRead);
+                }
+                Err(linux::EntryReadError::Io(error))
+                    if error.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    return Err(WorkspaceInspectError::ChangedDuringRead);
+                }
+                Err(linux::EntryReadError::Io(error)) => return Err(map_io(error)),
+                Err(linux::EntryReadError::Unsafe) => {}
+            }
+        }
+
+        match directory.open_directory(name) {
+            Ok(child) if depth < 4 => {
+                if *remaining_entries == 0 {
+                    return Err(WorkspaceInspectError::ResourceLimit);
+                }
+                let mut children = child.entries(*remaining_entries)?;
+                *remaining_entries = remaining_entries.saturating_sub(children.len());
+                children.sort_unstable();
+                scan_markdown_import_directory(
+                    &child,
+                    &children,
+                    &relative_path,
+                    depth + 1,
+                    remaining_entries,
+                    preview,
+                )?;
+            }
+            Ok(_) => {
+                preview.excluded_non_markdown += 1;
+            }
+            Err(linux::OpenDirectoryError::Missing) => {
+                return Err(WorkspaceInspectError::ChangedDuringRead);
+            }
+            Err(linux::OpenDirectoryError::Unsafe) => {
+                if name.ends_with(".md") {
+                    preview.malformed_or_unsafe += 1;
+                } else {
+                    preview.excluded_non_markdown += 1;
+                }
+            }
+            Err(linux::OpenDirectoryError::Io(error)) => return Err(map_io(error)),
+        }
+    }
+    Ok(())
+}
+
+fn normalize_import_markdown(bytes: &[u8]) -> Result<(Vec<u8>, bool), ()> {
+    let without_bom = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
+    let text = std::str::from_utf8(without_bom).map_err(|_| ())?;
+    if text
+        .chars()
+        .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return Err(());
+    }
+    let mut normalized = String::new();
+    normalized
+        .try_reserve(text.len().saturating_add(1))
+        .map_err(|_| ())?;
+    let mut characters = text.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '\r' {
+            if characters.peek() == Some(&'\n') {
+                characters.next();
+            }
+            normalized.push('\n');
+        } else {
+            normalized.push(character);
+        }
+    }
+    while normalized.ends_with('\n') {
+        normalized.pop();
+    }
+    if normalized.trim().is_empty() {
+        return Err(());
+    }
+    normalized.push('\n');
+    let changed = normalized.as_bytes() != bytes;
+    Ok((normalized.into_bytes(), changed))
+}
+
+fn inert_relative_display(relative_path: &str) -> String {
+    let mut display = String::new();
+    for byte in relative_path.bytes() {
+        if (0x20..=0x7e).contains(&byte) && byte != b'%' {
+            display.push(char::from(byte));
+        } else {
+            display.push('%');
+            display.push_str(&format!("{byte:02X}"));
+        }
+    }
+    display
 }
 
 fn contains_safe_markdown(
@@ -8198,7 +8452,7 @@ mod tests {
         fs::write(root.path().join("notes.md"), "# Notes\n").unwrap();
         assert!(matches!(
             classification(root.path()),
-            WorkspaceInspection::OrdinaryMarkdown
+            WorkspaceInspection::OrdinaryMarkdown(_)
         ));
     }
 
@@ -8210,7 +8464,7 @@ mod tests {
         fs::write(nested.join("install.md"), "# Install\n").unwrap();
         assert!(matches!(
             classification(root.path()),
-            WorkspaceInspection::OrdinaryMarkdown
+            WorkspaceInspection::OrdinaryMarkdown(_)
         ));
 
         #[cfg(unix)]
@@ -8223,6 +8477,156 @@ mod tests {
                 WorkspaceInspection::UnrelatedNonempty
             ));
         }
+    }
+
+    #[test]
+    fn previews_markdown_imports_in_stable_order_without_mutating_sources() {
+        let root = TestDirectory::new();
+        let nested = root.path().join("notes/linux");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(root.path().join("z.md"), b"# Z\n").unwrap();
+        let normalized_source = b"\xef\xbb\xbf# A\r\n\r\n";
+        fs::write(nested.join("a.md"), normalized_source).unwrap();
+        fs::write(root.path().join("readme.txt"), b"not imported").unwrap();
+
+        let WorkspaceInspection::OrdinaryMarkdown(source) = classification(root.path()) else {
+            panic!("expected ordinary Markdown");
+        };
+        let preview = source.preview().unwrap();
+
+        assert_eq!(preview.included(), 2);
+        assert_eq!(preview.normalization_required(), 1);
+        assert_eq!(preview.excluded_non_markdown(), 1);
+        assert_eq!(preview.malformed_or_unsafe(), 0);
+        assert_eq!(preview.oversized(), 0);
+        assert_eq!(
+            preview.aggregate_bytes(),
+            u64::try_from(b"# Z\n".len() + normalized_source.len()).unwrap()
+        );
+        assert_eq!(
+            preview
+                .entries()
+                .iter()
+                .map(MarkdownImportPreviewEntry::display_path)
+                .collect::<Vec<_>>(),
+            vec!["notes/linux/a.md", "z.md"]
+        );
+        assert!(preview.entries()[0].normalization_required());
+        assert!(!preview.entries()[1].normalization_required());
+        assert_eq!(fs::read(nested.join("a.md")).unwrap(), normalized_source);
+    }
+
+    #[test]
+    fn previews_only_markdown_within_the_depth_boundary() {
+        let root = TestDirectory::new();
+        let included = root.path().join("a/b/c/d");
+        let too_deep = included.join("e");
+        fs::create_dir_all(&too_deep).unwrap();
+        fs::write(included.join("included.md"), b"# Included\n").unwrap();
+        fs::write(too_deep.join("excluded.md"), b"# Excluded\n").unwrap();
+
+        let WorkspaceInspection::OrdinaryMarkdown(source) = classification(root.path()) else {
+            panic!("expected ordinary Markdown");
+        };
+        let preview = source.preview().unwrap();
+
+        assert_eq!(preview.included(), 1);
+        assert_eq!(preview.entries()[0].display_path(), "a/b/c/d/included.md");
+        assert_eq!(preview.excluded_non_markdown(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_unsafe_malformed_and_oversized_import_candidates() {
+        use std::{ffi::CString, os::unix::fs::symlink};
+
+        let root = TestDirectory::new();
+        fs::write(root.path().join("good.md"), b"# Good\n").unwrap();
+        fs::write(root.path().join("empty.md"), b" \n\t").unwrap();
+        fs::write(root.path().join("nul.md"), b"# Bad\0\n").unwrap();
+        fs::write(root.path().join("utf8.md"), [0xff, 0xfe]).unwrap();
+        fs::write(root.path().join("target.txt"), b"# Linked\n").unwrap();
+        fs::hard_link(
+            root.path().join("target.txt"),
+            root.path().join("hard-link.md"),
+        )
+        .unwrap();
+        let outside = TestDirectory::new();
+        fs::write(outside.path().join("outside.md"), b"# Outside\n").unwrap();
+        symlink(
+            outside.path().join("outside.md"),
+            root.path().join("symbolic-link.md"),
+        )
+        .unwrap();
+        let fifo =
+            CString::new(root.path().join("pipe.md").as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: the path is NUL-free and points inside this isolated test directory.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        fs::write(
+            root.path().join("large.md"),
+            vec![b'x'; IMPORT_SOURCE_LIMIT + 1],
+        )
+        .unwrap();
+
+        let WorkspaceInspection::OrdinaryMarkdown(source) = classification(root.path()) else {
+            panic!("expected ordinary Markdown");
+        };
+        let preview = source.preview().unwrap();
+
+        assert_eq!(preview.included(), 1);
+        assert_eq!(preview.malformed_or_unsafe(), 6);
+        assert_eq!(preview.oversized(), 1);
+        assert_eq!(preview.excluded_non_markdown(), 1);
+        assert_eq!(preview.entries()[0].display_path(), "good.md");
+        assert_eq!(
+            fs::read(outside.path().join("outside.md")).unwrap(),
+            b"# Outside\n"
+        );
+    }
+
+    #[test]
+    fn escapes_hostile_preview_labels_as_inert_text() {
+        let root = TestDirectory::new();
+        fs::write(root.path().join("line\n%.md"), b"# Safe label\n").unwrap();
+
+        let WorkspaceInspection::OrdinaryMarkdown(source) = classification(root.path()) else {
+            panic!("expected ordinary Markdown");
+        };
+        let preview = source.preview().unwrap();
+
+        assert_eq!(preview.entries()[0].display_path(), "line%0A%25.md");
+    }
+
+    #[test]
+    fn reports_a_collection_when_every_markdown_candidate_is_rejected() {
+        let root = TestDirectory::new();
+        fs::write(root.path().join("empty.md"), b"\r\n\t").unwrap();
+
+        let WorkspaceInspection::OrdinaryMarkdown(source) = classification(root.path()) else {
+            panic!("expected ordinary Markdown");
+        };
+        let preview = source.preview().unwrap();
+
+        assert_eq!(preview.included(), 0);
+        assert_eq!(preview.malformed_or_unsafe(), 1);
+        assert!(preview.entries().is_empty());
+    }
+
+    #[test]
+    fn normalizes_import_line_endings_bom_and_trailing_newlines() {
+        assert_eq!(
+            normalize_import_markdown(b"\xef\xbb\xbf# Guide\r\nStep\r\n\r\n"),
+            Ok((b"# Guide\nStep\n".to_vec(), true))
+        );
+        assert_eq!(
+            normalize_import_markdown(b"# Guide\rStep"),
+            Ok((b"# Guide\nStep\n".to_vec(), true))
+        );
+        assert_eq!(
+            normalize_import_markdown(b"# Guide\n"),
+            Ok((b"# Guide\n".to_vec(), false))
+        );
+        assert!(normalize_import_markdown(b"# Guide\x01\n").is_err());
     }
 
     #[test]

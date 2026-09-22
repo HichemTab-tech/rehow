@@ -333,6 +333,60 @@ export function isSearchHitPayload(value: unknown): value is SearchHitPayload {
   });
 }
 
+export function isMarkdownImportPreviewPayload(
+  value: unknown,
+): value is MarkdownImportPreviewPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const preview = value as Partial<MarkdownImportPreviewPayload> &
+    Record<string, unknown>;
+  const boundedCount = (count: unknown, maximum: number) =>
+    Number.isSafeInteger(count) &&
+    (count as number) >= 0 &&
+    (count as number) <= maximum;
+  if (
+    Object.keys(preview).length !== 7 ||
+    !boundedCount(preview.included, 10_000) ||
+    !boundedCount(preview.normalizationRequired, preview.included as number) ||
+    !boundedCount(preview.excludedNonMarkdown, 20_000) ||
+    !boundedCount(preview.malformedOrUnsafe, 20_000) ||
+    !boundedCount(preview.oversized, 20_000) ||
+    typeof preview.aggregateBytes !== "string" ||
+    !/^(0|[1-9][0-9]{0,7})$/.test(preview.aggregateBytes) ||
+    Number(preview.aggregateBytes) > 50 * 1024 * 1024 ||
+    !Array.isArray(preview.entries) ||
+    preview.entries.length > 100 ||
+    preview.entries.length > (preview.included as number)
+  )
+    return false;
+  if (
+    (preview.included as number) +
+      (preview.excludedNonMarkdown as number) +
+      (preview.malformedOrUnsafe as number) +
+      (preview.oversized as number) >
+    20_000
+  )
+    return false;
+  const displayPaths = new Set<string>();
+  return preview.entries.every((value) => {
+    if (typeof value !== "object" || value === null) return false;
+    const entry = value as Partial<
+      MarkdownImportPreviewPayload["entries"][number]
+    > &
+      Record<string, unknown>;
+    const valid =
+      Object.keys(entry).length === 3 &&
+      isBoundedText(entry.displayPath, 1, 3072) &&
+      /^(?:[ -$&-~]|%[0-9A-F]{2})+$/.test(entry.displayPath as string) &&
+      typeof entry.size === "string" &&
+      /^(0|[1-9][0-9]{0,7})$/.test(entry.size) &&
+      Number(entry.size) <= 2 * 1024 * 1024 - 4 * 1024 &&
+      typeof entry.normalizationRequired === "boolean";
+    if (!valid || displayPaths.has(entry.displayPath as string)) return false;
+    displayPaths.add(entry.displayPath as string);
+    return true;
+  });
+}
+
 export function highlightedExcerptSegments(hit: SearchHitPayload) {
   const characters = Array.from(hit.excerpt);
   const segments: Array<{
@@ -375,9 +429,27 @@ type OpenWorkspaceResult =
   | { kind: "empty"; facts: FolderFacts }
   | { kind: "compatible"; workspace: WorkspacePayload }
   | { kind: "newerUnsupported"; version: number; facts: FolderFacts }
-  | { kind: "ordinaryMarkdown"; facts: FolderFacts }
+  | {
+      kind: "ordinaryMarkdown";
+      facts: FolderFacts;
+      preview: MarkdownImportPreviewPayload;
+    }
   | { kind: "unrelatedNonempty"; facts: FolderFacts }
   | { kind: "malformed"; reason: string; facts: FolderFacts };
+
+export type MarkdownImportPreviewPayload = {
+  included: number;
+  normalizationRequired: number;
+  excludedNonMarkdown: number;
+  malformedOrUnsafe: number;
+  oversized: number;
+  aggregateBytes: string;
+  entries: Array<{
+    displayPath: string;
+    size: string;
+    normalizationRequired: boolean;
+  }>;
+};
 
 type SaveGuidePayload = {
   workspace: WorkspacePayload;
@@ -1399,6 +1471,8 @@ export function App() {
   const [pendingWorkspace, setPendingWorkspace] = useState<FolderFacts | null>(
     null,
   );
+  const [markdownImportPreview, setMarkdownImportPreview] =
+    useState<MarkdownImportPreviewPayload | null>(null);
   const [workspaceName, setWorkspaceName] = useState("");
   const [initializingWorkspace, setInitializingWorkspace] = useState(false);
   const [workspaceSetupError, setWorkspaceSetupError] = useState("");
@@ -2055,6 +2129,7 @@ export function App() {
       const { invoke } = await import("@tauri-apps/api/core");
       const result = await invoke<OpenWorkspaceResult>("choose_workspace");
       if (result.kind !== "cancelled") {
+        setMarkdownImportPreview(null);
         resetGitCloneUi();
         resetGitSyncUi();
         setGitInitError("");
@@ -2096,19 +2171,29 @@ export function App() {
           `Empty folder selected. Create a new Workspace or clone an existing one. ${folderFactSuffix(result.facts)}`,
         );
         requestAnimationFrame(() => workspaceNameRef.current?.focus());
+      } else if (result.kind === "ordinaryMarkdown") {
+        if (!isMarkdownImportPreviewPayload(result.preview)) {
+          throw new Error("invalid Markdown import preview payload");
+        }
+        setWorkspace(null);
+        setPendingWorkspace(null);
+        setMarkdownImportPreview(result.preview);
+        setSelectedId("");
+        setReaderOpen(false);
+        setAnnouncement(
+          `Markdown import preview: ${result.preview.included} files ready, ${result.preview.malformedOrUnsafe + result.preview.oversized} excluded. ${folderFactSuffix(result.facts)}`,
+        );
       } else if (result.kind !== "cancelled") {
         setPendingWorkspace(null);
         const messages: Record<
           Exclude<
             OpenWorkspaceResult["kind"],
-            "compatible" | "cancelled" | "empty"
+            "compatible" | "cancelled" | "empty" | "ordinaryMarkdown"
           >,
           string
         > = {
           newerUnsupported:
             "That Workspace was created by a newer Rehow version.",
-          ordinaryMarkdown:
-            "That folder is a Markdown collection. Safe import is coming next.",
           unrelatedNonempty: "That nonempty folder is not a Rehow Workspace.",
           malformed: "That Workspace is malformed and was not opened.",
         };
@@ -2946,6 +3031,7 @@ export function App() {
       return;
     }
     setPendingWorkspace(null);
+    setMarkdownImportPreview(null);
     setWorkspaceName("");
     setWorkspaceSetupError("");
     resetGitCloneUi();
@@ -4345,43 +4431,132 @@ export function App() {
               );
             })
           ) : (
-            <li className="empty-results">
-              <Icon name={pendingWorkspace === null ? "search" : "folder"} />
+            <li
+              className={`empty-results ${markdownImportPreview !== null ? "has-import-preview" : ""}`}
+            >
+              <Icon
+                name={
+                  pendingWorkspace === null && markdownImportPreview === null
+                    ? "search"
+                    : "folder"
+                }
+              />
               <h2>
-                {pendingWorkspace !== null
-                  ? gitCloneStage === "idle"
-                    ? "Create This Workspace"
-                    : "Clone a Git Workspace"
-                  : workspace === null
-                    ? "Open a Workspace"
-                    : guides.length === 0 && query.trim() === ""
-                      ? "No Guides Yet"
-                      : query.trim() === ""
-                        ? "No Guides in This Scope"
-                        : "No Matching Guides"}
+                {markdownImportPreview !== null
+                  ? "Review Markdown Import"
+                  : pendingWorkspace !== null
+                    ? gitCloneStage === "idle"
+                      ? "Create This Workspace"
+                      : "Clone a Git Workspace"
+                    : workspace === null
+                      ? "Open a Workspace"
+                      : guides.length === 0 && query.trim() === ""
+                        ? "No Guides Yet"
+                        : query.trim() === ""
+                          ? "No Guides in This Scope"
+                          : "No Matching Guides"}
               </h2>
               <p>
-                {pendingWorkspace !== null
-                  ? pendingWorkspace.writable
-                    ? gitCloneStage === "idle"
-                      ? "The selected folder is empty. Create a new Workspace or clone an existing one."
-                      : gitCloneStage === "entry"
-                        ? "Enter an HTTPS or SSH repository address. Rehow validates it privately before changing the selected folder."
-                        : gitCloneStage === "validating" ||
-                            gitCloneStage === "cancelling"
-                          ? "Rehow is validating the remote Workspace in private staging. The selected folder remains unchanged."
-                          : gitCloneStage === "recovery"
-                            ? "Native clone state needs reconciliation before Rehow can safely continue."
-                            : "Validation passed. Complete the clone to write the exact validated Workspace and Git metadata."
-                    : "The selected folder is read-only. Choose a writable empty folder."
-                  : workspace === null
-                    ? "Choose a Rehow Workspace to load its Guides securely."
-                    : guides.length === 0 && query.trim() === ""
-                      ? "This Workspace is ready for its first Guide."
-                      : query.trim() === ""
-                        ? "Choose another status scope to see more Guides."
-                        : "Try fewer words, another scope, or search for a command, path, or error message."}
+                {markdownImportPreview !== null
+                  ? `${markdownImportPreview.included} Markdown file${markdownImportPreview.included === 1 ? " is" : "s are"} ready. Source files remain unchanged.`
+                  : pendingWorkspace !== null
+                    ? pendingWorkspace.writable
+                      ? gitCloneStage === "idle"
+                        ? "The selected folder is empty. Create a new Workspace or clone an existing one."
+                        : gitCloneStage === "entry"
+                          ? "Enter an HTTPS or SSH repository address. Rehow validates it privately before changing the selected folder."
+                          : gitCloneStage === "validating" ||
+                              gitCloneStage === "cancelling"
+                            ? "Rehow is validating the remote Workspace in private staging. The selected folder remains unchanged."
+                            : gitCloneStage === "recovery"
+                              ? "Native clone state needs reconciliation before Rehow can safely continue."
+                              : "Validation passed. Complete the clone to write the exact validated Workspace and Git metadata."
+                      : "The selected folder is read-only. Choose a writable empty folder."
+                    : workspace === null
+                      ? "Choose a Rehow Workspace to load its Guides securely."
+                      : guides.length === 0 && query.trim() === ""
+                        ? "This Workspace is ready for its first Guide."
+                        : query.trim() === ""
+                          ? "Choose another status scope to see more Guides."
+                          : "Try fewer words, another scope, or search for a command, path, or error message."}
               </p>
+              {markdownImportPreview !== null && (
+                <section
+                  className="markdown-import-preview"
+                  aria-labelledby="markdown-import-preview-title"
+                >
+                  <h3 id="markdown-import-preview-title">Import Preview</h3>
+                  <dl className="markdown-import-summary">
+                    <div className="markdown-import-summary-item">
+                      <dt>Ready</dt>
+                      <dd>{markdownImportPreview.included}</dd>
+                    </div>
+                    <div className="markdown-import-summary-item">
+                      <dt>Normalized</dt>
+                      <dd>{markdownImportPreview.normalizationRequired}</dd>
+                    </div>
+                    <div className="markdown-import-summary-item">
+                      <dt>Malformed or unsafe</dt>
+                      <dd>{markdownImportPreview.malformedOrUnsafe}</dd>
+                    </div>
+                    <div className="markdown-import-summary-item">
+                      <dt>Oversized</dt>
+                      <dd>{markdownImportPreview.oversized}</dd>
+                    </div>
+                  </dl>
+                  <ul
+                    className="markdown-import-file-list"
+                    aria-label="Markdown files ready to import"
+                  >
+                    {markdownImportPreview.entries.map((entry) => (
+                      <li
+                        className="markdown-import-file-row"
+                        key={entry.displayPath}
+                      >
+                        <span className="markdown-import-file-path">
+                          {entry.displayPath}
+                        </span>
+                        {entry.normalizationRequired && (
+                          <small className="markdown-import-normalize-label">
+                            Normalize
+                          </small>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                  {markdownImportPreview.entries.length <
+                    markdownImportPreview.included && (
+                    <p>
+                      Showing the first {markdownImportPreview.entries.length}{" "}
+                      of {markdownImportPreview.included} files.
+                    </p>
+                  )}
+                  <div className="workspace-setup-actions">
+                    <button
+                      className="button"
+                      type="button"
+                      onClick={() => void cancelWorkspaceSetup()}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="button button-primary"
+                      type="button"
+                      disabled
+                      aria-describedby="markdown-import-next-step"
+                    >
+                      Choose Destination
+                    </button>
+                  </div>
+                  <p
+                    id="markdown-import-next-step"
+                    className="workspace-setup-help"
+                  >
+                    Destination selection becomes available with the reviewed
+                    copy step.
+                  </p>
+                </section>
+              )}
               {workspaceSetupError !== "" && (
                 <p
                   ref={workspaceSetupErrorRef}
@@ -4393,7 +4568,7 @@ export function App() {
                   {workspaceSetupError}
                 </p>
               )}
-              {pendingWorkspace?.writable ? (
+              {markdownImportPreview === null && pendingWorkspace?.writable ? (
                 gitCloneStage === "idle" ? (
                   <div className="workspace-onboarding-options">
                     <form
@@ -4580,7 +4755,7 @@ export function App() {
                     </div>
                   </div>
                 )
-              ) : workspace === null ? (
+              ) : markdownImportPreview !== null ? null : workspace === null ? (
                 <button
                   className="button"
                   type="button"

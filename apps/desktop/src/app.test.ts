@@ -35,6 +35,7 @@ import {
   isGitSyncCancelResultPayload,
   isGitSyncInspectionPayload,
   isGitSyncRecoveryResultPayload,
+  isMarkdownImportPreviewPayload,
   isSearchHitPayload,
   isWorkspaceWatchEvent,
   movedCategoryOrder,
@@ -75,6 +76,68 @@ describe("application identity", () => {
     expect(nextResultIndex(3, 4, 1)).toBe(0);
     expect(nextResultIndex(0, 4, -1)).toBe(3);
     expect(nextResultIndex(0, 0, 1)).toBe(-1);
+  });
+
+  it("accepts only bounded pathless Markdown import previews", () => {
+    const preview = {
+      included: 2,
+      normalizationRequired: 1,
+      excludedNonMarkdown: 3,
+      malformedOrUnsafe: 1,
+      oversized: 1,
+      aggregateBytes: "2048",
+      entries: [
+        {
+          displayPath: "linux/install.md",
+          size: "1024",
+          normalizationRequired: false,
+        },
+        {
+          displayPath: "line%0Abreak.md",
+          size: "1024",
+          normalizationRequired: true,
+        },
+      ],
+    };
+
+    expect(isMarkdownImportPreviewPayload(preview)).toBe(true);
+    expect(
+      isMarkdownImportPreviewPayload({
+        ...preview,
+        included: 0,
+        normalizationRequired: 0,
+        aggregateBytes: "0",
+        entries: [],
+      }),
+    ).toBe(true);
+    expect(
+      isMarkdownImportPreviewPayload({ ...preview, sourcePath: "/home/user" }),
+    ).toBe(false);
+    expect(
+      isMarkdownImportPreviewPayload({
+        ...preview,
+        entries: [{ ...preview.entries[0], displayPath: "line\nbreak.md" }],
+      }),
+    ).toBe(false);
+    expect(
+      isMarkdownImportPreviewPayload({
+        ...preview,
+        entries: [preview.entries[0], preview.entries[0]],
+      }),
+    ).toBe(false);
+    expect(
+      isMarkdownImportPreviewPayload({
+        ...preview,
+        included: 10_000,
+        excludedNonMarkdown: 10_001,
+      }),
+    ).toBe(false);
+    expect(
+      isMarkdownImportPreviewPayload({
+        ...preview,
+        entries: [{ ...preview.entries[0], size: "2093057" }],
+      }),
+    ).toBe(false);
   });
 
   it("describes root, ancestor, and unsafe Git facts", () => {
