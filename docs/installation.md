@@ -1,6 +1,6 @@
 # Installation and Desktop Integration
 
-Status: desktop packaging planned; Phase 6E2D2 MCP Attachment removal development boundary available
+Status: desktop packaging planned; Phase 6E3A MCP managed Git commit development boundary available
 Last updated: 2026-09-21
 
 ## Supported baseline

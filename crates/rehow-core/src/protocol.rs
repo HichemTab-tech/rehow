@@ -150,6 +150,118 @@ pub fn workspace_broad_required_error(request_id: RequestId) -> ErrorDto {
     ))
 }
 
+pub fn workspace_git_write_required_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::workspace_read_only(
+        request_id,
+        construction::Reason::CapabilityMissing,
+        Some(RequiredCapability::GitWrite),
+    ))
+}
+
+pub fn invalid_git_commit_message_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::Message,
+        construction::Reason::InvalidFormat,
+    ))
+}
+
+pub fn git_commit_nothing_to_commit_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::Details,
+        construction::Reason::UnsupportedValue,
+    ))
+}
+
+pub fn git_commit_resource_limit_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::invalid_argument(
+        request_id,
+        construction::Field::Details,
+        construction::Reason::OutOfRange,
+    ))
+}
+
+pub fn git_commit_busy_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::io_busy(
+        request_id,
+        construction::Operation::GitCommit,
+        2_000,
+    ))
+}
+
+pub fn git_commit_unavailable_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::git_unavailable(
+        request_id,
+        BoundedList::try_new(Vec::new(), 0)
+            .expect("the fixed empty Git search-source list is valid"),
+    ))
+}
+
+pub fn git_commit_unsafe_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::git_unsafe_repository(
+        request_id,
+        construction::Reason::RepositoryLayoutUnsupported,
+    ))
+}
+
+pub fn git_commit_conflict_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::git_conflict(
+        request_id,
+        GitConflictKind::Unknown,
+        BoundedList::try_new(Vec::new(), 0)
+            .expect("the fixed empty Git conflict path list is valid"),
+    ))
+}
+
+pub fn git_commit_failed_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::git_failed(
+        request_id,
+        construction::GitOperation::Commit,
+        GitExitKind::ExitStatus,
+    ))
+}
+
+pub fn git_commit_plan_stale_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::plan_stale(
+        request_id,
+        construction::Operation::GitCommit,
+        BoundedList::try_new(Vec::new(), 0).expect("the fixed empty changed-entity list is valid"),
+    ))
+}
+
+pub fn git_commit_plan_expired_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::GitCommit,
+        construction::Reason::PlanExpired,
+    ))
+}
+
+pub fn git_commit_plan_replayed_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::GitCommit,
+        construction::Reason::PlanReplayed,
+    ))
+}
+
+pub fn git_commit_plan_scope_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::GitCommit,
+        construction::Reason::PlanScopeMismatch,
+    ))
+}
+
+pub fn git_commit_cancelled_error(request_id: RequestId) -> ErrorDto {
+    constructed_error(construction::confirmation_invalid(
+        request_id,
+        construction::Operation::GitCommit,
+        construction::Reason::PlanStateChanged,
+    ))
+}
+
 pub fn guide_not_found_error(request_id: RequestId, guide_id: GuideId) -> ErrorDto {
     constructed_error(construction::guide_not_found(request_id, guide_id))
 }

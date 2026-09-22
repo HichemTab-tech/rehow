@@ -18,7 +18,12 @@ use rehow_core::{
         validate_guide_tested_approval,
     },
     domain::{CategoryStatus, GuideStatus, RestorableGuideStatus},
-    git::{GitReadError, GitRepositoryStatus, read_git_status},
+    git::{
+        GitCommitPlan, GitCommitPlanError, GitReadError, GitRepositoryStatus,
+        apply_git_commit_with_cancellation, cancel_git_commit_plan, git_commit_recovery_required,
+        plan_git_commit, plan_git_commit_recovery, read_git_status,
+        resume_planned_git_commit_publication,
+    },
     markdown::{MAX_MARKDOWN_BYTES, SafeMarkdownContainer, SafeMarkdownEvent, parse_safe_markdown},
     protocol::{
         AttachmentId, CategoryId, ErrorDto, GuideId, PlanToken, Revision, SafeRelativePath,
@@ -42,6 +47,10 @@ use rehow_core::{
         category_reorder_plan_stale_error, category_reorder_unavailable_error,
         category_restore_busy_error, category_update_busy_error, category_update_not_found_error,
         category_update_revision_conflict_error, category_update_unavailable_error,
+        git_commit_busy_error, git_commit_cancelled_error, git_commit_conflict_error,
+        git_commit_failed_error, git_commit_nothing_to_commit_error, git_commit_plan_expired_error,
+        git_commit_plan_replayed_error, git_commit_plan_scope_error, git_commit_plan_stale_error,
+        git_commit_resource_limit_error, git_commit_unavailable_error, git_commit_unsafe_error,
         guide_archive_busy_error, guide_change_category_busy_error,
         guide_create_archived_category_error, guide_create_busy_error,
         guide_create_category_not_found_error, guide_create_category_revision_conflict_error,
@@ -55,10 +64,11 @@ use rehow_core::{
         invalid_category_create_name_error, invalid_category_create_summary_error,
         invalid_category_lifecycle_error, invalid_category_update_error,
         invalid_category_update_name_error, invalid_category_update_summary_error,
-        invalid_guide_aliases_error, invalid_guide_category_error,
-        invalid_guide_create_summary_error, invalid_guide_create_title_error,
-        invalid_guide_lifecycle_error, invalid_guide_tags_error, invalid_guide_update_error,
-        new_request_id, workspace_broad_required_error, workspace_write_required_error,
+        invalid_git_commit_message_error, invalid_guide_aliases_error,
+        invalid_guide_category_error, invalid_guide_create_summary_error,
+        invalid_guide_create_title_error, invalid_guide_lifecycle_error, invalid_guide_tags_error,
+        invalid_guide_update_error, new_request_id, workspace_broad_required_error,
+        workspace_git_write_required_error, workspace_write_required_error,
     },
     search::{MAX_SEARCH_RESULTS, SearchError, normalize_search_text, search_workspace_filtered},
     storage::{
@@ -168,12 +178,17 @@ pub struct McpServer {
     category_remove_plans: Arc<Mutex<HashMap<String, CategoryRemovePlan>>>,
     guide_tested_plans: Arc<Mutex<HashMap<String, GuideTestedPlan>>>,
     attachment_remove_plans: Arc<Mutex<HashMap<String, AttachmentRemovePlan>>>,
+    git_commit_plans: Arc<GitCommitPlanStore>,
+    git_commit_recovery_plans: Arc<Mutex<HashMap<String, McpGitCommitRecoveryPlan>>>,
+    git_commit_reservations: Arc<Mutex<HashSet<String>>>,
     #[cfg(test)]
     guide_tested_commit_probe: Option<Arc<GuideTestedCommitProbe>>,
     #[cfg(test)]
     attachment_remove_commit_probe: Option<Arc<GuideTestedCommitProbe>>,
     #[cfg(test)]
     attachment_remove_plan_probe: Option<Arc<GuideTestedCommitProbe>>,
+    #[cfg(test)]
+    git_commit_commit_probe: Option<Arc<GuideTestedCommitProbe>>,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -241,6 +256,8 @@ const MAX_CATEGORY_REORDER_PLANS: usize = 64;
 const MAX_CATEGORY_REMOVE_PLANS: usize = 64;
 const MAX_GUIDE_TESTED_PLANS: usize = 64;
 const MAX_ATTACHMENT_REMOVE_PLANS: usize = 64;
+const MAX_GIT_COMMIT_PLANS: usize = 16;
+const MAX_GIT_COMMIT_RECOVERY_PLANS: usize = 16;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -421,6 +438,21 @@ struct AttachmentRemovePlanInput {
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AttachmentRemoveInput {
+    workspace_handle: String,
+    plan_token: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GitCommitPlanInput {
+    workspace_handle: String,
+    expected_git_state: String,
+    message: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GitCommitInput {
     workspace_handle: String,
     plan_token: String,
 }
@@ -803,6 +835,124 @@ enum AttachmentRemoveBlockingOutcome {
     },
 }
 
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitPlanOutput {
+    operation: &'static str,
+    effect_set: String,
+    message: String,
+    branch: String,
+    created: u32,
+    updated: u32,
+    deleted: u32,
+    unrelated_changes: u32,
+    unsigned: bool,
+    pushes: bool,
+    uses_network: bool,
+    plan_token: String,
+    expires_at: String,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitOutput {
+    status: &'static str,
+    committed: bool,
+    workspace_changed: bool,
+    recovery_required: bool,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitRecoveryPlanOutput {
+    operation: &'static str,
+    effect_set: String,
+    effects: Vec<String>,
+    plan_token: String,
+    expires_at: String,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitRecoveryOutput {
+    status: &'static str,
+    recovered: bool,
+    workspace_changed: bool,
+}
+
+struct StoredGitCommitPlan {
+    workspace_handle: String,
+    workspace_id: String,
+    binding: Vec<u8>,
+    expires_at: Instant,
+    core: Option<GitCommitPlan>,
+    _reservation: GitCommitPlanningReservation,
+}
+
+impl Drop for StoredGitCommitPlan {
+    fn drop(&mut self) {
+        if let Some(core) = self.core.take() {
+            let _ = cancel_git_commit_plan(core);
+        }
+    }
+}
+
+#[derive(Default)]
+struct GitCommitPlanStore {
+    plans: Mutex<HashMap<String, StoredGitCommitPlan>>,
+}
+
+impl Drop for GitCommitPlanStore {
+    fn drop(&mut self) {
+        let Ok(plans) = self.plans.get_mut() else {
+            return;
+        };
+        for mut plan in plans.drain().map(|(_, plan)| plan) {
+            if let Some(core) = plan.core.take() {
+                let _ = cancel_git_commit_plan(core);
+            }
+        }
+    }
+}
+
+struct McpGitCommitRecoveryPlan {
+    workspace_handle: String,
+    workspace_id: String,
+    binding: Vec<u8>,
+    expires_at: Instant,
+    core: rehow_core::git::GitCommitRecoveryPlan,
+    _reservation: GitCommitPlanningReservation,
+}
+
+struct GitCommitPlanningReservation {
+    reservations: Arc<Mutex<HashSet<String>>>,
+    workspace_handle: String,
+}
+
+impl Drop for GitCommitPlanningReservation {
+    fn drop(&mut self) {
+        if let Ok(mut reservations) = self.reservations.lock() {
+            reservations.remove(&self.workspace_handle);
+        }
+    }
+}
+
+enum GitCommitBlockingOutcome {
+    Committed { workspace_changed: bool },
+    Stale,
+    Cancelled,
+    Conflict,
+    RecoveryRequired,
+    Unavailable,
+}
+
+enum GitCommitRecoveryBlockingOutcome {
+    Recovered { workspace_changed: bool },
+    Stale,
+    Conflict,
+    Unavailable,
+}
+
 #[cfg(test)]
 struct GuideTestedCommitProbe {
     reached: std::sync::Barrier,
@@ -935,6 +1085,7 @@ struct AttachmentsListOutput {
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct GitStatusOutput {
+    git_state: String,
     kind: &'static str,
     version: Option<String>,
     branch: Option<String>,
@@ -1249,12 +1400,17 @@ fn open_server_with_recovery(
         category_remove_plans: Arc::new(Mutex::new(HashMap::new())),
         guide_tested_plans: Arc::new(Mutex::new(HashMap::new())),
         attachment_remove_plans: Arc::new(Mutex::new(HashMap::new())),
+        git_commit_plans: Arc::new(GitCommitPlanStore::default()),
+        git_commit_recovery_plans: Arc::new(Mutex::new(HashMap::new())),
+        git_commit_reservations: Arc::new(Mutex::new(HashSet::new())),
         #[cfg(test)]
         guide_tested_commit_probe: None,
         #[cfg(test)]
         attachment_remove_commit_probe: None,
         #[cfg(test)]
         attachment_remove_plan_probe: None,
+        #[cfg(test)]
+        git_commit_commit_probe: None,
     };
     server.tool_router = McpServer::tool_router();
     Ok(server)
@@ -1526,6 +1682,7 @@ fn empty_git_status(
     failure: Option<&'static str>,
 ) -> GitStatusOutput {
     GitStatusOutput {
+        git_state: String::new(),
         kind,
         version,
         branch: None,
@@ -1542,6 +1699,66 @@ fn empty_git_status(
         remote_count: 0,
         failure,
     }
+}
+
+fn git_status_output(view: &WorkspaceView) -> GitStatusOutput {
+    match read_git_status(view) {
+        Ok(status) => {
+            let version = status.version().map(str::to_owned);
+            if !status.available() {
+                empty_git_status("unavailable", None, None)
+            } else {
+                match status.repository() {
+                    GitRepositoryStatus::NotRepository => {
+                        empty_git_status("notRepository", version, None)
+                    }
+                    GitRepositoryStatus::Unsafe => empty_git_status("unsafe", version, None),
+                    GitRepositoryStatus::Ready(repository) => GitStatusOutput {
+                        git_state: String::new(),
+                        kind: "ready",
+                        version,
+                        branch: repository.branch().map(str::to_owned),
+                        detached: repository.detached(),
+                        upstream: repository.upstream().map(str::to_owned),
+                        divergence_known: repository.divergence_known(),
+                        ahead: repository.ahead(),
+                        behind: repository.behind(),
+                        changed: repository.changed(),
+                        untracked: repository.untracked(),
+                        conflicts: repository.conflicts(),
+                        clean: repository.clean(),
+                        remotes: repository.remotes().to_vec(),
+                        remote_count: repository.remote_count(),
+                        failure: None,
+                    },
+                }
+            }
+        }
+        Err(error) => empty_git_status(
+            "failed",
+            None,
+            Some(match error {
+                GitReadError::Spawn => "spawn",
+                GitReadError::ExitStatus => "exitStatus",
+                GitReadError::Signal => "signal",
+                GitReadError::Timeout => "timeout",
+                GitReadError::OutputLimit => "outputLimit",
+                GitReadError::InvalidOutput => "invalidOutput",
+            }),
+        ),
+    }
+}
+
+fn current_git_status(view: &WorkspaceView, key: &[u8; 32]) -> GitStatusOutput {
+    let mut output = git_status_output(view);
+    let encoded = serde_json::to_vec(&output).expect("the closed Git status output serializes");
+    let mut binding = Vec::with_capacity(encoded.len() + 80);
+    binding.extend_from_slice(b"rehow-mcp-git-state-v1\0");
+    binding.extend_from_slice(view.manifest().workspace_id().to_string().as_bytes());
+    binding.push(0);
+    binding.extend_from_slice(&encoded);
+    output.git_state = format!("gitstate:v1:{}", blake3::keyed_hash(key, &binding).to_hex());
+    output
 }
 
 fn find_guide<'a>(
@@ -4252,6 +4469,896 @@ async fn attachment_remove_execute(
     }
 }
 
+fn map_git_commit_error(
+    request_id: rehow_core::protocol::RequestId,
+    error: GitCommitPlanError,
+) -> ErrorDto {
+    match error {
+        GitCommitPlanError::InvalidMessage => invalid_git_commit_message_error(request_id),
+        GitCommitPlanError::Cancelled => git_commit_cancelled_error(request_id),
+        GitCommitPlanError::ReadOnly => workspace_write_required_error(request_id),
+        GitCommitPlanError::NotRepository
+        | GitCommitPlanError::InvalidIdentity
+        | GitCommitPlanError::WorkspaceIssues
+        | GitCommitPlanError::UnsafeRepository
+        | GitCommitPlanError::UnsupportedRepository
+        | GitCommitPlanError::UnsupportedIndex
+        | GitCommitPlanError::AmbiguousManagedHistory
+        | GitCommitPlanError::PathCollision => git_commit_unsafe_error(request_id),
+        GitCommitPlanError::OperationInProgress => git_commit_conflict_error(request_id),
+        GitCommitPlanError::NothingToCommit => git_commit_nothing_to_commit_error(request_id),
+        GitCommitPlanError::ResourceLimit => git_commit_resource_limit_error(request_id),
+        GitCommitPlanError::PlanStale | GitCommitPlanError::RecoveryNotRequired => {
+            git_commit_plan_stale_error(request_id)
+        }
+        GitCommitPlanError::Io => git_commit_failed_error(request_id),
+    }
+}
+
+fn git_commit_binding(workspace_id: &str, plan: &GitCommitPlan) -> Vec<u8> {
+    let mut binding = b"rehow-mcp-git-commit-plan-v1\0".to_vec();
+    let core_token =
+        serde_json::to_string(plan.token()).expect("the opaque core Git commit token serializes");
+    for value in [
+        workspace_id,
+        core_token.as_str(),
+        plan.message(),
+        plan.branch(),
+    ] {
+        binding.extend_from_slice(&(value.len() as u64).to_be_bytes());
+        binding.extend_from_slice(value.as_bytes());
+    }
+    for count in [
+        plan.created(),
+        plan.updated(),
+        plan.deleted(),
+        plan.unrelated_changes(),
+    ] {
+        binding.extend_from_slice(&count.to_be_bytes());
+    }
+    binding
+}
+
+fn prune_git_commit_plans(server: &McpServer) -> Result<(), McpError> {
+    let now = Instant::now();
+    let expired = {
+        let mut plans = server
+            .git_commit_plans
+            .plans
+            .lock()
+            .map_err(|_| McpError::internal_error("Git commit plans unavailable", None))?;
+        let tokens = plans
+            .iter()
+            .filter(|(_, plan)| now >= plan.expires_at)
+            .map(|(token, _)| token.clone())
+            .collect::<Vec<_>>();
+        tokens
+            .into_iter()
+            .filter_map(|token| plans.remove(&token).map(|plan| (token, plan)))
+            .collect::<Vec<_>>()
+    };
+    for (token, mut plan) in expired {
+        server.approval_manager.cancel(&token);
+        if let Some(core) = plan.core.take() {
+            let _ = cancel_git_commit_plan(core);
+        }
+    }
+    Ok(())
+}
+
+enum GitCommitPlanningOutcome {
+    Planned {
+        workspace_id: String,
+        plan: Box<GitCommitPlan>,
+    },
+    StateStale,
+    Failed(GitCommitPlanError),
+}
+
+fn build_git_commit_plan_blocking(
+    workspaces: &[ConfiguredWorkspace],
+    recovery: &RecoveryLocations,
+    cursor_key: &[u8; 32],
+    workspace_handle: &str,
+    expected_git_state: &str,
+    message: &str,
+) -> GitCommitPlanningOutcome {
+    let Some(workspace) = workspaces
+        .iter()
+        .find(|workspace| workspace.handle == workspace_handle)
+    else {
+        return GitCommitPlanningOutcome::Failed(GitCommitPlanError::Io);
+    };
+    let mut view = match workspace.view.write() {
+        Ok(view) => view,
+        Err(_) => return GitCommitPlanningOutcome::Failed(GitCommitPlanError::Io),
+    };
+    if refresh_open_workspace(&mut view).is_err() {
+        return GitCommitPlanningOutcome::Failed(GitCommitPlanError::Io);
+    }
+    if current_git_status(&view, cursor_key).git_state != expected_git_state {
+        return GitCommitPlanningOutcome::StateStale;
+    }
+    let workspace_id = view.manifest().workspace_id().to_string();
+    match plan_git_commit(&view, &recovery.state_home.bridge_path, message) {
+        Ok(plan) => GitCommitPlanningOutcome::Planned {
+            workspace_id,
+            plan: Box::new(plan),
+        },
+        Err(error) => GitCommitPlanningOutcome::Failed(error),
+    }
+}
+
+fn reserve_git_commit_planning(
+    server: &McpServer,
+    workspace_handle: &str,
+) -> Result<Option<GitCommitPlanningReservation>, McpError> {
+    let reservations = Arc::clone(&server.git_commit_reservations);
+    {
+        let mut active = reservations
+            .lock()
+            .map_err(|_| McpError::internal_error("Git commit planning unavailable", None))?;
+        if !active.insert(workspace_handle.to_owned()) {
+            return Ok(None);
+        }
+    }
+    let reservation = GitCommitPlanningReservation {
+        reservations,
+        workspace_handle: workspace_handle.to_owned(),
+    };
+    let normal_busy = {
+        let plans = server
+            .git_commit_plans
+            .plans
+            .lock()
+            .map_err(|_| McpError::internal_error("Git commit plans unavailable", None))?;
+        plans.len() >= MAX_GIT_COMMIT_PLANS
+            || plans
+                .values()
+                .any(|plan| plan.workspace_handle == workspace_handle)
+    };
+    let recovery_busy = {
+        let plans = server
+            .git_commit_recovery_plans
+            .lock()
+            .map_err(|_| McpError::internal_error("Git recovery plans unavailable", None))?;
+        plans.len() >= MAX_GIT_COMMIT_RECOVERY_PLANS
+            || plans
+                .values()
+                .any(|plan| plan.workspace_handle == workspace_handle)
+    };
+    if normal_busy || recovery_busy {
+        return Ok(None);
+    }
+    Ok(Some(reservation))
+}
+
+async fn git_commit_plan_tool(
+    server: &McpServer,
+    input: GitCommitPlanInput,
+) -> Result<CallToolResult, McpError> {
+    let request_id = new_request_id();
+    let workspace = server.workspace(&input.workspace_handle)?;
+    if !workspace.allow_write {
+        return structured_tool_error(workspace_write_required_error(request_id));
+    }
+    if !workspace.allow_git_write {
+        return structured_tool_error(workspace_git_write_required_error(request_id));
+    }
+    if server.approval_status != ApprovalHelperStatus::Trusted {
+        return structured_tool_error(git_commit_unavailable_error(request_id));
+    }
+    let Some(recovery) = server.recovery_locations.clone() else {
+        return structured_tool_error(git_commit_unavailable_error(request_id));
+    };
+    if !input.expected_git_state.starts_with("gitstate:v1:") {
+        return Err(McpError::invalid_params("invalid Git state", None));
+    }
+    prune_git_commit_plans(server)?;
+    prune_git_commit_recovery_plans(server)?;
+    let Some(reservation) = reserve_git_commit_planning(server, &workspace.handle)? else {
+        return structured_tool_error(git_commit_busy_error(request_id));
+    };
+    let workspaces = Arc::clone(&server.workspaces);
+    let cursor_key = server.cursor_key;
+    let workspace_handle = workspace.handle.clone();
+    let expected_git_state = input.expected_git_state;
+    let message = input.message;
+    let outcome = tokio::task::spawn_blocking(move || {
+        build_git_commit_plan_blocking(
+            workspaces.as_slice(),
+            &recovery,
+            &cursor_key,
+            &workspace_handle,
+            &expected_git_state,
+            &message,
+        )
+    })
+    .await
+    .map_err(|_| McpError::internal_error("Git commit planning unavailable", None))?;
+    let (workspace_id, plan) = match outcome {
+        GitCommitPlanningOutcome::Planned { workspace_id, plan } => (workspace_id, *plan),
+        GitCommitPlanningOutcome::StateStale => {
+            return structured_tool_error(git_commit_plan_stale_error(request_id));
+        }
+        GitCommitPlanningOutcome::Failed(error) => {
+            return structured_tool_error(map_git_commit_error(request_id, error));
+        }
+    };
+    let binding = git_commit_binding(&workspace_id, &plan);
+    let effect_set = format!("effect:v1:{}", blake3::hash(&binding).to_hex());
+    let summary = format!(
+        "Create one unsigned managed-only Git commit.\nMessage: {}\nBranch: {}\nManaged changes: {} created, {} updated, {} deleted.\nUnrelated worktree changes: {}; they remain uncommitted.\nNo push, network, hooks, filters, helpers, or signing.\nEffect fingerprint: {}",
+        safe_summary_line(plan.message()),
+        safe_summary_line(plan.branch()),
+        plan.created(),
+        plan.updated(),
+        plan.deleted(),
+        plan.unrelated_changes(),
+        effect_set,
+    );
+    let ticket = match server.approval_manager.issue(
+        &workspace.handle,
+        ApprovalKind::GitWrite,
+        ApprovalOperation::GitCommit,
+        &binding,
+        &summary,
+        APPROVAL_PLAN_LIFETIME,
+    ) {
+        Ok(ticket) => ticket,
+        Err(error) => {
+            let _ = cancel_git_commit_plan(plan);
+            return match error {
+                PlanIssueError::Capacity => {
+                    structured_tool_error(git_commit_busy_error(request_id))
+                }
+                PlanIssueError::Unavailable => {
+                    structured_tool_error(git_commit_unavailable_error(request_id))
+                }
+                PlanIssueError::Invalid => Err(McpError::internal_error(
+                    "Git commit plan unavailable",
+                    None,
+                )),
+            };
+        }
+    };
+    let formatted_expiry = match (OffsetDateTime::now_utc()
+        + time::Duration::seconds(ticket.lifetime.as_secs() as i64))
+    .format(&Rfc3339)
+    {
+        Ok(value) => value,
+        Err(_) => {
+            server.approval_manager.cancel(&ticket.token);
+            let _ = cancel_git_commit_plan(plan);
+            return Err(McpError::internal_error("Plan expiry unavailable", None));
+        }
+    };
+    let output = GitCommitPlanOutput {
+        operation: "git_commit",
+        effect_set,
+        message: plan.message().to_owned(),
+        branch: plan.branch().to_owned(),
+        created: plan.created(),
+        updated: plan.updated(),
+        deleted: plan.deleted(),
+        unrelated_changes: plan.unrelated_changes(),
+        unsigned: true,
+        pushes: false,
+        uses_network: false,
+        plan_token: ticket.token.clone(),
+        expires_at: formatted_expiry,
+    };
+    let stored = StoredGitCommitPlan {
+        workspace_handle: workspace.handle.clone(),
+        workspace_id,
+        binding,
+        expires_at: ticket.expires_at,
+        core: Some(plan),
+        _reservation: reservation,
+    };
+    let rejected = {
+        let Ok(mut plans) = server.git_commit_plans.plans.lock() else {
+            server.approval_manager.cancel(&ticket.token);
+            drop(stored);
+            return Err(McpError::internal_error(
+                "Git commit plans unavailable",
+                None,
+            ));
+        };
+        if plans.len() >= MAX_GIT_COMMIT_PLANS
+            || plans.contains_key(&ticket.token)
+            || plans
+                .values()
+                .any(|plan| plan.workspace_handle == workspace.handle)
+        {
+            Some(stored)
+        } else {
+            plans.insert(ticket.token.clone(), stored);
+            None
+        }
+    };
+    if let Some(rejected) = rejected {
+        server.approval_manager.cancel(&ticket.token);
+        drop(rejected);
+        return structured_tool_error(git_commit_busy_error(request_id));
+    }
+    serde_json::to_value(output)
+        .map(CallToolResult::structured)
+        .map_err(|_| McpError::internal_error("Tool output unavailable", None))
+}
+
+fn apply_git_commit_plan_blocking(
+    workspaces: &[ConfiguredWorkspace],
+    recovery: &RecoveryLocations,
+    mut stored: StoredGitCommitPlan,
+    cancellation: &CancellationToken,
+    #[cfg(test)] commit_probe: Option<&Arc<GuideTestedCommitProbe>>,
+) -> GitCommitBlockingOutcome {
+    let Some(core) = stored.core.take() else {
+        return GitCommitBlockingOutcome::Unavailable;
+    };
+    let Some(workspace) = workspaces
+        .iter()
+        .find(|workspace| workspace.handle == stored.workspace_handle)
+    else {
+        let _ = cancel_git_commit_plan(core);
+        return GitCommitBlockingOutcome::Stale;
+    };
+    let mut view = match workspace.view.write() {
+        Ok(view) => view,
+        Err(_) => {
+            let _ = cancel_git_commit_plan(core);
+            return GitCommitBlockingOutcome::Unavailable;
+        }
+    };
+    if refresh_open_workspace(&mut view).is_err()
+        || view.manifest().workspace_id().to_string() != stored.workspace_id
+    {
+        let _ = cancel_git_commit_plan(core);
+        return GitCommitBlockingOutcome::Stale;
+    }
+    match apply_git_commit_with_cancellation(
+        &view,
+        &recovery.state_home.bridge_path,
+        recovery
+            .runtime_directory
+            .as_ref()
+            .map(|directory| directory.bridge_path.as_path()),
+        core,
+        || {
+            #[cfg(test)]
+            if let Some(probe) = commit_probe {
+                *probe.cancellation.lock().expect("probe cancellation locks") =
+                    Some(cancellation.clone());
+                probe.reached.wait();
+                probe.release.wait();
+            }
+            cancellation.is_cancelled()
+        },
+    ) {
+        Ok(outcome) => GitCommitBlockingOutcome::Committed {
+            workspace_changed: outcome.workspace_changed(),
+        },
+        Err(GitCommitPlanError::PlanStale) => GitCommitBlockingOutcome::Stale,
+        Err(GitCommitPlanError::Cancelled) => GitCommitBlockingOutcome::Cancelled,
+        Err(GitCommitPlanError::OperationInProgress | GitCommitPlanError::RecoveryNotRequired) => {
+            GitCommitBlockingOutcome::RecoveryRequired
+        }
+        Err(
+            GitCommitPlanError::UnsafeRepository
+            | GitCommitPlanError::UnsupportedRepository
+            | GitCommitPlanError::UnsupportedIndex
+            | GitCommitPlanError::AmbiguousManagedHistory
+            | GitCommitPlanError::PathCollision,
+        ) => GitCommitBlockingOutcome::Conflict,
+        Err(GitCommitPlanError::Io) => {
+            match git_commit_recovery_required(
+                &view,
+                &recovery.state_home.bridge_path,
+                recovery
+                    .runtime_directory
+                    .as_ref()
+                    .map(|directory| directory.bridge_path.as_path()),
+            ) {
+                Ok(true) => GitCommitBlockingOutcome::RecoveryRequired,
+                _ => GitCommitBlockingOutcome::Unavailable,
+            }
+        }
+        Err(_) => GitCommitBlockingOutcome::Unavailable,
+    }
+}
+
+async fn git_commit_execute(
+    server: &McpServer,
+    input: GitCommitInput,
+    request_cancellation: CancellationToken,
+) -> Result<CallToolResult, McpError> {
+    let request_id = new_request_id();
+    let workspace = server.workspace(&input.workspace_handle)?;
+    if !workspace.allow_write {
+        return structured_tool_error(workspace_write_required_error(request_id));
+    }
+    if !workspace.allow_git_write {
+        return structured_tool_error(workspace_git_write_required_error(request_id));
+    }
+    input
+        .plan_token
+        .parse::<PlanToken>()
+        .map_err(|_| McpError::invalid_params("invalid plan token", None))?;
+    let stored = server
+        .git_commit_plans
+        .plans
+        .lock()
+        .map_err(|_| McpError::internal_error("Git commit plans unavailable", None))?
+        .remove(&input.plan_token);
+    let Some(mut stored) = stored else {
+        return structured_tool_error(git_commit_plan_replayed_error(request_id));
+    };
+    let cancel_stored = |stored: &mut StoredGitCommitPlan| {
+        if let Some(core) = stored.core.take() {
+            let _ = cancel_git_commit_plan(core);
+        }
+    };
+    if request_cancellation.is_cancelled() {
+        server.approval_manager.cancel(&input.plan_token);
+        cancel_stored(&mut stored);
+        return structured_tool_error(git_commit_cancelled_error(request_id));
+    }
+    if Instant::now() >= stored.expires_at {
+        server.approval_manager.cancel(&input.plan_token);
+        cancel_stored(&mut stored);
+        return structured_tool_error(git_commit_plan_expired_error(request_id));
+    }
+    if stored.workspace_handle != workspace.handle {
+        let _ = server.approval_manager.execute(
+            &input.plan_token,
+            &workspace.handle,
+            ApprovalKind::GitWrite,
+            ApprovalOperation::GitCommit,
+            &stored.binding,
+        );
+        cancel_stored(&mut stored);
+        return structured_tool_error(git_commit_plan_scope_error(request_id));
+    }
+    let manager = Arc::clone(&server.approval_manager);
+    let task_manager = Arc::clone(&manager);
+    let token = input.plan_token.clone();
+    let task_token = token.clone();
+    let workspace_handle = workspace.handle.clone();
+    let binding = stored.binding.clone();
+    let mut execution_guard = ApprovalExecutionGuard::new(manager, token);
+    let mut task = tokio::task::spawn_blocking(move || {
+        task_manager.execute(
+            &task_token,
+            &workspace_handle,
+            ApprovalKind::GitWrite,
+            ApprovalOperation::GitCommit,
+            &binding,
+        )
+    });
+    let execution = tokio::select! {
+        result = &mut task => result.map_err(|_| McpError::internal_error("Native approval unavailable", None))?,
+        () = request_cancellation.cancelled() => {
+            server.approval_manager.cancel(&input.plan_token);
+            let _ = task.await;
+            execution_guard.disarm();
+            cancel_stored(&mut stored);
+            return structured_tool_error(git_commit_cancelled_error(request_id));
+        }
+    };
+    execution_guard.disarm();
+    tokio::task::yield_now().await;
+    if request_cancellation.is_cancelled() {
+        cancel_stored(&mut stored);
+        return structured_tool_error(git_commit_cancelled_error(request_id));
+    }
+    match execution {
+        PlanExecution::Invalid => {
+            cancel_stored(&mut stored);
+            return structured_tool_error(git_commit_plan_replayed_error(request_id));
+        }
+        PlanExecution::Denied => {
+            cancel_stored(&mut stored);
+            return serde_json::to_value(GitCommitOutput {
+                status: "denied",
+                committed: false,
+                workspace_changed: false,
+                recovery_required: false,
+            })
+            .map(CallToolResult::structured)
+            .map_err(|_| McpError::internal_error("Tool output unavailable", None));
+        }
+        PlanExecution::Approved => {}
+    }
+    let Some(recovery) = server.recovery_locations.clone() else {
+        cancel_stored(&mut stored);
+        return structured_tool_error(git_commit_unavailable_error(request_id));
+    };
+    let workspaces = Arc::clone(&server.workspaces);
+    let publication_cancellation = request_cancellation.clone();
+    #[cfg(test)]
+    let commit_probe = server.git_commit_commit_probe.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        apply_git_commit_plan_blocking(
+            workspaces.as_slice(),
+            &recovery,
+            stored,
+            &publication_cancellation,
+            #[cfg(test)]
+            commit_probe.as_ref(),
+        )
+    })
+    .await
+    .map_err(|_| McpError::internal_error("Git commit publication unavailable", None))?;
+    match outcome {
+        GitCommitBlockingOutcome::Committed { workspace_changed } => {
+            serde_json::to_value(GitCommitOutput {
+                status: "committed",
+                committed: true,
+                workspace_changed,
+                recovery_required: false,
+            })
+            .map(CallToolResult::structured)
+            .map_err(|_| McpError::internal_error("Tool output unavailable", None))
+        }
+        GitCommitBlockingOutcome::Stale => {
+            structured_tool_error(git_commit_plan_stale_error(request_id))
+        }
+        GitCommitBlockingOutcome::Cancelled => {
+            structured_tool_error(git_commit_cancelled_error(request_id))
+        }
+        GitCommitBlockingOutcome::Conflict => {
+            structured_tool_error(git_commit_conflict_error(request_id))
+        }
+        GitCommitBlockingOutcome::RecoveryRequired => serde_json::to_value(GitCommitOutput {
+            status: "recoveryRequired",
+            committed: false,
+            workspace_changed: false,
+            recovery_required: true,
+        })
+        .map(CallToolResult::structured)
+        .map_err(|_| McpError::internal_error("Tool output unavailable", None)),
+        GitCommitBlockingOutcome::Unavailable => {
+            structured_tool_error(git_commit_failed_error(request_id))
+        }
+    }
+}
+
+fn prune_git_commit_recovery_plans(server: &McpServer) -> Result<(), McpError> {
+    let now = Instant::now();
+    let expired = {
+        let mut plans = server
+            .git_commit_recovery_plans
+            .lock()
+            .map_err(|_| McpError::internal_error("Git recovery plans unavailable", None))?;
+        let tokens = plans
+            .iter()
+            .filter(|(_, plan)| now >= plan.expires_at)
+            .map(|(token, _)| token.clone())
+            .collect::<Vec<_>>();
+        for token in &tokens {
+            plans.remove(token);
+        }
+        tokens
+    };
+    for token in expired {
+        server.approval_manager.cancel(&token);
+    }
+    Ok(())
+}
+
+fn git_commit_recovery_binding(
+    workspace_id: &str,
+    core: &rehow_core::git::GitCommitRecoveryPlan,
+) -> Vec<u8> {
+    let mut binding = b"rehow-mcp-git-commit-recovery-v1\0".to_vec();
+    let core_token =
+        serde_json::to_string(core.token()).expect("the opaque core recovery token serializes");
+    for value in [workspace_id, core_token.as_str()] {
+        binding.extend_from_slice(&(value.len() as u64).to_be_bytes());
+        binding.extend_from_slice(value.as_bytes());
+    }
+    binding
+}
+
+async fn git_commit_recovery_plan_tool(
+    server: &McpServer,
+    input: WorkspaceGetInput,
+) -> Result<CallToolResult, McpError> {
+    let request_id = new_request_id();
+    let workspace = server.workspace(&input.workspace_handle)?;
+    if !workspace.allow_write {
+        return structured_tool_error(workspace_write_required_error(request_id));
+    }
+    if !workspace.allow_git_write {
+        return structured_tool_error(workspace_git_write_required_error(request_id));
+    }
+    if server.approval_status != ApprovalHelperStatus::Trusted {
+        return structured_tool_error(git_commit_unavailable_error(request_id));
+    }
+    let Some(recovery) = server.recovery_locations.clone() else {
+        return structured_tool_error(git_commit_unavailable_error(request_id));
+    };
+    prune_git_commit_plans(server)?;
+    prune_git_commit_recovery_plans(server)?;
+    let Some(reservation) = reserve_git_commit_planning(server, &workspace.handle)? else {
+        return structured_tool_error(git_commit_busy_error(request_id));
+    };
+    let workspaces = Arc::clone(&server.workspaces);
+    let workspace_handle = workspace.handle.clone();
+    let discovery = tokio::task::spawn_blocking(move || {
+        let workspace = workspaces
+            .iter()
+            .find(|workspace| workspace.handle == workspace_handle)
+            .ok_or(GitCommitPlanError::Io)?;
+        let mut view = workspace.view.write().map_err(|_| GitCommitPlanError::Io)?;
+        refresh_open_workspace(&mut view).map_err(|_| GitCommitPlanError::Io)?;
+        let core = plan_git_commit_recovery(
+            &view,
+            &recovery.state_home.bridge_path,
+            recovery
+                .runtime_directory
+                .as_ref()
+                .map(|directory| directory.bridge_path.as_path()),
+        )?;
+        Ok((view.manifest().workspace_id().to_string(), core))
+    })
+    .await
+    .map_err(|_| McpError::internal_error("Git recovery planning unavailable", None))?;
+    let (workspace_id, core) = match discovery {
+        Ok(discovery) => discovery,
+        Err(error) => return structured_tool_error(map_git_commit_error(request_id, error)),
+    };
+    let binding = git_commit_recovery_binding(&workspace_id, &core);
+    let effect_set = format!("effect:v1:{}", blake3::hash(&binding).to_hex());
+    let summary = format!(
+        "Resume one interrupted managed Git commit.\nRehow will inspect its exact private recovery record and finish only the approved index/branch update.\nNo push, network, reset, discard, history rewrite, hooks, helpers, or signing.\nEffect fingerprint: {effect_set}"
+    );
+    let ticket = match server.approval_manager.issue(
+        &workspace.handle,
+        ApprovalKind::GitWrite,
+        ApprovalOperation::GitCommit,
+        &binding,
+        &summary,
+        APPROVAL_PLAN_LIFETIME,
+    ) {
+        Ok(ticket) => ticket,
+        Err(PlanIssueError::Capacity) => {
+            return structured_tool_error(git_commit_busy_error(request_id));
+        }
+        Err(PlanIssueError::Unavailable) => {
+            return structured_tool_error(git_commit_unavailable_error(request_id));
+        }
+        Err(PlanIssueError::Invalid) => {
+            return Err(McpError::internal_error(
+                "Git recovery plan unavailable",
+                None,
+            ));
+        }
+    };
+    let expires_at = match (OffsetDateTime::now_utc()
+        + time::Duration::seconds(ticket.lifetime.as_secs() as i64))
+    .format(&Rfc3339)
+    {
+        Ok(value) => value,
+        Err(_) => {
+            server.approval_manager.cancel(&ticket.token);
+            return Err(McpError::internal_error("Plan expiry unavailable", None));
+        }
+    };
+    let plan = McpGitCommitRecoveryPlan {
+        workspace_handle: workspace.handle.clone(),
+        workspace_id,
+        binding,
+        expires_at: ticket.expires_at,
+        core,
+        _reservation: reservation,
+    };
+    let inserted = match server.git_commit_recovery_plans.lock() {
+        Ok(mut plans)
+            if plans.len() < MAX_GIT_COMMIT_RECOVERY_PLANS
+                && !plans.contains_key(&ticket.token)
+                && !plans
+                    .values()
+                    .any(|plan| plan.workspace_handle == workspace.handle) =>
+        {
+            plans.insert(ticket.token.clone(), plan);
+            true
+        }
+        Ok(_) => false,
+        Err(_) => {
+            server.approval_manager.cancel(&ticket.token);
+            return Err(McpError::internal_error(
+                "Git recovery plans unavailable",
+                None,
+            ));
+        }
+    };
+    if !inserted {
+        server.approval_manager.cancel(&ticket.token);
+        return structured_tool_error(git_commit_busy_error(request_id));
+    }
+    serde_json::to_value(GitCommitRecoveryPlanOutput {
+        operation: "git_commit_recover",
+        effect_set,
+        effects: vec![
+            "Resume only Rehow's internally discovered interrupted managed commit publication."
+                .to_owned(),
+            "Preserve conflicting Git state and never reset, discard, rewrite, push, or use the network."
+                .to_owned(),
+        ],
+        plan_token: ticket.token,
+        expires_at,
+    })
+    .map(CallToolResult::structured)
+    .map_err(|_| McpError::internal_error("Tool output unavailable", None))
+}
+
+fn apply_git_commit_recovery_blocking(
+    workspaces: &[ConfiguredWorkspace],
+    recovery: &RecoveryLocations,
+    plan: McpGitCommitRecoveryPlan,
+) -> GitCommitRecoveryBlockingOutcome {
+    let Some(workspace) = workspaces
+        .iter()
+        .find(|workspace| workspace.handle == plan.workspace_handle)
+    else {
+        return GitCommitRecoveryBlockingOutcome::Stale;
+    };
+    let mut view = match workspace.view.write() {
+        Ok(view) => view,
+        Err(_) => return GitCommitRecoveryBlockingOutcome::Unavailable,
+    };
+    if refresh_open_workspace(&mut view).is_err()
+        || view.manifest().workspace_id().to_string() != plan.workspace_id
+    {
+        return GitCommitRecoveryBlockingOutcome::Stale;
+    }
+    match resume_planned_git_commit_publication(
+        &view,
+        &recovery.state_home.bridge_path,
+        recovery
+            .runtime_directory
+            .as_ref()
+            .map(|directory| directory.bridge_path.as_path()),
+        plan.core,
+    ) {
+        Ok(outcome) => GitCommitRecoveryBlockingOutcome::Recovered {
+            workspace_changed: outcome.workspace_changed(),
+        },
+        Err(GitCommitPlanError::RecoveryNotRequired | GitCommitPlanError::PlanStale) => {
+            GitCommitRecoveryBlockingOutcome::Stale
+        }
+        Err(
+            GitCommitPlanError::UnsafeRepository
+            | GitCommitPlanError::UnsupportedRepository
+            | GitCommitPlanError::UnsupportedIndex
+            | GitCommitPlanError::AmbiguousManagedHistory
+            | GitCommitPlanError::PathCollision,
+        ) => GitCommitRecoveryBlockingOutcome::Conflict,
+        Err(_) => GitCommitRecoveryBlockingOutcome::Unavailable,
+    }
+}
+
+async fn git_commit_recover_execute(
+    server: &McpServer,
+    input: GitCommitInput,
+    request_cancellation: CancellationToken,
+) -> Result<CallToolResult, McpError> {
+    let request_id = new_request_id();
+    let workspace = server.workspace(&input.workspace_handle)?;
+    if !workspace.allow_write {
+        return structured_tool_error(workspace_write_required_error(request_id));
+    }
+    if !workspace.allow_git_write {
+        return structured_tool_error(workspace_git_write_required_error(request_id));
+    }
+    input
+        .plan_token
+        .parse::<PlanToken>()
+        .map_err(|_| McpError::invalid_params("invalid plan token", None))?;
+    let plan = server
+        .git_commit_recovery_plans
+        .lock()
+        .map_err(|_| McpError::internal_error("Git recovery plans unavailable", None))?
+        .remove(&input.plan_token);
+    let Some(plan) = plan else {
+        return structured_tool_error(git_commit_plan_replayed_error(request_id));
+    };
+    if request_cancellation.is_cancelled() {
+        server.approval_manager.cancel(&input.plan_token);
+        return structured_tool_error(git_commit_cancelled_error(request_id));
+    }
+    if Instant::now() >= plan.expires_at {
+        server.approval_manager.cancel(&input.plan_token);
+        return structured_tool_error(git_commit_plan_expired_error(request_id));
+    }
+    if plan.workspace_handle != workspace.handle {
+        let _ = server.approval_manager.execute(
+            &input.plan_token,
+            &workspace.handle,
+            ApprovalKind::GitWrite,
+            ApprovalOperation::GitCommit,
+            &plan.binding,
+        );
+        return structured_tool_error(git_commit_plan_scope_error(request_id));
+    }
+    let manager = Arc::clone(&server.approval_manager);
+    let task_manager = Arc::clone(&manager);
+    let token = input.plan_token.clone();
+    let task_token = token.clone();
+    let workspace_handle = workspace.handle.clone();
+    let binding = plan.binding.clone();
+    let mut execution_guard = ApprovalExecutionGuard::new(manager, token);
+    let mut task = tokio::task::spawn_blocking(move || {
+        task_manager.execute(
+            &task_token,
+            &workspace_handle,
+            ApprovalKind::GitWrite,
+            ApprovalOperation::GitCommit,
+            &binding,
+        )
+    });
+    let execution = tokio::select! {
+        result = &mut task => result.map_err(|_| McpError::internal_error("Native approval unavailable", None))?,
+        () = request_cancellation.cancelled() => {
+            server.approval_manager.cancel(&input.plan_token);
+            let _ = task.await;
+            execution_guard.disarm();
+            return structured_tool_error(git_commit_cancelled_error(request_id));
+        }
+    };
+    execution_guard.disarm();
+    tokio::task::yield_now().await;
+    if request_cancellation.is_cancelled() {
+        return structured_tool_error(git_commit_cancelled_error(request_id));
+    }
+    match execution {
+        PlanExecution::Invalid => {
+            return structured_tool_error(git_commit_plan_replayed_error(request_id));
+        }
+        PlanExecution::Denied => {
+            return serde_json::to_value(GitCommitRecoveryOutput {
+                status: "denied",
+                recovered: false,
+                workspace_changed: false,
+            })
+            .map(CallToolResult::structured)
+            .map_err(|_| McpError::internal_error("Tool output unavailable", None));
+        }
+        PlanExecution::Approved => {}
+    }
+    let Some(recovery) = server.recovery_locations.clone() else {
+        return structured_tool_error(git_commit_unavailable_error(request_id));
+    };
+    let workspaces = Arc::clone(&server.workspaces);
+    let outcome = tokio::task::spawn_blocking(move || {
+        apply_git_commit_recovery_blocking(workspaces.as_slice(), &recovery, plan)
+    })
+    .await
+    .map_err(|_| McpError::internal_error("Git recovery unavailable", None))?;
+    match outcome {
+        GitCommitRecoveryBlockingOutcome::Recovered { workspace_changed } => {
+            serde_json::to_value(GitCommitRecoveryOutput {
+                status: "recovered",
+                recovered: true,
+                workspace_changed,
+            })
+            .map(CallToolResult::structured)
+            .map_err(|_| McpError::internal_error("Tool output unavailable", None))
+        }
+        GitCommitRecoveryBlockingOutcome::Stale => {
+            structured_tool_error(git_commit_plan_stale_error(request_id))
+        }
+        GitCommitRecoveryBlockingOutcome::Conflict => {
+            structured_tool_error(git_commit_conflict_error(request_id))
+        }
+        GitCommitRecoveryBlockingOutcome::Unavailable => {
+            structured_tool_error(git_commit_failed_error(request_id))
+        }
+    }
+}
+
 fn guide_tested_binding(
     workspace_id: &str,
     guide_id: GuideId,
@@ -5997,51 +7104,58 @@ impl McpServer {
     ) -> Result<Json<GitStatusOutput>, McpError> {
         let workspace = self.workspace(&input.workspace_handle)?;
         let view = Self::read_view(workspace)?;
-        let output = match read_git_status(&view) {
-            Ok(status) => {
-                let version = status.version().map(str::to_owned);
-                if !status.available() {
-                    empty_git_status("unavailable", None, None)
-                } else {
-                    match status.repository() {
-                        GitRepositoryStatus::NotRepository => {
-                            empty_git_status("notRepository", version, None)
-                        }
-                        GitRepositoryStatus::Unsafe => empty_git_status("unsafe", version, None),
-                        GitRepositoryStatus::Ready(repository) => GitStatusOutput {
-                            kind: "ready",
-                            version,
-                            branch: repository.branch().map(str::to_owned),
-                            detached: repository.detached(),
-                            upstream: repository.upstream().map(str::to_owned),
-                            divergence_known: repository.divergence_known(),
-                            ahead: repository.ahead(),
-                            behind: repository.behind(),
-                            changed: repository.changed(),
-                            untracked: repository.untracked(),
-                            conflicts: repository.conflicts(),
-                            clean: repository.clean(),
-                            remotes: repository.remotes().to_vec(),
-                            remote_count: repository.remote_count(),
-                            failure: None,
-                        },
-                    }
-                }
-            }
-            Err(error) => empty_git_status(
-                "failed",
-                None,
-                Some(match error {
-                    GitReadError::Spawn => "spawn",
-                    GitReadError::ExitStatus => "exitStatus",
-                    GitReadError::Signal => "signal",
-                    GitReadError::Timeout => "timeout",
-                    GitReadError::OutputLimit => "outputLimit",
-                    GitReadError::InvalidOutput => "invalidOutput",
-                }),
-            ),
-        };
+        let output = current_git_status(&view, &self.cursor_key);
         Ok(Json(output))
+    }
+
+    #[tool(
+        name = "git_commit_plan",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<GitCommitPlanOutput>(),
+        description = "Prepare one unsigned managed-only local Git commit from an exact gitState. Requires startup write+Git-write capability and the trusted native approval helper. Returns no paths, object IDs, identity, content, raw Git output, or credentials."
+    )]
+    async fn git_commit_plan(
+        &self,
+        Parameters(input): Parameters<GitCommitPlanInput>,
+    ) -> Result<CallToolResult, McpError> {
+        git_commit_plan_tool(self, input).await
+    }
+
+    #[tool(
+        name = "git_commit",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<GitCommitOutput>(),
+        description = "Request native approval and publish one single-use managed-only local Git commit plan. The call accepts no Git arguments, paths, refs, identity, effects, credentials, or consent assertion and never pushes or uses the network."
+    )]
+    async fn git_commit(
+        &self,
+        Parameters(input): Parameters<GitCommitInput>,
+        cancellation: CancellationToken,
+    ) -> Result<CallToolResult, McpError> {
+        git_commit_execute(self, input, cancellation).await
+    }
+
+    #[tool(
+        name = "git_commit_recovery_plan",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<GitCommitRecoveryPlanOutput>(),
+        description = "Prepare native approval to resume Rehow's internally discovered interrupted managed commit. The client cannot select or receive a recovery operation ID."
+    )]
+    async fn git_commit_recovery_plan(
+        &self,
+        Parameters(input): Parameters<WorkspaceGetInput>,
+    ) -> Result<CallToolResult, McpError> {
+        git_commit_recovery_plan_tool(self, input).await
+    }
+
+    #[tool(
+        name = "git_commit_recover",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<GitCommitRecoveryOutput>(),
+        description = "Request native approval and resume only the internally discovered interrupted managed commit. This accepts no operation ID or Git authority and never resets, discards, rewrites, pushes, or uses the network."
+    )]
+    async fn git_commit_recover(
+        &self,
+        Parameters(input): Parameters<GitCommitInput>,
+        cancellation: CancellationToken,
+    ) -> Result<CallToolResult, McpError> {
+        git_commit_recover_execute(self, input, cancellation).await
     }
 
     #[tool(
@@ -6230,7 +7344,20 @@ mod tests {
             "origin",
             "https://example.invalid/rehow.git",
         ]);
+        run(&["config", "--local", "user.name", "Rehow Test"]);
+        run(&["config", "--local", "user.email", "rehow@example.invalid"]);
         fs::write(root.join("local-note.txt"), b"untracked\n").unwrap();
+    }
+
+    fn fixture_git_stdout(root: &std::path::Path, arguments: &[&str]) -> String {
+        let output = Command::new("/usr/bin/git")
+            .current_dir(root)
+            .env_clear()
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
     }
 
     fn fixture_discovery_guides(root: &std::path::Path) {
@@ -6321,6 +7448,28 @@ mod tests {
                     allow_write: true,
                     allow_broad: true,
                     allow_git_write: false,
+                }],
+            },
+            Some(RecoveryLocationPaths {
+                state_home: state.to_owned(),
+                runtime_directory: None,
+            }),
+        )
+        .unwrap();
+        server.approval_manager = Arc::new(ApprovalManager::approving_for_tests());
+        server.approval_status = ApprovalHelperStatus::Trusted;
+        server
+    }
+
+    fn approval_ready_git_server(root: &std::path::Path, state: &std::path::Path) -> McpServer {
+        let mut server = open_server_with_recovery(
+            LaunchConfig {
+                workspaces: vec![WorkspaceArgument {
+                    alias: "personal".to_owned(),
+                    path: root.to_owned(),
+                    allow_write: true,
+                    allow_broad: false,
+                    allow_git_write: true,
                 }],
             },
             Some(RecoveryLocationPaths {
@@ -6700,6 +7849,10 @@ mod tests {
                 "category_reorder_plan",
                 "category_restore",
                 "category_update",
+                "git_commit",
+                "git_commit_plan",
+                "git_commit_recover",
+                "git_commit_recovery_plan",
                 "git_status",
                 "guide_archive",
                 "guide_change_category",
@@ -6988,6 +8141,76 @@ mod tests {
                         .is_none()
                 );
             }
+            let git_commit_plan = responses[1]["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == "git_commit_plan")
+                .unwrap();
+            for required in ["workspaceHandle", "expectedGitState", "message"] {
+                assert!(
+                    git_commit_plan["inputSchema"]["properties"]
+                        .get(required)
+                        .is_some()
+                );
+            }
+            for forbidden in [
+                "path",
+                "args",
+                "command",
+                "branch",
+                "ref",
+                "identity",
+                "author",
+                "email",
+                "approved",
+                "effectSet",
+                "planToken",
+                "credentials",
+            ] {
+                assert!(
+                    git_commit_plan["inputSchema"]["properties"]
+                        .get(forbidden)
+                        .is_none()
+                );
+            }
+            for name in ["git_commit", "git_commit_recover"] {
+                let tool = responses[1]["result"]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|tool| tool["name"] == name)
+                    .unwrap();
+                assert!(
+                    tool["inputSchema"]["properties"]
+                        .get("workspaceHandle")
+                        .is_some()
+                );
+                assert!(tool["inputSchema"]["properties"].get("planToken").is_some());
+                for forbidden in [
+                    "path",
+                    "args",
+                    "command",
+                    "branch",
+                    "ref",
+                    "operationId",
+                    "approved",
+                    "effectSet",
+                    "credentials",
+                ] {
+                    assert!(tool["inputSchema"]["properties"].get(forbidden).is_none());
+                }
+            }
+            let recovery_plan = responses[1]["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == "git_commit_recovery_plan")
+                .unwrap();
+            assert_eq!(
+                recovery_plan["inputSchema"]["required"],
+                serde_json::json!(["workspaceHandle"])
+            );
         }
         for (name, field, other) in [
             ("guide_set_tags", "tags", "aliases"),
@@ -7392,6 +8615,8 @@ mod tests {
         assert_eq!(status.remotes, ["origin"]);
         assert_eq!(status.remote_count, 1);
         assert!(!status.clean);
+        assert!(status.git_state.starts_with("gitstate:v1:"));
+        assert_eq!(status.git_state.len(), "gitstate:v1:".len() + 64);
         let serialized = serde_json::to_string(&status).unwrap();
         assert!(!serialized.contains("example.invalid"));
         assert!(!serialized.contains(workspace_root.path().to_str().unwrap()));
@@ -7414,6 +8639,339 @@ mod tests {
         );
         assert_eq!(responses[2]["result"]["isError"], false);
         assert_eq!(responses[2]["result"]["structuredContent"]["kind"], "ready");
+    }
+
+    #[tokio::test]
+    async fn git_commit_is_state_bound_native_approved_managed_only_and_single_use() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let state_root = tempfile::tempdir().unwrap();
+        fixture_workspace(workspace_root.path());
+        fixture_guide(workspace_root.path());
+        fixture_attachment(workspace_root.path());
+        fixture_git_repository(workspace_root.path());
+        let guide_path = workspace_root
+            .path()
+            .join("categories/general/0199a1d7-7b0d-7d8e-a38d-f936c5735e12.md");
+        let changed = fs::read_to_string(&guide_path).unwrap().replacen(
+            "summary: Install a downloaded archive.",
+            "summary: Install a downloaded archive safely.",
+            1,
+        );
+        fs::write(&guide_path, changed).unwrap();
+
+        let read_only = open_server(LaunchConfig {
+            workspaces: vec![WorkspaceArgument {
+                alias: "personal".to_owned(),
+                path: workspace_root.path().to_owned(),
+                allow_write: false,
+                allow_broad: false,
+                allow_git_write: false,
+            }],
+        })
+        .unwrap();
+        let read_only_handle = read_only.workspaces[0].handle.clone();
+        let read_only_state = read_only
+            .git_status(Parameters(WorkspaceGetInput {
+                workspace_handle: read_only_handle.clone(),
+            }))
+            .unwrap()
+            .0
+            .git_state;
+        let refused = read_only
+            .git_commit_plan(Parameters(GitCommitPlanInput {
+                workspace_handle: read_only_handle,
+                expected_git_state: read_only_state,
+                message: "Remember safer tarball steps".to_owned(),
+            }))
+            .await
+            .unwrap();
+        assert!(refused.is_error.unwrap_or(false));
+        assert_eq!(
+            refused.structured_content.unwrap()["code"],
+            "WORKSPACE_READ_ONLY"
+        );
+        drop(read_only);
+
+        let server = approval_ready_git_server(workspace_root.path(), state_root.path());
+        let handle = server.workspaces[0].handle.clone();
+        let state = server
+            .git_status(Parameters(WorkspaceGetInput {
+                workspace_handle: handle.clone(),
+            }))
+            .unwrap()
+            .0
+            .git_state;
+
+        let stale = server
+            .git_commit_plan(Parameters(GitCommitPlanInput {
+                workspace_handle: handle.clone(),
+                expected_git_state: format!("gitstate:v1:{}", "0".repeat(64)),
+                message: "Remember safer tarball steps".to_owned(),
+            }))
+            .await
+            .unwrap();
+        assert!(stale.is_error.unwrap_or(false));
+        assert_eq!(stale.structured_content.unwrap()["code"], "PLAN_STALE");
+
+        let planned = server
+            .git_commit_plan(Parameters(GitCommitPlanInput {
+                workspace_handle: handle.clone(),
+                expected_git_state: state,
+                message: "  Remember safer tarball steps  ".to_owned(),
+            }))
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        assert_eq!(planned["operation"], "git_commit");
+        assert_eq!(planned["message"], "Remember safer tarball steps");
+        assert_eq!(planned["updated"], 1);
+        assert_eq!(planned["unrelatedChanges"], 1);
+        assert_eq!(planned["unsigned"], true);
+        assert_eq!(planned["pushes"], false);
+        assert_eq!(planned["usesNetwork"], false);
+        let serialized = serde_json::to_string(&planned).unwrap();
+        assert!(!serialized.contains(workspace_root.path().to_str().unwrap()));
+        assert!(!serialized.contains("rehow@example.invalid"));
+        let token = planned["planToken"].as_str().unwrap().to_owned();
+
+        let applied = server
+            .git_commit(
+                Parameters(GitCommitInput {
+                    workspace_handle: handle.clone(),
+                    plan_token: token.clone(),
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        assert_eq!(applied["status"], "committed");
+        assert_eq!(applied["committed"], true);
+        assert!(workspace_root.path().join("local-note.txt").exists());
+
+        let message = Command::new("/usr/bin/git")
+            .current_dir(workspace_root.path())
+            .env_clear()
+            .args(["log", "-1", "--format=%s"])
+            .output()
+            .unwrap();
+        assert!(message.status.success());
+        assert_eq!(
+            String::from_utf8(message.stdout).unwrap().trim(),
+            "Remember safer tarball steps"
+        );
+
+        let replay = server
+            .git_commit(
+                Parameters(GitCommitInput {
+                    workspace_handle: handle,
+                    plan_token: token,
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(replay.is_error.unwrap_or(false));
+        assert_eq!(
+            replay.structured_content.unwrap()["details"]["reason"],
+            "plan_replayed"
+        );
+
+        let no_recovery = server
+            .git_commit_recovery_plan(Parameters(WorkspaceGetInput {
+                workspace_handle: server.workspaces[0].handle.clone(),
+            }))
+            .await
+            .unwrap();
+        assert!(no_recovery.is_error.unwrap_or(false));
+        assert_eq!(
+            no_recovery.structured_content.unwrap()["code"],
+            "PLAN_STALE"
+        );
+    }
+
+    #[test]
+    fn git_commit_planning_reservation_is_atomic_per_workspace() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let state_root = tempfile::tempdir().unwrap();
+        fixture_workspace(workspace_root.path());
+        fixture_guide(workspace_root.path());
+        fixture_attachment(workspace_root.path());
+        fixture_git_repository(workspace_root.path());
+        let server = approval_ready_git_server(workspace_root.path(), state_root.path());
+        let handle = server.workspaces[0].handle.clone();
+        let first = reserve_git_commit_planning(&server, &handle)
+            .unwrap()
+            .expect("first reservation succeeds");
+        assert!(
+            reserve_git_commit_planning(&server, &handle)
+                .unwrap()
+                .is_none()
+        );
+        drop(first);
+        assert!(
+            reserve_git_commit_planning(&server, &handle)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn git_commit_protocol_cancellation_stops_before_durable_publication() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let state_root = tempfile::tempdir().unwrap();
+        fixture_workspace(workspace_root.path());
+        fixture_guide(workspace_root.path());
+        fixture_attachment(workspace_root.path());
+        fixture_git_repository(workspace_root.path());
+        let guide_path = workspace_root
+            .path()
+            .join("categories/general/0199a1d7-7b0d-7d8e-a38d-f936c5735e12.md");
+        let changed = fs::read_to_string(&guide_path).unwrap().replacen(
+            "summary: Install a downloaded archive.",
+            "summary: Preserve cancellation safely.",
+            1,
+        );
+        fs::write(&guide_path, changed).unwrap();
+        let head_before = fixture_git_stdout(workspace_root.path(), &["rev-parse", "HEAD"]);
+        let index_before = fs::read(workspace_root.path().join(".git/index")).unwrap();
+        let probe = Arc::new(GuideTestedCommitProbe::new());
+        let mut server = approval_ready_git_server(workspace_root.path(), state_root.path());
+        server.git_commit_commit_probe = Some(Arc::clone(&probe));
+        let handle = server.workspaces[0].handle.clone();
+        let git_state = server
+            .git_status(Parameters(WorkspaceGetInput {
+                workspace_handle: handle.clone(),
+            }))
+            .unwrap()
+            .0
+            .git_state;
+        let planned = server
+            .git_commit_plan(Parameters(GitCommitPlanInput {
+                workspace_handle: handle.clone(),
+                expected_git_state: git_state.clone(),
+                message: "Cancellation boundary".to_owned(),
+            }))
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        let token = planned["planToken"].as_str().unwrap().to_owned();
+        let competing_server = server.clone();
+
+        let (server_stream, client_stream) = tokio::io::duplex(64 * 1024);
+        let (server_read, server_write) = tokio::io::split(server_stream);
+        let task = tokio::spawn(async move {
+            server
+                .serve(StdioTransport::new(server_read, server_write))
+                .await
+                .unwrap()
+                .waiting()
+                .await
+                .unwrap();
+        });
+        let (client_read, mut client_write) = tokio::io::split(client_stream);
+        let mut client_read = BufReader::new(client_read);
+        let mut initialize = serde_json::to_vec(&serde_json::json!({
+            "jsonrpc":"2.0","id":1,"method":"initialize",
+            "params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}
+        }))
+        .unwrap();
+        initialize.push(b'\n');
+        client_write.write_all(&initialize).await.unwrap();
+        let mut line = String::new();
+        client_read.read_line(&mut line).await.unwrap();
+        let mut execute = serde_json::to_vec(&serde_json::json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"git_commit","arguments":{
+                "workspaceHandle":handle,"planToken":token
+            }}
+        }))
+        .unwrap();
+        execute.push(b'\n');
+        client_write.write_all(&execute).await.unwrap();
+
+        let reached = Arc::clone(&probe);
+        tokio::task::spawn_blocking(move || reached.reached.wait())
+            .await
+            .unwrap();
+        let competing = competing_server
+            .git_commit_plan(Parameters(GitCommitPlanInput {
+                workspace_handle: handle.clone(),
+                expected_git_state: git_state,
+                message: "Must remain busy".to_owned(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(competing.is_error, Some(true));
+        assert_eq!(competing.structured_content.unwrap()["code"], "IO_BUSY");
+        let mut cancellation = serde_json::to_vec(&serde_json::json!({
+            "jsonrpc":"2.0","method":"notifications/cancelled",
+            "params":{"requestId":2,"reason":"test cancellation"}
+        }))
+        .unwrap();
+        cancellation.push(b'\n');
+        client_write.write_all(&cancellation).await.unwrap();
+        let observed = Arc::clone(&probe);
+        tokio::task::spawn_blocking(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                let cancelled = observed
+                    .cancellation
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(CancellationToken::is_cancelled);
+                if cancelled || Instant::now() >= deadline {
+                    assert!(cancelled);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        })
+        .await
+        .unwrap();
+        let release = Arc::clone(&probe);
+        tokio::task::spawn_blocking(move || release.release.wait())
+            .await
+            .unwrap();
+        client_write.shutdown().await.unwrap();
+        drop(client_write);
+        drop(client_read);
+        task.await.unwrap();
+
+        assert_eq!(
+            fixture_git_stdout(workspace_root.path(), &["rev-parse", "HEAD"]),
+            head_before
+        );
+        assert_eq!(
+            fs::read(workspace_root.path().join(".git/index")).unwrap(),
+            index_before
+        );
+        assert!(
+            fs::read_to_string(guide_path)
+                .unwrap()
+                .contains("Preserve cancellation safely")
+        );
+        fn cbor_files(path: &std::path::Path) -> usize {
+            if !path.exists() {
+                return 0;
+            }
+            fs::read_dir(path)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .map(|entry| {
+                    if entry.is_dir() {
+                        cbor_files(&entry)
+                    } else {
+                        usize::from(entry.extension().is_some_and(|value| value == "cbor"))
+                    }
+                })
+                .sum()
+        }
+        assert_eq!(cbor_files(state_root.path()), 0);
     }
 
     #[test]

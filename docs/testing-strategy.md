@@ -217,6 +217,8 @@ Phase 6E2D1 adds the exact thirty-three-tool schema plus Attachment-title valida
 
 Phase 6E2D2 expands the exact schema to thirty-five tools and covers capability-only previews, native denial, single-use replay, scope/expiry/archive/missing/drift refusal, exact recoverable trash bytes, unknown-metadata/trust behavior inherited from core, and deterministic real-protocol cancellation at the final pre-journal check.
 
+Phase 6E3A expands the exact schema to thirty-nine tools. Focused coverage binds opaque `gitState`, startup write+Git-write authority, normalized messages, closed plan/apply/recovery inputs, single-use approval, unrelated-file preservation, managed-only publication, no-recovery refusal, non-disclosure, atomic per-Workspace normal/recovery exclusion across planning and active execution, exact interrupted-operation recovery binding, and real JSON-RPC cancellation at the final pre-intent boundary. The accepted core commit/recovery adversarial suite remains mandatory. The complete gate and Security Reviewer acceptance remain mandatory before checkpoint.
+
 ## Test result recording
 
 `PROGRESS.md` records date, exact command, pass/fail counts or concise result, relevant environment, known flakes/failures, and commit/tree state. The latest verified commit means all claimed gates ran against that commit; if docs changed afterward, say so explicitly.

@@ -19,7 +19,7 @@ Each startup root has a unique user-chosen alias. Canonical duplicate/nested/ove
 
 Initial transport is stdio. Remote Streamable HTTP is deferred until authentication, origin, multi-user, and network threat models exist.
 
-The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6E2D2 exposes thirty-five tools, including exact Category reorder/removal, Guide Tested preview/execution, bounded Attachment listing/title update/removal, and confined Git-status reads. Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
+The server uses the official Rust SDK and supports both current stateless discovery (`server/discover`, with protocol/client metadata on each request) and the preceding initialize lifecycle for deployed clients. Phase 6E3A exposes thirty-nine tools, including exact Category reorder/removal, Guide Tested preview/execution, bounded Attachment listing/title update/removal, confined Git-status reads, and native-approved managed-only Git commit/recovery. Stdio uses newline-delimited JSON-RPC with a Rehow-owned 1 MiB per-frame limit; exceeding the limit closes the transport without echoing input. Stdout is protocol-only from process start through shutdown.
 
 ## Trust rules
 
@@ -180,10 +180,10 @@ The opaque token is process-local, short-lived, single-use, and bound to launch 
 Availability follows the approved Phase 5 core:
 
 - `git_status({workspaceHandle})` — implemented through the accepted networkless confined core reader; returns closed availability/repository/branch/divergence/change/remote-name state, plus an opaque process-local `gitState` fingerprint for stale-client detection, and no URL, path, raw output, or credentials.
-- `git_commit_plan({workspaceHandle, expectedGitState, message})`
-- `git_commit({workspaceHandle, planToken})`
-- `git_commit_recovery_plan({workspaceHandle})`
-- `git_commit_recover({workspaceHandle, planToken})`
+- `git_commit_plan({workspaceHandle, expectedGitState, message})` — implemented; builds the accepted private managed-only candidate off-thread and returns only bounded plan facts plus a single-use token.
+- `git_commit({workspaceHandle, planToken})` — implemented; consumes the token, requires sealed native Git-write approval, and publishes through the accepted recoverable core intent without push or network.
+- `git_commit_recovery_plan({workspaceHandle})` — implemented; atomically excludes overlapping planning, captures the core's opaque selector for the exact pending operation, and exposes no operation identifier.
+- `git_commit_recover({workspaceHandle, planToken})` — implemented; separately approves and resumes only that exact internally selected publication, refusing replacement by a later operation.
 - `git_sync_plan({workspaceHandle, expectedGitState, direction})`
 - `git_sync({workspaceHandle, planToken})`
 

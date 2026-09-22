@@ -1526,6 +1526,7 @@ fn git_commit_recovery_confirmation() -> &'static str {
 
 fn git_commit_code(error: GitCommitPlanError) -> &'static str {
     match error {
+        GitCommitPlanError::Cancelled => "cancelled",
         GitCommitPlanError::InvalidMessage => "invalidMessage",
         GitCommitPlanError::InvalidIdentity => "invalidIdentity",
         GitCommitPlanError::WorkspaceIssues => "workspaceIssues",
@@ -1547,6 +1548,9 @@ fn git_commit_code(error: GitCommitPlanError) -> &'static str {
 
 fn git_commit_message(error: GitCommitPlanError) -> String {
     match error {
+        GitCommitPlanError::Cancelled => {
+            "The Git commit was cancelled before publication.".to_owned()
+        }
         GitCommitPlanError::InvalidMessage => {
             "Enter a one-line commit message between 1 and 200 characters.".to_owned()
         }
@@ -5018,6 +5022,7 @@ mod tests {
         assert!(!git_commit_message_input_allowed(&"x".repeat(801)));
 
         for (error, code) in [
+            (GitCommitPlanError::Cancelled, "cancelled"),
             (GitCommitPlanError::InvalidMessage, "invalidMessage"),
             (GitCommitPlanError::InvalidIdentity, "invalidIdentity"),
             (GitCommitPlanError::WorkspaceIssues, "workspaceIssues"),

@@ -663,6 +663,7 @@ pub enum GitReadError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GitCommitPlanError {
+    Cancelled,
     InvalidMessage,
     InvalidIdentity,
     WorkspaceIssues,
@@ -868,6 +869,27 @@ pub struct GitCommitPlan {
     staging_snapshot: GitCommitStagingSnapshot,
     preflight: GitCommitRepositoryPreflight,
     candidate: GitCommitCandidate,
+}
+
+pub struct GitCommitRecoveryPlan {
+    token: PlanToken,
+    operation_id: OperationId,
+}
+
+impl GitCommitRecoveryPlan {
+    pub fn token(&self) -> &PlanToken {
+        &self.token
+    }
+}
+
+impl fmt::Debug for GitCommitRecoveryPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitCommitRecoveryPlan")
+            .field("token", &"<redacted>")
+            .field("operation_id", &"<redacted>")
+            .finish()
+    }
 }
 
 impl fmt::Debug for GitCommitPlan {
@@ -8413,6 +8435,22 @@ fn publish_git_commit_with_intent(
     runtime_directory: Option<&Path>,
     plan: &mut GitCommitPlan,
 ) -> Result<GitCommitPublicationOutcome, GitCommitPlanError> {
+    publish_git_commit_with_intent_cancellable(
+        workspace,
+        state_home,
+        runtime_directory,
+        plan,
+        &|| false,
+    )
+}
+
+fn publish_git_commit_with_intent_cancellable(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    plan: &mut GitCommitPlan,
+    cancelled: &impl Fn() -> bool,
+) -> Result<GitCommitPublicationOutcome, GitCommitPlanError> {
     install_git_commit_candidate_pack(workspace, state_home, runtime_directory, plan)?;
     let candidate_index = prepare_git_commit_candidate_index(plan)?;
     let mut candidate_ref = Vec::new();
@@ -8552,6 +8590,9 @@ fn publish_git_commit_with_intent(
         staging_inode,
     };
     intent.plan_hash = git_commit_intent_plan_hash(&intent, &plan.candidate.commit_object_id);
+    if cancelled() {
+        return Err(GitCommitPlanError::Cancelled);
+    }
     session
         .install_intent(&intent)
         .map_err(map_git_commit_intent_error)?;
@@ -8616,9 +8657,25 @@ pub fn apply_git_commit(
     workspace: &WorkspaceView,
     state_home: &Path,
     runtime_directory: Option<&Path>,
-    mut plan: GitCommitPlan,
+    plan: GitCommitPlan,
 ) -> Result<GitCommitPublicationOutcome, GitCommitPlanError> {
-    match publish_git_commit_with_intent(workspace, state_home, runtime_directory, &mut plan) {
+    apply_git_commit_with_cancellation(workspace, state_home, runtime_directory, plan, || false)
+}
+
+pub fn apply_git_commit_with_cancellation(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    mut plan: GitCommitPlan,
+    cancelled: impl Fn() -> bool,
+) -> Result<GitCommitPublicationOutcome, GitCommitPlanError> {
+    match publish_git_commit_with_intent_cancellable(
+        workspace,
+        state_home,
+        runtime_directory,
+        &mut plan,
+        &cancelled,
+    ) {
         Ok(outcome) => Ok(outcome),
         Err(error) => {
             if matches!(
@@ -8900,6 +8957,40 @@ pub fn resume_pending_git_commit_publication(
         resume_git_commit_publication(workspace, state_home, runtime_directory, operation_id)?;
     Ok(GitCommitPublicationOutcome {
         operation_id,
+        workspace_changed,
+    })
+}
+
+pub fn plan_git_commit_recovery(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+) -> Result<GitCommitRecoveryPlan, GitCommitPlanError> {
+    let operation_id = pending_git_commit_recovery_at(workspace, state_home, runtime_directory)?
+        .ok_or(GitCommitPlanError::RecoveryNotRequired)?;
+    let mut random = [0_u8; 32];
+    fill_random(&mut random).map_err(|_| GitCommitPlanError::Io)?;
+    Ok(GitCommitRecoveryPlan {
+        token: PlanToken::from_random_bytes(random),
+        operation_id,
+    })
+}
+
+pub fn resume_planned_git_commit_publication(
+    workspace: &WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    plan: GitCommitRecoveryPlan,
+) -> Result<GitCommitPublicationOutcome, GitCommitPlanError> {
+    let current = pending_git_commit_recovery_at(workspace, state_home, runtime_directory)?
+        .ok_or(GitCommitPlanError::RecoveryNotRequired)?;
+    if current != plan.operation_id {
+        return Err(GitCommitPlanError::PlanStale);
+    }
+    let workspace_changed =
+        resume_git_commit_publication(workspace, state_home, runtime_directory, current)?;
+    Ok(GitCommitPublicationOutcome {
+        operation_id: current,
         workspace_changed,
     })
 }
@@ -11879,7 +11970,7 @@ fn map_commit_plan_to_sync(error: GitCommitPlanError) -> GitSyncError {
         GitCommitPlanError::OperationInProgress => GitSyncError::RecoveryRequired,
         GitCommitPlanError::ResourceLimit => GitSyncError::ResourceLimit,
         GitCommitPlanError::PlanStale => GitSyncError::PlanStale,
-        GitCommitPlanError::Io => GitSyncError::Io,
+        GitCommitPlanError::Cancelled | GitCommitPlanError::Io => GitSyncError::Io,
         GitCommitPlanError::UnsafeRepository => GitSyncError::Unsafe,
         GitCommitPlanError::UnsupportedRepository
         | GitCommitPlanError::UnsupportedIndex
@@ -13752,6 +13843,78 @@ mod tests {
             );
             drop(session);
         }
+    }
+
+    #[test]
+    fn commit_recovery_plan_is_bound_to_the_exact_interrupted_operation() {
+        let temp = Temp::new();
+        drop(initialized_workspace(&temp));
+        configure_fixture_identity(&temp);
+        fixture_git(&temp, &["add", "--", "rehow.yaml"]);
+        fixture_git(&temp, &["commit", "-qm", "base"]);
+        let changed = fs::read_to_string(temp.0.join("rehow.yaml"))
+            .unwrap()
+            .replace("name: Git", "name: First interrupted commit");
+        fs::write(temp.0.join("rehow.yaml"), changed).unwrap();
+        let workspace = open_workspace(&temp);
+        let state = Temp::new();
+        let mut first = plan_git_commit(&workspace, &state.0, "First interruption").unwrap();
+        let commit_id = first.candidate.commit_object_id.clone();
+        set_git_commit_metadata_fault(GitCommitMetadataFault::IndexLockPublished);
+        assert_eq!(
+            publish_git_commit_with_intent(&workspace, &state.0, None, &mut first).unwrap_err(),
+            GitCommitPlanError::UnsupportedRepository
+        );
+        let recovery_for_first = plan_git_commit_recovery(&workspace, &state.0, None).unwrap();
+        let first_operation = pending_git_commit_recovery(&workspace, &state.0)
+            .unwrap()
+            .unwrap();
+        let session = workspace
+            .open_git_commit_recovery_session(&state.0, None)
+            .unwrap();
+        let first_intent = session.read_intent(first_operation).unwrap();
+        session
+            .quarantine_staging(
+                &first_intent.staging_name,
+                (first_intent.staging_device, first_intent.staging_inode),
+            )
+            .unwrap();
+        session
+            .install_intent(
+                &first_intent
+                    .next_stage(GitCommitIntentStage::Conflict)
+                    .unwrap(),
+            )
+            .unwrap();
+        drop(session);
+        drop(first);
+        assert_eq!(
+            pending_git_commit_recovery(&workspace, &state.0).unwrap(),
+            None
+        );
+        let mut second_intent = first_intent.clone();
+        second_intent.operation_id = new_operation_id();
+        second_intent.generation = 1;
+        second_intent.stage = GitCommitIntentStage::Prepared;
+        second_intent.plan_hash = git_commit_intent_plan_hash(&second_intent, &commit_id);
+        let session = workspace
+            .open_git_commit_recovery_session(&state.0, None)
+            .unwrap();
+        session.install_intent(&second_intent).unwrap();
+        drop(session);
+        let second_operation = pending_git_commit_recovery(&workspace, &state.0)
+            .unwrap()
+            .unwrap();
+        assert_ne!(first_operation, second_operation);
+        assert_eq!(
+            resume_planned_git_commit_publication(&workspace, &state.0, None, recovery_for_first,)
+                .unwrap_err(),
+            GitCommitPlanError::PlanStale
+        );
+        assert_eq!(
+            pending_git_commit_recovery(&workspace, &state.0).unwrap(),
+            Some(second_operation)
+        );
     }
 
     #[test]
