@@ -5,11 +5,11 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 6E2D2 implementation is checkpointed at signed `4d349ff`: MCP now supports exact Attachment title update and native-approved recoverable Attachment removal. Full gates pass. Combined security review found four issues; all are corrected and tested, but the review process exhausted external credits before emitting its formal final PASS. Phase 6E3A managed Git commit is specified in ADR 0047 and an implementation-ready packet; no new Git authority is implemented yet.
+Phase 6E2D2 is accepted: signed `4d349ff` passes full gates and the correction-only Security Reviewer verdict is PASS. Phase 6E3A managed Git commit is specified at signed planning checkpoint `3a65a3c` and is ready for direct implementation.
 
 ## Current task
 
-Close the formal combined Phase 6E2D1–D2 Security Reviewer verdict when reviewer capacity is available, then execute the ready Phase 6E3A MCP managed-Git-commit packet.
+Implement `docs/task-packets/phase-6e3a-mcp-git-commit.md` with focused tests, then run one complete gate and one Security Reviewer acceptance pass.
 
 ## Overall status
 
@@ -287,17 +287,17 @@ No known regression in accepted phases. If the process is killed after the initi
 - Phase 6E2B exposes only exact empty, non-default Category removal. The independent reviewer found two issues: desktop cancellation handling was non-exhaustive, and a foreign entry arriving after the final scan could move the descriptor before reporting an ordinary stale plan. The correction adds closed desktop cancellation/recovery handling and operation/path-bound `RECOVERY_REQUIRED`; a deterministic race proves foreign bytes and the exact trashed descriptor both survive. The correction-only independent re-review is PASS.
 - Phase 6E2C exposes only exact ready-Guide Tested approval. Security review found missing operation-level scope/expiry/archive evidence and a blocked cancellation path from synchronous post-approval work on the current-thread runtime. The correction adds those refusal tests, moves revalidation/mutation to blocking work, and proves real JSON-RPC cancellation immediately before journal creation leaves bytes unchanged and creates no journal. Final verdict: PASS with no blocker/high/medium finding.
 - Phase 6E2D1 exposes only one existing Attachment title scalar. The schema omits path/bytes/hash/size/media type/status/consent, the core preserves all file-binding and unknown fields, and no-op/read-only/archived/missing/invalid/stale states fail or preserve bytes.
-- Phase 6E2D2 exposes only ID/revision planning and handle/token execution. Combined security review found pathname substitution, post-Guide conflict misreporting, current-thread hashing, and stale portable Workspace-ID binding. Corrections bind source device/inode into approval and journal state, verify the atomically held file, return bounded `RECOVERY_REQUIRED`, move exact planning to blocking work, and bind/recheck the refreshed portable ID. Adversarial tests and the complete gate pass. The reviewer confirmed the first three substantially fixed and reported only the fourth before external credits prevented a final verdict; that fourth correction is source-audited and tested, but formal PASS remains open.
+- Phase 6E2D2 exposes only ID/revision planning and handle/token execution. Combined security review found pathname substitution, post-Guide conflict misreporting, current-thread hashing, and stale portable Workspace-ID binding. Corrections bind source device/inode into approval and journal state, verify the atomically held file, return bounded `RECOVERY_REQUIRED`, move exact planning to blocking work, and bind/recheck the refreshed portable ID. Adversarial tests and the complete gate pass; the final correction-only Security Reviewer verdict is PASS.
 
 ## Blockers and human checkpoints
 
-- No product decision or manual-test blocker. Routine work uses zero extra agents. The single combined Attachment Security Reviewer exhausted external workspace credits after identifying the final now-fixed Workspace-ID issue, so the formal PASS cannot be obtained until reviewer capacity returns. No known technical finding remains.
+- No product decision, security-review, or manual-test blocker. Routine work uses zero extra agents; one specialist is reserved for mandatory acceptance gates.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`4d349ff` — signed Phase 6E2D2 MCP recoverable Attachment-removal implementation/docs checkpoint; `git verify-commit 4d349ff` reports a good configured signature. Full gates pass; formal combined security PASS remains pending only because reviewer credits were exhausted. This progress update follows it.
+`3a65a3c` — signed Phase 6E3A planning checkpoint; `git verify-commit 3a65a3c` reports a good configured signature and bootstrap validation passes. Latest fully tested implementation remains signed `4d349ff`; its correction-only Security Reviewer verdict is PASS. This progress update follows `3a65a3c`.
 
 ## Tests last run and results
 
@@ -583,24 +583,24 @@ No product test failure. The repository now pins the unchanged installed pnpm 11
 - ADR 0042, `docs/task-packets/phase-6e2a-mcp-category-reorder.md`, its evidence, cancellation/commit-boundary core hardening, the two-tool MCP adapter, explicit native buttons, and the packaged smoke script implement exact approved Category reorder at `f89479f`.
 - ADR 0043, `docs/task-packets/phase-6e2b-mcp-category-remove.md`, its evidence, recovery-required race hardening, two-tool MCP adapter, desktop error closure, and packaged smoke script implement accepted Category removal at `d1e96f9`; final independent correction review: PASS.
 - ADR 0044, `docs/task-packets/phase-6e2c-mcp-guide-tested-approval.md`, its evidence, cancellation-aware recovery boundary, dedicated approval kind, and two-tool MCP adapter implement accepted Guide Tested approval at `c4696dc`; final Security Reviewer correction verdict: PASS.
-- ADR 0045, `docs/task-packets/phase-6e2d1-mcp-attachment-title-update.md`, its evidence, typed nested-scalar mutation, and one-tool MCP adapter implement Attachment title updates at `a7fb9b7`; only formal combined review closure remains pending.
-- ADR 0046, `docs/task-packets/phase-6e2d2-mcp-attachment-removal.md`, its evidence, source-identity-bound core recovery correction, two-tool MCP adapter, desktop recovery closure, and unchanged-host-toolchain reconciliation implement recoverable Attachment removal at signed `4d349ff`; full gates pass and only the formal final combined security verdict remains open after reviewer credit exhaustion.
+- ADR 0045, `docs/task-packets/phase-6e2d1-mcp-attachment-title-update.md`, its evidence, typed nested-scalar mutation, and one-tool MCP adapter implement Attachment title updates at `a7fb9b7`.
+- ADR 0046, `docs/task-packets/phase-6e2d2-mcp-attachment-removal.md`, its evidence, source-identity-bound core recovery correction, two-tool MCP adapter, desktop recovery closure, and unchanged-host-toolchain reconciliation implement recoverable Attachment removal at signed `4d349ff`; full gates and the final correction-only Security Reviewer verdict pass.
 - ADR 0047 and `docs/task-packets/phase-6e3a-mcp-git-commit.md` freeze the next narrow slice: reuse the accepted core managed-only commit/recovery lifecycle through startup Git-write authority, exact process-local state binding, sealed native approval, and closed pathless MCP schemas. This is planning only; no Git mutation tool is yet exposed.
 
 ## Next recommended action
 
-Request the correction-only Security Reviewer verdict for the refreshed portable Workspace-ID binding at `4d349ff`. After PASS, implement `docs/task-packets/phase-6e3a-mcp-git-commit.md` directly with focused tests, then one full gate before its signed checkpoint.
+Implement `docs/task-packets/phase-6e3a-mcp-git-commit.md` directly with focused tests, then one full gate and one Security Reviewer pass before its signed checkpoint.
 
 ## Recommended agent role and reasoning effort
 
-Primary Orchestrator/Architect with zero routine agents. Reuse the existing Security Reviewer only for the one pending correction verdict when capacity returns; do not spawn routine agents.
+Primary Orchestrator/Architect with zero routine agents. Use one Security Reviewer only after the Phase 6E3A focused gate is green.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read ADRs 0021–0024, 0026, and 0039–0047 plus the Git sections of `docs/mcp-spec.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `4d349ff`, `a7fb9b7`, and `c4696dc`; the following signed ledger commit changes only `PROGRESS.md`.
+4. Verify signed checkpoints `3a65a3c` and `4d349ff`; the following signed ledger commit changes only `PROGRESS.md`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 6E2D2 implementation/full gates as complete but its formal combined security verdict as pending solely because reviewer credits were exhausted. Do not reopen the implementation or repeat its full gate unless the diff changes; request only the correction verdict when capacity returns.
-7. After that verdict passes, execute `docs/task-packets/phase-6e3a-mcp-git-commit.md`; keep sync, network, credentials, arbitrary Git, and new dependencies out of scope.
+6. Treat Phase 6E2D2 as accepted; its full gate and final correction-only Security Reviewer verdict pass.
+7. Execute `docs/task-packets/phase-6e3a-mcp-git-commit.md`; keep sync, network, credentials, arbitrary Git, and new dependencies out of scope.
