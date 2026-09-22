@@ -154,7 +154,7 @@ Phase 6 is complete. Phase 7A now produces locally smoke-tested `.deb` and `.rpm
 
 ## Work in progress
 
-- Only this progress-ledger update is intentionally uncommitted. Phase 7A is checkpointed at signed `d4ceffc`. Untracked `x` remains unrelated and untouched.
+- Only this progress-ledger update is intentionally uncommitted. Phase 7A packaging is checkpointed at signed `d4ceffc` and current-host runtime evidence at signed `92b492f`. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
@@ -166,7 +166,7 @@ Phase 6 is complete. Phase 7A now produces locally smoke-tested `.deb` and `.rpm
 
 ## Known bugs
 
-No known regression in accepted phases. If the process is killed after the initialization manifest commits but before `categories/` is durably created, reopening classifies the folder as malformed with `categoriesMissing`; an explicit descriptor-bound repair flow is still required and Rehow never auto-adopts the residue. An interrupted Category create can similarly leave an empty private Category directory; inspection reports a missing descriptor and never deletes or adopts it automatically. An interrupted Guide create can leave a recovery journal or same-directory temp; the scan does not execute recovery automatically, so the explicit recovery UX remains required. Phase 1E-A currently retains all parsed Guide bodies in native memory for the session; broad IPC is bounded, but streaming/lazy native reread is still required before claiming the 2 GiB worst-case scan budget is production-memory-safe. Automatic watching can degrade on unsupported/network filesystems or exhausted kernel limits; visible degraded state, refocus reconciliation, and manual refresh remain the recovery path. Safe links are intentionally inert until the guarded native opener exists.
+No known regression in accepted phases. On the current development host, default Wayland launch exits with a GDK protocol error; the targeted `WEBKIT_DISABLE_DMABUF_RENDERER=1` invocation and X11 both stay alive, so driver/WebKitGTK qualification remains open and no global fallback is configured. If the process is killed after the initialization manifest commits but before `categories/` is durably created, reopening classifies the folder as malformed with `categoriesMissing`; an explicit descriptor-bound repair flow is still required and Rehow never auto-adopts the residue. An interrupted Category create can similarly leave an empty private Category directory; inspection reports a missing descriptor and never deletes or adopts it automatically. An interrupted Guide create can leave a recovery journal or same-directory temp; the scan does not execute recovery automatically, so the explicit recovery UX remains required. Phase 1E-A currently retains all parsed Guide bodies in native memory for the session; broad IPC is bounded, but streaming/lazy native reread is still required before claiming the 2 GiB worst-case scan budget is production-memory-safe. Automatic watching can degrade on unsupported/network filesystems or exhausted kernel limits; visible degraded state, refocus reconciliation, and manual refresh remain the recovery path. Safe links are intentionally inert until the guarded native opener exists.
 
 ## Design and accessibility findings
 
@@ -305,11 +305,11 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Latest verified commit
 
-`d4ceffc` — signed Phase 7A Linux development bundle implementation, documentation, icon, and evidence checkpoint; its configured signature verifies. This progress-ledger update follows that commit.
+`92b492f` — signed current-host Wayland/X11 runtime-smoke evidence following the signed Phase 7A implementation checkpoint `d4ceffc`; both configured signatures verify. This progress-ledger update follows that commit.
 
 ## Tests last run and results
 
-- 2026-09-22: Phase 7A checkpoint `d4ceffc` passed a real `pnpm tauri:build`, producing `.deb` and `.rpm` development packages. `scripts/test-linux-bundles.sh` passed for both extracted artifacts, including five one-link executables, desktop entry, four icon sizes, exact embedded approval-helper digest, and empty-configuration MCP refusal. `pnpm check`, Bootstrap validation, visual inspection of 512/32 px icons, and whitespace checks pass. No package, Node version, pnpm version, or dependency was installed or switched; the commit signature verifies.
+- 2026-09-22: Phase 7A checkpoint `d4ceffc` passed a real `pnpm tauri:build`, producing `.deb` and `.rpm` development packages. `scripts/test-linux-bundles.sh` passed for both extracted artifacts, including five one-link executables, desktop entry, four icon sizes, exact embedded approval-helper digest, and empty-configuration MCP refusal. `pnpm check`, Bootstrap validation, visual inspection of 512/32 px icons, and whitespace checks pass. Current-host runtime evidence at signed `92b492f` records default-Wayland failure, targeted DMABUF-disabled Wayland success, and X11 liveness with GBM warnings. Temporary smoke state was deleted. No package, Node version, pnpm version, or dependency was installed or switched; both commit signatures verify.
 - 2026-09-22: Phase 6E2D3 checkpoint `36b175e` passes `pnpm check`, `pnpm test`, `pnpm test:integration`, `pnpm build`, 39 Vitest tests, 455 core tests (453 pass and 2 intentional network/performance ignores), 18 error-contract tests, 13 protocol tests, public-API/trybuild and unknown-YAML suites, 25 desktop Rust tests, 92 MCP unit tests, 3 approval-helper integration tests, and 1 stdio integration test. Strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, Bootstrap validation (17 required files, 49 ADRs, 8 pinned agents), contract drift, production build, and whitespace checks pass on the existing Node 26.2.0/pnpm 11.3.0 toolchain. The 45-tool schema and adversarial candidate confinement/filtering, capability, drift, expiry, scope, replay/eviction, trust, preservation, and disclosure cases pass. The single Security Reviewer correction verdict is PASS with no blocker/high/medium finding.
 - 2026-09-22: Phase 6E2D3 planning/toolchain checkpoint `1f83118` passes `pnpm check`, contract drift/type/Biome checks, Bootstrap validation (17 required files, 49 ADRs, 8 pinned agents), and whitespace checks on the existing active Node 26.2.0/pnpm 11.3.0 pair. No runtime/package manager was installed or switched.
 - 2026-09-22: MCP setup/workflow checkpoint `ea3009c` passes exact real-tool-name/CLI-flag source checks, Codex CLI add/remove help checks, Bootstrap validation (17 required files, 48 ADRs, 8 pinned agents), and whitespace checks. `pnpm check` could not start because the host now exposes Node 26.8.1/pnpm 11.3.0 instead of the repository-required 26.2.0/11.20.0; no install, switch, or pin change was attempted. The preceding accepted code checkpoint's complete gate remains authoritative.
@@ -619,7 +619,7 @@ Primary Orchestrator with zero routine agents. Use one specialist only for a man
 1. Read `AGENTS.md` and this file.
 2. Read `docs/installation.md`, the Phase 7 section of `docs/implementation-plan.md`, and applicable packaging ADRs.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed Phase 7A packaging checkpoint `d4ceffc` and the following progress-ledger commit; do not touch unrelated untracked `x`.
+4. Verify signed Phase 7A packaging checkpoint `d4ceffc`, runtime-evidence checkpoint `92b492f`, and the following progress-ledger commit; do not touch unrelated untracked `x`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
 7. Continue Phase 7 with focused package/runtime checks; do not choose the production identifier, release version, license, or publication policy without the required human decision.
