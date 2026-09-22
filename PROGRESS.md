@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 6E2D2 is accepted: signed `4d349ff` passes full gates and the correction-only Security Reviewer verdict is PASS. Phase 6E3A managed Git commit is specified at signed planning checkpoint `3a65a3c` and is ready for direct implementation.
+Phase 6E3A is accepted at signed `ac76863`: the complete consolidated gate passes and the correction-only Security Reviewer verdict is PASS.
 
 ## Current task
 
-Implement `docs/task-packets/phase-6e3a-mcp-git-commit.md` with focused tests, then run one complete gate and one Security Reviewer acceptance pass.
+Specify the next narrow Phase 6 MCP Git-sync slice from the already accepted Phase 5D core, then implement it through the same focused-test/single-gate workflow.
 
 ## Overall status
 
-In progress. A user can open or initialize a Workspace; manage Categories and Guides; search; use confined Git workflows; and use the standalone MCP server for bounded reads, narrow Guide/Category/Attachment mutations, native-approved Category reorder/removal and Attachment removal, and explicit Guide Tested confirmation. Attachment viewing/export/reveal, Attachment metadata add, and MCP Git mutation tools remain incomplete.
+In progress. A user can open or initialize a Workspace; manage Categories and Guides; search; use confined Git workflows; and use the standalone MCP server for bounded reads, narrow Guide/Category/Attachment mutations, native-approved Category reorder/removal and Attachment removal, explicit Guide Tested confirmation, and native-approved managed-only Git commit/recovery. Attachment viewing/export/reveal, Attachment metadata add, and MCP Git sync remain incomplete.
 
 ## Completed work
 
@@ -147,17 +147,18 @@ In progress. A user can open or initialize a Workspace; manage Categories and Gu
 - Completed Phase 6E2C at signed checkpoint `c4696dc`: `guide_tested_plan` binds the exact ready Guide revision and `guide_mark_tested` accepts only handle+token, obtains dedicated native Tested confirmation, and delegates verification hash/timestamps to the core. Scope, expiry, archive, denial, drift, replay, and real JSON-RPC cancellation at the final pre-journal boundary preserve exact bytes. Full gates and the reused Security Reviewer pass after closing missing refusal coverage and current-thread cancellation blocking.
 - Implemented Phase 6E2D1 at signed checkpoint `a7fb9b7`: `attachment_metadata_update` replaces only one existing Attachment title at an exact Guide revision. Its schema cannot provide file-binding fields; the typed planner preserves nested unknown metadata and immutable Attachment fields, stales Tested trust, and makes identical input a no-op. Full gates pass; its combined verdict now awaits only formal review closure with Phase 6E2D2.
 - Implemented Phase 6E2D2 at signed checkpoint `4d349ff`: `attachment_remove_plan` performs refreshed blocking exact-file validation and binds portable Workspace/Guide/Attachment identity plus device/inode/content state; handle+token-only execution obtains destructive native consent and moves exact bytes to recoverable trash through the core journal. Swap races preserve both files and return operation/path-bound `RECOVERY_REQUIRED`; cancellation, replay, scope, expiry, drift, archive, missing targets, and Workspace-ID drift fail closed. Full repository gates pass.
+- Implemented and accepted Phase 6E3A at signed checkpoint `ac76863`: `git_status` supplies opaque process-local stale-state binding; four closed tools plan/apply/recover managed-only unsigned commits behind startup write+Git-write authority and sealed native approval. Exact recovery-operation binding, final pre-intent protocol cancellation, and a full-lifecycle per-Workspace reservation close replacement and overlapping-candidate races. The full gate and correction-only Security Reviewer pass.
 
 ## Work in progress
 
-- No product implementation is uncommitted. Phase 6E2D2 is checkpointed at signed `4d349ff`; only the formal final combined Security Reviewer verdict remains open because the reviewer process exhausted external credits after reporting its last now-fixed scope issue. Untracked `x` remains unrelated and untouched.
+- No product implementation is uncommitted. Phase 6E3A is checkpointed at signed `ac76863`; this progress/ADR closure follows that commit. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
 - Workspace adoption/import/migration and Attachment viewing/export/reveal remain incomplete.
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
-- Phase 6: protocol, bounded reads, narrow mutations, explicit startup capabilities, the sealed native approval launcher, exact Category reorder/removal, Guide Tested approval, Attachment title update, and recoverable Attachment removal are checkpointed through `4d349ff`; Attachment metadata add, Git commit/sync, and broader client documentation remain.
+- Phase 6: protocol, bounded reads, narrow mutations, explicit startup capabilities, the sealed native approval launcher, exact Category reorder/removal, Guide Tested approval, Attachment title update/removal, and managed Git commit/recovery are checkpointed through `ac76863`; Attachment metadata add, safe Git sync, and broader client documentation remain.
 - Phase 7: Linux packaging, desktop integration, cross-environment hardening.
 
 ## Known bugs
@@ -199,7 +200,7 @@ No known regression in accepted phases. If the process is killed after the initi
 
 - Highest risks: symlink/TOCTOU escape, frontmatter loss, concurrent lost updates, Git-triggered execution, Markdown/WebView injection/file disclosure, crash consistency, watcher/index staleness, duplicate IDs, MCP prompt injection/data overexposure.
 - Baseline controls and required adversarial gates are documented. Phase 1B now supplies implementation evidence for bounded public protocols and parser-neutral YAML construction; filesystem, Git, renderer, and MCP mutation controls remain future-phase gates.
-- Git commit/sync remain required but must follow read-only primitives and a dedicated malicious-repository gate. Unsafe shortcut implementation is explicitly blocked.
+- Managed Git commit/recovery now follows the accepted confined core and malicious-repository gates; MCP safe sync remains required and must reuse the accepted Phase 5D lifecycle. Unsafe shortcut implementation is explicitly blocked.
 - Both security review rounds found specification gaps. All reported gaps are corrected; the Security Reviewer/xhigh closure pass reports no blocker, high, or medium finding.
 - Phase 1A Security Reviewer/xhigh passes the actual implementation: exact dependencies/lockfiles, empty command manifest, one zero-permission capability, restrictive CSP, deterministic contract scripts, and zero-output MCP boundary.
 - Phase 1B decision Security Reviewer/xhigh passes the full decision and the correction delta with no blocker/high/medium finding. Construction remains parse/validation-only, output text is provenance-controlled, path/Git factories stay protocol-private, and the unknown-YAML builder is bounded and poisoning.
@@ -288,6 +289,7 @@ No known regression in accepted phases. If the process is killed after the initi
 - Phase 6E2C exposes only exact ready-Guide Tested approval. Security review found missing operation-level scope/expiry/archive evidence and a blocked cancellation path from synchronous post-approval work on the current-thread runtime. The correction adds those refusal tests, moves revalidation/mutation to blocking work, and proves real JSON-RPC cancellation immediately before journal creation leaves bytes unchanged and creates no journal. Final verdict: PASS with no blocker/high/medium finding.
 - Phase 6E2D1 exposes only one existing Attachment title scalar. The schema omits path/bytes/hash/size/media type/status/consent, the core preserves all file-binding and unknown fields, and no-op/read-only/archived/missing/invalid/stale states fail or preserve bytes.
 - Phase 6E2D2 exposes only ID/revision planning and handle/token execution. Combined security review found pathname substitution, post-Guide conflict misreporting, current-thread hashing, and stale portable Workspace-ID binding. Corrections bind source device/inode into approval and journal state, verify the atomically held file, return bounded `RECOVERY_REQUIRED`, move exact planning to blocking work, and bind/recheck the refreshed portable ID. Adversarial tests and the complete gate pass; the final correction-only Security Reviewer verdict is PASS.
+- Phase 6E3A exposes no arbitrary Git, path, ref, object ID, identity, credential, shell, network, push, or raw-output authority. Security review found recovery-intent replacement, missing final-boundary cancellation, and candidate-lifecycle races. Corrections bind an opaque exact core recovery selector, check JSON-RPC cancellation immediately before durable intent creation, and retain one atomic per-Workspace reservation through approval and apply/recovery completion. Final correction-only verdict: PASS.
 
 ## Blockers and human checkpoints
 
@@ -297,10 +299,11 @@ No known regression in accepted phases. If the process is killed after the initi
 
 ## Latest verified commit
 
-`3a65a3c` — signed Phase 6E3A planning checkpoint; `git verify-commit 3a65a3c` reports a good configured signature and bootstrap validation passes. Latest fully tested implementation remains signed `4d349ff`; its correction-only Security Reviewer verdict is PASS. This progress update follows `3a65a3c`.
+`ac76863` — signed Phase 6E3A implementation checkpoint; `git log -1 --show-signature` reports a good configured signature. Its complete consolidated gate and correction-only Security Reviewer verdict are PASS. This progress/ADR closure follows `ac76863`.
 
 ## Tests last run and results
 
+- 2026-09-22: Phase 6E3A checkpoint `ac76863` passes `pnpm check`, `pnpm test`, `pnpm build`, 39 Vitest tests, 452 core tests with 2 intentional network/performance ignores, 25 desktop Rust tests, 80 MCP unit tests, 3 approval-helper integration tests, 1 stdio integration test, and all protocol/API/contract suites. Strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, Bootstrap validation (17 required files, 47 ADRs, 8 pinned agents), and whitespace checks pass on unchanged installed Node 26.2.0/pnpm 11.20.0. Exact recovery replacement, final-boundary real JSON-RPC cancellation, and concurrent active-execution planning refusal regressions pass. Security Reviewer verdict: PASS.
 - 2026-09-22: Phase 6E2D2 checkpoint `4d349ff` passes `pnpm check`, contract drift/integration checks, 39 Vitest tests, 451 core tests with 2 explicit network/performance ignores, 25 desktop Rust tests, 77 MCP unit tests, 3 approval-helper integration tests, 1 stdio integration test, and all protocol/API suites. Strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, Bootstrap validation (17 required files, 46 ADRs, 8 pinned agents), whitespace checks, and `pnpm build` pass on unchanged installed Node 26.2.0/pnpm 11.20.0. The first full run exposed an over-broad journal validation affecting one Git-sync regression; it was removed without weakening operation-specific identity binding, and the regression, swap-race, and final complete runs pass.
 - 2026-09-21: Phase 6E2D1 checkpoint `a7fb9b7` passes 450 core tests with 2 intentional ignores, 25 desktop Rust tests, 69 MCP unit tests, 3 approval-helper integration tests, 1 stdio integration test, and supporting contract/API suites. Strict workspace Clippy, Cargo formatting/build, Biome, both TypeScript checks, contract/hash vectors, 39 Vitest tests, Git helper/credential smoke, Vite production build, bootstrap, and whitespace checks pass. Bootstrap reports 17 required files, 45 ADRs, and 8 pinned agents.
 - 2026-09-21: Phase 6E2C checkpoint `c4696dc` passes 449 core tests with 2 intentional ignores, 25 desktop Rust tests, 68 MCP unit tests, 3 approval-helper integration tests, 1 stdio integration test, and supporting contract/API suites. Strict workspace Clippy, Cargo formatting/build, Biome over 57 files, direct installed TypeScript checks, contract drift, Guide hash vectors, 39 Vitest tests, Git helper/credential smoke, Vite production build, bootstrap, and whitespace checks pass. Security Reviewer correction verdict: PASS.
@@ -585,22 +588,22 @@ No product test failure. The repository now pins the unchanged installed pnpm 11
 - ADR 0044, `docs/task-packets/phase-6e2c-mcp-guide-tested-approval.md`, its evidence, cancellation-aware recovery boundary, dedicated approval kind, and two-tool MCP adapter implement accepted Guide Tested approval at `c4696dc`; final Security Reviewer correction verdict: PASS.
 - ADR 0045, `docs/task-packets/phase-6e2d1-mcp-attachment-title-update.md`, its evidence, typed nested-scalar mutation, and one-tool MCP adapter implement Attachment title updates at `a7fb9b7`.
 - ADR 0046, `docs/task-packets/phase-6e2d2-mcp-attachment-removal.md`, its evidence, source-identity-bound core recovery correction, two-tool MCP adapter, desktop recovery closure, and unchanged-host-toolchain reconciliation implement recoverable Attachment removal at signed `4d349ff`; full gates and the final correction-only Security Reviewer verdict pass.
-- ADR 0047 and `docs/task-packets/phase-6e3a-mcp-git-commit.md` freeze the next narrow slice: reuse the accepted core managed-only commit/recovery lifecycle through startup Git-write authority, exact process-local state binding, sealed native approval, and closed pathless MCP schemas. This is planning only; no Git mutation tool is yet exposed.
+- ADR 0047, `docs/task-packets/phase-6e3a-mcp-git-commit.md`, its evidence, the exact recovery/cancellation core additions, and the four-tool adapter implement accepted managed Git commit/recovery at signed `ac76863`; final Security Reviewer verdict: PASS.
 
 ## Next recommended action
 
-Implement `docs/task-packets/phase-6e3a-mcp-git-commit.md` directly with focused tests, then one full gate and one Security Reviewer pass before its signed checkpoint.
+Specify the next narrow MCP safe-sync slice by adapting the accepted Phase 5D core without exposing URLs, credentials, refs, paths, raw Git, reset/rebase/stash, force push, or automatic conflict resolution.
 
 ## Recommended agent role and reasoning effort
 
-Primary Orchestrator/Architect with zero routine agents. Use one Security Reviewer only after the Phase 6E3A focused gate is green.
+Primary Orchestrator/Architect with zero routine agents. Use one Security Reviewer only after the next Git-mutation focused gate is green.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
 2. Read ADRs 0021–0024, 0026, and 0039–0047 plus the Git sections of `docs/mcp-spec.md`, `docs/testing-strategy.md`, and `docs/threat-model.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `3a65a3c` and `4d349ff`; the following signed ledger commit changes only `PROGRESS.md`.
+4. Verify signed checkpoint `ac76863`; the following signed ledger commit records its accepted state.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 6E2D2 as accepted; its full gate and final correction-only Security Reviewer verdict pass.
-7. Execute `docs/task-packets/phase-6e3a-mcp-git-commit.md`; keep sync, network, credentials, arbitrary Git, and new dependencies out of scope.
+6. Treat Phase 6E3A as accepted; its full gate and final correction-only Security Reviewer verdict pass.
+7. Plan the next narrow MCP safe-sync slice from the accepted Phase 5D core; keep arbitrary Git, user-selected refs/paths, credential material, unsafe history changes, and new dependencies out of scope.

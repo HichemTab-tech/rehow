@@ -1,6 +1,6 @@
 # ADR 0047: MCP managed Git commit
 
-- Status: Accepted for Phase 6E3A planning; implementation not yet accepted
+- Status: Accepted and implemented in Phase 6E3A
 - Date: 2026-09-22
 
 ## Context
@@ -15,9 +15,9 @@ Phase 6E3A adds `git_commit_plan`, `git_commit`, `git_commit_recovery_plan`, and
 
 Planning requires startup write+Git-write authority because candidate construction writes owner-private staging objects. Without both capabilities, the tool returns a bounded informational refusal rather than creating staging or an executable token. This is a documented Git-specific exception to the general read-only preview rule. A successful preview returns only the normalized message, safe branch, managed create/update/delete counts, unrelated-change count, unsigned/no-push/no-network facts, expiry, and one MCP plan token. It returns no path, object ID, identity, content, raw Git output, operation ID, or core token.
 
-The MCP token is short-lived, single-use, launch/root/portable-Workspace scoped, and bound to an opaque digest of the exact core plan facts. `git_commit` accepts only the launch handle and MCP token, consumes it, obtains native Git-write approval for the exact bounded summary, refreshes the portable Workspace identity, and gives the retained opaque core plan to `apply_git_commit` in blocking work. Denial or pre-publication protocol cancellation safely quarantines the candidate. Once the recoverable core intent begins, cancellation cannot abort or roll back publication; the response reports success, stale/conflict, or recovery required without leaking the intent identifier.
+The MCP token is short-lived, single-use, launch/root/portable-Workspace scoped, and bound to an opaque digest of the exact core plan facts. `git_commit` accepts only the launch handle and MCP token, consumes it, obtains native Git-write approval for the exact bounded summary, refreshes the portable Workspace identity, and gives the retained opaque core plan to cancellation-aware blocking apply. One per-Workspace lifecycle reservation excludes competing commit/recovery planning from candidate construction through approval and apply termination. Denial or protocol cancellation at the core's final pre-intent boundary safely quarantines the candidate. Once the recoverable core intent begins, cancellation cannot abort or roll back publication; the response reports success, stale/conflict, or recovery required without leaking the intent identifier.
 
-Pending commit recovery blocks new commit planning. `git_commit_recovery_plan` discovers recovery internally and issues a separate short-lived native-approval plan containing only bounded policy facts. `git_commit_recover` accepts only handle+token, consumes it, obtains Git-write approval, rechecks that recovery is still required, and calls `resume_pending_git_commit_publication`. The client never selects or receives an operation identifier. Recovery is forward-only according to ADR 0024 and never resets, discards, rewrites, or guesses.
+Pending commit recovery blocks new commit planning. `git_commit_recovery_plan` captures a core-owned opaque selector for the exact pending operation and issues a separate short-lived native-approval plan containing only bounded policy facts. `git_commit_recover` accepts only handle+token, consumes it, obtains Git-write approval, and resumes only that exact operation; replacement by a different pending operation is stale. The client never selects or receives an operation identifier. Recovery is forward-only according to ADR 0024 and never resets, discards, rewrites, or guesses.
 
 At most one live commit candidate exists per Workspace handle. Replacement is not implicit: a new plan while one is live returns busy, avoiding hidden staging churn. Expiry, denial, server shutdown, and safe pre-intent cancellation quarantine only the descriptor-identified candidate. All error and debug surfaces remain path/content/OID/Git-output/credential safe.
 
@@ -28,4 +28,3 @@ At most one live commit candidate exists per Workspace handle. Replacement is no
 - Read-only sessions retain `git_status` but cannot create private candidate objects.
 - Git sync, fetch, pull, push, remote changes, signing, amend, reflogs, cleanup, arbitrary branches, arbitrary Git arguments, and scheduled commits remain deferred.
 - Implementation acceptance requires focused adversarial tests, one complete repository gate, and a Security Reviewer pass.
-
