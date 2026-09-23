@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 2 onboarding is complete through ADR 0051. Phase 3 safe Attachment handling, guarded external Guide links, and actionable Workspace issue recovery guidance are complete through signed checkpoint `b7ac3ce`. Phase 7A packaging remains qualified through the current-host menu smoke.
+Phase 2 onboarding is complete through ADR 0051. Phase 3 safe Attachment handling, guarded external Guide links, and actionable Workspace issue recovery guidance are complete. ADR 0057 closes the retained-memory/search-capacity gap at signed checkpoint `5d8ab31`. Phase 7A packaging remains qualified through the current-host menu smoke.
 
 ## Current task
 
-Design the memory-safe retained Guide/search representation without reducing the documented 2 GiB Workspace scan capacity; release metadata and graphical qualification remain human/environment checkpoints.
+The autonomous implementation backlog is closed. Resume only the documented release metadata decisions and disposable graphical Ubuntu qualification.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Phase 2 safely copies ordinary Markdown into new draft-only Workspaces. Phase 3 provides pathless Attachment preview/export/reveal, guarded external Guide links, and bounded actionable Workspace diagnostics. Product completion still requires memory-capacity closure and final release qualification.
+Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Phase 2 safely copies ordinary Markdown into new draft-only Workspaces. Phase 3 provides pathless Attachment preview/export/reveal, guarded external Guide links, and bounded actionable Workspace diagnostics. Retained Workspace/search memory is bounded and benchmarked. Product completion now requires only final human/environment release qualification.
 
 ## Completed work
 
@@ -163,10 +163,11 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 - Added safe Attachment parent reveal at signed checkpoint `4305a5c`: exact session/Guide revision/Attachment identity and SHA-256 precede a no-follow parent capability; GIO sends only its duplicated directory descriptor to XDG Desktop Portal `OpenFile`; no pathname, URI, Attachment descriptor, shell, or arbitrary process crosses the boundary. The async command is single-flight and releases the Workspace mutex before the portal call. The full gate and final Security Reviewer correction review pass.
 - Added guarded external Guide links at signed checkpoint `50177c7`: core binds the exact Workspace session, Guide ID/revision, and safe-AST URL; rereads the confined Guide; redacts the URL from native results/errors; and requires OpenURI portal v3+ with `ask=true`, so every renderer request is mediated by a native application chooser. The full gate, current-guideline review, and final Security Reviewer correction pass.
 - Added actionable Workspace issue reporting at signed checkpoint `b7ac3ce`: the native payload exposes at most 100 closed scanner issue records with inert bounded relative locations, complete count, and exact truncation; the Reference Desk provides specific recovery guidance, refresh, keyboard-safe modal behavior, and focus restoration without deleting, editing, opening, or adopting ambiguous content. Full gates and current-guideline/security self-review pass.
+- Closed the retained-memory gap at signed checkpoint `5d8ab31`: loaded views keep Guide metadata and revision-check lazy body reads; normalized search records live in bounded anonymous files with revision reuse, generation compaction, exact ranking, hard record/collection/physical-backing limits, and fail-closed codec/position checks. The 5,000-Guide/52.7 MiB release corpus measured 1.533 s cold, 13.484 ms warm p95, and 10,228 KiB peak RSS. The final correction-only Security Reviewer verdict is PASS.
 
 ## Work in progress
 
-- Final release readiness is audited in `docs/evidence/final-release-readiness.md`. Actionable Workspace diagnostics are accepted at `b7ac3ce`; the retained Guide/search memory architecture is the remaining safe implementation task. Untracked `x` remains unrelated and untouched.
+- No code work is in progress. Final release readiness is audited in `docs/evidence/final-release-readiness.md`; remaining steps require human metadata choices and a disposable graphical Ubuntu environment. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
@@ -178,7 +179,7 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 
 ## Known bugs
 
-No known regression in accepted phases. On the current development host, default Wayland launch exits with a GDK protocol error; the targeted `WEBKIT_DISABLE_DMABUF_RENDERER=1` invocation and X11 both stay alive, so driver/WebKitGTK qualification remains open and no global fallback is configured. Interrupted Category/Guide creation can leave conservative scanner issues; the accepted issue panel now names the inert relative location and safe manual recovery step, while ambiguous residue is never deleted or adopted automatically. Phase 1E-A currently retains parsed Guide bodies plus normalized search bodies in native memory for the session; streaming/lazy or compact indexed representation is still required before claiming the 2 GiB worst-case scan budget is production-memory-safe. Automatic watching can degrade on unsupported/network filesystems or exhausted kernel limits; visible degraded state, refocus reconciliation, and manual refresh remain the recovery path.
+No known regression in accepted phases. On the current development host, default Wayland launch exits with a GDK protocol error; the targeted `WEBKIT_DISABLE_DMABUF_RENDERER=1` invocation and X11 both stay alive, so driver/WebKitGTK qualification remains open and no global fallback is configured. Interrupted Category/Guide creation can leave conservative scanner issues; the accepted issue panel names the inert relative location and safe manual recovery step, while ambiguous residue is never deleted or adopted automatically. Automatic watching can degrade on unsupported/network filesystems or exhausted kernel limits; visible degraded state, refocus reconciliation, and manual refresh remain the recovery path.
 
 ## Design and accessibility findings
 
@@ -218,6 +219,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Security findings
 
+- ADR 0057 keeps bodies behind the retained root capability and exact revision, and keeps search state private, anonymous, disposable, and non-authoritative. Codec corruption, impossible counts, record overrun, and positional failures fail closed. Hard limits are 64 MiB per encoded record, 65,536 values per repeated field, and 4 GiB across physically live prior plus candidate backings; compaction counts the still-live source. The initial review's disk-amplification and pre-allocation findings plus its compaction-accounting correction were fixed. Final Security Reviewer verdict: PASS.
 - Actionable Workspace diagnostics disclose only scanner-owned relative locations and a closed issue kind, capped at 100 with count/truncation correlation. The renderer rejects unknown kinds, overlong/control-bearing paths, and extra fields; React renders inert escaped text. There is no absolute path, file content, opener, mutation, automatic repair, or MCP expansion. Security self-review: PASS.
 - Guarded external Guide links bind the open Workspace session, Guide ID, exact revision, and exact destination retained in the reparsed safe AST, then reread the confined Guide. Only OpenURI portal v3+ with privately fixed `ask=true` is accepted; renderer input cannot bypass the native chooser or choose a process. IPC/results/errors/Debug are URL-redacted. The initial confused-deputy finding was corrected; final Security Reviewer verdict: PASS with no blocker/high/medium finding.
 - Attachment parent reveal exposes no path, URI, Attachment descriptor, content, shell, or arbitrary-process authority. Core binds the exact Workspace session, Guide revision, Attachment ID, size, and SHA-256, then passes only a duplicated no-follow-opened parent-directory descriptor to the fixed XDG Desktop Portal `OpenFile` endpoint. Retained-inode and leaf/intermediate symlink races are covered; native execution is async/single-flight and drops the Workspace mutex before the bounded portal call. Final correction review: PASS with no blocker/high/medium finding.
@@ -267,7 +269,7 @@ No known regression in accepted phases. On the current development host, default
 - The `843cc51` inventory follows only retained descriptors, streams an already-locked pure-Rust SHA-256 implementation, enforces 10,000 declared/actual candidate and diagnostic caps plus 64 MiB/4 GiB byte caps, and refuses unstable/symlink/hardlink/special candidates. Security review found and closed metadata-exhaustion, oversized-aggregate, and growth-race issues; final verdict is PASS.
 - The `2469a9a` import boundary keeps source paths out of IPC, binds confirmation to the exact Guide/candidate/destination/source identity and hashes, revalidates under the writer lock, streams with fixed memory, and journals Attachment creation before Guide metadata. The initial review's confused-deputy, source-change, and orphan-object findings were corrected; Security Reviewer/xhigh re-review is PASS with no blocker/high/medium finding.
 - The `f614e08` removal boundary keeps paths out of renderer IPC, binds native confirmation to stable IDs plus exact candidate/path/hash/size/mode/revisions, streams a durable content-addressed before-image, and moves the original inode to an operation-bound held-source path before materializing canonical trash. Symlink, hardlink, special-mode/type, drift, collision, and interrupted replay cases fail closed or recover without losing approved bytes. Security Reviewer/xhigh re-review is PASS with no blocker/high/medium finding.
-- The `c53378d` search index is derived in memory only, has no write authority or new product filesystem/process/network access, and is atomically paired with a successfully inspected Workspace view. ADR 0018 supersedes only ADR 0004's Tantivy presumption based on measured fit and defines explicit scale/p95/RSS/incremental revisit triggers. Independent Reviewer/high reports no blocker/high/medium finding.
+- The historical `c53378d` search index was derived in memory only and atomically paired with a successfully inspected Workspace view. ADR 0057 now supersedes that retained representation with bounded anonymous disk records while preserving its ranking contract; neither design has Workspace write, process, or network authority.
 - The `a4ca4e3` reconciler trusts only freshly confined canonical records and exact revisions, never filesystem events or prior index content. A complete compatible view/index is built before the retained pair is replaced; independent Reviewer/high reports no remaining finding.
 - The `f2edc2a` watcher holds no-follow directory descriptors, emits no paths/content, treats events only as invalidation hints, rejects stale native sessions, and retains dirty/in-flight edits. Review corrections closed a lost-wakeup race and exact managed-directory selection; Security Reviewer/xhigh reports no remaining blocker/high/medium finding.
 - The `e17b7d1` result contract contains only bounded plain text, closed field names, IDs, and bounded integer spans; React constructs text/`mark` nodes without HTML. Closed scopes are validated natively and enforced in core before ranking/capping. No new filesystem, shell, Git, credential, or MCP mutation authority was added.
@@ -330,10 +332,11 @@ No known regression in accepted phases. On the current development host, default
 
 ## Latest verified commit
 
-`b7ac3ce` — signed actionable Workspace issue checkpoint; its configured signature verifies. This progress-ledger update follows that commit.
+`5d8ab31` — signed bounded retained-memory/search checkpoint; its configured signature verifies. This progress-ledger update follows that commit.
 
 ## Tests last run and results
 
+- 2026-09-23: Memory-safe search checkpoint `5d8ab31` passes the final locked all-target/all-feature Workspace test gate: 491 core tests pass with 2 intentional network/performance ignores, plus 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 33 desktop Rust, 92 MCP, 3 approval-helper integration, and 1 stdio integration tests. Thirteen focused search tests pass after security corrections. `pnpm check`, 48 Vitest tests, production Vite/Cargo build, strict Clippy with warnings denied, Cargo formatting, Bootstrap validation (17 files, 57 ADRs, 8 agents), contract drift, and whitespace checks pass. The release corpus records 1.533 s cold, 13.484 ms warm p95, and 10,228 KiB peak RSS; single-Guide reconciliation is 0.667 ms with 4,999/5,000 descriptors reused. The only intermediate failure was the corrected expected compiler diagnostic changing from `Guide` to `GuideMetadata`. Final Security Reviewer verdict: PASS.
 - 2026-09-23: Actionable Workspace issue checkpoint `b7ac3ce` passes `pnpm check/test/build`, 487 core tests with 2 intentional network/performance ignores, 33 desktop Rust tests, 92 MCP tests, 48 Vitest tests, all remaining contract/integration suites, strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, Bootstrap validation (17 required files, 56 ADRs, 8 pinned agents), and whitespace checks. Closed issue mapping, truncation correlation, hostile display-control rejection, inert rendering, recovery copy, and strict refreshed/created Workspace response validation pass. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
 - 2026-09-23: Guarded external-link checkpoint `50177c7` passes `pnpm check/test/build`, 487 core tests with 2 intentional network/performance ignores, 33 desktop Rust tests, 92 MCP tests, 47 Vitest tests, all remaining contract/integration suites, strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, Bootstrap validation (17 required files, 55 ADRs, 8 pinned agents), and whitespace checks. Exact safe-link/revision binding, URL redaction, closed IPC, mandatory portal chooser options, and semantic UI rendering pass. Final Security Reviewer verdict: PASS. Existing Node 26.2.0 and installed pnpm 11.20.0 were used without installation or switching.
 - 2026-09-23: Attachment parent-reveal checkpoint `4305a5c` passes `pnpm check/test/build`, 486 core tests with 2 intentional network/performance ignores, 18 error-contract tests, 13 protocol tests, public-API/trybuild and unknown-YAML suites, 32 desktop Rust tests, 92 MCP tests, 3 approval-helper integration tests, 1 stdio integration test, and 46 Vitest tests. Strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, Bootstrap validation (17 required files, 54 ADRs, 8 pinned agents), contract drift, production Vite/Cargo builds, and whitespace checks pass. Focused coverage proves retained parent inode identity across leaf swaps, intermediate-symlink refusal, closed/pathless IPC, and single-flight recovery. The final Security Reviewer correction verdict is PASS. Existing Node 26.2.0 and installed pnpm 11.20.0 were used without installation or switching.
@@ -529,6 +532,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Important files changed
 
+- Memory-safe search: ADR 0057, `docs/evidence/phase-4f-memory-safe-search.md`, the Guide metadata/body split, revision-bound lazy body reader, bounded anonymous record codec/backings, desktop/MCP mappings, adversarial tests, and aligned architecture/content/testing/threat/release docs are checkpointed at `5d8ab31`.
 - Actionable Workspace issues: ADR 0056, its task packet/evidence, bounded native payload, strict renderer validation, Reference Desk recovery panel, styles, and tests are checkpointed at `b7ac3ce`.
 - Guarded external links: ADR 0055, `docs/task-packets/phase-3-guarded-external-links.md`, `docs/evidence/phase-3-guarded-external-links.md`, core revision/safe-AST/portal boundary, pathless native adapter, semantic reader action, and adversarial tests are checkpointed at `50177c7`.
 - Final release audit: `docs/evidence/final-release-readiness.md` distinguishes accepted product evidence, the remaining clean graphical/manual journey, and license/identity/signing/publication human checkpoints.
@@ -654,18 +658,18 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Next recommended action
 
-While release metadata and the graphical Ubuntu environment await human input, specify and implement the memory-safe retained Guide/search representation without lowering the 2 GiB capacity or weakening search behavior. Do not reopen accepted recovery/UI phases.
+Ask the user for the license, production version, stable reverse-DNS application identifier, and intended first-release package formats. Then run the documented installed-package journey in a disposable graphical Ubuntu 24.04 Wayland/X11 environment. Do not reopen accepted feature phases.
 
 ## Recommended agent role and reasoning effort
 
-Primary Orchestrator with zero routine agents. Use one specialist only for a mandatory final acceptance gate.
+Primary Orchestrator with zero routine agents. Use one specialist only if a release correction changes a security- or UI-sensitive boundary.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read `docs/implementation-plan.md`, `docs/testing-strategy.md`, `docs/installation.md`, and the Phase 7 evidence. Attachment behavior is accepted through ADR 0054, guarded external links through ADR 0055, and actionable Workspace issues through ADR 0056.
+2. Read `docs/evidence/final-release-readiness.md`, `docs/installation.md`, ADR 0057, and `docs/evidence/phase-4f-memory-safe-search.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed actionable Workspace issue checkpoint `b7ac3ce` plus the following progress-ledger commit; do not touch unrelated untracked `x`.
+4. Verify signed memory-safe search checkpoint `5d8ab31` plus the following progress-ledger commit; do not touch unrelated untracked `x`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
 7. Read `docs/evidence/final-release-readiness.md`. Resume only the named release gates; do not sign, publish, push, create external resources, install packages, or change the active Node/pnpm toolchain without user authorization.
