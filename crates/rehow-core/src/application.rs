@@ -2804,10 +2804,16 @@ pub fn prepare_external_link_open(
     if bound.record().id() != &guide_id {
         return Err(ExternalLinkOpenError::RevisionConflict);
     }
+    let retained_reference = bound
+        .record()
+        .references()
+        .unwrap_or_default()
+        .iter()
+        .any(|reference| reference.url() == destination);
     let body = std::str::from_utf8(bound.record().body())
         .map_err(|_| ExternalLinkOpenError::LinkNotFound)?;
     let document = parse_safe_markdown(body).map_err(|_| ExternalLinkOpenError::LinkNotFound)?;
-    let retained = document.events.iter().any(|event| {
+    let retained_body_link = document.events.iter().any(|event| {
         matches!(
             event,
             SafeMarkdownEvent::Start {
@@ -2818,7 +2824,7 @@ pub fn prepare_external_link_open(
             } if candidate == destination
         )
     });
-    if !retained {
+    if !retained_reference && !retained_body_link {
         return Err(ExternalLinkOpenError::LinkNotFound);
     }
     let mut confirmed = String::new();
@@ -4803,10 +4809,20 @@ mod tests {
     #[test]
     fn external_link_open_plan_is_exact_revision_bound_and_redacted() {
         let destination = "https://example.com/help?source=rehow";
-        let guide = GUIDE.replace(
-            "Extract the archive.",
-            &format!("Read [the documentation]({destination}) and [blocked](file:///etc/passwd)."),
-        );
+        let reference_destination = "https://example.com/reference";
+        let guide = GUIDE
+            .replace(
+                "future_key: keep-me",
+                &format!(
+                    "references:\n  - title: Reference manual\n    url: {reference_destination}\nfuture_key: keep-me"
+                ),
+            )
+            .replace(
+                "Extract the archive.",
+                &format!(
+                    "Read [the documentation]({destination}) and [blocked](file:///etc/passwd)."
+                ),
+            );
         let (workspace, _state, view) = fixture("external-link", &guide);
         let plan = prepare_external_link_open(
             &view,
@@ -4819,6 +4835,15 @@ mod tests {
         let debug = format!("{plan:?}");
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("example.com"));
+
+        let reference_plan = prepare_external_link_open(
+            &view,
+            GuideId::from_str(GUIDE_ID).unwrap(),
+            revision(&view),
+            reference_destination,
+        )
+        .unwrap();
+        assert_eq!(reference_plan.destination, reference_destination);
 
         assert!(matches!(
             prepare_external_link_open(

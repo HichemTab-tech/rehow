@@ -697,6 +697,29 @@ struct GuideBodyPayload {
     revision: String,
     body: String,
     document: SafeMarkdownDocument,
+    created_at: String,
+    last_verified_at: Option<String>,
+    applies_to: Vec<GuideApplicabilityPayload>,
+    prerequisites: Vec<String>,
+    warnings: Vec<String>,
+    files_affected: Vec<String>,
+    related_guide_ids: Vec<String>,
+    references: Vec<GuideReferencePayload>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GuideApplicabilityPayload {
+    platform: String,
+    versions: Option<String>,
+    notes: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GuideReferencePayload {
+    title: String,
+    url: String,
 }
 
 #[derive(Serialize)]
@@ -932,6 +955,38 @@ fn guide_body_payload(
         revision: loaded.revision().to_string(),
         body: body.to_owned(),
         document,
+        created_at: guide.created_at().to_string(),
+        last_verified_at: guide
+            .verification()
+            .map(|verification| verification.last_verified_at().to_string()),
+        applies_to: guide
+            .applies_to()
+            .unwrap_or_default()
+            .iter()
+            .map(|applicability| GuideApplicabilityPayload {
+                platform: applicability.platform().to_owned(),
+                versions: applicability.versions().map(str::to_owned),
+                notes: applicability.notes().map(str::to_owned),
+            })
+            .collect(),
+        prerequisites: guide.prerequisites().unwrap_or_default().to_vec(),
+        warnings: guide.warnings().unwrap_or_default().to_vec(),
+        files_affected: guide.files_affected().unwrap_or_default().to_vec(),
+        related_guide_ids: guide
+            .related_guide_ids()
+            .unwrap_or_default()
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        references: guide
+            .references()
+            .unwrap_or_default()
+            .iter()
+            .map(|reference| GuideReferencePayload {
+                title: reference.title().to_owned(),
+                url: reference.url().to_owned(),
+            })
+            .collect(),
     })
 }
 
@@ -6017,17 +6072,17 @@ mod tests {
         GitCommitResultPayload, GitInitPlanPayload, GitInitResultPayload, GitPushResultPayload,
         GitRemotePlanPayload, GitRemoteResultPayload, GitSyncApplyResultPayload,
         GitSyncCancelError, GitSyncCancelResultPayload, GitSyncInspectionPayload, GitSyncLifecycle,
-        GitSyncRecoveryResultPayload, GuideBodyPayload, GuidePayload, MarkdownImportApplyPayload,
-        MarkdownImportDestinationResult, MarkdownImportLifecycle,
-        MarkdownImportPreviewEntryPayload, MarkdownImportPreviewPayload, PendingGitPlanError,
-        SearchHighlightPayload, SearchHitPayload, SingleFlightReservation, WorkspaceIssuePayload,
-        WorkspacePayload, WorkspaceWatchEventPayload, attachment_export_code,
-        attachment_export_message, attachment_removal_code, attachment_removal_message,
-        attachment_reveal_code, attachment_reveal_message, attachment_text_preview_code,
-        attachment_text_preview_message, begin_markdown_import, category_create_code,
-        category_create_message, category_remove_code, category_remove_message,
-        category_reorder_code, category_reorder_message, category_update_code,
-        category_update_message, empty_git_payload, external_link_open_code,
+        GitSyncRecoveryResultPayload, GuideApplicabilityPayload, GuideBodyPayload, GuidePayload,
+        GuideReferencePayload, MarkdownImportApplyPayload, MarkdownImportDestinationResult,
+        MarkdownImportLifecycle, MarkdownImportPreviewEntryPayload, MarkdownImportPreviewPayload,
+        PendingGitPlanError, SearchHighlightPayload, SearchHitPayload, SingleFlightReservation,
+        WorkspaceIssuePayload, WorkspacePayload, WorkspaceWatchEventPayload,
+        attachment_export_code, attachment_export_message, attachment_removal_code,
+        attachment_removal_message, attachment_reveal_code, attachment_reveal_message,
+        attachment_text_preview_code, attachment_text_preview_message, begin_markdown_import,
+        category_create_code, category_create_message, category_remove_code,
+        category_remove_message, category_reorder_code, category_reorder_message,
+        category_update_code, category_update_message, empty_git_payload, external_link_open_code,
         external_link_open_message, finish_markdown_import, git_clone_apply_code,
         git_clone_apply_message, git_clone_code, git_clone_completion_confirmation,
         git_clone_confirmation_fields, git_clone_materialize_code, git_clone_materialize_message,
@@ -6731,8 +6786,24 @@ mod tests {
             revision: format!("rev:v1:{}", "11".repeat(32)),
             body: "<script>no</script>".to_owned(),
             document: parse_safe_markdown("<script>no</script>").unwrap(),
+            created_at: "2026-09-05T10:03:00Z".to_owned(),
+            last_verified_at: Some("2026-09-23T10:03:00Z".to_owned()),
+            applies_to: vec![GuideApplicabilityPayload {
+                platform: "Arch Linux".to_owned(),
+                versions: Some("2026".to_owned()),
+                notes: None,
+            }],
+            prerequisites: vec!["A downloaded archive".to_owned()],
+            warnings: vec!["Back up the existing directory.".to_owned()],
+            files_affected: vec!["~/Programs/example".to_owned()],
+            related_guide_ids: vec!["0199a1d7-7b0d-7d8e-a38d-f936c5735e11".to_owned()],
+            references: vec![GuideReferencePayload {
+                title: "Reference manual".to_owned(),
+                url: "https://example.com/reference".to_owned(),
+            }],
         };
         let json = serde_json::to_value(payload).unwrap();
+        assert_eq!(json.as_object().unwrap().len(), 12);
         assert_eq!(json["body"], "<script>no</script>");
         assert_eq!(json["revision"], format!("rev:v1:{}", "11".repeat(32)));
         assert_eq!(json["document"]["version"], 1);
@@ -6743,6 +6814,11 @@ mod tests {
                 .iter()
                 .any(|event| event["kind"] == "htmlLiteral")
         );
+        assert_eq!(json["appliesTo"][0]["platform"], "Arch Linux");
+        assert_eq!(json["lastVerifiedAt"], "2026-09-23T10:03:00Z");
+        assert_eq!(json["references"][0]["title"], "Reference manual");
+        assert!(json.get("verifiedContentHash").is_none());
+        assert!(json.get("path").is_none());
     }
 
     #[test]

@@ -108,6 +108,7 @@ Use the most stable Tauri/WebDriver-compatible automation available at Phase 2 a
 | Import/adoption | safe Markdown, frontmatter variants, source unchanged, symlink/special file, collision, oversize, rollback |
 | Compatibility/migration | each supported version, unknown fields, backup validation, interrupted/repeated migration, newer refusal |
 | Markdown | known/unknown fields, comments/order strategy, Unicode/BOM/CRLF, duplicate keys, aliases/tags, deep/large input, reserved sections, malicious HTML/links |
+| Guide reader context | selected-Guide-only metadata payload; warnings/prerequisites/applicability/files/relationships/References/verification; escaping, long text, missing related Guide, guarded Reference open |
 | Category/Guide | every lifecycle/status/move/rename/reorder/archive/restore/delete path and invalid transition |
 | Tested trust | AI/default draft, missing/false/wrong confirmation, explicit success, stale→tested, no implicit transitions |
 | Search | field extraction, exact title/alias/command/path/error order, typo/prefix policy, archived scope, malformed docs, incremental/rebuild/corrupt index |

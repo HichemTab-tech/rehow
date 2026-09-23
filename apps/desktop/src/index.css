@@ -1090,6 +1090,97 @@ h1 {
   margin-top: -2px;
 }
 
+.guide-context {
+  display: grid;
+  gap: 1rem;
+  border-bottom: 1px solid var(--divider);
+  padding-block: 1rem 1.2rem;
+}
+
+.guide-context h3 {
+  margin: 0 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.guide-context ul {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+  padding-left: 1.15rem;
+}
+
+.guide-context li {
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.guide-warnings {
+  border-left: 3px solid var(--warning);
+  padding: 0.75rem 0.9rem;
+  background: var(--warning-bg);
+}
+
+.guide-warnings h3 {
+  color: var(--warning);
+}
+
+.guide-context-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
+  gap: 1.1rem 1.5rem;
+}
+
+.guide-applicability-list li {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.guide-applicability-list span,
+.guide-applicability-list small {
+  color: var(--muted);
+}
+
+.guide-files-list code,
+.guide-references code {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 0.78rem;
+}
+
+.guide-related-list button,
+.guide-references button {
+  min-height: 2.25rem;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  padding: 0.2rem 0;
+  color: var(--accent);
+  background: transparent;
+  font: inherit;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+
+.guide-related-list button:hover:not(:disabled),
+.guide-references button:hover:not(:disabled) {
+  border-bottom-color: currentColor;
+  color: var(--accent-strong);
+}
+
+.guide-references {
+  grid-column: 1 / -1;
+}
+
+.guide-references li {
+  display: grid;
+  justify-items: start;
+  gap: 0.1rem;
+}
+
 .guide-attachments {
   margin-block: 1rem 1.5rem;
   border-block: 1px solid var(--divider);

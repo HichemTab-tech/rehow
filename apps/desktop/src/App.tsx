@@ -28,6 +28,18 @@ type GuideBodyPayload = {
   revision: string;
   body: string;
   document: SafeMarkdownDocument;
+  createdAt: string;
+  lastVerifiedAt: string | null;
+  appliesTo: Array<{
+    platform: string;
+    versions: string | null;
+    notes: string | null;
+  }>;
+  prerequisites: string[];
+  warnings: string[];
+  filesAffected: string[];
+  relatedGuideIds: string[];
+  references: Array<{ title: string; url: string }>;
 };
 
 type AttachmentTextPreviewPayload = {
@@ -1799,6 +1811,135 @@ function SearchExcerpt({ hit }: { hit: SearchHitPayload }) {
   );
 }
 
+export function GuideContext({
+  guide,
+  guides,
+  openingExternalLink,
+  onOpenExternalLink,
+  onOpenRelatedGuide,
+}: {
+  guide: GuideBodyPayload;
+  guides: GuideSummary[];
+  openingExternalLink: string;
+  onOpenExternalLink: (url: string) => void;
+  onOpenRelatedGuide: (guideId: string) => void;
+}) {
+  const hasContext =
+    guide.appliesTo.length > 0 ||
+    guide.prerequisites.length > 0 ||
+    guide.warnings.length > 0 ||
+    guide.filesAffected.length > 0 ||
+    guide.relatedGuideIds.length > 0 ||
+    guide.references.length > 0;
+  if (!hasContext) return null;
+
+  return (
+    <section className="guide-context" aria-labelledby="guide-context-heading">
+      <h2 className="sr-only" id="guide-context-heading">
+        Guide context
+      </h2>
+      {guide.warnings.length > 0 ? (
+        <aside
+          className="guide-warnings"
+          aria-labelledby="guide-warnings-heading"
+        >
+          <h3 id="guide-warnings-heading">Warnings</h3>
+          <ul>
+            {guide.warnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        </aside>
+      ) : null}
+      <div className="guide-context-grid">
+        {guide.prerequisites.length > 0 ? (
+          <section>
+            <h3>Prerequisites</h3>
+            <ul>
+              {guide.prerequisites.map((prerequisite) => (
+                <li key={prerequisite}>{prerequisite}</li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+        {guide.appliesTo.length > 0 ? (
+          <section>
+            <h3>Applies To</h3>
+            <ul className="guide-applicability-list">
+              {guide.appliesTo.map((item) => (
+                <li key={`${item.platform}-${item.versions}-${item.notes}`}>
+                  <strong>{item.platform}</strong>
+                  {item.versions ? <span>{item.versions}</span> : null}
+                  {item.notes ? <small>{item.notes}</small> : null}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+        {guide.filesAffected.length > 0 ? (
+          <section>
+            <h3>Files Affected</h3>
+            <ul className="guide-files-list">
+              {guide.filesAffected.map((file) => (
+                <li key={file}>
+                  <code>{file}</code>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+        {guide.relatedGuideIds.length > 0 ? (
+          <section>
+            <h3>Related Guides</h3>
+            <ul className="guide-related-list">
+              {guide.relatedGuideIds.map((guideId) => {
+                const related = guides.find(
+                  (candidate) => candidate.id === guideId,
+                );
+                return (
+                  <li key={guideId}>
+                    {related ? (
+                      <button
+                        type="button"
+                        onClick={() => onOpenRelatedGuide(guideId)}
+                      >
+                        {related.title}
+                      </button>
+                    ) : (
+                      <span>Unavailable Guide</span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        ) : null}
+        {guide.references.length > 0 ? (
+          <section className="guide-references">
+            <h3>References</h3>
+            <ul>
+              {guide.references.map((reference) => (
+                <li key={`${reference.url}-${reference.title}`}>
+                  <button
+                    type="button"
+                    disabled={openingExternalLink !== ""}
+                    onClick={() => onOpenExternalLink(reference.url)}
+                  >
+                    {openingExternalLink === reference.url
+                      ? "Opening…"
+                      : reference.title}
+                  </button>
+                  <code>{reference.url}</code>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 export function App() {
   const [query, setQuery] = useState(() => initialParameter("q") ?? "");
   const [searchScope, setSearchScope] = useState<SearchScope>(() => {
@@ -2618,6 +2759,15 @@ export function App() {
   function openGuide(id: string, trigger?: HTMLButtonElement) {
     if (id !== selectedId && !confirmDiscard()) return;
     if (trigger) lastResultRef.current = trigger;
+    setSelectedId(id);
+    setReaderOpen(true);
+    requestAnimationFrame(() => readerRef.current?.focus());
+  }
+
+  function openRelatedGuide(id: string) {
+    if (id === selectedId || !confirmDiscard()) return;
+    setQuery("");
+    setSearchScope("all");
     setSelectedId(id);
     setReaderOpen(true);
     requestAnimationFrame(() => readerRef.current?.focus());
@@ -4867,20 +5017,17 @@ export function App() {
           <p className="rail-label">Library</p>
           <RailItem
             icon="book"
-            label="All Guides"
-            count={guides.length}
-            active
+            label="Active Guides"
+            count={guides.filter((guide) => guide.status !== "Archived").length}
+            active={searchScope === "active"}
+            onClick={() => changeSearchScope("active")}
           />
-          <RailItem
-            icon="folder"
-            label="Categories"
-            count={workspace?.categories.length ?? 0}
-          />
-          <RailItem icon="tag" label="Tags" count={0} />
           <RailItem
             icon="archive"
             label="Archive"
             count={guides.filter((guide) => guide.status === "Archived").length}
+            active={searchScope === "archived"}
+            onClick={() => changeSearchScope("archived")}
           />
         </nav>
         <div className="category-list">
@@ -6211,10 +6358,23 @@ export function App() {
                 <p className="guide-summary">{selected.summary}</p>
               )}
               <dl className="guide-meta">
+                {guideBody?.id === selected.id ? (
+                  <div>
+                    <dt>Created</dt>
+                    <dd>{formatLongDate(guideBody.createdAt)}</dd>
+                  </div>
+                ) : null}
                 <div>
                   <dt>Updated</dt>
                   <dd>{formatLongDate(selected.updatedAt)}</dd>
                 </div>
+                {guideBody?.id === selected.id &&
+                guideBody.lastVerifiedAt !== null ? (
+                  <div>
+                    <dt>Last Verified</dt>
+                    <dd>{formatLongDate(guideBody.lastVerifiedAt)}</dd>
+                  </div>
+                ) : null}
                 <div>
                   <dt>Mode</dt>
                   <dd>
@@ -6239,6 +6399,17 @@ export function App() {
                 )}
               </dl>
             </header>
+            {guideBody?.id === selected.id ? (
+              <GuideContext
+                guide={guideBody}
+                guides={guides}
+                openingExternalLink={openingExternalLink}
+                onOpenExternalLink={(destination) =>
+                  void openExternalGuideLink(destination)
+                }
+                onOpenRelatedGuide={openRelatedGuide}
+              />
+            ) : null}
             {selected.attachments.length > 0 && (
               <section
                 className="guide-attachments"
@@ -7252,15 +7423,21 @@ function RailItem({
   icon,
   label,
   count,
+  onClick,
   active = false,
 }: {
   icon: IconName;
   label: string;
   count: number;
+  onClick: () => void;
   active?: boolean;
 }) {
   return (
-    <button className={`rail-item ${active ? "is-active" : ""}`} type="button">
+    <button
+      className={`rail-item ${active ? "is-active" : ""}`}
+      type="button"
+      onClick={onClick}
+    >
       <Icon name={icon} />
       <span>{label}</span>
       <span className="count">{count}</span>

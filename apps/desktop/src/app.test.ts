@@ -11,6 +11,7 @@ import {
   filterGuides,
   focusGitCommitReview,
   focusGitSyncAction,
+  GuideContext,
   gitFactLabel,
   gitStatusLabel,
   gitSyncPresentation,
@@ -1250,6 +1251,65 @@ describe("Guide search", () => {
 });
 
 describe("safe Guide rendering", () => {
+  it("renders Guide context as escaped text and guarded actions", () => {
+    const markup = renderToStaticMarkup(
+      createElement(GuideContext, {
+        guide: {
+          id: "guide-id",
+          revision: `rev:v1:${"11".repeat(32)}`,
+          body: "",
+          document: { version: 1, events: [] },
+          createdAt: "2026-09-05T10:03:00Z",
+          lastVerifiedAt: "2026-09-23T10:03:00Z",
+          appliesTo: [
+            {
+              platform: "Arch <Linux>",
+              versions: "2026",
+              notes: "Wayland & Hyprland",
+            },
+          ],
+          prerequisites: ["Back up <config>"],
+          warnings: ["Never run <script>alert(1)</script>"],
+          filesAffected: ["~/.config/<unsafe>"],
+          relatedGuideIds: ["related-id", "missing-id"],
+          references: [
+            {
+              title: "Reference <manual>",
+              url: "https://example.com/?q=<unsafe>",
+            },
+          ],
+        },
+        guides: [
+          {
+            id: "related-id",
+            title: "Related <Guide>",
+            summary: "Summary",
+            categoryId: "category-id",
+            category: "Linux",
+            status: "Draft" as const,
+            updatedAt: "2026-09-23T10:03:00Z",
+            tags: [],
+            aliases: [],
+            attachments: [],
+            matches: "",
+          },
+        ],
+        openingExternalLink: "",
+        onOpenExternalLink: () => undefined,
+        onOpenRelatedGuide: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain("Warnings");
+    expect(markup).toContain("Never run &lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(markup).toContain("~/.config/&lt;unsafe&gt;");
+    expect(markup).toContain("Related &lt;Guide&gt;");
+    expect(markup).toContain("Reference &lt;manual&gt;");
+    expect(markup).toContain("Unavailable Guide");
+    expect(markup).not.toContain("<script>");
+    expect(markup).not.toContain("href=");
+  });
+
   it("renders bounded Workspace issue recovery guidance as inert text", () => {
     const issue = {
       kind: "missingCategoryDescriptor" as const,

@@ -198,7 +198,7 @@ The desktop offers Active, Tested, Draft, Stale, Archived, and All scopes. Tauri
 - Parse CommonMark/GFM in Rust to the versioned safe AST; React renders only fixed known nodes and never uses `dangerouslySetInnerHTML`.
 - Emit embedded raw-HTML source as escaped literal/unsupported nodes. There is no HAST/HTML-string sanitization path.
 - Allow only `http`, `https`, and `mailto` external links, plus validated managed Attachment references. Block `javascript`, `data`, `file`, custom command schemes, control characters, and deceptive malformed URLs.
-- External links are semantic actions with destination context, never WebView navigation. A renderer request sends the open Workspace session, Guide ID, exact revision, and displayed destination; core rereads the confined Guide and proves that exact URL is retained in its safe AST. It then requires OpenURI portal version 3 and `ask=true`, so every request needs an out-of-WebView application choice. The native response and errors contain no URL.
+- External links are semantic actions with destination context, never WebView navigation. A renderer request sends the open Workspace session, Guide ID, exact revision, and displayed destination; core rereads the confined Guide and proves that exact URL is retained in its safe body AST or canonical Reference metadata. It then requires OpenURI portal version 3 and `ask=true`, so every request needs an out-of-WebView application choice. The native response and errors contain no URL.
 - Images load only managed Attachments by default; no remote tracking pixels.
 - Copy copies literal command text only. No Run button or executable terminal integration.
 
