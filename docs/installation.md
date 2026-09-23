@@ -1,7 +1,7 @@
 # Installation and Desktop Integration
 
 Status: development `.deb`/`.rpm` bundles implemented and smoke-tested; clean-machine release qualification remains open
-Last updated: 2026-09-22
+Last updated: 2026-09-24
 
 ## Supported baseline
 
