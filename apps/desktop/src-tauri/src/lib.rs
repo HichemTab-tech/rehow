@@ -1,5 +1,7 @@
 pub const APPLICATION_NAME: &str = "Rehow";
 
+mod preferences;
+
 use rehow_core::{
     application::{
         AttachmentExportError, AttachmentExportOutcome, AttachmentImportError,
@@ -49,7 +51,7 @@ use rehow_core::{
 use serde::{Deserialize, Serialize};
 use std::{
     env, fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
     sync::{
         Arc, Mutex,
@@ -57,6 +59,8 @@ use std::{
     },
 };
 use tauri::{Emitter, Manager};
+
+use preferences::{DesktopPreferences, PreferencesError};
 
 const WORKSPACE_INVALIDATED_EVENT: &str = "rehow://workspace-invalidated/v1";
 const GIT_COMMIT_MESSAGE_INPUT_BYTES: usize = 800;
@@ -77,6 +81,7 @@ struct DesktopState {
     git_commit: Mutex<GitCommitLifecycle>,
     git_clone: Mutex<GitCloneLifecycle>,
     git_sync: Mutex<GitSyncLifecycle>,
+    preferences: Mutex<()>,
     attachment_reveal_active: Arc<AtomicBool>,
     external_link_open_active: Arc<AtomicBool>,
     next_watch_session: AtomicU64,
@@ -99,6 +104,7 @@ impl Default for DesktopState {
             git_commit: Mutex::default(),
             git_clone: Mutex::default(),
             git_sync: Mutex::default(),
+            preferences: Mutex::default(),
             attachment_reveal_active: Arc::default(),
             external_link_open_active: Arc::default(),
             next_watch_session: AtomicU64::default(),
@@ -214,6 +220,7 @@ impl DesktopState {
 struct DesktopWorkspace {
     view: Box<WorkspaceView>,
     facts: WorkspaceFolderFacts,
+    selected_path: PathBuf,
     watcher: Option<WorkspaceWatcher>,
     watch_status: WatchStatus,
     watch_session: u64,
@@ -237,6 +244,7 @@ impl WatchStatus {
 struct PendingWorkspace {
     target: EmptyWorkspaceTarget,
     facts: WorkspaceFolderFacts,
+    selected_path: PathBuf,
 }
 
 struct PendingMarkdownImport {
@@ -300,6 +308,30 @@ enum OpenWorkspaceResult {
         reason: &'static str,
         facts: FolderFactsPayload,
     },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum RecentWorkspaceResult {
+    None,
+    Restored { workspace: WorkspacePayload },
+    Unavailable { reason: String },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopPreferencesPayload {
+    sync_on_start: bool,
+    sync_interval_minutes: Option<u32>,
+}
+
+impl From<&DesktopPreferences> for DesktopPreferencesPayload {
+    fn from(preferences: &DesktopPreferences) -> Self {
+        Self {
+            sync_on_start: preferences.sync_on_start(),
+            sync_interval_minutes: preferences.sync_interval_minutes(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -827,12 +859,14 @@ impl DesktopWorkspace {
     fn new(
         view: Box<WorkspaceView>,
         facts: WorkspaceFolderFacts,
+        selected_path: PathBuf,
         watch_session: u64,
         app: &tauri::AppHandle,
     ) -> Self {
         let mut workspace = Self {
             view,
             facts,
+            selected_path,
             watcher: None,
             watch_status: WatchStatus::Degraded,
             watch_session,
@@ -3270,7 +3304,9 @@ async fn git_clone_complete_selected_workspace(
         }
     };
     let facts = pending.selected.facts.after_git_initialize();
-    let workspace = DesktopWorkspace::new(view, facts, state.next_watch_session(), &app);
+    let selected_path = pending.selected.selected_path.clone();
+    let workspace =
+        DesktopWorkspace::new(view, facts, selected_path, state.next_watch_session(), &app);
     let payload = workspace.payload();
     let mut workspace_session = match state.workspace.lock() {
         Ok(session) => session,
@@ -4618,7 +4654,13 @@ fn initialize_selected_workspace(
         }
     };
     let facts = selected.facts;
-    let workspace = DesktopWorkspace::new(view, facts, state.next_watch_session(), &app);
+    let workspace = DesktopWorkspace::new(
+        view,
+        facts,
+        selected.selected_path,
+        state.next_watch_session(),
+        &app,
+    );
     let payload = workspace.payload();
     *state.workspace.lock().map_err(|_| {
         native_command_error(
@@ -4631,6 +4673,184 @@ fn initialize_selected_workspace(
 
 fn native_command_error(code: &'static str, message: String) -> NativeCommandError {
     NativeCommandError { code, message }
+}
+
+fn preferences_error(error: PreferencesError) -> NativeCommandError {
+    match error {
+        PreferencesError::LocationUnavailable => native_command_error(
+            "preferencesUnavailable",
+            "Rehow cannot locate a private preferences folder.".to_owned(),
+        ),
+        PreferencesError::Unsafe => native_command_error(
+            "preferencesUnsafe",
+            "Rehow refused unsafe preferences storage. Check ownership, links, and permissions."
+                .to_owned(),
+        ),
+        PreferencesError::Invalid => native_command_error(
+            "preferencesInvalid",
+            "Rehow preferences are malformed or from an unsupported version.".to_owned(),
+        ),
+        PreferencesError::Io => native_command_error(
+            "preferencesUnavailable",
+            "Rehow could not read or save its private preferences.".to_owned(),
+        ),
+    }
+}
+
+#[tauri::command]
+fn load_desktop_preferences(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<DesktopPreferencesPayload, NativeCommandError> {
+    let _guard = state.preferences.lock().map_err(|_| {
+        native_command_error(
+            "preferencesUnavailable",
+            "Rehow preferences are temporarily unavailable.".to_owned(),
+        )
+    })?;
+    let preferences = preferences::load().map_err(preferences_error)?;
+    Ok((&preferences).into())
+}
+
+#[tauri::command]
+fn save_desktop_preferences(
+    state: tauri::State<'_, DesktopState>,
+    sync_on_start: bool,
+    sync_interval_minutes: Option<u32>,
+) -> Result<DesktopPreferencesPayload, NativeCommandError> {
+    let _guard = state.preferences.lock().map_err(|_| {
+        native_command_error(
+            "preferencesUnavailable",
+            "Rehow preferences are temporarily unavailable.".to_owned(),
+        )
+    })?;
+    let mut preferences = preferences::load().map_err(preferences_error)?;
+    preferences
+        .set_sync_policy(sync_on_start, sync_interval_minutes)
+        .map_err(preferences_error)?;
+    preferences::save(&preferences).map_err(preferences_error)?;
+    Ok((&preferences).into())
+}
+
+#[tauri::command]
+fn remember_open_workspace(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), NativeCommandError> {
+    let selected_path = state
+        .workspace
+        .lock()
+        .map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Workspace session is unavailable.".to_owned(),
+            )
+        })?
+        .as_ref()
+        .map(|workspace| workspace.selected_path.clone())
+        .ok_or_else(|| {
+            native_command_error("workspaceUnavailable", "No Workspace is open.".to_owned())
+        })?;
+    let _guard = state.preferences.lock().map_err(|_| {
+        native_command_error(
+            "preferencesUnavailable",
+            "Rehow preferences are temporarily unavailable.".to_owned(),
+        )
+    })?;
+    let mut preferences = preferences::load().map_err(preferences_error)?;
+    preferences
+        .remember_workspace(selected_path)
+        .map_err(preferences_error)?;
+    preferences::save(&preferences).map_err(preferences_error)
+}
+
+#[tauri::command]
+fn restore_recent_workspace(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<RecentWorkspaceResult, NativeCommandError> {
+    if state
+        .workspace
+        .lock()
+        .map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Workspace session is unavailable.".to_owned(),
+            )
+        })?
+        .is_some()
+    {
+        return Err(native_command_error(
+            "workspaceAlreadyOpen",
+            "A Workspace is already open.".to_owned(),
+        ));
+    }
+    let preferences = {
+        let _guard = state.preferences.lock().map_err(|_| {
+            native_command_error(
+                "preferencesUnavailable",
+                "Rehow preferences are temporarily unavailable.".to_owned(),
+            )
+        })?;
+        preferences::load().map_err(preferences_error)?
+    };
+    let Some(path) = preferences.recent_workspace().map(Path::to_path_buf) else {
+        return Ok(RecentWorkspaceResult::None);
+    };
+    let report = match inspect_workspace(&path) {
+        Ok(report) => report,
+        Err(_) => {
+            return Ok(RecentWorkspaceResult::Unavailable {
+                reason: "The recent Workspace could not be inspected safely.".to_owned(),
+            });
+        }
+    };
+    let (facts, inspection) = report.into_parts();
+    let view = match inspection {
+        WorkspaceInspection::Compatible(view) => view,
+        WorkspaceInspection::Empty(_) => {
+            return Ok(RecentWorkspaceResult::Unavailable {
+                reason: "The recent folder is empty and is not a Rehow Workspace.".to_owned(),
+            });
+        }
+        WorkspaceInspection::NewerUnsupported { version } => {
+            return Ok(RecentWorkspaceResult::Unavailable {
+                reason: format!(
+                    "The recent Workspace uses newer unsupported schema version {version}."
+                ),
+            });
+        }
+        WorkspaceInspection::OrdinaryMarkdown(_) => {
+            return Ok(RecentWorkspaceResult::Unavailable {
+                reason: "The recent folder is a Markdown collection, not a Rehow Workspace."
+                    .to_owned(),
+            });
+        }
+        WorkspaceInspection::UnrelatedNonempty => {
+            return Ok(RecentWorkspaceResult::Unavailable {
+                reason: "The recent folder is not a Rehow Workspace.".to_owned(),
+            });
+        }
+        WorkspaceInspection::Malformed { .. } => {
+            return Ok(RecentWorkspaceResult::Unavailable {
+                reason: "The recent Workspace is malformed and was not opened.".to_owned(),
+            });
+        }
+    };
+    let workspace = DesktopWorkspace::new(view, facts, path, state.next_watch_session(), &app);
+    let payload = workspace.payload();
+    let mut session = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable.".to_owned(),
+        )
+    })?;
+    if session.is_some() {
+        return Err(native_command_error(
+            "workspaceAlreadyOpen",
+            "A Workspace is already open.".to_owned(),
+        ));
+    }
+    *session = Some(workspace);
+    Ok(RecentWorkspaceResult::Restored { workspace: payload })
 }
 
 fn workspace_initialization_code(error: WorkspaceInitializationError) -> &'static str {
@@ -5399,7 +5619,11 @@ fn choose_markdown_import_destination(
             "Choose a destination outside the source collection.".to_owned(),
         ));
     }
-    import.destination = Some(PendingWorkspace { target, facts });
+    import.destination = Some(PendingWorkspace {
+        target,
+        facts,
+        selected_path: path,
+    });
     Ok(MarkdownImportDestinationResult::Selected {
         facts: facts.into(),
     })
@@ -5522,6 +5746,7 @@ async fn apply_markdown_import(
     let workspace = DesktopWorkspace::new(
         outcome.into_workspace(),
         destination.facts,
+        destination.selected_path,
         state.next_watch_session(),
         &app,
     );
@@ -5677,12 +5902,13 @@ fn choose_workspace(
                 Some(PendingWorkspace {
                     target,
                     facts: report_facts,
+                    selected_path: path.clone(),
                 });
             Ok(OpenWorkspaceResult::Empty { facts })
         }
         WorkspaceInspection::Compatible(view) => {
             let workspace =
-                DesktopWorkspace::new(view, report_facts, state.next_watch_session(), &app);
+                DesktopWorkspace::new(view, report_facts, path, state.next_watch_session(), &app);
             let payload = workspace.payload();
             *state
                 .workspace
@@ -5738,16 +5964,20 @@ pub fn run() {
             export_open_guide_attachment,
             initialize_selected_workspace,
             import_open_guide_attachment,
+            load_desktop_preferences,
             open_guide_external_link,
             read_open_guide,
             preview_open_guide_attachment_text,
             reveal_open_guide_attachment_parent,
+            remember_open_workspace,
+            restore_recent_workspace,
             refresh_open_workspace,
             remove_open_category,
             remove_open_guide_attachment,
             remove_open_guide,
             reorder_open_categories,
             save_open_category_details,
+            save_desktop_preferences,
             save_open_guide_body,
             save_open_guide_details,
             set_open_category_archived,

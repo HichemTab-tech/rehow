@@ -12,10 +12,9 @@ name = "rehow_desktop"
 tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
+libc = "=0.2.189"
 rehow-core = { path = "../../../crates/rehow-core" }
 rfd = { version = "=0.17.2", default-features = true }
 serde = { version = "=1.0.229", features = ["derive"] }
-tauri = { version = "=2.11.5", default-features = false, features = ["wry"] }
-
-[dev-dependencies]
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+tauri = { version = "=2.11.5", default-features = false, features = ["wry"] }

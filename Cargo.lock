@@ -2634,6 +2634,7 @@ dependencies = [
 name = "rehow-desktop"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "rehow-core",
  "rfd",
  "serde",

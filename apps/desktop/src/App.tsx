@@ -94,6 +94,18 @@ type WorkspacePayload = {
   watchSession: string;
 };
 
+type DesktopPreferencesPayload = {
+  syncOnStart: boolean;
+  syncIntervalMinutes: number | null;
+};
+
+type RecentWorkspaceResult =
+  | { kind: "none" }
+  | { kind: "restored"; workspace: WorkspacePayload }
+  | { kind: "unavailable"; reason: string };
+
+const SYNC_INTERVALS = [15, 30, 60, 240, 1_440] as const;
+
 const WORKSPACE_ISSUE_KINDS: readonly WorkspaceIssueKind[] = [
   "unsafeEntry",
   "unsupportedEntry",
@@ -1528,6 +1540,46 @@ function isWorkspacePayload(value: unknown): value is WorkspacePayload {
   return categoriesValid && guidesValid;
 }
 
+export function isDesktopPreferencesPayload(
+  value: unknown,
+): value is DesktopPreferencesPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const preferences = value as Partial<DesktopPreferencesPayload> &
+    Record<string, unknown>;
+  return (
+    Object.keys(preferences).length === 2 &&
+    typeof preferences.syncOnStart === "boolean" &&
+    (preferences.syncIntervalMinutes === null ||
+      (typeof preferences.syncIntervalMinutes === "number" &&
+        SYNC_INTERVALS.includes(
+          preferences.syncIntervalMinutes as (typeof SYNC_INTERVALS)[number],
+        )))
+  );
+}
+
+export function isRecentWorkspaceResult(
+  value: unknown,
+): value is RecentWorkspaceResult {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as {
+    kind?: unknown;
+    workspace?: unknown;
+    reason?: unknown;
+  };
+  if (result.kind === "none") return Object.keys(result).length === 1;
+  if (result.kind === "restored") {
+    return (
+      Object.keys(result).length === 2 && isWorkspacePayload(result.workspace)
+    );
+  }
+  return (
+    result.kind === "unavailable" &&
+    Object.keys(result).length === 2 &&
+    isBoundedText(result.reason, 1, 500) &&
+    !containsUnsafeDisplayCodePoint(result.reason as string)
+  );
+}
+
 export function isMarkdownImportApplyPayload(
   value: unknown,
 ): value is MarkdownImportApplyPayload {
@@ -1785,6 +1837,19 @@ export function App() {
   );
   const [announcement, setAnnouncement] = useState("");
   const [openingWorkspace, setOpeningWorkspace] = useState(false);
+  const [preferences, setPreferences] = useState<DesktopPreferencesPayload>({
+    syncOnStart: false,
+    syncIntervalMinutes: null,
+  });
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState("");
+  const [draftSyncOnStart, setDraftSyncOnStart] = useState(false);
+  const [draftSyncInterval, setDraftSyncInterval] = useState<number | null>(
+    null,
+  );
   const [refreshingWorkspace, setRefreshingWorkspace] = useState(false);
   const [externalChangeWorkspaceId, setExternalChangeWorkspaceId] =
     useState("");
@@ -1886,6 +1951,10 @@ export function App() {
   const attachmentImportButtonRef = useRef<HTMLButtonElement>(null);
   const attachmentPreviewDialogRef = useRef<HTMLDialogElement>(null);
   const workspaceIssuesDialogRef = useRef<HTMLDialogElement>(null);
+  const settingsDialogRef = useRef<HTMLDialogElement>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsErrorRef = useRef<HTMLParagraphElement>(null);
+  const startupGitInspectionSessionRef = useRef("");
   const workspaceIssuesButtonRef = useRef<HTMLButtonElement>(null);
   const attachmentPreviewButtonRefs = useRef(
     new Map<string, HTMLButtonElement>(),
@@ -2033,6 +2102,28 @@ export function App() {
     (workspaceEventsUnavailable ||
       workspace.watchStatus === "degraded" ||
       watchDegradedWorkspaceId === workspace.id);
+  const openWorkspaceWatchSession = workspace?.watchSession ?? "";
+  const gitSyncReadyForInspection =
+    workspace !== null &&
+    gitStatus?.kind === "ready" &&
+    gitStatus.upstream !== null &&
+    !syncPanelOpen &&
+    !syncOperationBusy &&
+    !commitFormOpen &&
+    !commitOperationBusy &&
+    !remoteFormOpen &&
+    !connectingRemote &&
+    !workspaceOperationBusy &&
+    !editingGuide &&
+    !editingGuideDetails &&
+    !creatingCategory &&
+    renamingCategoryId === "" &&
+    !creatingGuide &&
+    !dirtyGuide &&
+    !dirtyGuideDetails &&
+    !dirtyCategoryCreate &&
+    !dirtyCategoryRename &&
+    !dirtyGuideCreate;
   workspaceIdRef.current = workspace?.id ?? "";
   workspaceSessionRef.current = workspace?.watchSession ?? "";
   function noteDraftChange() {
@@ -2047,6 +2138,106 @@ export function App() {
   const cancelGitSyncFromEffect = useEffectEvent(() => {
     void cancelGitSync();
   });
+  const beginAutomaticGitSyncFromEffect = useEffectEvent(() => {
+    void beginGitSync("automatic");
+  });
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let active = true;
+    const timeout = window.setTimeout(() => {
+      setOpeningWorkspace(true);
+      import("@tauri-apps/api/core")
+        .then(async ({ invoke }) => {
+          const loaded = await invoke<unknown>("load_desktop_preferences");
+          if (!isDesktopPreferencesPayload(loaded)) {
+            throw new Error("invalid desktop preferences");
+          }
+          const recent = await invoke<unknown>("restore_recent_workspace");
+          if (!isRecentWorkspaceResult(recent)) {
+            throw new Error("invalid recent Workspace result");
+          }
+          return { loaded, recent };
+        })
+        .then(({ loaded, recent }) => {
+          if (!active) return;
+          setPreferences(loaded);
+          setPreferencesLoaded(true);
+          if (recent.kind === "restored") {
+            setWorkspace(recent.workspace);
+            setSelectedId(recent.workspace.guides[0]?.id ?? "");
+            setWatchDegradedWorkspaceId(
+              recent.workspace.watchStatus === "degraded"
+                ? recent.workspace.id
+                : "",
+            );
+            setAnnouncement(`Restored ${recent.workspace.name}.`);
+          } else if (recent.kind === "unavailable") {
+            setAnnouncement(recent.reason);
+          }
+        })
+        .catch((error) => {
+          if (!active) return;
+          setPreferencesLoaded(true);
+          setAnnouncement(nativeCommandError(error).message);
+        })
+        .finally(() => {
+          if (!active) return;
+          setOpeningWorkspace(false);
+          requestAnimationFrame(() => searchRef.current?.focus());
+        });
+    }, 0);
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window) || openWorkspaceWatchSession === "")
+      return;
+    let active = true;
+    import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke("remember_open_workspace"))
+      .catch((error) => {
+        if (active) setAnnouncement(nativeCommandError(error).message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [openWorkspaceWatchSession]);
+
+  useEffect(() => {
+    if (
+      !preferencesLoaded ||
+      !preferences.syncOnStart ||
+      !gitSyncReadyForInspection ||
+      workspace === null ||
+      startupGitInspectionSessionRef.current === workspace.watchSession
+    )
+      return;
+    startupGitInspectionSessionRef.current = workspace.watchSession;
+    beginAutomaticGitSyncFromEffect();
+  }, [
+    gitSyncReadyForInspection,
+    preferences.syncOnStart,
+    preferencesLoaded,
+    workspace,
+  ]);
+
+  useEffect(() => {
+    if (
+      !preferencesLoaded ||
+      preferences.syncIntervalMinutes === null ||
+      workspace === null
+    )
+      return;
+    const timer = window.setInterval(
+      beginAutomaticGitSyncFromEffect,
+      preferences.syncIntervalMinutes * 60_000,
+    );
+    return () => window.clearInterval(timer);
+  }, [preferences.syncIntervalMinutes, preferencesLoaded, workspace]);
 
   useEffect(() => {
     if (workspace === null) {
@@ -3150,36 +3341,16 @@ export function App() {
     }
   }
 
-  async function beginGitSync() {
-    if (
-      workspace === null ||
-      gitStatus?.kind !== "ready" ||
-      gitStatus.upstream === null ||
-      syncPanelOpen ||
-      syncOperationBusy ||
-      commitFormOpen ||
-      commitOperationBusy ||
-      remoteFormOpen ||
-      connectingRemote ||
-      workspaceOperationBusy ||
-      editingGuide ||
-      editingGuideDetails ||
-      creatingCategory ||
-      renamingCategoryId !== "" ||
-      creatingGuide ||
-      dirtyGuide ||
-      dirtyGuideDetails ||
-      dirtyCategoryCreate ||
-      dirtyCategoryRename ||
-      dirtyGuideCreate
-    )
-      return;
+  async function beginGitSync(origin: "manual" | "automatic" = "manual") {
+    if (!gitSyncReadyForInspection) return;
     const generation = ++syncGenerationRef.current;
     setSyncPanelOpen(true);
     setSyncInspection(null);
     setSyncError("");
     setSyncStage("inspecting");
-    requestAnimationFrame(() => syncPrimaryRef.current?.focus());
+    if (origin === "manual") {
+      requestAnimationFrame(() => syncPrimaryRef.current?.focus());
+    }
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const result = await invoke<unknown>("git_sync_inspect_open_workspace");
@@ -3193,7 +3364,9 @@ export function App() {
       setAnnouncement(
         `${gitSyncPresentation(result).title}. Review the sync result.`,
       );
-      requestAnimationFrame(() => syncPrimaryRef.current?.focus());
+      if (origin === "manual") {
+        requestAnimationFrame(() => syncPrimaryRef.current?.focus());
+      }
     } catch (error) {
       if (generation !== syncGenerationRef.current) return;
       const failure = nativeCommandError(error);
@@ -3201,13 +3374,71 @@ export function App() {
       if (failure.code === "cancelled") {
         resetGitSyncUi();
         setAnnouncement("Git sync inspection cancelled.");
-        requestAnimationFrame(() => syncButtonRef.current?.focus());
+        if (origin === "manual") {
+          requestAnimationFrame(() => syncButtonRef.current?.focus());
+        }
         return;
       }
       setSyncError(failure.message);
       setAnnouncement(failure.message);
       if (failure.code === "recoveryRequired") setGitStatus(null);
-      requestAnimationFrame(() => syncErrorRef.current?.focus());
+      if (origin === "manual") {
+        requestAnimationFrame(() => syncErrorRef.current?.focus());
+      }
+    }
+  }
+
+  async function openSettings() {
+    const dialog = settingsDialogRef.current;
+    if (dialog === null || settingsSaving) return;
+    setSettingsOpen(true);
+    setSettingsLoading(true);
+    setSettingsError("");
+    if (!dialog.open) dialog.showModal();
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const loaded = await invoke<unknown>("load_desktop_preferences");
+      if (!isDesktopPreferencesPayload(loaded)) {
+        throw new Error("invalid desktop preferences");
+      }
+      setPreferences(loaded);
+      setPreferencesLoaded(true);
+      setDraftSyncOnStart(loaded.syncOnStart);
+      setDraftSyncInterval(loaded.syncIntervalMinutes);
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setSettingsError(failure.message);
+      requestAnimationFrame(() => settingsErrorRef.current?.focus());
+    } finally {
+      setSettingsLoading(false);
+    }
+  }
+
+  async function saveSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (settingsSaving || settingsLoading) return;
+    setSettingsSaving(true);
+    setSettingsError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const saved = await invoke<unknown>("save_desktop_preferences", {
+        syncOnStart: draftSyncOnStart,
+        syncIntervalMinutes: draftSyncInterval,
+      });
+      if (!isDesktopPreferencesPayload(saved)) {
+        throw new Error("invalid desktop preferences");
+      }
+      setPreferences(saved);
+      setPreferencesLoaded(true);
+      setAnnouncement("Settings saved.");
+      settingsDialogRef.current?.close();
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setSettingsError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => settingsErrorRef.current?.focus());
+    } finally {
+      setSettingsSaving(false);
     }
   }
 
@@ -4614,10 +4845,13 @@ export function App() {
             <span className="toolbar-action-label">New Guide</span>
           </button>
           <button
+            ref={settingsButtonRef}
             className="icon-button"
             type="button"
             aria-label="Open settings"
+            aria-expanded={settingsOpen}
             title="Settings"
+            onClick={() => void openSettings()}
           >
             <Icon name="settings" />
           </button>
@@ -6737,6 +6971,114 @@ export function App() {
           ) : null}
         </span>
       </footer>
+      <dialog
+        ref={settingsDialogRef}
+        className="settings-dialog"
+        aria-labelledby="settings-title"
+        aria-describedby="settings-description"
+        onCancel={(event) => {
+          if (settingsSaving) event.preventDefault();
+        }}
+        onClose={() => {
+          setSettingsOpen(false);
+          setSettingsError("");
+          requestAnimationFrame(() => settingsButtonRef.current?.focus());
+        }}
+      >
+        <form className="settings-frame" onSubmit={saveSettings}>
+          <header>
+            <div>
+              <p className="eyebrow">Application</p>
+              <h2 id="settings-title">Settings</h2>
+              <p id="settings-description">
+                Choose when Rehow inspects the open Workspace for Git updates.
+              </p>
+            </div>
+            <button
+              className="attachment-preview-close"
+              type="button"
+              disabled={settingsSaving}
+              onClick={() => settingsDialogRef.current?.close()}
+            >
+              Close
+            </button>
+          </header>
+          <div className="settings-fields" aria-busy={settingsLoading}>
+            <label className="settings-check">
+              <input
+                type="checkbox"
+                name="sync-on-start"
+                autoComplete="off"
+                checked={draftSyncOnStart}
+                disabled={settingsLoading || settingsSaving}
+                onChange={(event) =>
+                  setDraftSyncOnStart(event.currentTarget.checked)
+                }
+              />
+              <span>
+                <strong>Inspect Git on startup</strong>
+                <small>
+                  Check the configured upstream after opening a Workspace.
+                </small>
+              </span>
+            </label>
+            <label className="settings-select">
+              <span>Scheduled inspection</span>
+              <select
+                name="sync-interval"
+                autoComplete="off"
+                value={draftSyncInterval ?? ""}
+                disabled={settingsLoading || settingsSaving}
+                onChange={(event) =>
+                  setDraftSyncInterval(
+                    event.currentTarget.value === ""
+                      ? null
+                      : Number(event.currentTarget.value),
+                  )
+                }
+              >
+                <option value="">Off</option>
+                <option value="15">Every 15 minutes</option>
+                <option value="30">Every 30 minutes</option>
+                <option value="60">Every hour</option>
+                <option value="240">Every 4 hours</option>
+                <option value="1440">Every day</option>
+              </select>
+            </label>
+            <p className="settings-note">
+              Inspections use private staging. Applying or pushing changes still
+              requires your explicit confirmation.
+            </p>
+            {settingsError !== "" ? (
+              <p
+                ref={settingsErrorRef}
+                className="form-error"
+                role="alert"
+                tabIndex={-1}
+              >
+                {settingsError}
+              </p>
+            ) : null}
+          </div>
+          <footer>
+            <button
+              className="button button-secondary"
+              type="button"
+              disabled={settingsSaving}
+              onClick={() => settingsDialogRef.current?.close()}
+            >
+              Cancel
+            </button>
+            <button
+              className="button button-primary"
+              type="submit"
+              disabled={settingsLoading || settingsSaving}
+            >
+              {settingsSaving ? "Saving…" : "Save Settings"}
+            </button>
+          </footer>
+        </form>
+      </dialog>
       <dialog
         ref={workspaceIssuesDialogRef}
         className="workspace-issues-dialog"

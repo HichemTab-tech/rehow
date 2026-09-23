@@ -1212,6 +1212,107 @@ h1 {
   box-shadow: 0 18px 60px rgb(0 0 0 / 28%);
 }
 
+.settings-dialog {
+  width: min(34rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+  margin: auto;
+  border: 1px solid var(--divider-strong);
+  border-radius: 4px;
+  padding: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  color: var(--text);
+  background: var(--reader);
+  box-shadow: 0 18px 60px rgb(0 0 0 / 28%);
+}
+
+.settings-dialog::backdrop {
+  background: rgb(12 16 13 / 58%);
+}
+
+.settings-frame > header,
+.settings-frame > footer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.1rem;
+}
+
+.settings-frame > header {
+  border-bottom: 1px solid var(--divider);
+}
+
+.settings-frame > footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--divider);
+}
+
+.settings-frame h2,
+.settings-frame p {
+  margin: 0;
+}
+
+.settings-frame h2 {
+  font-size: 1.15rem;
+  text-wrap: balance;
+}
+
+.settings-frame header div > p:last-child {
+  margin-top: 0.3rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.settings-fields {
+  display: grid;
+  gap: 1rem;
+  padding: 1.1rem;
+}
+
+.settings-check {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.65rem;
+}
+
+.settings-check input {
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.15rem;
+  accent-color: var(--accent);
+}
+
+.settings-check span,
+.settings-select {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.settings-check small,
+.settings-note {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.settings-select > span {
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.settings-select select {
+  min-height: 2.5rem;
+  border: 1px solid var(--divider-strong);
+  border-radius: 3px;
+  padding: 0.45rem 0.55rem;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+}
+
 .workspace-issues-dialog::backdrop {
   background: rgb(12 16 13 / 58%);
 }

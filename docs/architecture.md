@@ -240,6 +240,8 @@ Phase 6E2D2 reuses the accepted native Attachment-removal preview and recovery j
 
 Recent Workspace paths, window state, theme preference, and opt-in sync schedules are application-local configuration, not portable Workspace content. Store no secrets. Losing preferences must not lose content. Validate restored window geometry against current displays and do not depend on Wayland global positioning.
 
+The desktop stores schema-v1 preferences in an owner-only XDG configuration file using no-follow descriptor-relative access and same-directory atomic replacement. Workspace paths stay native-only and never cross renderer IPC. A returning launch re-inspects the remembered path through the normal Workspace classifier before opening it. Optional startup/scheduled Git activity invokes only the accepted isolated inspection and presents its existing review panel; mutation and push remain separately confirmed.
+
 ## Dependency and platform policy
 
 - Pin major versions and commit lockfiles. Review generated shadcn source.

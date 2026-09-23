@@ -113,7 +113,7 @@ See `docs/architecture.md` and `docs/adr/`.
 These do not block Phase 1 and should be resolved at their named gates:
 
 - Exact distribution matrix (`deb`, `rpm`, AppImage) after oldest-distro/Wayland validation — Phase 7.
-- Whether optional scheduled sync ships in v1 or remains deferred after Git usability testing — Phase 5.
+- Optional startup and scheduled Git inspection ship in v1 as disabled-by-default desktop preferences. They prepare an observable review only; apply/push still require explicit confirmation.
 - Whether remote Streamable HTTP MCP transport is useful; v1 requires local stdio only — post-v1 unless requested.
 - Default maximum Attachment size and optional MIME allowlist — Phase 3, before implementation.
 

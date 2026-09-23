@@ -22,6 +22,7 @@ import {
   isAttachmentRevealPayload,
   isAttachmentTextPreviewPayload,
   isCurrentWorkspaceWatchEvent,
+  isDesktopPreferencesPayload,
   isExternalLinkOpenPayload,
   isGitCloneApplyResultPayload,
   isGitCloneCancelResultPayload,
@@ -43,6 +44,7 @@ import {
   isGitSyncRecoveryResultPayload,
   isMarkdownImportApplyPayload,
   isMarkdownImportPreviewPayload,
+  isRecentWorkspaceResult,
   isSearchHitPayload,
   isWorkspaceWatchEvent,
   movedCategoryOrder,
@@ -85,6 +87,76 @@ describe("application identity", () => {
     expect(nextResultIndex(3, 4, 1)).toBe(0);
     expect(nextResultIndex(0, 4, -1)).toBe(3);
     expect(nextResultIndex(0, 0, 1)).toBe(-1);
+  });
+
+  it("accepts only closed desktop preferences", () => {
+    expect(
+      isDesktopPreferencesPayload({
+        syncOnStart: true,
+        syncIntervalMinutes: 60,
+      }),
+    ).toBe(true);
+    expect(
+      isDesktopPreferencesPayload({
+        syncOnStart: false,
+        syncIntervalMinutes: null,
+      }),
+    ).toBe(true);
+    expect(
+      isDesktopPreferencesPayload({
+        syncOnStart: true,
+        syncIntervalMinutes: 1,
+      }),
+    ).toBe(false);
+    expect(
+      isDesktopPreferencesPayload({
+        syncOnStart: true,
+        syncIntervalMinutes: null,
+        recentWorkspace: "/private/path",
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts only pathless recent Workspace results", () => {
+    const workspace = {
+      id: "workspace-id",
+      name: "Recent Guides",
+      categories: [],
+      guides: [],
+      issueCount: 0,
+      issues: [],
+      issuesTruncated: false,
+      facts: {
+        writable: true,
+        existingGitRepository: false,
+        nestedGitRepository: false,
+        gitProbeComplete: true,
+        unsafeGitMarker: false,
+      },
+      watchStatus: "active",
+      watchSession: "1",
+    };
+    expect(isRecentWorkspaceResult({ kind: "none" })).toBe(true);
+    expect(isRecentWorkspaceResult({ kind: "restored", workspace })).toBe(true);
+    expect(
+      isRecentWorkspaceResult({
+        kind: "unavailable",
+        reason: "The recent Workspace is unavailable.",
+      }),
+    ).toBe(true);
+    expect(
+      isRecentWorkspaceResult({
+        kind: "unavailable",
+        reason: "The recent Workspace is unavailable.",
+        path: "/private/path",
+      }),
+    ).toBe(false);
+    expect(
+      isRecentWorkspaceResult({
+        kind: "unavailable",
+        reason: "unsafe\ntext",
+      }),
+    ).toBe(false);
   });
 
   it("accepts only bounded pathless Markdown import previews", () => {

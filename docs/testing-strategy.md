@@ -113,6 +113,7 @@ Use the most stable Tauri/WebDriver-compatible automation available at Phase 2 a
 | Search | field extraction, exact title/alias/command/path/error order, typo/prefix policy, archived scope, malformed docs, incremental/rebuild/corrupt index |
 | External/concurrent | atomic-save event sequences, dirty draft, rapid rename, watch overflow/loss, path+byte revision, cooperating-writer winner, external/held-inode race with displaced bytes retained |
 | Atomic/recovery | injected failure before/after object/journal/temp/exchange/directory/commit sync; all-old/all-new/mixed/neither; hostile journal |
+| Desktop preferences | schema/interval rejection; non-UTF-8 remembered path round trip; owner-only modes; symlink/oversize refusal; closed pathless renderer payloads |
 | Confinement | absolute/parent/NUL/Unicode tricks, symlink each component/final, race swap, hardlinks, special files, non-UTF-8 names |
 | Git | unavailable, clean/dirty/untracked, branch/detached, remotes/redaction, ahead/behind/diverged, merge/rebase conflict, unsafe owner, nested repo, auth/offline, timeout/output cap, hostile hook/filter/fsmonitor/textconv/pager/env |
 
