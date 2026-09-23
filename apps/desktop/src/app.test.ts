@@ -64,6 +64,8 @@ import {
   requestGitStatus,
   resultCountLabel,
   searchStatePath,
+  WorkspaceIssuesContent,
+  workspaceIssuePresentation,
 } from "./App";
 import { MarkdownDocument } from "./MarkdownDocument";
 
@@ -154,6 +156,8 @@ describe("application identity", () => {
       categories: [],
       guides: [],
       issueCount: 0,
+      issues: [],
+      issuesTruncated: false,
       facts: {
         writable: true,
         existingGitRepository: false,
@@ -545,6 +549,8 @@ describe("application identity", () => {
       categories: [],
       guides: [],
       issueCount: 0,
+      issues: [],
+      issuesTruncated: false,
       facts: {
         writable: true,
         existingGitRepository: true,
@@ -660,6 +666,8 @@ describe("application identity", () => {
       categories: [],
       guides: [],
       issueCount: 0,
+      issues: [],
+      issuesTruncated: false,
       facts: {
         writable: true,
         existingGitRepository: true,
@@ -686,6 +694,65 @@ describe("application identity", () => {
       isGitCloneCompleteResultPayload({
         kind: "completed",
         workspace: { ...workspace, issueCount: 10_001 },
+      }),
+    ).toBe(false);
+    expect(
+      isGitCloneCompleteResultPayload({
+        kind: "completed",
+        workspace: {
+          ...workspace,
+          issueCount: 1,
+          issues: [
+            {
+              kind: "missingCategoryDescriptor",
+              relativePath: "categories/0199a1c2/category.yaml",
+            },
+          ],
+          issuesTruncated: true,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isGitCloneCompleteResultPayload({
+        kind: "completed",
+        workspace: {
+          ...workspace,
+          issueCount: 1,
+          issues: [
+            {
+              kind: "missingCategoryDescriptor",
+              relativePath: "categories/0199a1c2/category.yaml",
+            },
+          ],
+          issuesTruncated: false,
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isGitCloneCompleteResultPayload({
+        kind: "completed",
+        workspace: {
+          ...workspace,
+          issueCount: 1,
+          issues: [
+            {
+              kind: "missingCategoryDescriptor",
+              relativePath: "categories/\u202E/category.yaml",
+            },
+          ],
+          issuesTruncated: false,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isGitCloneCompleteResultPayload({
+        kind: "completed",
+        workspace: {
+          ...workspace,
+          issueCount: 1,
+          issues: [{ kind: "unknown", relativePath: "categories/unknown" }],
+          issuesTruncated: false,
+        },
       }),
     ).toBe(false);
     expect(
@@ -1111,6 +1178,31 @@ describe("Guide search", () => {
 });
 
 describe("safe Guide rendering", () => {
+  it("renders bounded Workspace issue recovery guidance as inert text", () => {
+    const issue = {
+      kind: "missingCategoryDescriptor" as const,
+      relativePath: "categories/<interrupted>/category.yaml",
+    };
+    const markup = renderToStaticMarkup(
+      createElement(WorkspaceIssuesContent, {
+        issueCount: 101,
+        issues: [issue],
+        issuesTruncated: true,
+        refreshing: false,
+        onClose: () => undefined,
+        onRefresh: () => undefined,
+      }),
+    );
+    expect(workspaceIssuePresentation(issue.kind).detail).toContain(
+      "interrupted Category creation",
+    );
+    expect(markup).toContain("Category Descriptor Missing");
+    expect(markup).toContain("categories/&lt;interrupted&gt;/category.yaml");
+    expect(markup).toContain("Fix these first, then refresh for more.");
+    expect(markup).toContain("Refresh Workspace");
+    expect(markup).not.toContain("dangerouslySetInnerHTML");
+  });
+
   it("renders Attachment preview content as inert text", () => {
     const markup = renderToStaticMarkup(
       createElement(AttachmentTextPreviewContent, {

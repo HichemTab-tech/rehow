@@ -168,6 +168,8 @@ Before any migration, create a timestamped snapshot under `.rehow/backups/` with
 
 Exact-pinned `notify` events are coalesced but carry no path or content across the core boundary. Core watches only retained descriptor-backed managed directories; every hint invokes the same complete descriptor-confined canonical refresh and revision-driven index reconciliation. Dirty forms defer automatic application, window refocus recovers common background event loss, and manual refresh remains available for unreliable filesystems or degraded watches. Revisions use normalized path plus exact bytes, not timestamps. Cooperating desktop/MCP writers serialize and compare revisions; uncooperative same-user writers cannot be locked universally, so the exchange/recovery protocol preserves displaced bytes and surfaces races. An open dirty editor whose revision changes enters conflict state.
 
+Workspace diagnostics cross the desktop boundary only as a closed issue kind plus scanner-owned relative location. The payload carries at most 100 details, the complete count, and an exact truncation flag. The renderer treats locations as inert escaped text and gives kind-specific recovery guidance; it receives no absolute path or repair authority. Ambiguous interrupted-create residue is never deleted automatically.
+
 ## Search/index design
 
 The index is versioned by application/index schema and stored beneath `$XDG_CACHE_HOME/rehow/workspaces/<workspace-id>-<root-hash>/search/<format-version>/` or held in memory. It contains no irreplaceable data and can be deleted/rebuilt.

@@ -4,9 +4,9 @@ Date: 2026-09-23
 
 ## Accepted product evidence
 
-- Workspace detection, creation, safe Markdown copy import, Guide/Category/Tag/Attachment workflows, tested-state approval, external-change reconciliation, search, Git, and MCP are implemented at the signed checkpoints recorded in `PROGRESS.md`.
+- Workspace detection, creation, safe Markdown copy import, Guide/Category/Tag/Attachment workflows, tested-state approval, external-change reconciliation, actionable Workspace issue guidance, search, Git, and MCP are implemented at the signed checkpoints recorded in `PROGRESS.md`.
 - Attachment preview, absent-only export, and descriptor-only parent reveal complete the approved Phase 3 Attachment surface. Rehow never executes or external-opens Attachment content.
-- The complete repository gate passes after the final Attachment change: 486 core tests with 2 intentional network/performance ignores, all protocol/API/unknown-YAML suites, 32 desktop Rust tests, 92 MCP tests, 46 Vitest tests, strict Clippy/format/type/contract checks, and production Vite/Cargo builds.
+- The complete repository gate passes after actionable Workspace issue reporting: 487 core tests with 2 intentional network/performance ignores, all protocol/API/unknown-YAML suites, 33 desktop Rust tests, 92 MCP tests, 48 Vitest tests, strict Clippy/format/type/contract checks, and production Vite/Cargo builds.
 - Development `.deb` and `.rpm` artifacts, package contents, independent MCP execution, uninstall preservation, ABI floor, current-host menu resolution, Debian 13 installation, Fedora 44 installation, and Ubuntu 24.04 baseline compatibility have recorded evidence in `phase-7a-linux-bundles.md` and `PROGRESS.md`.
 - Current visual evidence covers wide/narrow, light/dark, focus, 200% scaling, search, Git clone/commit/sync, and bounded Attachment actions. Current web-interface guideline reviews pass.
 

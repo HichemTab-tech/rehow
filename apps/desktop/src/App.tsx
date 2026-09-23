@@ -53,6 +53,27 @@ type FolderFacts = {
   unsafeGitMarker: boolean;
 };
 
+export type WorkspaceIssueKind =
+  | "unsafeEntry"
+  | "unsupportedEntry"
+  | "missingCategoryDescriptor"
+  | "malformedCategory"
+  | "malformedGuide"
+  | "fileTooLarge"
+  | "categoryMismatch"
+  | "duplicateCategoryId"
+  | "duplicateGuideId"
+  | "verificationMismatch"
+  | "missingAttachment"
+  | "orphanAttachment"
+  | "attachmentHashMismatch"
+  | "attachmentSizeMismatch";
+
+type WorkspaceIssuePayload = {
+  kind: WorkspaceIssueKind;
+  relativePath: string;
+};
+
 type WorkspacePayload = {
   id: string;
   name: string;
@@ -66,10 +87,125 @@ type WorkspacePayload = {
   }>;
   guides: GuideSummary[];
   issueCount: number;
+  issues: WorkspaceIssuePayload[];
+  issuesTruncated: boolean;
   facts: FolderFacts;
   watchStatus: "active" | "degraded";
   watchSession: string;
 };
+
+const WORKSPACE_ISSUE_KINDS: readonly WorkspaceIssueKind[] = [
+  "unsafeEntry",
+  "unsupportedEntry",
+  "missingCategoryDescriptor",
+  "malformedCategory",
+  "malformedGuide",
+  "fileTooLarge",
+  "categoryMismatch",
+  "duplicateCategoryId",
+  "duplicateGuideId",
+  "verificationMismatch",
+  "missingAttachment",
+  "orphanAttachment",
+  "attachmentHashMismatch",
+  "attachmentSizeMismatch",
+];
+
+const WORKSPACE_ISSUE_PRESENTATIONS: Record<
+  WorkspaceIssueKind,
+  { title: string; detail: string; recovery: string }
+> = {
+  unsafeEntry: {
+    title: "Unsafe Entry",
+    detail: "Rehow refused an entry whose type, links, or metadata are unsafe.",
+    recovery:
+      "Inspect it outside Rehow. Replace it with an ordinary single-link file or move it outside the Workspace, then refresh.",
+  },
+  unsupportedEntry: {
+    title: "Unsupported Entry",
+    detail: "This entry is not part of the managed Workspace layout.",
+    recovery:
+      "Move it outside the managed folder or rename it to a supported Rehow file, then refresh.",
+  },
+  missingCategoryDescriptor: {
+    title: "Category Descriptor Missing",
+    detail:
+      "This Category folder has no category.yaml, which can follow an interrupted Category creation.",
+    recovery:
+      "Restore category.yaml from Git or a backup. If the folder is empty and unneeded, remove it outside Rehow, then refresh.",
+  },
+  malformedCategory: {
+    title: "Malformed Category",
+    detail: "Rehow could not validate this Category descriptor.",
+    recovery:
+      "Restore category.yaml from Git or a backup, or correct its YAML and required fields outside Rehow, then refresh.",
+  },
+  malformedGuide: {
+    title: "Malformed Guide",
+    detail: "Rehow could not validate this Guide's Markdown metadata.",
+    recovery:
+      "Restore the Guide from Git or a backup, or correct its frontmatter outside Rehow, then refresh.",
+  },
+  fileTooLarge: {
+    title: "File Too Large",
+    detail: "This managed file exceeds Rehow's bounded read limit.",
+    recovery:
+      "Reduce or move the file outside the Workspace, then refresh. Preserve a backup before changing it.",
+  },
+  categoryMismatch: {
+    title: "Guide Category Mismatch",
+    detail: "The Guide's category ID does not match its containing Category.",
+    recovery:
+      "Restore the Guide from Git or correct its category metadata and location outside Rehow, then refresh.",
+  },
+  duplicateCategoryId: {
+    title: "Duplicate Category ID",
+    detail: "More than one Category uses the same stable ID.",
+    recovery:
+      "Restore the affected descriptors or assign a new stable ID outside Rehow after backing them up, then refresh.",
+  },
+  duplicateGuideId: {
+    title: "Duplicate Guide ID",
+    detail: "More than one Guide uses the same stable ID.",
+    recovery:
+      "Restore the affected Guides or assign a new stable ID outside Rehow after backing them up, then refresh.",
+  },
+  verificationMismatch: {
+    title: "Tested Content Changed",
+    detail: "The stored Tested verification no longer matches this Guide.",
+    recovery:
+      "Review the Guide as Stale. After trying the instructions again, use Mark Tested to confirm the current revision.",
+  },
+  missingAttachment: {
+    title: "Attachment Missing",
+    detail: "A Guide declares an Attachment that is not present.",
+    recovery:
+      "Restore the file from Git or a backup, or remove the Attachment from the Guide after confirming it is no longer needed.",
+  },
+  orphanAttachment: {
+    title: "Unlisted Attachment",
+    detail:
+      "A file exists in managed Attachment storage but no Guide declares it.",
+    recovery:
+      "Back up the file, then add its metadata to the correct Guide or move it outside the Workspace.",
+  },
+  attachmentHashMismatch: {
+    title: "Attachment Content Changed",
+    detail: "An Attachment's bytes do not match its declared SHA-256 digest.",
+    recovery:
+      "Verify the file, then restore the expected bytes or re-import the intended Attachment through Rehow.",
+  },
+  attachmentSizeMismatch: {
+    title: "Attachment Size Changed",
+    detail: "An Attachment's size does not match its declared metadata.",
+    recovery:
+      "Verify the file, then restore the expected bytes or re-import the intended Attachment through Rehow.",
+  },
+};
+
+export function workspaceIssuePresentation(kind: WorkspaceIssueKind) {
+  return WORKSPACE_ISSUE_PRESENTATIONS[kind];
+}
 
 type GitStatusPayload = {
   kind:
@@ -1287,7 +1423,7 @@ function isWorkspacePayload(value: unknown): value is WorkspacePayload {
   const workspace = value as Partial<WorkspacePayload> &
     Record<string, unknown>;
   if (
-    Object.keys(workspace).length !== 8 ||
+    Object.keys(workspace).length !== 10 ||
     !isBoundedText(workspace.id, 1, 64) ||
     !isBoundedText(workspace.name, 1, 200) ||
     !Array.isArray(workspace.categories) ||
@@ -1297,10 +1433,30 @@ function isWorkspacePayload(value: unknown): value is WorkspacePayload {
     !Number.isSafeInteger(workspace.issueCount) ||
     (workspace.issueCount as number) < 0 ||
     (workspace.issueCount as number) > 10_000 ||
+    !Array.isArray(workspace.issues) ||
+    workspace.issues.length > 100 ||
+    typeof workspace.issuesTruncated !== "boolean" ||
     (workspace.watchStatus !== "active" &&
       workspace.watchStatus !== "degraded") ||
     typeof workspace.watchSession !== "string" ||
     !/^[1-9][0-9]{0,19}$/.test(workspace.watchSession)
+  )
+    return false;
+  const issuesValid = workspace.issues.every((value) => {
+    if (typeof value !== "object" || value === null) return false;
+    const issue = value as WorkspaceIssuePayload & Record<string, unknown>;
+    return (
+      Object.keys(issue).length === 2 &&
+      WORKSPACE_ISSUE_KINDS.includes(issue.kind) &&
+      isBoundedText(issue.relativePath, 1, 2_048) &&
+      !containsUnsafeDisplayCodePoint(issue.relativePath)
+    );
+  });
+  if (
+    !issuesValid ||
+    (workspace.issueCount as number) < workspace.issues.length ||
+    workspace.issuesTruncated !==
+      (workspace.issueCount as number) > workspace.issues.length
   )
     return false;
   if (typeof workspace.facts !== "object" || workspace.facts === null)
@@ -1729,6 +1885,8 @@ export function App() {
   const guideVerifyButtonRef = useRef<HTMLButtonElement>(null);
   const attachmentImportButtonRef = useRef<HTMLButtonElement>(null);
   const attachmentPreviewDialogRef = useRef<HTMLDialogElement>(null);
+  const workspaceIssuesDialogRef = useRef<HTMLDialogElement>(null);
+  const workspaceIssuesButtonRef = useRef<HTMLButtonElement>(null);
   const attachmentPreviewButtonRefs = useRef(
     new Map<string, HTMLButtonElement>(),
   );
@@ -1889,6 +2047,16 @@ export function App() {
   const cancelGitSyncFromEffect = useEffectEvent(() => {
     void cancelGitSync();
   });
+
+  useEffect(() => {
+    if (workspace === null) {
+      workspaceIssuesDialogRef.current?.close();
+      return;
+    }
+    if (workspaceIssuesDialogRef.current?.open) {
+      workspaceIssuesDialogRef.current.close();
+    }
+  }, [workspace]);
 
   useEffect(() => {
     const theme = initialParameter("theme");
@@ -2450,9 +2618,10 @@ export function App() {
     setRefreshingWorkspace(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const refreshed = await invoke<WorkspacePayload>(
-        "refresh_open_workspace",
-      );
+      const refreshed = await invoke<unknown>("refresh_open_workspace");
+      if (!isWorkspacePayload(refreshed)) {
+        throw new Error("Workspace refresh returned an invalid response.");
+      }
       if (
         !refreshResultMayApply(startedEditGeneration, editGenerationRef.current)
       ) {
@@ -2518,10 +2687,12 @@ export function App() {
     setWorkspaceSetupError("");
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const created = await invoke<WorkspacePayload>(
-        "initialize_selected_workspace",
-        { name },
-      );
+      const created = await invoke<unknown>("initialize_selected_workspace", {
+        name,
+      });
+      if (!isWorkspacePayload(created)) {
+        throw new Error("Workspace creation returned an invalid response.");
+      }
       setWorkspace(created);
       setGitInitError("");
       setExternalChangeWorkspaceId("");
@@ -4804,13 +4975,27 @@ export function App() {
         </div>
         <div className="rail-footer">
           <span className="sync-indicator" aria-hidden="true" />
-          {workspace === null
-            ? "No Workspace open"
-            : workspace.issueCount === 0
-              ? workspace.facts.writable
-                ? "Workspace ready"
-                : "Workspace open read-only"
-              : `${workspace.issueCount} item${workspace.issueCount === 1 ? "" : "s"} need attention`}
+          {workspace !== null && workspace.issueCount > 0 ? (
+            <button
+              ref={workspaceIssuesButtonRef}
+              className="workspace-issues-button"
+              type="button"
+              onClick={() => workspaceIssuesDialogRef.current?.showModal()}
+            >
+              {workspace.issueCount}{" "}
+              {workspace.issueCount === 1
+                ? "Item Needs Attention"
+                : "Items Need Attention"}
+            </button>
+          ) : (
+            <span>
+              {workspace === null
+                ? "No Workspace open"
+                : workspace.facts.writable
+                  ? "Workspace ready"
+                  : "Workspace open read-only"}
+            </span>
+          )}
         </div>
       </aside>
 
@@ -6553,6 +6738,29 @@ export function App() {
         </span>
       </footer>
       <dialog
+        ref={workspaceIssuesDialogRef}
+        className="workspace-issues-dialog"
+        aria-labelledby="workspace-issues-title"
+        aria-describedby="workspace-issues-summary"
+        onClose={() =>
+          requestAnimationFrame(() => workspaceIssuesButtonRef.current?.focus())
+        }
+      >
+        {workspace !== null && workspace.issueCount > 0 ? (
+          <WorkspaceIssuesContent
+            issueCount={workspace.issueCount}
+            issues={workspace.issues}
+            issuesTruncated={workspace.issuesTruncated}
+            refreshing={refreshingWorkspace}
+            onClose={() => workspaceIssuesDialogRef.current?.close()}
+            onRefresh={() => {
+              workspaceIssuesDialogRef.current?.close();
+              void refreshWorkspace();
+            }}
+          />
+        ) : null}
+      </dialog>
+      <dialog
         ref={attachmentPreviewDialogRef}
         className="attachment-preview-dialog"
         aria-labelledby="attachment-preview-title"
@@ -6573,6 +6781,79 @@ export function App() {
       <div className="sr-only" aria-live="polite">
         {announcement}
       </div>
+    </div>
+  );
+}
+
+export function WorkspaceIssuesContent({
+  issueCount,
+  issues,
+  issuesTruncated,
+  refreshing,
+  onClose,
+  onRefresh,
+}: {
+  issueCount: number;
+  issues: WorkspaceIssuePayload[];
+  issuesTruncated: boolean;
+  refreshing: boolean;
+  onClose: () => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="workspace-issues-frame">
+      <header>
+        <div>
+          <p className="eyebrow">Workspace Health</p>
+          <h2 className="workspace-issues-title" id="workspace-issues-title">
+            Items Need Attention
+          </h2>
+          <p
+            className="workspace-issues-description"
+            id="workspace-issues-summary"
+          >
+            Rehow left these entries unchanged. Back up important files before
+            correcting them outside Rehow.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="workspace-issues-close"
+          onClick={onClose}
+        >
+          Close
+        </button>
+      </header>
+      <ol className="workspace-issues-list">
+        {issues.map((issue) => {
+          const presentation = workspaceIssuePresentation(issue.kind);
+          return (
+            <li key={`${issue.kind}-${issue.relativePath}`}>
+              <h3 className="workspace-issue-title">{presentation.title}</h3>
+              <code translate="no">{issue.relativePath}</code>
+              <p className="workspace-issue-detail">{presentation.detail}</p>
+              <p className="workspace-issue-recovery">
+                <strong>Next Step:</strong> {presentation.recovery}
+              </p>
+            </li>
+          );
+        })}
+      </ol>
+      <footer>
+        <p className="workspace-issues-count">
+          Showing {issues.length} of {issueCount} item
+          {issueCount === 1 ? "" : "s"}.
+          {issuesTruncated ? " Fix these first, then refresh for more." : ""}
+        </p>
+        <button
+          type="button"
+          className="button"
+          disabled={refreshing}
+          onClick={onRefresh}
+        >
+          {refreshing ? "Refreshing…" : "Refresh Workspace"}
+        </button>
+      </footer>
     </div>
   );
 }

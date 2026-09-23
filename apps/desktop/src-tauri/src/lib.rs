@@ -41,8 +41,8 @@ use rehow_core::{
     search::{SearchHit, SearchStatusScope, search_workspace_in_scope},
     storage::{
         EmptyWorkspaceTarget, MarkdownImportPreview, MarkdownImportSelection, WorkspaceFolderFacts,
-        WorkspaceInspection, WorkspaceView, WorkspaceWatchSignal, WorkspaceWatcher,
-        inspect_workspace,
+        WorkspaceInspection, WorkspaceIssueKind, WorkspaceView, WorkspaceWatchSignal,
+        WorkspaceWatcher, inspect_workspace,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -59,6 +59,7 @@ use tauri::{Emitter, Manager};
 
 const WORKSPACE_INVALIDATED_EVENT: &str = "rehow://workspace-invalidated/v1";
 const GIT_COMMIT_MESSAGE_INPUT_BYTES: usize = 800;
+const WORKSPACE_ISSUE_PAYLOAD_LIMIT: usize = 100;
 
 struct DesktopState {
     https_credential_backing_provenance: rehow_core::git::GitHttpsCredentialBackingProvenance,
@@ -377,9 +378,18 @@ struct WorkspacePayload {
     categories: Vec<CategoryPayload>,
     guides: Vec<GuidePayload>,
     issue_count: usize,
+    issues: Vec<WorkspaceIssuePayload>,
+    issues_truncated: bool,
     facts: FolderFactsPayload,
     watch_status: &'static str,
     watch_session: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceIssuePayload {
+    kind: &'static str,
+    relative_path: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -769,16 +779,46 @@ impl WorkspacePayload {
                 });
             }
         }
+        let issues = view
+            .issues()
+            .iter()
+            .take(WORKSPACE_ISSUE_PAYLOAD_LIMIT)
+            .map(|issue| WorkspaceIssuePayload {
+                kind: workspace_issue_kind(issue.kind()),
+                relative_path: issue.relative_path().to_owned(),
+            })
+            .collect::<Vec<_>>();
         Self {
             id: view.manifest().workspace_id().to_string(),
             name: view.manifest().name().to_owned(),
             categories,
             guides,
             issue_count: view.issues().len(),
+            issues_truncated: issues.len() < view.issues().len(),
+            issues,
             facts,
             watch_status: watch_status.as_str(),
             watch_session: watch_session.to_string(),
         }
+    }
+}
+
+fn workspace_issue_kind(kind: WorkspaceIssueKind) -> &'static str {
+    match kind {
+        WorkspaceIssueKind::UnsafeEntry => "unsafeEntry",
+        WorkspaceIssueKind::UnsupportedEntry => "unsupportedEntry",
+        WorkspaceIssueKind::MissingCategoryDescriptor => "missingCategoryDescriptor",
+        WorkspaceIssueKind::MalformedCategory => "malformedCategory",
+        WorkspaceIssueKind::MalformedGuide => "malformedGuide",
+        WorkspaceIssueKind::FileTooLarge => "fileTooLarge",
+        WorkspaceIssueKind::CategoryMismatch => "categoryMismatch",
+        WorkspaceIssueKind::DuplicateCategoryId => "duplicateCategoryId",
+        WorkspaceIssueKind::DuplicateGuideId => "duplicateGuideId",
+        WorkspaceIssueKind::VerificationMismatch => "verificationMismatch",
+        WorkspaceIssueKind::MissingAttachment => "missingAttachment",
+        WorkspaceIssueKind::OrphanAttachment => "orphanAttachment",
+        WorkspaceIssueKind::AttachmentHashMismatch => "attachmentHashMismatch",
+        WorkspaceIssueKind::AttachmentSizeMismatch => "attachmentSizeMismatch",
     }
 }
 
@@ -5731,13 +5771,14 @@ mod tests {
         GitSyncRecoveryResultPayload, GuideBodyPayload, GuidePayload, MarkdownImportApplyPayload,
         MarkdownImportDestinationResult, MarkdownImportLifecycle,
         MarkdownImportPreviewEntryPayload, MarkdownImportPreviewPayload, PendingGitPlanError,
-        SearchHighlightPayload, SearchHitPayload, SingleFlightReservation, WorkspacePayload,
-        WorkspaceWatchEventPayload, attachment_export_code, attachment_export_message,
-        attachment_removal_code, attachment_removal_message, attachment_reveal_code,
-        attachment_reveal_message, attachment_text_preview_code, attachment_text_preview_message,
-        begin_markdown_import, category_create_code, category_create_message, category_remove_code,
-        category_remove_message, category_reorder_code, category_reorder_message,
-        category_update_code, category_update_message, empty_git_payload, external_link_open_code,
+        SearchHighlightPayload, SearchHitPayload, SingleFlightReservation, WorkspaceIssuePayload,
+        WorkspacePayload, WorkspaceWatchEventPayload, attachment_export_code,
+        attachment_export_message, attachment_removal_code, attachment_removal_message,
+        attachment_reveal_code, attachment_reveal_message, attachment_text_preview_code,
+        attachment_text_preview_message, begin_markdown_import, category_create_code,
+        category_create_message, category_remove_code, category_remove_message,
+        category_reorder_code, category_reorder_message, category_update_code,
+        category_update_message, empty_git_payload, external_link_open_code,
         external_link_open_message, finish_markdown_import, git_clone_apply_code,
         git_clone_apply_message, git_clone_code, git_clone_completion_confirmation,
         git_clone_confirmation_fields, git_clone_materialize_code, git_clone_materialize_message,
@@ -5752,7 +5793,7 @@ mod tests {
         guide_update_message, markdown_import_blocks_workspace_switch, markdown_import_error,
         native_command_error, request_git_clone_cancellation, request_git_sync_cancellation,
         search_status_scope, take_matching_git_plan, workspace_initialization_message,
-        workspace_refresh_code, workspace_refresh_message,
+        workspace_issue_kind, workspace_refresh_code, workspace_refresh_message,
     };
     use rehow_core::{
         application::{
@@ -5770,6 +5811,7 @@ mod tests {
         },
         markdown::parse_safe_markdown,
         protocol::{OperationId, PlanToken},
+        storage::WorkspaceIssueKind,
     };
     use std::{
         str::FromStr,
@@ -5829,6 +5871,8 @@ mod tests {
             categories: Vec::new(),
             guides: Vec::new(),
             issue_count: 0,
+            issues: Vec::new(),
+            issues_truncated: false,
             facts: FolderFactsPayload {
                 writable: true,
                 existing_git_repository: false,
@@ -6354,6 +6398,8 @@ mod tests {
                 matches: "alias tag".to_owned(),
             }],
             issue_count: 0,
+            issues: Vec::new(),
+            issues_truncated: false,
             facts: FolderFactsPayload {
                 writable: true,
                 existing_git_repository: false,
@@ -6368,6 +6414,19 @@ mod tests {
         assert_eq!(json["id"], "0199a1d7-7b0d-7d8e-a38d-f936c5735e01");
         assert_eq!(json["name"], "Test");
         assert_eq!(json["issueCount"], 0);
+        assert_eq!(json["issues"], serde_json::json!([]));
+        assert_eq!(json["issuesTruncated"], false);
+        assert_eq!(
+            serde_json::to_value(WorkspaceIssuePayload {
+                kind: workspace_issue_kind(WorkspaceIssueKind::MissingCategoryDescriptor),
+                relative_path: "categories/0199a1c2/category.yaml".to_owned(),
+            })
+            .unwrap(),
+            serde_json::json!({
+                "kind": "missingCategoryDescriptor",
+                "relativePath": "categories/0199a1c2/category.yaml",
+            })
+        );
         assert_eq!(json["facts"]["writable"], true);
         assert_eq!(json["categories"][0]["status"], "active");
         assert_eq!(json["categories"][0]["summary"], "System work");
