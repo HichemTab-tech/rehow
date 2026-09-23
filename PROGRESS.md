@@ -9,7 +9,7 @@ Phase 2 onboarding is complete through ADR 0051. Phase 3 safe Attachment text pr
 
 ## Current task
 
-Record the completed guarded Attachment parent-reveal checkpoint, then begin final release qualification.
+Resolve the final release human checkpoints and run the remaining clean graphical install-to-recovery acceptance journey.
 
 ## Overall status
 
@@ -164,7 +164,7 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 
 ## Work in progress
 
-- Only this progress-ledger update is intentionally uncommitted. Attachment parent reveal is signed through `4305a5c`. Untracked `x` remains unrelated and untouched.
+- Final release readiness is audited in `docs/evidence/final-release-readiness.md`. No runtime implementation is in progress. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
@@ -315,7 +315,9 @@ No known regression in accepted phases. On the current development host, default
 
 ## Blockers and human checkpoints
 
-- No product decision, security-review, or manual-test blocker. Routine work uses zero extra agents; one specialist is used only at mandatory acceptance gates.
+- Final release metadata needs a human choice of project license, production version, and stable reverse-DNS application identifier. Artifact signing/publication additionally requires explicit authorization and credentials.
+- Final graphical acceptance needs access to one disposable Ubuntu 24.04 graphical environment with Wayland and X11. The current host's normal Wayland launch fails in WebKit/GDK unless the invocation-scoped DMABUF workaround is used; evidence does not justify a global launcher workaround.
+- Routine work uses zero extra agents; one specialist is used only at mandatory acceptance gates.
 - The active existing host tools are Node 26.2.0 and pnpm 11.20.0. The repository accepts pnpm 11 per user direction; no install or version switch was performed, and `pnpm check` passes.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
@@ -519,6 +521,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Important files changed
 
+- Final release audit: `docs/evidence/final-release-readiness.md` distinguishes accepted product evidence, the remaining clean graphical/manual journey, and license/identity/signing/publication human checkpoints.
 - Attachment parent reveal: ADR 0054, `docs/task-packets/phase-3-attachment-reveal.md`, `docs/evidence/phase-3-attachment-reveal.md`, descriptor-only core portal handoff, async/single-flight native command, Reference Desk action, and adversarial tests are checkpointed at `4305a5c`.
 - Attachment export: ADR 0053, `docs/task-packets/phase-3-attachment-export.md`, `docs/evidence/phase-3-attachment-export.md`, core source/destination confinement, pathless native command/result, Reference Desk action, and adversarial tests are checkpointed at `6d30cd2`.
 - Attachment text preview: ADR 0052, `docs/task-packets/phase-3-attachment-text-preview.md`, `docs/evidence/phase-3-attachment-text-preview.md`, core confined reading/application logic, the pathless async native command, inert modal UI, and adversarial tests are checkpointed at `cb5920a`.
@@ -641,7 +644,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Next recommended action
 
-Begin final release qualification: reconcile the product definition of done against accepted Phase 2–7 evidence, run the remaining graphical/native accessibility and failure-state smoke matrix that is possible on the current host, and document any credential/signing/publication checkpoints without attempting them.
+Obtain the user's license/version/application-ID decisions and a disposable graphical Ubuntu 24.04 Wayland/X11 environment. Then execute the exact remaining journey in `docs/evidence/final-release-readiness.md`; do not reopen accepted feature phases.
 
 ## Recommended agent role and reasoning effort
 
@@ -655,4 +658,4 @@ Primary Orchestrator with zero routine agents. Use one specialist only for a man
 4. Verify signed Attachment parent-reveal checkpoint `4305a5c` plus the following progress-ledger commit; do not touch unrelated untracked `x`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
-7. Begin the final release-qualification audit from documented acceptance criteria. Do not sign, publish, push, create external resources, install packages, or change the active Node/pnpm toolchain without user authorization.
+7. Read `docs/evidence/final-release-readiness.md`. Resume only the named release gates; do not sign, publish, push, create external resources, install packages, or change the active Node/pnpm toolchain without user authorization.
