@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-The external-change editor conflict gap is closed at signed checkpoint `f048360`. Phase 7A packaging remains qualified through the current-host menu smoke.
+The compact final requirements audit is closed at signed checkpoint `2f3668a`: loaded Guide files open through a guarded portal capability and the desktop now owns reviewed shadcn/ui source. Phase 7A packaging remains qualified through the current-host menu smoke.
 
 ## Current task
 
-Run one compact final requirements audit, then stop at the documented human release metadata and disposable graphical Ubuntu checkpoints.
+Await the documented human release metadata decisions and disposable graphical Ubuntu qualification.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Core Workspace/Guide/Git/MCP behavior is implemented, retained Workspace/search memory is bounded, and dirty Guide editors now provide Compare, Keep Draft, and confirmed Reload from Disk behavior at `f048360`. A compact original-requirements audit remains before the human release gates.
+Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Core Workspace/Guide/Git/MCP behavior is implemented, retained Workspace/search memory is bounded, dirty Guide conflicts are explicit, loaded Guide files open safely, and the required shadcn/ui source foundation is present. Remaining work requires human release choices or a disposable graphical Ubuntu environment.
 
 ## Completed work
 
@@ -165,10 +165,11 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 - Added actionable Workspace issue reporting at signed checkpoint `b7ac3ce`: the native payload exposes at most 100 closed scanner issue records with inert bounded relative locations, complete count, and exact truncation; the Reference Desk provides specific recovery guidance, refresh, keyboard-safe modal behavior, and focus restoration without deleting, editing, opening, or adopting ambiguous content. Full gates and current-guideline/security self-review pass.
 - Closed the retained-memory gap at signed checkpoint `5d8ab31`: loaded views keep Guide metadata and revision-check lazy body reads; normalized search records live in bounded anonymous files with revision reuse, generation compaction, exact ranking, hard record/collection/physical-backing limits, and fail-closed codec/position checks. The 5,000-Guide/52.7 MiB release corpus measured 1.533 s cold, 13.484 ms warm p95, and 10,228 KiB peak RSS. The final correction-only Security Reviewer verdict is PASS.
 - Added explicit external Guide conflict handling at signed checkpoint `f048360`: the core rereads one selected Guide through its retained capability without mutating the open view; the reader compares local content/details with current disk state, preserves drafts, and requires confirmation before Reload from Disk. Pathless native IPC, inert hostile-text rendering, 52 Vitest tests, 36 desktop tests, focused core coverage, strict Clippy, type/lint checks, and the production frontend build pass.
+- Added guarded Guide-file opening and the source-owned shadcn/ui foundation at signed checkpoint `2f3668a`: exact Workspace session/Guide ID/revision selects a retained no-follow read-only descriptor, the XDG portal forces an application chooser, and renderer IPC remains pathless. Reviewed `Button`/`cn` source and exact locked utilities now back the conflict controls without replacing the Reference Desk styling.
 
 ## Work in progress
 
-- No code work is in progress. A compact original-requirements audit is next. Untracked `x` remains unrelated and untouched.
+- No code work is in progress. Remaining steps are human release metadata and graphical Ubuntu qualification. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
@@ -177,7 +178,6 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
 - Phase 6: complete, including the final managed Attachment discovery/metadata-add mutation.
 - Phase 7: development `.deb`/`.rpm` packaging, clean-container install/remove qualification, and the glibc 2.39 floor are implemented; graphical desktop runtime matrix, release metadata/signing, and final audits remain.
-- Audit the remaining explicit “open underlying Guide file” and shadcn/ui foundation requirements; either close them with bounded implementation or record the exact human/architecture checkpoint.
 
 ## Known bugs
 
@@ -185,6 +185,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Design and accessibility findings
 
+- 2026-09-24: The loaded-Guide Open File action and source-owned shadcn Button primitive pass the current static guidelines. Open File is a named semantic control with busy/disabled state, polite feedback, error focus, read-only Workspace availability, and no renderer path. The shadcn primitive retains existing Reference Desk sizing/contrast/focus styles instead of introducing raw defaults.
 - 2026-09-24: External Guide conflict handling passed the freshly fetched Web Interface Guidelines static review. Compare/Keep Draft/Reload are semantic named buttons, destructive reload confirms all unsaved-edit loss, hostile content remains inert in labeled read-only controls, focus is visible, and the comparison collapses to one column at narrow widths. No screenshot cycle was repeated for this bounded reader-top state.
 - 2026-09-23: Complete Guide context passed the freshly fetched Web Interface Guidelines and visual inspection at 1200×900 light and 480×900 dark. Warnings remain prominent; semantic headings/buttons, visible focus, guarded Reference activity, escaped long content, responsive grids, working Active/Archive navigation, and scrollable narrow continuation pass without gradients, nested cards, clipping, or hidden content. Evidence is in `docs/evidence/phase-3-guide-context-reader.md`.
 - 2026-09-23: The desktop Settings dialog passed the freshly fetched Web Interface Guidelines after adding labeled/named controls, native dialog focus/Escape behavior, inline focused errors, polite status, explicit dark-theme select colors, overscroll containment, visible global focus treatment, and narrow bounded layout. Automatic inspections never move focus; they only expose the existing review panel.
@@ -224,6 +225,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Security findings
 
+- ADR 0058 accepts only Workspace session, Guide ID, and exact revision. Core retains a bounded one-link regular-file descriptor, verifies bytes/metadata/current inode identity, and passes only a read-only duplicate to XDG Portal `OpenFile` with fixed `ask=true`/`writable=false`. IPC and errors are pathless; external-change and symlink-substitution tests pass.
 - External comparison accepts only the selected stable Guide ID. Rust resolves its core-owned relative path from the retained Workspace capability, rejects unsafe/changed/malformed storage, verifies the stable ID, and returns no path. The snapshot never mutates the retained view; Reload is separate and explicitly confirmed. Focused core/native/UI tests and strict Clippy pass.
 - Selected-Guide context stays out of the Workspace list payload and renders only escaped text/fixed controls. Reference opening now accepts an exact URL only when the freshly reread revision retains it in the safe body AST or canonical validated Reference metadata; session/revision binding, portal `ask=true`, single-flight behavior, and URL-redacted native results/errors remain unchanged. Core and inert-rendering adversarial tests pass; security self-review found no unresolved blocker/high issue.
 - Desktop preferences contain no secrets and never expose the remembered absolute Workspace path to the renderer. Owner/type/link/mode/size checks, no-follow descriptor-relative access, private modes, atomic replacement, serialized load-modify-save operations, bounded schema/path decoding, and normal safe Workspace reinspection fail closed. Startup/scheduled Git activity cannot apply or push and retains the existing explicit confirmation gates. Security self-review found no unresolved blocker/high issue.
@@ -340,10 +342,11 @@ No known regression in accepted phases. On the current development host, default
 
 ## Latest verified commit
 
-`f048360` — signed external Guide conflict-resolution checkpoint; its configured signature verifies. This progress-ledger update follows that commit.
+`2f3668a` — signed guarded Guide-file/shadcn foundation checkpoint; its configured signature verifies. This progress-ledger update follows that commit.
 
 ## Tests last run and results
 
+- 2026-09-24: Guarded Guide-file/shadcn checkpoint `2f3668a` passes `pnpm check`, 52 Vitest tests, 2 focused core opener tests, all 37 desktop Rust tests, strict core/desktop all-target/all-feature Clippy, Cargo/Biome formatting, contract drift, bootstrap validation (17 required files, 58 ADRs, 8 agents), production Vite build, and whitespace checks. The built renderer is 99.63 kB gzip. Existing Node 26.2.0 and pnpm 11.20.0 were used; only exact project dependencies were added.
 - 2026-09-24: Conflict checkpoint `f048360` passes `pnpm check`, 52 Vitest tests, the focused current-snapshot core test, all 36 desktop Rust tests, strict core/desktop all-target/all-feature Clippy, Cargo/Biome formatting, contract drift, the production Vite build, and whitespace checks. The current Web Interface Guidelines static review passes. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
 - 2026-09-23: Guide-context checkpoint `0e5f617` passes 51 Vitest tests, 493 core tests (491 pass and 2 intentional network/performance ignores), 36 desktop Rust tests, `pnpm check`, strict core/desktop all-target/all-feature Clippy, Cargo formatting, contract drift, production Vite build, whitespace checks, and wide/narrow visual inspection. Coverage includes canonical metadata projection, hostile text escaping, missing related Guides, and exact revision-bound Reference portal authority. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
 - 2026-09-23: Desktop preferences/recent-Workspace restore passes 50 Vitest tests, 36 desktop Rust tests, `pnpm check`, strict desktop all-target/all-feature Clippy, Cargo formatting/check, contract drift, and whitespace checks on the existing Node 26.2.0/pnpm 11.20.0 toolchain. Coverage includes closed/pathless renderer payloads, allowed schedule values, non-UTF-8 paths, private modes, malformed schema, symlink and oversize refusal. No runtime or package-manager installation/switch occurred.
@@ -543,6 +546,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Important files changed
 
+- Guarded Guide file/shadcn foundation: ADR 0058, the core held-file capability, pathless native portal command, Open File UI, `apps/desktop/components.json`, reviewed `Button`/`cn` source, lockfile, and aligned architecture/design/development/testing/threat docs are checkpointed at `2f3668a`.
 - External Guide conflicts: `crates/rehow-core/src/application.rs`, `apps/desktop/src-tauri/src/lib.rs`, `apps/desktop/src/{App.tsx,index.css,app.test.ts}`, and aligned architecture/design/testing docs are checkpointed at `f048360`.
 - Memory-safe search: ADR 0057, `docs/evidence/phase-4f-memory-safe-search.md`, the Guide metadata/body split, revision-bound lazy body reader, bounded anonymous record codec/backings, desktop/MCP mappings, adversarial tests, and aligned architecture/content/testing/threat/release docs are checkpointed at `5d8ab31`.
 - Actionable Workspace issues: ADR 0056, its task packet/evidence, bounded native payload, strict renderer validation, Reference Desk recovery panel, styles, and tests are checkpointed at `b7ac3ce`.
@@ -670,7 +674,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Next recommended action
 
-Run one compact original-requirements audit focused on underlying-Guide-file access and the shadcn/ui foundation. Then ask the user for the license, production version, stable reverse-DNS application identifier, and intended first-release package formats, and run the documented installed-package journey in a disposable graphical Ubuntu 24.04 Wayland/X11 environment.
+Ask the user for the license, production version, stable reverse-DNS application identifier, and intended first-release package formats. Then run the documented installed-package journey in a disposable graphical Ubuntu 24.04 Wayland/X11 environment.
 
 ## Recommended agent role and reasoning effort
 
@@ -679,9 +683,9 @@ Primary Orchestrator with zero routine agents. Use one specialist only if a rele
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read `docs/evidence/final-release-readiness.md`, `docs/installation.md`, and the external-conflict architecture/design/testing updates.
+2. Read `docs/evidence/final-release-readiness.md`, `docs/installation.md`, ADR 0058, and the external-conflict architecture/design/testing updates.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `f048360` and the focused desktop tests; do not touch unrelated untracked `x`.
+4. Verify signed checkpoint `2f3668a` and the focused desktop tests; do not touch unrelated untracked `x`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
-7. Run the compact requirements audit, then resume only the named release gates. Do not publish, push, create external resources, install packages, or change the active Node/pnpm toolchain without user authorization.
+7. Resume only the named human release gates. Do not publish, push, create external resources, install packages, or change the active Node/pnpm toolchain without user authorization.
