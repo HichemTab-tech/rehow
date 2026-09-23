@@ -30,8 +30,8 @@ use crate::{
         AttachmentRemovalStorageError, AttachmentSourceState, CancellableDocumentUpdateError,
         CategoryCreateStorageError, CategoryRemoveStorageError, DocumentCreateError,
         DocumentRemoveError, DocumentUpdateError, DocumentUpdateRequest, EmptyWorkspaceTarget,
-        ManagedAttachmentCandidate as StorageManagedAttachmentCandidate, MultiDocumentUpdateError,
-        WorkspaceInitializeError, WorkspaceInspectError, WorkspaceView,
+        ManagedAttachmentCandidate as StorageManagedAttachmentCandidate, MarkdownImportSelection,
+        MultiDocumentUpdateError, WorkspaceInitializeError, WorkspaceInspectError, WorkspaceView,
         category_inventory_snapshot, discover_managed_attachment_candidates,
         execute_attachment_import, execute_attachment_removal, execute_category_create,
         execute_category_document_update, execute_category_remove, execute_document_create,
@@ -891,6 +891,59 @@ pub fn create_guide_at_revision(
     title: &str,
     summary: &str,
 ) -> Result<GuideCreateOutcome, GuideCreateError> {
+    create_guide_with_body_at_revision(
+        workspace,
+        state_home,
+        runtime_directory,
+        category_id,
+        expected_category_revision,
+        title,
+        summary,
+        NEW_GUIDE_BODY,
+    )
+}
+
+pub fn create_guide_with_body(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    category_id: CategoryId,
+    title: &str,
+    summary: &str,
+    body: &[u8],
+) -> Result<GuideCreateOutcome, GuideCreateError> {
+    let expected_category_revision = workspace
+        .categories()
+        .iter()
+        .find(|loaded| loaded.category().id() == &category_id)
+        .ok_or(GuideCreateError::CategoryNotFound)?
+        .descriptor_revision();
+    create_guide_with_body_at_revision(
+        workspace,
+        state_home,
+        runtime_directory,
+        category_id,
+        expected_category_revision,
+        title,
+        summary,
+        body,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn create_guide_with_body_at_revision(
+    workspace: &mut WorkspaceView,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    category_id: CategoryId,
+    expected_category_revision: Revision,
+    title: &str,
+    summary: &str,
+    body: &[u8],
+) -> Result<GuideCreateOutcome, GuideCreateError> {
+    if body.len() > GUIDE_BODY_INPUT_LIMIT {
+        return Err(GuideCreateError::ResourceLimit);
+    }
     if workspace
         .categories()
         .iter()
@@ -915,22 +968,15 @@ pub fn create_guide_at_revision(
     let guide_id = new_guide_id();
     let operation_id = new_operation_id();
     let timestamp = current_timestamp();
-    let document = emit_new_guide(
-        &guide_id,
-        title,
-        summary,
-        &category_id,
-        &timestamp,
-        NEW_GUIDE_BODY,
-    )
-    .map_err(|error| match (error.kind(), error.field()) {
-        (EmitFailureKind::ResourceLimit, _) => GuideCreateError::ResourceLimit,
-        (EmitFailureKind::InvalidValue, EmitField::Summary) => GuideCreateError::InvalidSummary,
-        (EmitFailureKind::InvalidValue, EmitField::Title) => GuideCreateError::InvalidTitle,
-        (EmitFailureKind::InvalidValue, _) | (EmitFailureKind::CandidateMismatch, _) => {
-            GuideCreateError::Io
-        }
-    })?;
+    let document = emit_new_guide(&guide_id, title, summary, &category_id, &timestamp, body)
+        .map_err(|error| match (error.kind(), error.field()) {
+            (EmitFailureKind::ResourceLimit, _) => GuideCreateError::ResourceLimit,
+            (EmitFailureKind::InvalidValue, EmitField::Summary) => GuideCreateError::InvalidSummary,
+            (EmitFailureKind::InvalidValue, EmitField::Title) => GuideCreateError::InvalidTitle,
+            (EmitFailureKind::InvalidValue, _) | (EmitFailureKind::CandidateMismatch, _) => {
+                GuideCreateError::Io
+            }
+        })?;
     let relative_path = format!("{relative_directory}/{}", guide_file_name(title, &guide_id));
     let category_descriptor_path = format!("{relative_directory}/category.yaml");
     let result = execute_document_create(
@@ -1070,6 +1116,223 @@ fn map_workspace_initialization_error(
             WorkspaceInitializationError::CommittedRefreshRequired { revision }
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MarkdownImportError {
+    SourceUnavailable,
+    SourceChanged,
+    SameFolder,
+    NothingToImport,
+    Initialize(WorkspaceInitializationError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MarkdownImportPartialFailure {
+    Category(CategoryCreateError),
+    Guide(GuideCreateError),
+}
+
+pub struct MarkdownImportOutcome {
+    workspace: Box<WorkspaceView>,
+    imported: usize,
+    total: usize,
+    failure: Option<MarkdownImportPartialFailure>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static MARKDOWN_IMPORT_GUIDE_FAILURE_AT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    static MARKDOWN_IMPORT_AFTER_PREPARE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_markdown_import_guide_failure_at(index: usize) {
+    MARKDOWN_IMPORT_GUIDE_FAILURE_AT.set(Some(index));
+}
+
+fn markdown_import_guide_failure(index: usize) -> bool {
+    #[cfg(test)]
+    {
+        MARKDOWN_IMPORT_GUIDE_FAILURE_AT.with(|fault| {
+            if fault.get() == Some(index) {
+                fault.set(None);
+                true
+            } else {
+                false
+            }
+        })
+    }
+    #[cfg(not(test))]
+    {
+        let _ = index;
+        false
+    }
+}
+
+#[cfg(test)]
+fn set_markdown_import_after_prepare_hook(hook: impl FnOnce() + 'static) {
+    MARKDOWN_IMPORT_AFTER_PREPARE_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
+fn run_markdown_import_after_prepare_hook() {
+    MARKDOWN_IMPORT_AFTER_PREPARE_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+impl MarkdownImportOutcome {
+    pub fn into_workspace(self) -> Box<WorkspaceView> {
+        self.workspace
+    }
+
+    pub fn imported(&self) -> usize {
+        self.imported
+    }
+
+    pub fn total(&self) -> usize {
+        self.total
+    }
+
+    pub fn failure(&self) -> Option<MarkdownImportPartialFailure> {
+        self.failure
+    }
+
+    pub fn complete(&self) -> bool {
+        self.failure.is_none() && self.imported == self.total
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn import_markdown_collection(
+    selection: &MarkdownImportSelection,
+    destination: &EmptyWorkspaceTarget,
+    state_home: &Path,
+    runtime_directory: Option<&Path>,
+    workspace_name: &str,
+    category_name: &str,
+) -> Result<MarkdownImportOutcome, MarkdownImportError> {
+    if selection
+        .destination_is_within_source(destination)
+        .map_err(|_| MarkdownImportError::SourceUnavailable)?
+    {
+        return Err(MarkdownImportError::SameFolder);
+    }
+    let prepared = selection.prepare().map_err(|error| match error {
+        WorkspaceInspectError::ChangedDuringRead => MarkdownImportError::SourceChanged,
+        _ => MarkdownImportError::SourceUnavailable,
+    })?;
+    if prepared.guides().is_empty() {
+        return Err(MarkdownImportError::NothingToImport);
+    }
+    #[cfg(test)]
+    run_markdown_import_after_prepare_hook();
+    if selection
+        .destination_is_within_source(destination)
+        .map_err(|_| MarkdownImportError::SourceUnavailable)?
+    {
+        return Err(MarkdownImportError::SameFolder);
+    }
+    let total = prepared.guides().len();
+    let mut workspace =
+        initialize_workspace(destination, state_home, runtime_directory, workspace_name)
+            .map_err(MarkdownImportError::Initialize)?;
+    let category_id = match create_category(
+        &mut workspace,
+        state_home,
+        runtime_directory,
+        category_name,
+        None,
+    ) {
+        Ok(outcome) => outcome.category_id(),
+        Err(
+            error @ CategoryCreateError::CommittedRefreshRequired {
+                category_id,
+                revision,
+            },
+        ) => {
+            if refresh_workspace(&mut workspace).is_ok()
+                && workspace.categories().iter().any(|loaded| {
+                    loaded.category().id() == &category_id
+                        && loaded.descriptor_revision() == revision
+                })
+            {
+                category_id
+            } else {
+                return Ok(MarkdownImportOutcome {
+                    workspace,
+                    imported: 0,
+                    total,
+                    failure: Some(MarkdownImportPartialFailure::Category(error)),
+                });
+            }
+        }
+        Err(error) => {
+            let _ = refresh_workspace(&mut workspace);
+            return Ok(MarkdownImportOutcome {
+                workspace,
+                imported: 0,
+                total,
+                failure: Some(MarkdownImportPartialFailure::Category(error)),
+            });
+        }
+    };
+    let mut imported = 0usize;
+    let mut failure = None;
+    for (index, guide) in prepared.guides().iter().enumerate() {
+        if markdown_import_guide_failure(index) {
+            failure = Some(MarkdownImportPartialFailure::Guide(GuideCreateError::Io));
+            break;
+        }
+        let summary = markdown_import_summary(guide.display_path());
+        match create_guide_with_body(
+            &mut workspace,
+            state_home,
+            runtime_directory,
+            category_id,
+            guide.title(),
+            &summary,
+            guide.body(),
+        ) {
+            Ok(_) => imported += 1,
+            Err(error @ GuideCreateError::CommittedRefreshRequired { guide_id, revision }) => {
+                imported += 1;
+                if refresh_workspace(&mut workspace).is_err()
+                    || !workspace.categories().iter().any(|category| {
+                        category.guides().iter().any(|loaded| {
+                            loaded.guide().id() == &guide_id && loaded.revision() == revision
+                        })
+                    })
+                {
+                    failure = Some(MarkdownImportPartialFailure::Guide(error));
+                    break;
+                }
+            }
+            Err(error) => {
+                failure = Some(MarkdownImportPartialFailure::Guide(error));
+                break;
+            }
+        }
+    }
+    if failure.is_some() {
+        let _ = refresh_workspace(&mut workspace);
+    }
+    Ok(MarkdownImportOutcome {
+        workspace,
+        imported,
+        total,
+        failure,
+    })
+}
+
+fn markdown_import_summary(display_path: &str) -> String {
+    const PREFIX: &str = "Imported from ";
+    let available = 500usize.saturating_sub(PREFIX.chars().count());
+    let path = display_path.chars().take(available).collect::<String>();
+    format!("{PREFIX}{path}")
 }
 
 pub enum GuideEdit {
@@ -3273,6 +3536,302 @@ mod tests {
     }
 
     #[test]
+    fn imports_a_markdown_collection_as_draft_guides_without_mutating_sources() {
+        let source = TestDirectory::new("markdown-import-source");
+        let destination = TestDirectory::new("markdown-import-destination");
+        let state = TestDirectory::new("markdown-import-state");
+        fs::create_dir(source.path().join("linux")).unwrap();
+        let first = b"\xef\xbb\xbf---\r\nstatus: tested\r\n---\r\n\r\n# Install\r\n";
+        let second = b"# Configure\n";
+        fs::write(source.path().join("linux/01-install.md"), first).unwrap();
+        fs::write(source.path().join("configure_system.md"), second).unwrap();
+        let WorkspaceInspection::OrdinaryMarkdown(source_capability) =
+            inspect_workspace(source.path()).unwrap().into_parts().1
+        else {
+            panic!("expected ordinary Markdown");
+        };
+        let selection = source_capability.preview().unwrap();
+        let target = empty_target(&destination);
+
+        let outcome = import_markdown_collection(
+            &selection,
+            &target,
+            state.path(),
+            None,
+            "Imported Guides",
+            "Imported",
+        )
+        .unwrap();
+
+        assert!(outcome.complete());
+        assert_eq!(outcome.imported(), 2);
+        assert_eq!(outcome.total(), 2);
+        assert_eq!(outcome.failure(), None);
+        let view = outcome.into_workspace();
+        assert_eq!(view.manifest().name(), "Imported Guides");
+        assert_eq!(view.categories().len(), 1);
+        assert_eq!(view.categories()[0].category().name(), "Imported");
+        assert_eq!(view.categories()[0].guides().len(), 2);
+        assert!(
+            view.categories()[0]
+                .guides()
+                .iter()
+                .all(|guide| guide.guide().declared_status() == GuideStatus::Draft)
+        );
+        let installed = view.categories()[0]
+            .guides()
+            .iter()
+            .find(|guide| guide.guide().title() == "01 install")
+            .unwrap();
+        assert_eq!(
+            installed.guide().body(),
+            b"---\nstatus: tested\n---\n\n# Install\n"
+        );
+        assert_eq!(
+            installed.guide().summary(),
+            "Imported from linux/01-install.md"
+        );
+        assert_eq!(
+            fs::read(source.path().join("linux/01-install.md")).unwrap(),
+            first
+        );
+        assert_eq!(
+            fs::read(source.path().join("configure_system.md")).unwrap(),
+            second
+        );
+    }
+
+    #[test]
+    fn later_import_failure_returns_an_exact_valid_prefix() {
+        let source = TestDirectory::new("markdown-import-partial-source");
+        let destination = TestDirectory::new("markdown-import-partial-destination");
+        let state = TestDirectory::new("markdown-import-partial-state");
+        fs::write(source.path().join("01-first.md"), b"# First\n").unwrap();
+        fs::write(source.path().join("02-second.md"), b"# Second\n").unwrap();
+        let WorkspaceInspection::OrdinaryMarkdown(source_capability) =
+            inspect_workspace(source.path()).unwrap().into_parts().1
+        else {
+            panic!("expected ordinary Markdown");
+        };
+        let selection = source_capability.preview().unwrap();
+        let target = empty_target(&destination);
+        set_markdown_import_guide_failure_at(1);
+
+        let outcome = import_markdown_collection(
+            &selection,
+            &target,
+            state.path(),
+            None,
+            "Partial Import",
+            "Imported",
+        )
+        .unwrap();
+
+        assert_eq!(outcome.imported(), 1);
+        assert_eq!(outcome.total(), 2);
+        assert_eq!(
+            outcome.failure(),
+            Some(MarkdownImportPartialFailure::Guide(GuideCreateError::Io))
+        );
+        let view = outcome.into_workspace();
+        assert_eq!(view.categories().len(), 1);
+        assert_eq!(view.categories()[0].guides().len(), 1);
+        assert_eq!(view.categories()[0].guides()[0].guide().title(), "01 first");
+        assert_eq!(
+            fs::read(source.path().join("01-first.md")).unwrap(),
+            b"# First\n"
+        );
+        assert_eq!(
+            fs::read(source.path().join("02-second.md")).unwrap(),
+            b"# Second\n"
+        );
+    }
+
+    #[test]
+    fn source_drift_refuses_import_before_destination_initialization() {
+        let source = TestDirectory::new("markdown-import-drift-source");
+        let destination = TestDirectory::new("markdown-import-drift-destination");
+        let state = TestDirectory::new("markdown-import-drift-state");
+        let source_path = source.path().join("guide.md");
+        fs::write(&source_path, b"# Original\n").unwrap();
+        let WorkspaceInspection::OrdinaryMarkdown(source_capability) =
+            inspect_workspace(source.path()).unwrap().into_parts().1
+        else {
+            panic!("expected ordinary Markdown");
+        };
+        let selection = source_capability.preview().unwrap();
+        let target = empty_target(&destination);
+        fs::write(source_path, b"# Changed\n").unwrap();
+
+        assert!(matches!(
+            import_markdown_collection(
+                &selection,
+                &target,
+                state.path(),
+                None,
+                "Imported Guides",
+                "Imported",
+            ),
+            Err(MarkdownImportError::SourceChanged)
+        ));
+        assert_eq!(fs::read_dir(destination.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn apply_rejects_symlink_hardlink_and_special_file_substitution() {
+        use std::os::unix::net::UnixListener;
+
+        for kind in ["symlink", "hardlink", "socket"] {
+            let source = TestDirectory::new(&format!("markdown-import-{kind}-source"));
+            let destination = TestDirectory::new(&format!("markdown-import-{kind}-destination"));
+            let state = TestDirectory::new(&format!("markdown-import-{kind}-state"));
+            let guide = source.path().join("guide.md");
+            fs::write(&guide, b"# Original\n").unwrap();
+            let WorkspaceInspection::OrdinaryMarkdown(source_capability) =
+                inspect_workspace(source.path()).unwrap().into_parts().1
+            else {
+                panic!("expected ordinary Markdown");
+            };
+            let selection = source_capability.preview().unwrap();
+            let target = empty_target(&destination);
+            fs::remove_file(&guide).unwrap();
+            let _socket = match kind {
+                "symlink" => {
+                    symlink("missing.md", &guide).unwrap();
+                    None
+                }
+                "hardlink" => {
+                    let other = source.path().join("other.md");
+                    fs::write(&other, b"# Original\n").unwrap();
+                    fs::hard_link(other, &guide).unwrap();
+                    None
+                }
+                "socket" => Some(UnixListener::bind(&guide).unwrap()),
+                _ => unreachable!(),
+            };
+
+            assert!(matches!(
+                import_markdown_collection(
+                    &selection,
+                    &target,
+                    state.path(),
+                    None,
+                    "Must Not Exist",
+                    "Imported",
+                ),
+                Err(MarkdownImportError::SourceChanged | MarkdownImportError::SourceUnavailable)
+            ));
+            assert_eq!(fs::read_dir(destination.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn destination_change_after_selection_is_preserved_and_refused() {
+        let source = TestDirectory::new("markdown-import-destination-change-source");
+        let destination = TestDirectory::new("markdown-import-destination-change");
+        let state = TestDirectory::new("markdown-import-destination-change-state");
+        fs::write(source.path().join("guide.md"), b"# Source\n").unwrap();
+        let WorkspaceInspection::OrdinaryMarkdown(source_capability) =
+            inspect_workspace(source.path()).unwrap().into_parts().1
+        else {
+            panic!("expected ordinary Markdown");
+        };
+        let selection = source_capability.preview().unwrap();
+        let target = empty_target(&destination);
+        fs::write(destination.path().join("appeared.txt"), b"keep me").unwrap();
+
+        assert!(matches!(
+            import_markdown_collection(
+                &selection,
+                &target,
+                state.path(),
+                None,
+                "Must Not Exist",
+                "Imported",
+            ),
+            Err(MarkdownImportError::Initialize(
+                WorkspaceInitializationError::Conflict
+            ))
+        ));
+        assert_eq!(
+            fs::read(destination.path().join("appeared.txt")).unwrap(),
+            b"keep me"
+        );
+        assert!(!destination.path().join("rehow.yaml").exists());
+    }
+
+    #[test]
+    fn destination_moved_beneath_source_during_prepare_is_rechecked() {
+        let source = TestDirectory::new("markdown-import-destination-move-source");
+        let destination = TestDirectory::new("markdown-import-destination-move");
+        let state = TestDirectory::new("markdown-import-destination-move-state");
+        fs::write(source.path().join("guide.md"), b"# Source\n").unwrap();
+        let WorkspaceInspection::OrdinaryMarkdown(source_capability) =
+            inspect_workspace(source.path()).unwrap().into_parts().1
+        else {
+            panic!("expected ordinary Markdown");
+        };
+        let selection = source_capability.preview().unwrap();
+        let target = empty_target(&destination);
+        let original = destination.path().to_owned();
+        let nested = source.path().join("moved-destination");
+        let nested_for_hook = nested.clone();
+        set_markdown_import_after_prepare_hook(move || {
+            fs::rename(original, nested_for_hook).unwrap();
+        });
+
+        assert!(matches!(
+            import_markdown_collection(
+                &selection,
+                &target,
+                state.path(),
+                None,
+                "Must Not Exist",
+                "Imported",
+            ),
+            Err(MarkdownImportError::SameFolder)
+        ));
+        assert_eq!(fs::read_dir(&nested).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn nested_destination_refuses_import_without_writing_into_the_source() {
+        let source = TestDirectory::new("markdown-import-nested-destination");
+        let state = TestDirectory::new("markdown-import-nested-state");
+        fs::write(source.path().join("guide.md"), b"# Source\n").unwrap();
+        let destination_path = source.path().join("new-workspace");
+        fs::create_dir(&destination_path).unwrap();
+        let WorkspaceInspection::OrdinaryMarkdown(source_capability) =
+            inspect_workspace(source.path()).unwrap().into_parts().1
+        else {
+            panic!("expected ordinary Markdown");
+        };
+        let selection = source_capability.preview().unwrap();
+        let WorkspaceInspection::Empty(destination) =
+            inspect_workspace(&destination_path).unwrap().into_parts().1
+        else {
+            panic!("expected empty destination");
+        };
+
+        assert!(matches!(
+            import_markdown_collection(
+                &selection,
+                &destination,
+                state.path(),
+                None,
+                "Must Not Exist",
+                "Imported",
+            ),
+            Err(MarkdownImportError::SameFolder)
+        ));
+        assert_eq!(fs::read_dir(&destination_path).unwrap().count(), 0);
+        assert_eq!(
+            fs::read(source.path().join("guide.md")).unwrap(),
+            b"# Source\n"
+        );
+    }
+
+    #[test]
     fn manual_refresh_reconciles_external_changes_and_isolates_malformed_guides() {
         let (workspace, _state, mut view) = fixture("manual-refresh", GUIDE);
         let category = workspace.path().join("categories/linux-system--b6ba3a5551");
@@ -3398,6 +3957,84 @@ mod tests {
             Err(WorkspaceInitializationError::Conflict)
         ));
         assert!(!directory_change.path().join("rehow.yaml").exists());
+    }
+
+    #[test]
+    fn initialization_journal_recovers_after_categories_directory_publication() {
+        let workspace = TestDirectory::new("initialize-directory-interruption");
+        let state = TestDirectory::new("initialize-directory-interruption-state");
+        let target = empty_target(&workspace);
+        crate::storage::set_workspace_fault(crate::storage::WorkspaceFault::AfterDirectoryCreate);
+
+        let view = initialize_workspace(&target, state.path(), None, "Recovered Rehow").unwrap();
+
+        assert_eq!(view.manifest().name(), "Recovered Rehow");
+        assert!(view.categories().is_empty());
+        assert!(workspace.path().join("rehow.yaml").is_file());
+        assert!(workspace.path().join("categories").is_dir());
+        assert_eq!(
+            fs::read_dir(workspace.path().join("categories"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn initialization_race_cannot_adopt_a_foreign_categories_directory() {
+        let workspace = TestDirectory::new("initialize-directory-race");
+        let state = TestDirectory::new("initialize-directory-race-state");
+        let target = empty_target(&workspace);
+        let categories = workspace.path().join("categories");
+        crate::storage::set_before_directory_create_hook(move || {
+            fs::create_dir(&categories).unwrap();
+            fs::set_permissions(&categories, fs::Permissions::from_mode(0o700)).unwrap();
+        });
+
+        assert!(matches!(
+            initialize_workspace(&target, state.path(), None, "Must Not Commit"),
+            Err(WorkspaceInitializationError::Conflict)
+        ));
+        assert!(!workspace.path().join("rehow.yaml").exists());
+        assert!(workspace.path().join("categories").is_dir());
+    }
+
+    #[test]
+    fn initialization_reports_and_preserves_a_hostile_marker_cleanup_race() {
+        let workspace = TestDirectory::new("initialize-marker-cleanup-race");
+        let state = TestDirectory::new("initialize-marker-cleanup-race-state");
+        let target = empty_target(&workspace);
+        let marker = workspace.path().join("categories/.rehow-init");
+        let marker_for_hook = marker.clone();
+        crate::storage::set_before_initialization_marker_cleanup_hook(move || {
+            fs::remove_file(&marker_for_hook).unwrap();
+            symlink("foreign-target", &marker_for_hook).unwrap();
+        });
+
+        assert!(matches!(
+            initialize_workspace(&target, state.path(), None, "Committed Rehow"),
+            Err(WorkspaceInitializationError::CommittedRefreshRequired { .. })
+        ));
+        assert!(!marker.exists());
+        let retired = fs::read_dir(workspace.path().join(".rehow/trash"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path()
+            .join("rehow.yaml");
+        assert!(
+            fs::symlink_metadata(&retired)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let WorkspaceInspection::Compatible(view) =
+            inspect_workspace(workspace.path()).unwrap().into_parts().1
+        else {
+            panic!("expected a compatible Workspace after preserving the raced marker");
+        };
+        assert!(view.issues().is_empty());
     }
 
     #[test]
@@ -3880,17 +4517,17 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(operations.len(), 1);
-        assert_eq!(
-            fs::read(
-                operations[0]
+        let removed_copy = operations
+            .iter()
+            .map(|operation| {
+                operation
                     .path()
                     .join(&relative_directory)
                     .join("category.yaml")
-            )
-            .unwrap(),
-            descriptor
-        );
+            })
+            .find(|path| path.is_file())
+            .unwrap();
+        assert_eq!(fs::read(removed_copy).unwrap(), descriptor);
     }
 
     #[test]
@@ -4341,6 +4978,33 @@ mod tests {
                 & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn imported_guide_creation_keeps_source_frontmatter_in_the_draft_body() {
+        let (_workspace, state, mut view) = initialized_workspace("guide-import-body");
+        let category = create_category(&mut view, state.path(), None, "Imported", None)
+            .unwrap()
+            .category_id();
+        let body = b"---\ntitle: Untrusted source\nstatus: tested\n---\n\n# Instructions\n";
+
+        let created = create_guide_with_body(
+            &mut view,
+            state.path(),
+            None,
+            category,
+            "Source Guide",
+            "Imported from source.md",
+            body,
+        )
+        .unwrap();
+        let loaded = &view.categories()[0].guides()[0];
+
+        assert_eq!(loaded.guide().id(), &created.guide_id());
+        assert_eq!(loaded.guide().declared_status(), GuideStatus::Draft);
+        assert_eq!(loaded.guide().body(), body);
+        assert_eq!(loaded.guide().title(), "Source Guide");
+        assert_eq!(loaded.guide().summary(), "Imported from source.md");
     }
 
     #[test]
@@ -5221,11 +5885,12 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(operations.len(), 1);
-        assert_eq!(
-            fs::read(operations[0].path().join(relative_path)).unwrap(),
-            original
-        );
+        let removed_copy = operations
+            .iter()
+            .map(|operation| operation.path().join(&relative_path))
+            .find(|path| path.is_file())
+            .unwrap();
+        assert_eq!(fs::read(removed_copy).unwrap(), original);
     }
 
     #[test]

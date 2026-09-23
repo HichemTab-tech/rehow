@@ -451,6 +451,18 @@ export type MarkdownImportPreviewPayload = {
   }>;
 };
 
+type MarkdownImportDestinationResult =
+  | { kind: "cancelled" }
+  | { kind: "selected"; facts: FolderFacts };
+
+type MarkdownImportApplyPayload = {
+  workspace: WorkspacePayload;
+  imported: number;
+  total: number;
+  complete: boolean;
+  failure: string | null;
+};
+
 type SaveGuidePayload = {
   workspace: WorkspacePayload;
   guide: GuideBodyPayload;
@@ -1227,6 +1239,28 @@ function isWorkspacePayload(value: unknown): value is WorkspacePayload {
   return categoriesValid && guidesValid;
 }
 
+export function isMarkdownImportApplyPayload(
+  value: unknown,
+): value is MarkdownImportApplyPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as Partial<MarkdownImportApplyPayload> &
+    Record<string, unknown>;
+  return (
+    Object.keys(result).length === 5 &&
+    isWorkspacePayload(result.workspace) &&
+    Number.isSafeInteger(result.imported) &&
+    (result.imported as number) >= 0 &&
+    Number.isSafeInteger(result.total) &&
+    (result.total as number) >= 1 &&
+    (result.total as number) <= 10_000 &&
+    (result.imported as number) <= (result.total as number) &&
+    typeof result.complete === "boolean" &&
+    result.complete === ((result.imported as number) === result.total) &&
+    (result.failure === null || isBoundedText(result.failure, 1, 500)) &&
+    (result.complete ? result.failure === null : result.failure !== null)
+  );
+}
+
 export function isGitCloneCompleteResultPayload(
   value: unknown,
 ): value is GitCloneCompleteResultPayload {
@@ -1473,6 +1507,13 @@ export function App() {
   );
   const [markdownImportPreview, setMarkdownImportPreview] =
     useState<MarkdownImportPreviewPayload | null>(null);
+  const [markdownImportDestination, setMarkdownImportDestination] =
+    useState<FolderFacts | null>(null);
+  const [markdownImportWorkspaceName, setMarkdownImportWorkspaceName] =
+    useState("");
+  const [markdownImportCategoryName, setMarkdownImportCategoryName] =
+    useState("");
+  const [applyingMarkdownImport, setApplyingMarkdownImport] = useState(false);
   const [workspaceName, setWorkspaceName] = useState("");
   const [initializingWorkspace, setInitializingWorkspace] = useState(false);
   const [workspaceSetupError, setWorkspaceSetupError] = useState("");
@@ -1562,6 +1603,8 @@ export function App() {
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const saveErrorRef = useRef<HTMLParagraphElement>(null);
   const workspaceNameRef = useRef<HTMLInputElement>(null);
+  const markdownImportWorkspaceNameRef = useRef<HTMLInputElement>(null);
+  const markdownImportCategoryNameRef = useRef<HTMLInputElement>(null);
   const workspaceSetupErrorRef = useRef<HTMLParagraphElement>(null);
   const gitCloneUrlRef = useRef<HTMLInputElement>(null);
   const gitCloneCompleteRef = useRef<HTMLButtonElement>(null);
@@ -2130,6 +2173,9 @@ export function App() {
       const result = await invoke<OpenWorkspaceResult>("choose_workspace");
       if (result.kind !== "cancelled") {
         setMarkdownImportPreview(null);
+        setMarkdownImportDestination(null);
+        setMarkdownImportWorkspaceName("");
+        setMarkdownImportCategoryName("");
         resetGitCloneUi();
         resetGitSyncUi();
         setGitInitError("");
@@ -2178,6 +2224,8 @@ export function App() {
         setWorkspace(null);
         setPendingWorkspace(null);
         setMarkdownImportPreview(result.preview);
+        setMarkdownImportWorkspaceName("Imported Guides");
+        setMarkdownImportCategoryName("Imported");
         setSelectedId("");
         setReaderOpen(false);
         setAnnouncement(
@@ -3021,6 +3069,89 @@ export function App() {
     }
   }
 
+  async function chooseMarkdownImportDestination() {
+    if (markdownImportPreview === null || applyingMarkdownImport) return;
+    setWorkspaceSetupError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<MarkdownImportDestinationResult>(
+        "choose_markdown_import_destination",
+      );
+      if (result.kind === "cancelled") return;
+      setMarkdownImportDestination(result.facts);
+      setAnnouncement(
+        "Empty destination selected. Name the new Workspace and Category to continue.",
+      );
+      requestAnimationFrame(() =>
+        markdownImportWorkspaceNameRef.current?.focus(),
+      );
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setWorkspaceSetupError(failure.message);
+      requestAnimationFrame(() => workspaceSetupErrorRef.current?.focus());
+    }
+  }
+
+  async function applyMarkdownImport(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const workspaceName = normalizedWorkspaceName(markdownImportWorkspaceName);
+    const category = normalizedCategoryDetails(markdownImportCategoryName, "");
+    if (markdownImportPreview === null || markdownImportDestination === null)
+      return;
+    if (workspaceName === null) {
+      setWorkspaceSetupError(
+        "Enter a Workspace name between 1 and 200 characters.",
+      );
+      requestAnimationFrame(() =>
+        markdownImportWorkspaceNameRef.current?.focus(),
+      );
+      return;
+    }
+    if (category === null) {
+      setWorkspaceSetupError(
+        "Enter a Category name between 1 and 200 characters.",
+      );
+      requestAnimationFrame(() =>
+        markdownImportCategoryNameRef.current?.focus(),
+      );
+      return;
+    }
+    if (applyingMarkdownImport) return;
+    setApplyingMarkdownImport(true);
+    setWorkspaceSetupError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<MarkdownImportApplyPayload>(
+        "apply_markdown_import",
+        { workspaceName, categoryName: category.name },
+      );
+      if (!isMarkdownImportApplyPayload(result)) {
+        throw new Error("invalid Markdown import result payload");
+      }
+      setWorkspace(result.workspace);
+      setMarkdownImportPreview(null);
+      setMarkdownImportDestination(null);
+      setSelectedId(result.workspace.guides[0]?.id ?? "");
+      setReaderOpen(false);
+      setQuery("");
+      setWatchDegradedWorkspaceId(
+        result.workspace.watchStatus === "degraded" ? result.workspace.id : "",
+      );
+      setAnnouncement(
+        result.complete
+          ? `${result.imported} Guide${result.imported === 1 ? "" : "s"} imported into ${result.workspace.name}.`
+          : `${result.imported} of ${result.total} Guides imported. ${result.failure ?? "Open the partial Workspace before retrying."}`,
+      );
+      requestAnimationFrame(() => searchRef.current?.focus());
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setWorkspaceSetupError(failure.message);
+      requestAnimationFrame(() => workspaceSetupErrorRef.current?.focus());
+    } finally {
+      setApplyingMarkdownImport(false);
+    }
+  }
+
   async function cancelWorkspaceSetup() {
     if (initializingWorkspace || gitCloneOperationBusy) return;
     try {
@@ -3032,6 +3163,9 @@ export function App() {
     }
     setPendingWorkspace(null);
     setMarkdownImportPreview(null);
+    setMarkdownImportDestination(null);
+    setMarkdownImportWorkspaceName("");
+    setMarkdownImportCategoryName("");
     setWorkspaceName("");
     setWorkspaceSetupError("");
     resetGitCloneUi();
@@ -4504,26 +4638,28 @@ export function App() {
                       <dd>{markdownImportPreview.oversized}</dd>
                     </div>
                   </dl>
-                  <ul
-                    className="markdown-import-file-list"
-                    aria-label="Markdown files ready to import"
-                  >
-                    {markdownImportPreview.entries.map((entry) => (
-                      <li
-                        className="markdown-import-file-row"
-                        key={entry.displayPath}
-                      >
-                        <span className="markdown-import-file-path">
-                          {entry.displayPath}
-                        </span>
-                        {entry.normalizationRequired && (
-                          <small className="markdown-import-normalize-label">
-                            Normalize
-                          </small>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
+                  {markdownImportPreview.entries.length > 0 && (
+                    <ul
+                      className="markdown-import-file-list"
+                      aria-label="Markdown files ready to import"
+                    >
+                      {markdownImportPreview.entries.map((entry) => (
+                        <li
+                          className="markdown-import-file-row"
+                          key={entry.displayPath}
+                        >
+                          <span className="markdown-import-file-path">
+                            {entry.displayPath}
+                          </span>
+                          {entry.normalizationRequired && (
+                            <small className="markdown-import-normalize-label">
+                              Normalize
+                            </small>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   {markdownImportPreview.entries.length <
                     markdownImportPreview.included && (
                     <p>
@@ -4531,30 +4667,119 @@ export function App() {
                       of {markdownImportPreview.included} files.
                     </p>
                   )}
-                  <div className="workspace-setup-actions">
-                    <button
-                      className="button"
-                      type="button"
-                      onClick={() => void cancelWorkspaceSetup()}
+                  {markdownImportDestination === null ? (
+                    <>
+                      <div className="workspace-setup-actions">
+                        <button
+                          className="button"
+                          type="button"
+                          onClick={() => void cancelWorkspaceSetup()}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          className="button button-primary"
+                          type="button"
+                          disabled={markdownImportPreview.included === 0}
+                          aria-describedby="markdown-import-next-step"
+                          onClick={() => void chooseMarkdownImportDestination()}
+                        >
+                          Choose Destination
+                        </button>
+                      </div>
+                      <p
+                        id="markdown-import-next-step"
+                        className="workspace-setup-help"
+                      >
+                        {markdownImportPreview.included === 0
+                          ? "No safe Markdown files are available to copy."
+                          : "Choose an empty folder outside the source collection."}
+                      </p>
+                    </>
+                  ) : (
+                    <form
+                      className="workspace-setup markdown-import-apply"
+                      aria-busy={applyingMarkdownImport}
+                      onSubmit={(event) => void applyMarkdownImport(event)}
                     >
-                      Cancel
-                    </button>
-                    <button
-                      className="button button-primary"
-                      type="button"
-                      disabled
-                      aria-describedby="markdown-import-next-step"
-                    >
-                      Choose Destination
-                    </button>
-                  </div>
-                  <p
-                    id="markdown-import-next-step"
-                    className="workspace-setup-help"
-                  >
-                    Destination selection becomes available with the reviewed
-                    copy step.
-                  </p>
+                      <span className="workspace-setup-help">
+                        Empty writable destination selected.
+                      </span>
+                      <label htmlFor="markdown-import-workspace-name">
+                        Workspace Name
+                      </label>
+                      <input
+                        ref={markdownImportWorkspaceNameRef}
+                        id="markdown-import-workspace-name"
+                        name="markdown-import-workspace-name"
+                        type="text"
+                        autoComplete="off"
+                        maxLength={200}
+                        disabled={applyingMarkdownImport}
+                        aria-invalid={workspaceSetupError !== ""}
+                        aria-describedby={
+                          workspaceSetupError !== ""
+                            ? "workspace-setup-error"
+                            : undefined
+                        }
+                        value={markdownImportWorkspaceName}
+                        onChange={(event) => {
+                          setMarkdownImportWorkspaceName(event.target.value);
+                          setWorkspaceSetupError("");
+                        }}
+                      />
+                      <label htmlFor="markdown-import-category-name">
+                        Category Name
+                      </label>
+                      <input
+                        ref={markdownImportCategoryNameRef}
+                        id="markdown-import-category-name"
+                        name="markdown-import-category-name"
+                        type="text"
+                        autoComplete="off"
+                        maxLength={200}
+                        disabled={applyingMarkdownImport}
+                        aria-invalid={workspaceSetupError !== ""}
+                        aria-describedby={
+                          workspaceSetupError !== ""
+                            ? "workspace-setup-error"
+                            : undefined
+                        }
+                        value={markdownImportCategoryName}
+                        onChange={(event) => {
+                          setMarkdownImportCategoryName(event.target.value);
+                          setWorkspaceSetupError("");
+                        }}
+                      />
+                      <div className="workspace-setup-actions">
+                        <button
+                          className="button"
+                          type="button"
+                          disabled={applyingMarkdownImport}
+                          onClick={() => void cancelWorkspaceSetup()}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          className="button"
+                          type="button"
+                          disabled={applyingMarkdownImport}
+                          onClick={() => void chooseMarkdownImportDestination()}
+                        >
+                          Change Destination
+                        </button>
+                        <button
+                          className="button button-primary"
+                          type="submit"
+                          disabled={applyingMarkdownImport}
+                        >
+                          {applyingMarkdownImport
+                            ? "Importing…"
+                            : `Import ${markdownImportPreview.included} Guide${markdownImportPreview.included === 1 ? "" : "s"}`}
+                        </button>
+                      </div>
+                    </form>
+                  )}
                 </section>
               )}
               {workspaceSetupError !== "" && (

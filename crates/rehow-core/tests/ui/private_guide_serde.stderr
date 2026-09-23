@@ -1,10 +1,10 @@
-error[E0277]: the trait bound `Guide: serde::Serialize` is not satisfied
+error[E0277]: the trait bound `rehow_core::domain::Guide: serde::Serialize` is not satisfied
  --> tests/ui/private_guide_serde.rs:6:26
   |
 6 |     requires_serialize::<Guide>();
-  |                          ^^^^^ the trait `Serialize` is not implemented for `Guide`
+  |                          ^^^^^ the trait `Serialize` is not implemented for `rehow_core::domain::Guide`
   |
-  = note: for local types consider adding `#[derive(serde::Serialize)]` to your `Guide` type
+  = note: for local types consider adding `#[derive(serde::Serialize)]` to your `rehow_core::domain::Guide` type
   = note: for types from other crates check whether the crate offers a `serde` feature flag
   = help: the following other types implement trait `Serialize`:
             &'a T

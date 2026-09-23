@@ -17,17 +17,33 @@ pub(crate) enum WorkspaceFault {
     BeforeLiveRename,
     AfterLiveRenameBeforeSync,
     AfterSourceDirectorySync,
+    AfterDirectoryCreate,
 }
 
 #[cfg(test)]
 thread_local! {
     static WORKSPACE_FAULT: std::cell::Cell<Option<WorkspaceFault>> = const { std::cell::Cell::new(None) };
     static ATTACHMENT_BEFORE_MOVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static BEFORE_DIRECTORY_CREATE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
 pub(crate) fn set_workspace_fault(fault: WorkspaceFault) {
     WORKSPACE_FAULT.set(Some(fault));
+}
+
+#[cfg(test)]
+pub(crate) fn set_before_directory_create_hook(hook: impl FnOnce() + 'static) {
+    BEFORE_DIRECTORY_CREATE_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
+fn run_before_directory_create_hook() {
+    BEFORE_DIRECTORY_CREATE_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
 }
 
 #[cfg(test)]
@@ -584,7 +600,7 @@ pub(super) fn execute_new_journal(
         return Err(WorkspaceMutationError::Conflict);
     }
     store.install_journal(lock, &journal).map_err(map_store)?;
-    continue_journal(root, store, lock, journal)
+    continue_journal(root, store, lock, journal, false)
 }
 
 pub(super) fn resume_journal(
@@ -595,7 +611,7 @@ pub(super) fn resume_journal(
 ) -> Result<Journal, WorkspaceMutationError> {
     let journal = store.read_journal(lock, operation_id).map_err(map_store)?;
     preflight(root, store, lock, &journal)?;
-    continue_journal(root, store, lock, journal)
+    continue_journal(root, store, lock, journal, true)
 }
 
 fn preflight(
@@ -679,6 +695,7 @@ fn continue_journal(
     store: &RecoveryStore,
     lock: &WriterLock,
     mut journal: Journal,
+    resuming: bool,
 ) -> Result<Journal, WorkspaceMutationError> {
     if journal.stage == JournalStage::Committed && journal.completion {
         verify_journal_applied(root, store, lock, &journal)?;
@@ -718,7 +735,15 @@ fn continue_journal(
             .as_ref()
             .map(|(bytes, mode)| (bytes.as_slice(), *mode));
         let applied = if target.step == TargetStep::Prepared {
-            apply_prepared_target(root, store, lock, &target, expected)
+            apply_prepared_target(
+                root,
+                store,
+                lock,
+                journal.operation_id,
+                &target,
+                expected,
+                resuming,
+            )
         } else {
             verify_applied_target(root, store, lock, journal.operation_id, &target, expected)
         };
@@ -803,10 +828,27 @@ fn apply_prepared_target(
     root: &DirectoryCapability,
     store: &RecoveryStore,
     lock: &WriterLock,
+    operation_id: OperationId,
     target: &super::Target,
     expected: Option<(&[u8], u32)>,
+    resuming: bool,
 ) -> Result<(), WorkspaceMutationError> {
     match &target.intended {
+        IntendedState::Directory { mode } => {
+            if expected.is_some() || target.relative_path != "categories" || *mode != 0o700 {
+                return Err(WorkspaceMutationError::Conflict);
+            }
+            let marker = initialization_marker(operation_id);
+            if resuming {
+                root.create_or_verify_empty_categories_directory(&marker)
+            } else {
+                #[cfg(test)]
+                run_before_directory_create_hook();
+                root.create_categories_directory(&marker)
+            }
+            .map_err(map_io)?;
+            fail(WorkspaceFaultPoint::AfterDirectoryCreate)
+        }
         IntendedState::Object { object_hash, mode } => {
             if is_attachment_path(&target.relative_path) && expected.is_none() {
                 return install_streamed_object(
@@ -863,6 +905,13 @@ fn apply_prepared_target(
             trash_object(root, &target.relative_path, expected, *mode, destination)
         }
     }
+}
+
+pub(super) fn initialization_marker(operation_id: OperationId) -> Vec<u8> {
+    let mut marker = b"rehow-workspace-initialize-v1\n".to_vec();
+    marker.extend_from_slice(operation_id.to_string().as_bytes());
+    marker.push(b'\n');
+    marker
 }
 
 fn verify_journal_applied(
@@ -977,11 +1026,21 @@ fn verify_applied_target(
         }
         return Ok(());
     }
+    if let IntendedState::Directory { mode } = &target.intended {
+        if expected.is_some() || target.relative_path != "categories" || *mode != 0o700 {
+            return Err(WorkspaceMutationError::Conflict);
+        }
+        let marker = initialization_marker(operation_id);
+        root.create_or_verify_empty_categories_directory(&marker)
+            .map_err(map_io)?;
+        return Ok(());
+    }
     let active = root
         .open_managed_target(&target.relative_path)
         .map_err(map_io)?;
     active.sync_directory().map_err(map_io)?;
     match &target.intended {
+        IntendedState::Directory { .. } => unreachable!(),
         IntendedState::Object { object_hash, mode } => {
             if is_attachment_path(&target.relative_path) && expected.is_none() {
                 let (_, size) = store.open_object(lock, object_hash).map_err(map_store)?;
@@ -1183,6 +1242,9 @@ fn cleanup_committed(
         }
         let old = store.read_object(lock, object_hash).map_err(map_store)?;
         match &target.intended {
+            IntendedState::Directory { .. } => {
+                return Err(WorkspaceMutationError::Conflict);
+            }
             IntendedState::Object {
                 object_hash: new_hash,
                 mode: new_mode,
@@ -1334,6 +1396,7 @@ enum WorkspaceFaultPoint {
     BeforeLiveRename,
     AfterLiveRenameBeforeSync,
     AfterSourceDirectorySync,
+    AfterDirectoryCreate,
 }
 
 #[cfg(test)]
@@ -1342,6 +1405,7 @@ fn fail(point: WorkspaceFaultPoint) -> Result<(), WorkspaceMutationError> {
         WorkspaceFaultPoint::BeforeLiveRename => WorkspaceFault::BeforeLiveRename,
         WorkspaceFaultPoint::AfterLiveRenameBeforeSync => WorkspaceFault::AfterLiveRenameBeforeSync,
         WorkspaceFaultPoint::AfterSourceDirectorySync => WorkspaceFault::AfterSourceDirectorySync,
+        WorkspaceFaultPoint::AfterDirectoryCreate => WorkspaceFault::AfterDirectoryCreate,
     };
     if WORKSPACE_FAULT.get() == Some(wanted) {
         WORKSPACE_FAULT.set(None);

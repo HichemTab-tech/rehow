@@ -41,7 +41,8 @@ pub(crate) use linux::{
 
 #[cfg(test)]
 pub(crate) use recovery::{
-    WorkspaceFault, set_attachment_before_move_hook, set_git_sync_fail_after_directory_preparation,
+    WorkspaceFault, set_attachment_before_move_hook, set_before_directory_create_hook,
+    set_before_initialization_marker_cleanup_hook, set_git_sync_fail_after_directory_preparation,
     set_workspace_fault,
 };
 
@@ -2131,6 +2132,57 @@ pub struct MarkdownCollectionSource {
     root: linux::DirectoryCapability,
 }
 
+pub struct MarkdownImportSelection {
+    root: linux::DirectoryCapability,
+    snapshot: MarkdownImportSnapshot,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct MarkdownImportSnapshot {
+    preview: MarkdownImportPreview,
+    candidates: Vec<MarkdownImportCandidate>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct MarkdownImportCandidate {
+    components: Vec<String>,
+    display_path: String,
+    state: AttachmentSourceState,
+    source_digest: [u8; 32],
+    normalized_digest: [u8; 32],
+    normalized_body: Option<Vec<u8>>,
+}
+
+pub struct PreparedMarkdownImport {
+    guides: Vec<PreparedMarkdownGuide>,
+}
+
+pub struct PreparedMarkdownGuide {
+    display_path: String,
+    title: String,
+    body: Vec<u8>,
+}
+
+impl PreparedMarkdownImport {
+    pub fn guides(&self) -> &[PreparedMarkdownGuide] {
+        &self.guides
+    }
+}
+
+impl PreparedMarkdownGuide {
+    pub fn display_path(&self) -> &str {
+        &self.display_path
+    }
+
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct MarkdownImportPreviewEntry {
     display_path: String,
@@ -2194,8 +2246,141 @@ impl MarkdownImportPreview {
 }
 
 impl MarkdownCollectionSource {
-    pub fn preview(&self) -> Result<MarkdownImportPreview, WorkspaceInspectError> {
-        preview_markdown_collection(&self.root)
+    pub fn preview(self) -> Result<MarkdownImportSelection, WorkspaceInspectError> {
+        let snapshot = scan_markdown_collection(&self.root, false)?;
+        Ok(MarkdownImportSelection {
+            root: self.root,
+            snapshot,
+        })
+    }
+}
+
+impl MarkdownImportSelection {
+    pub fn preview(&self) -> &MarkdownImportPreview {
+        &self.snapshot.preview
+    }
+
+    pub fn destination_is_within_source(
+        &self,
+        destination: &EmptyWorkspaceTarget,
+    ) -> Result<bool, WorkspaceInspectError> {
+        let source = self.root.identity().map_err(map_clone_destination_error)?;
+        let mut current = Some(destination.root.duplicate().map_err(map_io)?);
+        for _ in 0..=GIT_ANCESTOR_LIMIT {
+            let Some(directory) = current else {
+                return Ok(false);
+            };
+            if directory.identity().map_err(map_clone_destination_error)? == source {
+                return Ok(true);
+            }
+            current = directory.open_parent().map_err(map_io)?;
+        }
+        Err(WorkspaceInspectError::ResourceLimit)
+    }
+
+    pub fn prepare(&self) -> Result<PreparedMarkdownImport, WorkspaceInspectError> {
+        let mut current = scan_markdown_collection(&self.root, true)?;
+        if current.preview != self.snapshot.preview
+            || current.candidates.len() != self.snapshot.candidates.len()
+            || current
+                .candidates
+                .iter()
+                .zip(&self.snapshot.candidates)
+                .any(|(current, expected)| !current.matches_snapshot(expected))
+        {
+            return Err(WorkspaceInspectError::ChangedDuringRead);
+        }
+        let mut guides = Vec::new();
+        guides
+            .try_reserve_exact(current.candidates.len())
+            .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
+        for candidate in &mut current.candidates {
+            let title = candidate
+                .components
+                .last()
+                .map_or_else(|| "Imported Guide".to_owned(), |name| import_title(name));
+            guides.push(PreparedMarkdownGuide {
+                display_path: std::mem::take(&mut candidate.display_path),
+                title,
+                body: candidate
+                    .normalized_body
+                    .take()
+                    .ok_or(WorkspaceInspectError::ChangedDuringRead)?,
+            });
+        }
+        Ok(PreparedMarkdownImport { guides })
+    }
+}
+
+fn import_title(filename: &str) -> String {
+    let stem = filename.strip_suffix(".md").unwrap_or(filename);
+    let mut title = String::new();
+    let mut separator = false;
+    let mut length = 0usize;
+    for character in stem.chars() {
+        if character == '-'
+            || character == '_'
+            || character.is_whitespace()
+            || character.is_control()
+            || unsafe_import_title_scalar(character)
+        {
+            separator = !title.is_empty();
+        } else {
+            if separator && length < 200 {
+                title.push(' ');
+                length += 1;
+            }
+            separator = false;
+            if length < 200 {
+                title.push(character);
+                length += 1;
+            }
+        }
+    }
+    while title.ends_with(' ') {
+        title.pop();
+    }
+    if title.is_empty() {
+        "Imported Guide".to_owned()
+    } else {
+        title
+    }
+}
+
+fn unsafe_import_title_scalar(character: char) -> bool {
+    let scalar = character as u32;
+    matches!(
+        scalar,
+        0x00ad
+            | 0x034f
+            | 0x061c
+            | 0x115f..=0x1160
+            | 0x17b4..=0x17b5
+            | 0x180b..=0x180f
+            | 0x200b..=0x200f
+            | 0x202a..=0x202e
+            | 0x2060..=0x206f
+            | 0x3164
+            | 0xfe00..=0xfe0f
+            | 0xfeff
+            | 0xffa0
+            | 0xfff9..=0xfffb
+            | 0x1bca0..=0x1bca3
+            | 0x1d173..=0x1d17a
+            | 0xe0001
+            | 0xe0020..=0xe007f
+            | 0xe0100..=0xe01ef
+            | 0xfdd0..=0xfdef
+    ) || matches!(scalar & 0xffff, 0xfffe | 0xffff)
+}
+
+impl MarkdownImportCandidate {
+    fn matches_snapshot(&self, expected: &Self) -> bool {
+        self.components == expected.components
+            && self.display_path == expected.display_path
+            && self.state == expected.state
+            && self.source_digest == expected.source_digest
+            && self.normalized_digest == expected.normalized_digest
     }
 }
 
@@ -3689,6 +3874,24 @@ fn inspect_open_root_with_index(
         .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
 
     for category_name in category_names {
+        if category_name == ".rehow-init" {
+            let kind = match categories_dir.read_regular(".rehow-init", 256) {
+                Ok(_) => WorkspaceIssueKind::UnsupportedEntry,
+                Err(linux::EntryReadError::Unsafe) => WorkspaceIssueKind::UnsafeEntry,
+                Err(linux::EntryReadError::TooLarge) => WorkspaceIssueKind::FileTooLarge,
+                Err(linux::EntryReadError::Changed) => {
+                    return Err(WorkspaceInspectError::ChangedDuringRead);
+                }
+                Err(linux::EntryReadError::Io(error))
+                    if error.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    continue;
+                }
+                Err(linux::EntryReadError::Io(error)) => return Err(map_io(error)),
+            };
+            push_issue(&mut issues, "categories/.rehow-init".to_owned(), kind)?;
+            continue;
+        }
         if !valid_category_directory(&category_name) {
             push_issue(
                 &mut issues,
@@ -4196,9 +4399,10 @@ fn apply_git_marker(
     }
 }
 
-fn preview_markdown_collection(
+fn scan_markdown_collection(
     root: &linux::DirectoryCapability,
-) -> Result<MarkdownImportPreview, WorkspaceInspectError> {
+    retain_bodies: bool,
+) -> Result<MarkdownImportSnapshot, WorkspaceInspectError> {
     let mut names = root.entries(IMPORT_ENTRY_LIMIT)?;
     names.sort_unstable();
     let mut remaining_entries = IMPORT_ENTRY_LIMIT.saturating_sub(names.len());
@@ -4215,10 +4419,27 @@ fn preview_markdown_collection(
         .entries
         .try_reserve_exact(IMPORT_PREVIEW_ROW_LIMIT)
         .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
-    scan_markdown_import_directory(root, &names, "", 0, &mut remaining_entries, &mut preview)?;
-    Ok(preview)
+    let mut candidates = Vec::new();
+    candidates
+        .try_reserve(names.len().min(IMPORT_GUIDE_LIMIT))
+        .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
+    scan_markdown_import_directory(
+        root,
+        &names,
+        "",
+        0,
+        &mut remaining_entries,
+        &mut preview,
+        &mut candidates,
+        retain_bodies,
+    )?;
+    Ok(MarkdownImportSnapshot {
+        preview,
+        candidates,
+    })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn scan_markdown_import_directory(
     directory: &linux::DirectoryCapability,
     names: &[String],
@@ -4226,6 +4447,8 @@ fn scan_markdown_import_directory(
     depth: usize,
     remaining_entries: &mut usize,
     preview: &mut MarkdownImportPreview,
+    candidates: &mut Vec<MarkdownImportCandidate>,
+    retain_bodies: bool,
 ) -> Result<(), WorkspaceInspectError> {
     for name in names {
         let relative_path = if prefix.is_empty() {
@@ -4235,9 +4458,11 @@ fn scan_markdown_import_directory(
         };
 
         if name.ends_with(".md") {
-            match directory.read_regular(name, IMPORT_SOURCE_LIMIT) {
-                Ok(bytes) => {
-                    let Ok((_, normalization_required)) = normalize_import_markdown(&bytes) else {
+            match directory.read_import_regular(name, IMPORT_SOURCE_LIMIT) {
+                Ok((bytes, state)) => {
+                    let Ok((normalized, normalization_required)) =
+                        normalize_import_markdown(&bytes)
+                    else {
                         preview.malformed_or_unsafe = preview
                             .malformed_or_unsafe
                             .checked_add(1)
@@ -4267,6 +4492,16 @@ fn scan_markdown_import_directory(
                             normalization_required,
                         });
                     }
+                    let display_path = inert_relative_display(&relative_path);
+                    let components = relative_path.split('/').map(str::to_owned).collect();
+                    candidates.push(MarkdownImportCandidate {
+                        components,
+                        display_path,
+                        state,
+                        source_digest: *blake3::hash(&bytes).as_bytes(),
+                        normalized_digest: *blake3::hash(&normalized).as_bytes(),
+                        normalized_body: retain_bodies.then_some(normalized),
+                    });
                     continue;
                 }
                 Err(linux::EntryReadError::TooLarge) => {
@@ -4304,6 +4539,8 @@ fn scan_markdown_import_directory(
                     depth + 1,
                     remaining_entries,
                     preview,
+                    candidates,
+                    retain_bodies,
                 )?;
             }
             Ok(_) => {
@@ -5013,6 +5250,15 @@ mod linux {
                 .map(|state| state.bytes)
         }
 
+        pub(super) fn read_import_regular(
+            &self,
+            name: &str,
+            limit: usize,
+        ) -> Result<(Vec<u8>, AttachmentSourceState), EntryReadError> {
+            self.read_regular_state_with_source(name, limit)
+                .map(|(state, source)| (state.bytes, source))
+        }
+
         pub(super) fn hash_attachment(
             &self,
             name: &str,
@@ -5117,6 +5363,15 @@ mod linux {
             name: &str,
             limit: usize,
         ) -> Result<RegularState, EntryReadError> {
+            self.read_regular_state_with_source(name, limit)
+                .map(|(state, _)| state)
+        }
+
+        fn read_regular_state_with_source(
+            &self,
+            name: &str,
+            limit: usize,
+        ) -> Result<(RegularState, AttachmentSourceState), EntryReadError> {
             let name = component(name).map_err(|_| EntryReadError::Unsafe)?;
             // SAFETY: the directory descriptor and NUL-terminated component are valid.
             let raw = unsafe {
@@ -5170,10 +5425,13 @@ mod linux {
             {
                 return Err(EntryReadError::Changed);
             }
-            Ok(RegularState {
-                bytes,
-                mode: final_metadata.mode() & 0o7777,
-            })
+            Ok((
+                RegularState {
+                    bytes,
+                    mode: final_metadata.mode() & 0o7777,
+                },
+                AttachmentSourceState::capture(&final_metadata),
+            ))
         }
 
         pub(super) fn open_managed_target(
@@ -5219,8 +5477,77 @@ mod linux {
             Ok(())
         }
 
-        pub(super) fn create_categories_directory(&self) -> Result<(), MutationIoError> {
-            self.create_private_directory_exclusive("categories")?;
+        pub(super) fn create_categories_directory(
+            &self,
+            marker: &[u8],
+        ) -> Result<(), MutationIoError> {
+            let directory = self.create_private_directory_exclusive("categories")?;
+            directory
+                .create_or_verify_private_file(".rehow-init", marker)
+                .map_err(map_clone_materialization_git)?;
+            directory.sync_mutation_directory()?;
+            self.sync_mutation_directory()?;
+            Ok(())
+        }
+
+        pub(super) fn create_or_verify_empty_categories_directory(
+            &self,
+            marker: &[u8],
+        ) -> Result<(), MutationIoError> {
+            let directory = self.open_private_directory("categories")?;
+            let entries = directory.entries(2).map_err(|error| match error {
+                WorkspaceInspectError::ResourceLimit => MutationIoError::TooLarge,
+                WorkspaceInspectError::UnsafeRoot => MutationIoError::Unsafe,
+                WorkspaceInspectError::ChangedDuringRead => MutationIoError::Conflict,
+                WorkspaceInspectError::NotFound
+                | WorkspaceInspectError::NotDirectory
+                | WorkspaceInspectError::PermissionDenied
+                | WorkspaceInspectError::Io => MutationIoError::Io,
+            })?;
+            if entries != [".rehow-init"] {
+                return Err(MutationIoError::Conflict);
+            }
+            directory
+                .verify_private_file(".rehow-init", marker)
+                .map_err(map_clone_materialization_git)?;
+            directory.sync_mutation_directory()?;
+            self.sync_mutation_directory()?;
+            Ok(())
+        }
+
+        pub(super) fn retire_categories_initialization_marker(
+            &self,
+            marker: &[u8],
+            destination: &str,
+        ) -> Result<(), MutationIoError> {
+            let directory = self.open_private_directory("categories")?;
+            let source = ManagedTarget {
+                directory,
+                name: ".rehow-init".to_owned(),
+            };
+            let retired = self.prepare_trash_target(destination)?;
+            retired.sync_directory()?;
+            if !matches!(retired.state(marker.len())?, ManagedState::Missing) {
+                return Err(MutationIoError::Conflict);
+            }
+            source.move_to(&retired)?;
+            source.sync_directory()?;
+            retired.sync_directory()?;
+            if !matches!(
+                retired.state(marker.len())?,
+                ManagedState::Regular(ref saved)
+                    if saved.bytes == marker && saved.mode == 0o600
+            ) {
+                return Err(MutationIoError::Conflict);
+            }
+            self.sync_mutation_directory()
+        }
+
+        fn sync_mutation_directory(&self) -> Result<(), MutationIoError> {
+            // SAFETY: this is a retained directory descriptor.
+            if unsafe { libc::fsync(self.descriptor.as_raw_fd()) } != 0 {
+                return Err(MutationIoError::Unsupported);
+            }
             Ok(())
         }
 
@@ -8492,7 +8819,8 @@ mod tests {
         let WorkspaceInspection::OrdinaryMarkdown(source) = classification(root.path()) else {
             panic!("expected ordinary Markdown");
         };
-        let preview = source.preview().unwrap();
+        let selection = source.preview().unwrap();
+        let preview = selection.preview();
 
         assert_eq!(preview.included(), 2);
         assert_eq!(preview.normalization_required(), 1);
@@ -8528,7 +8856,8 @@ mod tests {
         let WorkspaceInspection::OrdinaryMarkdown(source) = classification(root.path()) else {
             panic!("expected ordinary Markdown");
         };
-        let preview = source.preview().unwrap();
+        let selection = source.preview().unwrap();
+        let preview = selection.preview();
 
         assert_eq!(preview.included(), 1);
         assert_eq!(preview.entries()[0].display_path(), "a/b/c/d/included.md");
@@ -8571,7 +8900,8 @@ mod tests {
         let WorkspaceInspection::OrdinaryMarkdown(source) = classification(root.path()) else {
             panic!("expected ordinary Markdown");
         };
-        let preview = source.preview().unwrap();
+        let selection = source.preview().unwrap();
+        let preview = selection.preview();
 
         assert_eq!(preview.included(), 1);
         assert_eq!(preview.malformed_or_unsafe(), 6);
@@ -8592,7 +8922,8 @@ mod tests {
         let WorkspaceInspection::OrdinaryMarkdown(source) = classification(root.path()) else {
             panic!("expected ordinary Markdown");
         };
-        let preview = source.preview().unwrap();
+        let selection = source.preview().unwrap();
+        let preview = selection.preview();
 
         assert_eq!(preview.entries()[0].display_path(), "line%0A%25.md");
     }
@@ -8605,7 +8936,8 @@ mod tests {
         let WorkspaceInspection::OrdinaryMarkdown(source) = classification(root.path()) else {
             panic!("expected ordinary Markdown");
         };
-        let preview = source.preview().unwrap();
+        let selection = source.preview().unwrap();
+        let preview = selection.preview();
 
         assert_eq!(preview.included(), 0);
         assert_eq!(preview.malformed_or_unsafe(), 1);
@@ -8627,6 +8959,102 @@ mod tests {
             Ok((b"# Guide\n".to_vec(), false))
         );
         assert!(normalize_import_markdown(b"# Guide\x01\n").is_err());
+    }
+
+    #[test]
+    fn prepares_normalized_import_bodies_and_preserves_source_frontmatter_as_body() {
+        let root = TestDirectory::new();
+        let source = b"\xef\xbb\xbf---\r\ntitle: Source metadata\r\n---\r\n\r\n# Body\r\n";
+        fs::write(root.path().join("source.md"), source).unwrap();
+
+        let WorkspaceInspection::OrdinaryMarkdown(source_capability) = classification(root.path())
+        else {
+            panic!("expected ordinary Markdown");
+        };
+        let selection = source_capability.preview().unwrap();
+        let prepared = selection.prepare().unwrap();
+
+        assert_eq!(prepared.guides().len(), 1);
+        assert_eq!(prepared.guides()[0].display_path(), "source.md");
+        assert_eq!(
+            prepared.guides()[0].body(),
+            b"---\ntitle: Source metadata\n---\n\n# Body\n"
+        );
+        assert_eq!(fs::read(root.path().join("source.md")).unwrap(), source);
+    }
+
+    #[test]
+    fn import_titles_remove_bidi_zero_width_and_noncharacter_spoofing() {
+        assert_eq!(
+            import_title("safe\u{202e}evil\u{200b}name\u{fdd0}.md"),
+            "safe evil name"
+        );
+    }
+
+    #[test]
+    fn refuses_import_prepare_after_source_identity_or_content_changes() {
+        let root = TestDirectory::new();
+        let path = root.path().join("source.md");
+        fs::write(&path, b"# Original\n").unwrap();
+
+        let WorkspaceInspection::OrdinaryMarkdown(source_capability) = classification(root.path())
+        else {
+            panic!("expected ordinary Markdown");
+        };
+        let selection = source_capability.preview().unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"# Original\n").unwrap();
+
+        assert!(matches!(
+            selection.prepare(),
+            Err(WorkspaceInspectError::ChangedDuringRead)
+        ));
+    }
+
+    #[test]
+    fn refuses_the_source_capability_as_its_own_import_destination() {
+        let root = TestDirectory::new();
+        let path = root.path().join("source.md");
+        fs::write(&path, b"# Source\n").unwrap();
+
+        let WorkspaceInspection::OrdinaryMarkdown(source_capability) = classification(root.path())
+        else {
+            panic!("expected ordinary Markdown");
+        };
+        let selection = source_capability.preview().unwrap();
+        fs::remove_file(path).unwrap();
+        let WorkspaceInspection::Empty(destination) = classification(root.path()) else {
+            panic!("expected empty destination");
+        };
+
+        assert!(
+            selection
+                .destination_is_within_source(&destination)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn refuses_an_empty_destination_nested_inside_the_source_collection() {
+        let root = TestDirectory::new();
+        fs::write(root.path().join("source.md"), b"# Source\n").unwrap();
+        let nested = root.path().join("new-workspace");
+        fs::create_dir(&nested).unwrap();
+
+        let WorkspaceInspection::OrdinaryMarkdown(source_capability) = classification(root.path())
+        else {
+            panic!("expected ordinary Markdown");
+        };
+        let selection = source_capability.preview().unwrap();
+        let WorkspaceInspection::Empty(destination) = classification(&nested) else {
+            panic!("expected empty destination");
+        };
+
+        assert!(
+            selection
+                .destination_is_within_source(&destination)
+                .unwrap()
+        );
     }
 
     #[test]

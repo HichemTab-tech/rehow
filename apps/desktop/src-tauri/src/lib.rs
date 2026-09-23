@@ -5,9 +5,10 @@ use rehow_core::{
         AttachmentImportError, AttachmentImportOutcome, AttachmentRemovalError,
         AttachmentRemovalOutcome, CategoryCreateError, CategoryOrderRevision, CategoryRemoveError,
         CategoryReorderError, CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError,
-        GuideEdit, GuideRemoveError, GuideUpdateError, WorkspaceInitializationError,
-        WorkspaceRefreshError, confirm_and_approve_guide_tested, confirm_and_remove_attachment,
-        create_category, create_guide, initialize_workspace,
+        GuideEdit, GuideRemoveError, GuideUpdateError, MarkdownImportError,
+        MarkdownImportPartialFailure, WorkspaceInitializationError, WorkspaceRefreshError,
+        confirm_and_approve_guide_tested, confirm_and_remove_attachment, create_category,
+        create_guide, import_markdown_collection, initialize_workspace,
         refresh_open_workspace as refresh_workspace_view, remove_category, remove_guide,
         reorder_categories, select_and_import_attachment, set_category_archived,
         set_guide_archived, update_category_details, update_guide, update_guide_details,
@@ -35,9 +36,9 @@ use rehow_core::{
     protocol::{AttachmentId, CategoryId, GuideId, PlanToken, Revision},
     search::{SearchHit, SearchStatusScope, search_workspace_in_scope},
     storage::{
-        EmptyWorkspaceTarget, MarkdownCollectionSource, MarkdownImportPreview,
-        WorkspaceFolderFacts, WorkspaceInspection, WorkspaceView, WorkspaceWatchSignal,
-        WorkspaceWatcher, inspect_workspace,
+        EmptyWorkspaceTarget, MarkdownImportPreview, MarkdownImportSelection, WorkspaceFolderFacts,
+        WorkspaceInspection, WorkspaceView, WorkspaceWatchSignal, WorkspaceWatcher,
+        inspect_workspace,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -64,7 +65,7 @@ struct DesktopState {
     ssh_proxy_provenance: rehow_core::git::GitSshProxyProvenance,
     workspace: Mutex<Option<DesktopWorkspace>>,
     pending_empty: Mutex<Option<PendingWorkspace>>,
-    pending_markdown_import: Mutex<Option<MarkdownCollectionSource>>,
+    markdown_import: Mutex<MarkdownImportLifecycle>,
     pending_git_init: Mutex<Option<(PlanToken, GitInitPlan)>>,
     pending_git_remote: Mutex<Option<(PlanToken, GitRemotePlan)>>,
     git_commit: Mutex<GitCommitLifecycle>,
@@ -84,7 +85,7 @@ impl Default for DesktopState {
             ssh_proxy_provenance: capture_git_ssh_proxy_provenance(),
             workspace: Mutex::default(),
             pending_empty: Mutex::default(),
-            pending_markdown_import: Mutex::default(),
+            markdown_import: Mutex::default(),
             pending_git_init: Mutex::default(),
             pending_git_remote: Mutex::default(),
             git_commit: Mutex::default(),
@@ -211,6 +212,37 @@ struct PendingWorkspace {
     facts: WorkspaceFolderFacts,
 }
 
+struct PendingMarkdownImport {
+    selection: MarkdownImportSelection,
+    destination: Option<PendingWorkspace>,
+}
+
+#[derive(Default)]
+struct MarkdownImportLifecycle {
+    pending: Option<PendingMarkdownImport>,
+    active: Option<u64>,
+    next_generation: u64,
+}
+
+fn markdown_import_blocks_workspace_switch(lifecycle: &MarkdownImportLifecycle) -> bool {
+    lifecycle.active.is_some()
+}
+
+fn begin_markdown_import(lifecycle: &mut MarkdownImportLifecycle) -> u64 {
+    lifecycle.next_generation = lifecycle.next_generation.wrapping_add(1).max(1);
+    lifecycle.active = Some(lifecycle.next_generation);
+    lifecycle.next_generation
+}
+
+fn finish_markdown_import(lifecycle: &mut MarkdownImportLifecycle, generation: u64) -> bool {
+    if lifecycle.active == Some(generation) {
+        lifecycle.active = None;
+        true
+    } else {
+        false
+    }
+}
+
 struct PendingValidatedClone {
     selected: PendingWorkspace,
     validation: GitCloneValidation,
@@ -263,8 +295,8 @@ struct MarkdownImportPreviewEntryPayload {
     normalization_required: bool,
 }
 
-impl From<MarkdownImportPreview> for MarkdownImportPreviewPayload {
-    fn from(preview: MarkdownImportPreview) -> Self {
+impl From<&MarkdownImportPreview> for MarkdownImportPreviewPayload {
+    fn from(preview: &MarkdownImportPreview) -> Self {
         Self {
             included: preview.included(),
             normalization_required: preview.normalization_required(),
@@ -283,6 +315,23 @@ impl From<MarkdownImportPreview> for MarkdownImportPreviewPayload {
                 .collect(),
         }
     }
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum MarkdownImportDestinationResult {
+    Cancelled,
+    Selected { facts: FolderFactsPayload },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MarkdownImportApplyPayload {
+    workspace: WorkspacePayload,
+    imported: usize,
+    total: usize,
+    complete: bool,
+    failure: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -4704,6 +4753,233 @@ fn guide_create_message(error: GuideCreateError) -> String {
 }
 
 #[tauri::command]
+fn choose_markdown_import_destination(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<MarkdownImportDestinationResult, NativeCommandError> {
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Choose an Empty Rehow Workspace Destination")
+        .pick_folder()
+    else {
+        return Ok(MarkdownImportDestinationResult::Cancelled);
+    };
+    let (facts, inspection) = inspect_workspace(&path)
+        .map_err(|error| native_command_error("inspectionFailed", error.to_string()))?
+        .into_parts();
+    let WorkspaceInspection::Empty(target) = inspection else {
+        return Err(native_command_error(
+            "destinationNotEmpty",
+            "Choose an empty folder. Rehow will not overwrite or reorganize existing content."
+                .to_owned(),
+        ));
+    };
+    if !facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "Choose a writable empty folder for the new Workspace.".to_owned(),
+        ));
+    }
+    let mut lifecycle = state.markdown_import.lock().map_err(|_| {
+        native_command_error(
+            "selectionUnavailable",
+            "Markdown import selection is unavailable.".to_owned(),
+        )
+    })?;
+    if markdown_import_blocks_workspace_switch(&lifecycle) {
+        return Err(native_command_error(
+            "operationActive",
+            "Wait for the active Markdown import to finish.".to_owned(),
+        ));
+    }
+    let import = lifecycle.pending.as_mut().ok_or_else(|| {
+        native_command_error(
+            "selectionUnavailable",
+            "Choose the Markdown collection again before selecting a destination.".to_owned(),
+        )
+    })?;
+    if import
+        .selection
+        .destination_is_within_source(&target)
+        .map_err(|error| native_command_error("inspectionFailed", error.to_string()))?
+    {
+        return Err(native_command_error(
+            "sameFolder",
+            "Choose a destination outside the source collection.".to_owned(),
+        ));
+    }
+    import.destination = Some(PendingWorkspace { target, facts });
+    Ok(MarkdownImportDestinationResult::Selected {
+        facts: facts.into(),
+    })
+}
+
+#[tauri::command]
+async fn apply_markdown_import(
+    workspace_name: String,
+    category_name: String,
+    app: tauri::AppHandle,
+) -> Result<MarkdownImportApplyPayload, NativeCommandError> {
+    let state = app.state::<DesktopState>();
+    if workspace_name.len() > 1_024 || category_name.len() > 1_024 {
+        return Err(native_command_error(
+            "invalidInput",
+            "Workspace and Category names are too long.".to_owned(),
+        ));
+    }
+    let (state_home, runtime_directory) = native_recovery_locations()
+        .map_err(|message| native_command_error("stateUnavailable", message))?;
+    fs::create_dir_all(&state_home).map_err(|_| {
+        native_command_error(
+            "stateUnavailable",
+            "Rehow could not prepare its private recovery folder.".to_owned(),
+        )
+    })?;
+    let (pending, destination, generation) = {
+        let mut lifecycle = state.markdown_import.lock().map_err(|_| {
+            native_command_error(
+                "selectionUnavailable",
+                "Markdown import selection is unavailable.".to_owned(),
+            )
+        })?;
+        if markdown_import_blocks_workspace_switch(&lifecycle) {
+            return Err(native_command_error(
+                "operationActive",
+                "Wait for the active Markdown import to finish.".to_owned(),
+            ));
+        }
+        let mut pending = lifecycle.pending.take().ok_or_else(|| {
+            native_command_error(
+                "selectionUnavailable",
+                "Choose the Markdown collection again before importing.".to_owned(),
+            )
+        })?;
+        let Some(destination) = pending.destination.take() else {
+            lifecycle.pending = Some(pending);
+            return Err(native_command_error(
+                "destinationUnavailable",
+                "Choose an empty destination folder before importing.".to_owned(),
+            ));
+        };
+        let generation = begin_markdown_import(&mut lifecycle);
+        (pending, destination, generation)
+    };
+    let operation = tauri::async_runtime::spawn_blocking(move || {
+        let result = import_markdown_collection(
+            &pending.selection,
+            &destination.target,
+            &state_home,
+            runtime_directory.as_deref(),
+            &workspace_name,
+            &category_name,
+        );
+        (result, pending, destination)
+    })
+    .await;
+    let operation = match operation {
+        Ok(operation) => operation,
+        Err(_) => {
+            if let Ok(mut lifecycle) = state.markdown_import.lock() {
+                finish_markdown_import(&mut lifecycle, generation);
+            }
+            return Err(native_command_error(
+                "operationUnavailable",
+                "The Markdown import worker stopped. Reopen the destination to inspect its state."
+                    .to_owned(),
+            ));
+        }
+    };
+    let (result, mut pending, destination) = operation;
+    let mut lifecycle = state.markdown_import.lock().map_err(|_| {
+        native_command_error(
+            "selectionUnavailable",
+            "Markdown import selection is unavailable.".to_owned(),
+        )
+    })?;
+    if lifecycle.active != Some(generation) {
+        return Err(native_command_error(
+            "operationSuperseded",
+            "This Markdown import no longer owns the active Workspace session.".to_owned(),
+        ));
+    }
+    let outcome = match result {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            if matches!(
+                error,
+                MarkdownImportError::SourceUnavailable
+                    | MarkdownImportError::SourceChanged
+                    | MarkdownImportError::SameFolder
+                    | MarkdownImportError::NothingToImport
+                    | MarkdownImportError::Initialize(WorkspaceInitializationError::InvalidName)
+                    | MarkdownImportError::Initialize(WorkspaceInitializationError::Busy)
+            ) {
+                pending.destination = Some(destination);
+                lifecycle.pending = Some(pending);
+            }
+            finish_markdown_import(&mut lifecycle, generation);
+            return Err(markdown_import_error(error));
+        }
+    };
+    let imported = outcome.imported();
+    let total = outcome.total();
+    let complete = outcome.complete();
+    let failure = outcome.failure().map(|failure| match failure {
+        MarkdownImportPartialFailure::Category(error) => category_create_message(error),
+        MarkdownImportPartialFailure::Guide(error) => guide_create_message(error),
+    });
+    let workspace = DesktopWorkspace::new(
+        outcome.into_workspace(),
+        destination.facts,
+        state.next_watch_session(),
+        &app,
+    );
+    let payload = workspace.payload();
+    let mut workspace_guard = match state.workspace.lock() {
+        Ok(workspace) => workspace,
+        Err(_) => {
+            finish_markdown_import(&mut lifecycle, generation);
+            return Err(native_command_error(
+                "sessionUnavailable",
+                "Workspace session is unavailable.".to_owned(),
+            ));
+        }
+    };
+    *workspace_guard = Some(workspace);
+    finish_markdown_import(&mut lifecycle, generation);
+    Ok(MarkdownImportApplyPayload {
+        workspace: payload,
+        imported,
+        total,
+        complete,
+        failure,
+    })
+}
+
+fn markdown_import_error(error: MarkdownImportError) -> NativeCommandError {
+    match error {
+        MarkdownImportError::SourceUnavailable => native_command_error(
+            "sourceUnavailable",
+            "The Markdown collection can no longer be read safely. Choose it again.".to_owned(),
+        ),
+        MarkdownImportError::SourceChanged => native_command_error(
+            "sourceChanged",
+            "The Markdown collection changed. Review it again before importing.".to_owned(),
+        ),
+        MarkdownImportError::SameFolder => native_command_error(
+            "sameFolder",
+            "Choose a destination outside the source collection.".to_owned(),
+        ),
+        MarkdownImportError::NothingToImport => native_command_error(
+            "nothingToImport",
+            "No safe Markdown files remain to import.".to_owned(),
+        ),
+        MarkdownImportError::Initialize(error) => native_command_error(
+            workspace_initialization_code(error),
+            workspace_initialization_message(error),
+        ),
+    }
+}
+
+#[tauri::command]
 fn cancel_selected_workspace_initialization(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
@@ -4725,14 +5001,18 @@ fn cancel_selected_workspace_initialization(
         lifecycle.revoke_on_completion = true;
         return Ok(());
     }
+    let mut import = state
+        .markdown_import
+        .lock()
+        .map_err(|_| "Markdown import selection is unavailable".to_owned())?;
+    if markdown_import_blocks_workspace_switch(&import) {
+        return Err("Wait for the active Markdown import to finish.".to_owned());
+    }
     *state
         .pending_empty
         .lock()
         .map_err(|_| "Workspace selection is unavailable".to_owned())? = None;
-    *state
-        .pending_markdown_import
-        .lock()
-        .map_err(|_| "Markdown import selection is unavailable".to_owned())? = None;
+    import.pending = None;
     Ok(())
 }
 
@@ -4777,14 +5057,20 @@ fn choose_workspace(
     }
     lifecycle.pending = None;
     lifecycle.validated = None;
+    let mut import = state
+        .markdown_import
+        .lock()
+        .map_err(|_| "Markdown import selection is unavailable".to_owned())?;
+    if markdown_import_blocks_workspace_switch(&import) {
+        return Err(
+            "Wait for the active Markdown import before choosing another Workspace.".to_owned(),
+        );
+    }
     *state
         .pending_empty
         .lock()
         .map_err(|_| "Workspace selection is unavailable".to_owned())? = None;
-    *state
-        .pending_markdown_import
-        .lock()
-        .map_err(|_| "Markdown import selection is unavailable".to_owned())? = None;
+    import.pending = None;
     match inspection {
         WorkspaceInspection::Empty(target) => {
             *state
@@ -4815,19 +5101,17 @@ fn choose_workspace(
             Ok(OpenWorkspaceResult::NewerUnsupported { version, facts })
         }
         WorkspaceInspection::OrdinaryMarkdown(source) => {
-            let preview = source.preview().map_err(|error| error.to_string())?;
+            let selection = source.preview().map_err(|error| error.to_string())?;
+            let preview = selection.preview().into();
             *state
                 .workspace
                 .lock()
                 .map_err(|_| "Workspace session is unavailable".to_owned())? = None;
-            *state
-                .pending_markdown_import
-                .lock()
-                .map_err(|_| "Markdown import selection is unavailable".to_owned())? = Some(source);
-            Ok(OpenWorkspaceResult::OrdinaryMarkdown {
-                facts,
-                preview: preview.into(),
-            })
+            import.pending = Some(PendingMarkdownImport {
+                selection,
+                destination: None,
+            });
+            Ok(OpenWorkspaceResult::OrdinaryMarkdown { facts, preview })
         }
         WorkspaceInspection::UnrelatedNonempty => {
             Ok(OpenWorkspaceResult::UnrelatedNonempty { facts })
@@ -4853,6 +5137,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             approve_open_guide_tested,
             cancel_selected_workspace_initialization,
+            choose_markdown_import_destination,
+            apply_markdown_import,
             choose_workspace,
             create_open_category,
             create_open_guide,
@@ -4903,15 +5189,17 @@ mod tests {
         GitInitResultPayload, GitPushResultPayload, GitRemotePlanPayload, GitRemoteResultPayload,
         GitSyncApplyResultPayload, GitSyncCancelError, GitSyncCancelResultPayload,
         GitSyncInspectionPayload, GitSyncLifecycle, GitSyncRecoveryResultPayload, GuideBodyPayload,
-        GuidePayload, MarkdownImportPreviewEntryPayload, MarkdownImportPreviewPayload,
+        GuidePayload, MarkdownImportApplyPayload, MarkdownImportDestinationResult,
+        MarkdownImportLifecycle, MarkdownImportPreviewEntryPayload, MarkdownImportPreviewPayload,
         PendingGitPlanError, SearchHighlightPayload, SearchHitPayload, WorkspacePayload,
         WorkspaceWatchEventPayload, attachment_removal_code, attachment_removal_message,
-        category_create_code, category_create_message, category_remove_code,
+        begin_markdown_import, category_create_code, category_create_message, category_remove_code,
         category_remove_message, category_reorder_code, category_reorder_message,
-        category_update_code, category_update_message, empty_git_payload, git_clone_apply_code,
-        git_clone_apply_message, git_clone_code, git_clone_completion_confirmation,
-        git_clone_confirmation_fields, git_clone_materialize_code, git_clone_materialize_message,
-        git_clone_message, git_commit_code, git_commit_confirmation_fields, git_commit_message,
+        category_update_code, category_update_message, empty_git_payload, finish_markdown_import,
+        git_clone_apply_code, git_clone_apply_message, git_clone_code,
+        git_clone_completion_confirmation, git_clone_confirmation_fields,
+        git_clone_materialize_code, git_clone_materialize_message, git_clone_message,
+        git_commit_code, git_commit_confirmation_fields, git_commit_message,
         git_commit_message_input_allowed, git_commit_recovery_confirmation, git_init_code,
         git_init_confirmation, git_init_message, git_push_ancestry_allowed,
         git_push_confirmation_fields, git_remote_code, git_remote_confirmation_fields,
@@ -4919,15 +5207,16 @@ mod tests {
         git_sync_blocks_workspace_switch, git_sync_code, git_sync_confirmation_fields,
         git_sync_message, git_sync_recovery_confirmation, guide_create_code, guide_create_message,
         guide_remove_code, guide_remove_confirmation, guide_remove_message, guide_update_code,
-        guide_update_message, native_command_error, request_git_clone_cancellation,
-        request_git_sync_cancellation, search_status_scope, take_matching_git_plan,
-        workspace_initialization_message, workspace_refresh_code, workspace_refresh_message,
+        guide_update_message, markdown_import_blocks_workspace_switch, markdown_import_error,
+        native_command_error, request_git_clone_cancellation, request_git_sync_cancellation,
+        search_status_scope, take_matching_git_plan, workspace_initialization_message,
+        workspace_refresh_code, workspace_refresh_message,
     };
     use rehow_core::{
         application::{
             AttachmentRemovalError, CategoryCreateError, CategoryRemoveError, CategoryReorderError,
             CategoryUpdateError, GuideCreateError, GuideRemoveError, GuideUpdateError,
-            WorkspaceInitializationError, WorkspaceRefreshError,
+            MarkdownImportError, WorkspaceInitializationError, WorkspaceRefreshError,
         },
         git::{
             GitCloneApplyError, GitCloneError, GitCloneMaterializeError, GitCloneValidation,
@@ -4973,6 +5262,70 @@ mod tests {
         assert!(value.get("sourcePath").is_none());
         assert!(value.get("destinationPath").is_none());
         assert!(!value.to_string().contains("/home/"));
+    }
+
+    #[test]
+    fn markdown_import_destination_and_apply_payloads_are_closed_and_pathless() {
+        let facts = FolderFactsPayload {
+            writable: true,
+            existing_git_repository: false,
+            nested_git_repository: false,
+            git_probe_complete: true,
+            unsafe_git_marker: false,
+        };
+        let selected =
+            serde_json::to_value(MarkdownImportDestinationResult::Selected { facts }).unwrap();
+        assert_eq!(selected.as_object().unwrap().len(), 2);
+        assert_eq!(selected["kind"], "selected");
+        assert!(selected.get("path").is_none());
+
+        let workspace = WorkspacePayload {
+            id: "workspace-id".to_owned(),
+            name: "Imported Guides".to_owned(),
+            categories: Vec::new(),
+            guides: Vec::new(),
+            issue_count: 0,
+            facts: FolderFactsPayload {
+                writable: true,
+                existing_git_repository: false,
+                nested_git_repository: false,
+                git_probe_complete: true,
+                unsafe_git_marker: false,
+            },
+            watch_status: "active",
+            watch_session: "1".to_owned(),
+        };
+        let applied = serde_json::to_value(MarkdownImportApplyPayload {
+            workspace,
+            imported: 2,
+            total: 2,
+            complete: true,
+            failure: None,
+        })
+        .unwrap();
+        assert_eq!(applied.as_object().unwrap().len(), 5);
+        assert!(applied.get("sourcePath").is_none());
+        assert!(applied.get("destinationPath").is_none());
+        assert!(!applied.to_string().contains("/home/"));
+        assert_eq!(
+            markdown_import_error(MarkdownImportError::SourceChanged).code,
+            "sourceChanged"
+        );
+    }
+
+    #[test]
+    fn active_markdown_import_blocks_workspace_transitions() {
+        let mut lifecycle = MarkdownImportLifecycle::default();
+        assert!(!markdown_import_blocks_workspace_switch(&lifecycle));
+        let first = begin_markdown_import(&mut lifecycle);
+        assert!(markdown_import_blocks_workspace_switch(&lifecycle));
+        assert!(finish_markdown_import(&mut lifecycle, first));
+        assert!(!markdown_import_blocks_workspace_switch(&lifecycle));
+
+        let current = begin_markdown_import(&mut lifecycle);
+        assert!(!finish_markdown_import(&mut lifecycle, first));
+        assert_eq!(lifecycle.active, Some(current));
+        assert!(markdown_import_blocks_workspace_switch(&lifecycle));
     }
 
     #[test]

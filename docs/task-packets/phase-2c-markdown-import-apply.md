@@ -1,0 +1,17 @@
+# Task Packet: Ordinary Markdown copy import apply
+
+- **Objective:** Complete copy import by selecting a distinct empty destination and creating one new Workspace, one new Category, and draft Guides from the accepted preview while leaving the source unchanged.
+- **Required reasoning level:** high; implement directly with one final security review.
+- **Prerequisites:** ADR 0050; signed preview checkpoint `3e33e89`; existing Workspace/Category/Guide recovery primitives.
+- **Allowed files or subsystem:** core storage/application, desktop Tauri adapter, onboarding React/CSS and existing tests, ADR/evidence/progress documentation.
+- **Relevant specifications and ADRs:** ADR 0050; content model import section; threat model confinement/concurrency controls.
+- **Exact required behavior:** preview consumes and retains a source snapshot; destination selection accepts only a writable empty descriptor capability outside the source hierarchy; apply re-enumerates and exactly revalidates accepted source identity/content before any destination write, retains all normalized bodies within the 50 MiB cap, then initializes the Workspace, creates the named Category, and creates one draft Guide per source in deterministic order. Source frontmatter remains inert body text. Core owns IDs, timestamps, paths, and status. The renderer supplies only Workspace/Category names.
+- **Important states and edge cases:** picker cancellation; zero accepted files; same source/destination; destination changed after selection; source add/remove/replace/change; invalid names; duplicate derived titles; partial failure after Category/Guide commits; initialization `CommittedRefreshRequired`; cancellation before apply; reopened valid post-initialization partial Workspace.
+- **Security constraints:** no renderer paths/bytes/IDs/status/timestamps; no source writes; descriptor-relative no-follow reads; exact device/inode/mode/size/time plus source/normalized digest revalidation; bounded memory/work; atomic recovery-backed destination writes; no Git or shell behavior.
+- **Tests to add or update:** exact source drift and path replacement; same-folder/destination refusal; normalized body/frontmatter preservation; draft-only output; deterministic titles/order; valid-prefix failure behavior; closed/pathless native payloads; UI guards, cancellation, errors, and successful install.
+- **Commands to run:** focused Rust/Vitest tests, `pnpm check`, strict relevant Clippy, formatting, Bootstrap, whitespace; full gates only if the implementation crosses an existing broad boundary.
+- **Required reviews and artifacts:** one combined Security Reviewer after implementation; concise evidence and progress update.
+- **Explicit non-goals:** in-place adoption, migration, existing destination Workspace, Category mapping across multiple Categories, Git, Attachments, MCP, background import, rollback that deletes a partial Workspace.
+- **Definition of done:** a user can preview a collection, choose an empty destination, name the Workspace/Category, import draft Guides, see exact completion/partial status, and verify unchanged source bytes; initialization scaffold interruption/race tests, focused gates, and security review pass.
+- **Expected commit boundary:** implementation/evidence, then progress ledger.
+- **Conditions requiring escalation:** need for arbitrary path IPC, source mutation, destructive cleanup, silent overwrite, unbounded memory, or architecture outside ADR 0050.

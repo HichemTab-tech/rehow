@@ -873,12 +873,14 @@ kbd {
 }
 .markdown-import-file-row {
   display: flex;
+  content-visibility: auto;
   justify-content: space-between;
   gap: 12px;
   padding: 6px 2px;
   border-bottom: 1px solid var(--divider);
   font-family: var(--font-mono);
   font-size: 12px;
+  contain-intrinsic-size: auto 30px;
 }
 .markdown-import-file-row:last-child {
   border-bottom: 0;
@@ -894,6 +896,12 @@ kbd {
 }
 .markdown-import-preview > p {
   margin: 7px 0 0;
+}
+.markdown-import-apply {
+  width: 100%;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--divider);
 }
 @media (max-width: 42rem) {
   .markdown-import-summary {

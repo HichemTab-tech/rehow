@@ -20,11 +20,28 @@ mod workspace;
 #[cfg(test)]
 pub(crate) use workspace::set_attachment_before_move_hook;
 #[cfg(test)]
-pub(crate) use workspace::{WorkspaceFault, set_workspace_fault};
+pub(crate) use workspace::{WorkspaceFault, set_before_directory_create_hook, set_workspace_fault};
 
 #[cfg(test)]
 thread_local! {
     static GIT_SYNC_FAIL_AFTER_DIRECTORY_PREPARATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static BEFORE_INITIALIZATION_MARKER_CLEANUP_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_before_initialization_marker_cleanup_hook(hook: impl FnOnce() + 'static) {
+    BEFORE_INITIALIZATION_MARKER_CLEANUP_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+fn run_before_initialization_marker_cleanup_hook() {
+    BEFORE_INITIALIZATION_MARKER_CLEANUP_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
 }
 
 #[cfg(test)]
@@ -1921,6 +1938,7 @@ pub(super) fn execute_workspace_initialize(
     let (root_device, root_inode) = root.identity().map_err(map_io_initialize)?;
     let mut plan = blake3::Hasher::new();
     plan.update(b"rehow-workspace-initialize-plan-v1\0");
+    hash_plan_field(&mut plan, b"categories:directory:0700");
     hash_plan_field(&mut plan, manifest);
     let journal = Journal {
         generation: 1,
@@ -1932,33 +1950,42 @@ pub(super) fn execute_workspace_initialize(
         root_inode,
         created_at,
         plan_hash: *plan.finalize().as_bytes(),
-        targets: vec![Target {
-            relative_path: "rehow.yaml".to_owned(),
-            expected: ExpectedState::Absent,
-            intended: IntendedState::Object {
-                object_hash: manifest_hash,
-                mode: 0o600,
+        targets: vec![
+            Target {
+                relative_path: "categories".to_owned(),
+                expected: ExpectedState::Absent,
+                intended: IntendedState::Directory { mode: 0o700 },
+                temp_name: format!(".rehow-tmp-{operation_id}-categories"),
+                step: TargetStep::Prepared,
             },
-            temp_name: format!(".rehow-tmp-{operation_id}"),
-            step: TargetStep::Prepared,
-        }],
+            Target {
+                relative_path: "rehow.yaml".to_owned(),
+                expected: ExpectedState::Absent,
+                intended: IntendedState::Object {
+                    object_hash: manifest_hash,
+                    mode: 0o600,
+                },
+                temp_name: format!(".rehow-tmp-{operation_id}"),
+                step: TargetStep::Prepared,
+            },
+        ],
         stage: JournalStage::Prepared,
         completion: false,
     };
     let execution = workspace::execute_new_journal(root, &store, &lock, journal.clone());
     if let Err(error) = execution {
-        let committed = store
-            .read_journal(&lock, operation_id)
-            .is_ok_and(|persisted| {
-                committed_matches(&persisted, &journal)
-                    && workspace::resume_journal(root, &store, &lock, operation_id).is_ok()
-            });
+        let committed = workspace::resume_journal(root, &store, &lock, operation_id)
+            .is_ok_and(|resumed| committed_matches(&resumed, &journal));
         if !committed {
             return Err(map_workspace_initialize(error));
         }
     }
     let revision = super::document_revision("rehow.yaml", manifest);
-    root.create_categories_directory()
+    let marker = workspace::initialization_marker(operation_id);
+    #[cfg(test)]
+    run_before_initialization_marker_cleanup_hook();
+    let retired_marker = format!(".rehow/trash/{operation_id}/rehow.yaml");
+    root.retire_categories_initialization_marker(&marker, &retired_marker)
         .map_err(|_| WorkspaceInitializeError::Committed { revision })?;
     Ok(WorkspaceInitializeOutcome { revision })
 }
@@ -3915,6 +3942,9 @@ pub(crate) enum ExpectedState {
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) enum IntendedState {
     Absent,
+    Directory {
+        mode: u32,
+    },
     Object {
         object_hash: ContentHash,
         mode: u32,
@@ -4732,7 +4762,10 @@ impl Target {
     }
 
     fn validate(&self, operation: OperationKind) -> Result<(), JournalCodecError> {
-        if !valid_active_path(&self.relative_path) || !valid_temp(&self.temp_name) {
+        let valid_path = valid_active_path(&self.relative_path)
+            || (self.relative_path == "categories"
+                && matches!(self.intended, IntendedState::Directory { .. }));
+        if !valid_path || !valid_temp(&self.temp_name) {
             return Err(JournalCodecError::Invalid);
         }
         self.expected.validate()?;
@@ -4761,7 +4794,10 @@ impl Target {
         let valid_operation = match operation {
             OperationKind::Create => {
                 matches!(self.expected, ExpectedState::Absent)
-                    && matches!(self.intended, IntendedState::Object { .. })
+                    && matches!(
+                        self.intended,
+                        IntendedState::Directory { .. } | IntendedState::Object { .. }
+                    )
             }
             OperationKind::Update => {
                 matches!(self.expected, ExpectedState::Existing { .. })
@@ -4862,6 +4898,13 @@ impl IntendedState {
                 writer.key(2)?;
                 writer.uint(u64::from(*mode))
             }
+            Self::Directory { mode } => {
+                writer.map(2)?;
+                writer.key(0)?;
+                writer.uint(3)?;
+                writer.key(1)?;
+                writer.uint(u64::from(*mode))
+            }
             Self::Trash {
                 object_hash,
                 mode,
@@ -4900,6 +4943,11 @@ impl IntendedState {
                 let mode = reader.mode()?;
                 Ok(Self::Object { object_hash, mode })
             }
+            (2, 3) => {
+                reader.key(1)?;
+                let mode = reader.mode()?;
+                Ok(Self::Directory { mode })
+            }
             (4 | 6, 2) => {
                 reader.key(1)?;
                 let object_hash = reader.hash()?;
@@ -4930,11 +4978,14 @@ impl IntendedState {
     fn validate(&self) -> Result<(), JournalCodecError> {
         match self {
             Self::Absent => Ok(()),
+            Self::Directory { mode } if *mode == 0o700 => Ok(()),
             Self::Object { mode, .. } if valid_mode(*mode) => Ok(()),
             Self::Trash {
                 mode, destination, ..
             } if valid_mode(*mode) && valid_trash_path(destination) => Ok(()),
-            Self::Object { .. } | Self::Trash { .. } => Err(JournalCodecError::Invalid),
+            Self::Directory { .. } | Self::Object { .. } | Self::Trash { .. } => {
+                Err(JournalCodecError::Invalid)
+            }
         }
     }
 }
@@ -5768,6 +5819,23 @@ mod tests {
         invalid.stage = JournalStage::Committed;
         invalid.completion = true;
         assert_eq!(invalid.encode(), Err(JournalCodecError::Invalid));
+    }
+
+    #[test]
+    fn initialization_directory_intent_round_trips_and_is_narrow() {
+        let mut journal = sample();
+        journal.operation_kind = OperationKind::Create;
+        journal.targets[0].relative_path = "categories".to_owned();
+        journal.targets[0].expected = ExpectedState::Absent;
+        journal.targets[0].intended = IntendedState::Directory { mode: 0o700 };
+        let encoded = journal.encode().unwrap();
+        assert!(Journal::decode(&encoded).unwrap() == journal);
+
+        journal.targets[0].intended = IntendedState::Directory { mode: 0o755 };
+        assert_eq!(journal.encode(), Err(JournalCodecError::Invalid));
+        journal.targets[0].intended = IntendedState::Directory { mode: 0o700 };
+        journal.targets[0].relative_path = "attachments".to_owned();
+        assert_eq!(journal.encode(), Err(JournalCodecError::Invalid));
     }
 
     #[test]

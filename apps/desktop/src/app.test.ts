@@ -35,6 +35,7 @@ import {
   isGitSyncCancelResultPayload,
   isGitSyncInspectionPayload,
   isGitSyncRecoveryResultPayload,
+  isMarkdownImportApplyPayload,
   isMarkdownImportPreviewPayload,
   isSearchHitPayload,
   isWorkspaceWatchEvent,
@@ -136,6 +137,54 @@ describe("application identity", () => {
       isMarkdownImportPreviewPayload({
         ...preview,
         entries: [{ ...preview.entries[0], size: "2093057" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts only closed Markdown import apply results", () => {
+    const workspace = {
+      id: "workspace-id",
+      name: "Imported Guides",
+      categories: [],
+      guides: [],
+      issueCount: 0,
+      facts: {
+        writable: true,
+        existingGitRepository: false,
+        nestedGitRepository: false,
+        gitProbeComplete: true,
+        unsafeGitMarker: false,
+      },
+      watchStatus: "active",
+      watchSession: "1",
+    };
+    const completed = {
+      workspace,
+      imported: 2,
+      total: 2,
+      complete: true,
+      failure: null,
+    };
+
+    expect(isMarkdownImportApplyPayload(completed)).toBe(true);
+    expect(
+      isMarkdownImportApplyPayload({
+        ...completed,
+        imported: 1,
+        complete: false,
+        failure: "A later Guide could not be written.",
+      }),
+    ).toBe(true);
+    expect(
+      isMarkdownImportApplyPayload({ ...completed, sourcePath: "/tmp/source" }),
+    ).toBe(false);
+    expect(
+      isMarkdownImportApplyPayload({ ...completed, complete: false }),
+    ).toBe(false);
+    expect(
+      isMarkdownImportApplyPayload({
+        ...completed,
+        imported: 3,
       }),
     ).toBe(false);
   });
