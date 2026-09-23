@@ -46,8 +46,11 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::{
     collections::HashSet,
     fs::{File, OpenOptions},
-    io::{Read, Seek, SeekFrom},
-    os::unix::{fs::MetadataExt, fs::OpenOptionsExt},
+    io::{Read, Seek, SeekFrom, Write},
+    os::{
+        fd::{AsRawFd, FromRawFd, OwnedFd},
+        unix::{ffi::OsStrExt, fs::MetadataExt, fs::OpenOptionsExt},
+    },
     path::Path,
 };
 use unicode_normalization::UnicodeNormalization;
@@ -1954,7 +1957,8 @@ fn sanitized_attachment_filename(path: &Path) -> String {
         let scalar = character as u32;
         let unsafe_scalar = character.is_control()
             || matches!(character, '/' | '\\' | '\0')
-            || matches!(scalar, 0x061c | 0x200e | 0x200f | 0x2028..=0x202e | 0x2066..=0x2069 | 0xfeff)
+            || is_unicode_16_invisible_or_format(character)
+            || matches!(scalar, 0x2028..=0x2029)
             || matches!(scalar, 0xfdd0..=0xfdef)
             || matches!(scalar & 0xffff, 0xfffe | 0xffff);
         let replacement = if unsafe_scalar { '-' } else { character };
@@ -2214,6 +2218,7 @@ pub struct ManagedAttachmentCandidate {
 }
 
 const ATTACHMENT_TEXT_PREVIEW_LIMIT: usize = 1024 * 1024;
+const ATTACHMENT_EXPORT_LIMIT: usize = 64 * 1024 * 1024;
 const GUIDE_SOURCE_PREVIEW_LIMIT: usize = 2 * 1024 * 1024;
 
 #[derive(Eq, PartialEq)]
@@ -2263,6 +2268,27 @@ pub enum AttachmentTextPreviewError {
     UnsafeStorage,
     ResourceLimit,
     Io,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachmentExportOutcome {
+    Cancelled,
+    Exported { size_bytes: u64 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachmentExportError {
+    GuideNotFound,
+    AttachmentNotFound,
+    RevisionConflict,
+    AttachmentChanged,
+    DestinationExists,
+    UnsafeDestination,
+    UnsafeStorage,
+    UnsupportedFilesystem,
+    ResourceLimit,
+    Io,
+    ExportedDurabilityUnknown,
 }
 
 #[cfg(test)]
@@ -2341,6 +2367,293 @@ pub fn preview_attachment_text(
         size_bytes: bytes.len() as u64,
         sanitized: text_sanitized || title_sanitized,
     })
+}
+
+pub fn select_and_export_attachment<W: HasWindowHandle + HasDisplayHandle + ?Sized>(
+    parent: &W,
+    workspace: &WorkspaceView,
+    guide_id: GuideId,
+    attachment_id: AttachmentId,
+    expected_revision: Revision,
+) -> Result<AttachmentExportOutcome, AttachmentExportError> {
+    let loaded = find_export_attachment(workspace, guide_id, attachment_id, expected_revision)?;
+    let suggested_name = sanitized_attachment_filename(Path::new(loaded.1.path()));
+    let Some(destination) = rfd::FileDialog::new()
+        .set_parent(parent)
+        .set_title("Export Attachment")
+        .set_file_name(suggested_name)
+        .save_file()
+    else {
+        return Ok(AttachmentExportOutcome::Cancelled);
+    };
+    export_attachment_to_path(
+        workspace,
+        guide_id,
+        attachment_id,
+        expected_revision,
+        &destination,
+    )
+}
+
+fn export_attachment_to_path(
+    workspace: &WorkspaceView,
+    guide_id: GuideId,
+    attachment_id: AttachmentId,
+    expected_revision: Revision,
+    destination: &Path,
+) -> Result<AttachmentExportOutcome, AttachmentExportError> {
+    let (loaded, attachment) =
+        find_export_attachment(workspace, guide_id, attachment_id, expected_revision)?;
+    verify_export_guide_revision(workspace, loaded.relative_path(), expected_revision)?;
+    let bytes = read_managed_regular(workspace, attachment.path(), ATTACHMENT_EXPORT_LIMIT, None)
+        .map_err(map_attachment_export_read_error)?;
+    if attachment
+        .size_bytes()
+        .is_some_and(|expected| expected != bytes.len() as u64)
+    {
+        return Err(AttachmentExportError::AttachmentChanged);
+    }
+    use sha2::Digest;
+    let expected_digest =
+        decode_sha256(attachment.sha256()).ok_or(AttachmentExportError::UnsafeStorage)?;
+    if sha2::Sha256::digest(&bytes).as_slice() != expected_digest {
+        return Err(AttachmentExportError::AttachmentChanged);
+    }
+    let (directory, leaf) = open_export_destination(destination)?;
+    if export_leaf_exists(&directory, &leaf)? {
+        return Err(AttachmentExportError::DestinationExists);
+    }
+    let mut output = create_unnamed_export(&directory)?;
+    output
+        .write_all(&bytes)
+        .map_err(|_| AttachmentExportError::Io)?;
+    output
+        .sync_all()
+        .map_err(|_| AttachmentExportError::UnsupportedFilesystem)?;
+    run_attachment_preview_after_read_hook();
+    verify_export_guide_revision(workspace, loaded.relative_path(), expected_revision)?;
+    publish_export(&directory, &leaf, &output)?;
+    // The name is already published and must never be removed on an ambiguous
+    // durability failure; report that exact state instead.
+    if unsafe { libc::fsync(directory.as_raw_fd()) } != 0 {
+        return Err(AttachmentExportError::ExportedDurabilityUnknown);
+    }
+    Ok(AttachmentExportOutcome::Exported {
+        size_bytes: bytes.len() as u64,
+    })
+}
+
+fn find_export_attachment(
+    workspace: &WorkspaceView,
+    guide_id: GuideId,
+    attachment_id: AttachmentId,
+    expected_revision: Revision,
+) -> Result<
+    (
+        &crate::storage::LoadedGuide,
+        &crate::domain::content::guide::Attachment,
+    ),
+    AttachmentExportError,
+> {
+    let loaded = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides())
+        .find(|guide| guide.guide().id() == &guide_id)
+        .ok_or(AttachmentExportError::GuideNotFound)?;
+    if loaded.revision() != expected_revision {
+        return Err(AttachmentExportError::RevisionConflict);
+    }
+    let attachment = loaded
+        .guide()
+        .attachments()
+        .unwrap_or_default()
+        .iter()
+        .find(|attachment| attachment.id() == &attachment_id)
+        .ok_or(AttachmentExportError::AttachmentNotFound)?;
+    if !attachment
+        .path()
+        .starts_with(&format!("attachments/{guide_id}/"))
+    {
+        return Err(AttachmentExportError::UnsafeStorage);
+    }
+    Ok((loaded, attachment))
+}
+
+fn verify_export_guide_revision(
+    workspace: &WorkspaceView,
+    relative_path: &str,
+    expected_revision: Revision,
+) -> Result<(), AttachmentExportError> {
+    read_managed_regular(
+        workspace,
+        relative_path,
+        GUIDE_SOURCE_PREVIEW_LIMIT,
+        Some(expected_revision),
+    )
+    .map(|_| ())
+    .map_err(|error| match error {
+        WorkspaceInspectError::ResourceLimit => AttachmentExportError::ResourceLimit,
+        WorkspaceInspectError::UnsafeRoot => AttachmentExportError::UnsafeStorage,
+        WorkspaceInspectError::ChangedDuringRead
+        | WorkspaceInspectError::NotFound
+        | WorkspaceInspectError::NotDirectory => AttachmentExportError::RevisionConflict,
+        WorkspaceInspectError::PermissionDenied | WorkspaceInspectError::Io => {
+            AttachmentExportError::Io
+        }
+    })
+}
+
+fn map_attachment_export_read_error(error: WorkspaceInspectError) -> AttachmentExportError {
+    match error {
+        WorkspaceInspectError::ResourceLimit => AttachmentExportError::ResourceLimit,
+        WorkspaceInspectError::UnsafeRoot => AttachmentExportError::UnsafeStorage,
+        WorkspaceInspectError::ChangedDuringRead
+        | WorkspaceInspectError::NotFound
+        | WorkspaceInspectError::NotDirectory => AttachmentExportError::AttachmentChanged,
+        WorkspaceInspectError::PermissionDenied | WorkspaceInspectError::Io => {
+            AttachmentExportError::Io
+        }
+    }
+}
+
+fn open_export_destination(
+    destination: &Path,
+) -> Result<(OwnedFd, std::ffi::CString), AttachmentExportError> {
+    if !destination.is_absolute() {
+        return Err(AttachmentExportError::UnsafeDestination);
+    }
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or(AttachmentExportError::UnsafeDestination)?;
+    let leaf = destination
+        .file_name()
+        .filter(|leaf| *leaf != "." && *leaf != ".." && !leaf.is_empty())
+        .ok_or(AttachmentExportError::UnsafeDestination)?;
+    let parent = std::ffi::CString::new(parent.as_os_str().as_bytes())
+        .map_err(|_| AttachmentExportError::UnsafeDestination)?;
+    let leaf = std::ffi::CString::new(leaf.as_bytes())
+        .map_err(|_| AttachmentExportError::UnsafeDestination)?;
+    // SAFETY: an all-zero open_how is a valid baseline; all defined fields
+    // used by this kernel ABI are assigned immediately below.
+    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+    how.flags = (libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) as u64;
+    how.resolve = libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_MAGICLINKS;
+    // SAFETY: parent is NUL-terminated and `how` has the kernel ABI layout.
+    let raw = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            parent.as_ptr(),
+            &how,
+            size_of::<libc::open_how>(),
+        )
+    } as i32;
+    if raw < 0 {
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ENOSYS | libc::EINVAL) => Err(AttachmentExportError::UnsupportedFilesystem),
+            Some(libc::ELOOP | libc::ENOTDIR) => Err(AttachmentExportError::UnsafeDestination),
+            _ => Err(AttachmentExportError::Io),
+        };
+    }
+    // SAFETY: successful openat2 returned a newly owned descriptor.
+    Ok((unsafe { OwnedFd::from_raw_fd(raw) }, leaf))
+}
+
+fn export_leaf_exists(
+    directory: &OwnedFd,
+    leaf: &std::ffi::CStr,
+) -> Result<bool, AttachmentExportError> {
+    let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: directory, leaf, and output storage are valid.
+    if unsafe {
+        libc::fstatat(
+            directory.as_raw_fd(),
+            leaf.as_ptr(),
+            status.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } == 0
+    {
+        return Ok(true);
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::ENOENT) => Ok(false),
+        _ => Err(AttachmentExportError::Io),
+    }
+}
+
+fn create_unnamed_export(directory: &OwnedFd) -> Result<File, AttachmentExportError> {
+    // SAFETY: retained directory and static dot component are valid.
+    let raw = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            c".".as_ptr(),
+            libc::O_WRONLY | libc::O_TMPFILE | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            0o600,
+        )
+    };
+    if raw < 0 {
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EOPNOTSUPP | libc::EINVAL | libc::EISDIR) => {
+                Err(AttachmentExportError::UnsupportedFilesystem)
+            }
+            _ => Err(AttachmentExportError::Io),
+        };
+    }
+    // SAFETY: successful openat returned a newly owned descriptor.
+    let file = unsafe { File::from_raw_fd(raw) };
+    if unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } != 0 {
+        return Err(AttachmentExportError::Io);
+    }
+    Ok(file)
+}
+
+fn publish_export(
+    directory: &OwnedFd,
+    leaf: &std::ffi::CStr,
+    output: &File,
+) -> Result<(), AttachmentExportError> {
+    // SAFETY: output is an unnamed inode and the target leaf is retained.
+    let mut result = unsafe {
+        libc::linkat(
+            output.as_raw_fd(),
+            c"".as_ptr(),
+            directory.as_raw_fd(),
+            leaf.as_ptr(),
+            libc::AT_EMPTY_PATH,
+        )
+    };
+    if result != 0
+        && matches!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EPERM | libc::EINVAL | libc::ENOENT)
+        )
+    {
+        let source = std::ffi::CString::new(format!("/proc/self/fd/{}", output.as_raw_fd()))
+            .map_err(|_| AttachmentExportError::Io)?;
+        // SAFETY: source names the still-open inode and target is retained.
+        result = unsafe {
+            libc::linkat(
+                libc::AT_FDCWD,
+                source.as_ptr(),
+                directory.as_raw_fd(),
+                leaf.as_ptr(),
+                libc::AT_SYMLINK_FOLLOW,
+            )
+        };
+    }
+    if result == 0 {
+        return Ok(());
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::EEXIST) => Err(AttachmentExportError::DestinationExists),
+        Some(libc::EOPNOTSUPP | libc::EINVAL | libc::EPERM) => {
+            Err(AttachmentExportError::UnsupportedFilesystem)
+        }
+        _ => Err(AttachmentExportError::Io),
+    }
 }
 
 fn verify_preview_guide_revision(
@@ -3890,6 +4203,144 @@ mod tests {
             ),
             Err(AttachmentTextPreviewError::RevisionConflict)
         );
+    }
+
+    #[test]
+    fn attachment_export_publishes_exact_private_bytes_without_overwrite() {
+        let content = b"binary\0attachment\xff";
+        let (_workspace, view, attachment_id, _attachment_path) =
+            attachment_preview_fixture("attachment-export", content);
+        let destination = TestDirectory::new("attachment-export-destination");
+        let target = destination.path().join("export.bin");
+        assert_eq!(
+            export_attachment_to_path(
+                &view,
+                GuideId::from_str(GUIDE_ID).unwrap(),
+                attachment_id,
+                revision(&view),
+                &target,
+            ),
+            Ok(AttachmentExportOutcome::Exported {
+                size_bytes: content.len() as u64,
+            })
+        );
+        assert_eq!(fs::read(&target).unwrap(), content);
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::write(&target, b"preserve").unwrap();
+        assert_eq!(
+            export_attachment_to_path(
+                &view,
+                GuideId::from_str(GUIDE_ID).unwrap(),
+                attachment_id,
+                revision(&view),
+                &target,
+            ),
+            Err(AttachmentExportError::DestinationExists)
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"preserve");
+    }
+
+    #[test]
+    fn attachment_export_refuses_symlinked_destination_and_source_drift() {
+        let (workspace, view, attachment_id, attachment_path) =
+            attachment_preview_fixture("attachment-export-refusal", b"stable");
+        let destination = TestDirectory::new("attachment-export-refusal-destination");
+        let linked_parent = destination.path().with_extension("link");
+        symlink(destination.path(), &linked_parent).unwrap();
+        assert_eq!(
+            export_attachment_to_path(
+                &view,
+                GuideId::from_str(GUIDE_ID).unwrap(),
+                attachment_id,
+                revision(&view),
+                &linked_parent.join("export.bin"),
+            ),
+            Err(AttachmentExportError::UnsafeDestination)
+        );
+        fs::remove_file(&linked_parent).unwrap();
+
+        let outside = workspace.path().join("outside.bin");
+        fs::write(&outside, b"stable").unwrap();
+        fs::remove_file(&attachment_path).unwrap();
+        symlink(&outside, &attachment_path).unwrap();
+        let unsafe_target = destination.path().join("unsafe.bin");
+        assert_eq!(
+            export_attachment_to_path(
+                &view,
+                GuideId::from_str(GUIDE_ID).unwrap(),
+                attachment_id,
+                revision(&view),
+                &unsafe_target,
+            ),
+            Err(AttachmentExportError::UnsafeStorage)
+        );
+        assert!(!unsafe_target.exists());
+
+        fs::remove_file(&attachment_path).unwrap();
+        fs::write(&attachment_path, b"stable").unwrap();
+        let destination_symlink = destination.path().join("existing-link.bin");
+        symlink(&outside, &destination_symlink).unwrap();
+        assert_eq!(
+            export_attachment_to_path(
+                &view,
+                GuideId::from_str(GUIDE_ID).unwrap(),
+                attachment_id,
+                revision(&view),
+                &destination_symlink,
+            ),
+            Err(AttachmentExportError::DestinationExists)
+        );
+        assert!(
+            fs::symlink_metadata(&destination_symlink)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        fs::write(&attachment_path, b"drift!").unwrap();
+        let target = destination.path().join("drift.bin");
+        assert_eq!(
+            export_attachment_to_path(
+                &view,
+                GuideId::from_str(GUIDE_ID).unwrap(),
+                attachment_id,
+                revision(&view),
+                &target,
+            ),
+            Err(AttachmentExportError::AttachmentChanged)
+        );
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn attachment_export_rechecks_guide_before_publication() {
+        let (workspace, view, attachment_id, _attachment_path) =
+            attachment_preview_fixture("attachment-export-guide-race", b"stable");
+        let destination = TestDirectory::new("attachment-export-race-destination");
+        let target = destination.path().join("export.bin");
+        let guide_path = workspace.path().join(GUIDE_PATH);
+        set_attachment_preview_after_read_hook(move || {
+            let current = fs::read_to_string(&guide_path).unwrap();
+            fs::write(
+                &guide_path,
+                current.replace("Install a Tarball", "Install changed tarball"),
+            )
+            .unwrap();
+        });
+        assert_eq!(
+            export_attachment_to_path(
+                &view,
+                GuideId::from_str(GUIDE_ID).unwrap(),
+                attachment_id,
+                revision(&view),
+                &target,
+            ),
+            Err(AttachmentExportError::RevisionConflict)
+        );
+        assert!(!target.exists());
     }
 
     #[test]

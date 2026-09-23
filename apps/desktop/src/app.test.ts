@@ -18,6 +18,7 @@ import {
   guideMatchesSearchScope,
   hasUnsavedChanges,
   highlightedExcerptSegments,
+  isAttachmentExportPayload,
   isAttachmentTextPreviewPayload,
   isCurrentWorkspaceWatchEvent,
   isGitCloneApplyResultPayload,
@@ -254,6 +255,26 @@ describe("application identity", () => {
     expect(
       attachmentPreviewOwnerKey("session-1", "guide-1", "revision-1"),
     ).toBe(current);
+  });
+
+  it("accepts only closed pathless Attachment export results", () => {
+    expect(isAttachmentExportPayload({ kind: "cancelled" })).toBe(true);
+    expect(isAttachmentExportPayload({ kind: "exported", sizeBytes: 42 })).toBe(
+      true,
+    );
+    expect(
+      isAttachmentExportPayload({
+        kind: "exported",
+        sizeBytes: 42,
+        path: "/home/user/file",
+      }),
+    ).toBe(false);
+    expect(
+      isAttachmentExportPayload({
+        kind: "exported",
+        sizeBytes: 64 * 1024 * 1024 + 1,
+      }),
+    ).toBe(false);
   });
 
   it("describes root, ancestor, and unsafe Git facts", () => {

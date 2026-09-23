@@ -2,16 +2,18 @@ pub const APPLICATION_NAME: &str = "Rehow";
 
 use rehow_core::{
     application::{
-        AttachmentImportError, AttachmentImportOutcome, AttachmentRemovalError,
-        AttachmentRemovalOutcome, AttachmentTextPreviewError, CategoryCreateError,
-        CategoryOrderRevision, CategoryRemoveError, CategoryReorderError, CategoryUpdateError,
-        GUIDE_BODY_INPUT_LIMIT, GuideCreateError, GuideEdit, GuideRemoveError, GuideUpdateError,
-        MarkdownImportError, MarkdownImportPartialFailure, WorkspaceInitializationError,
-        WorkspaceRefreshError, confirm_and_approve_guide_tested, confirm_and_remove_attachment,
-        create_category, create_guide, import_markdown_collection, initialize_workspace,
-        preview_attachment_text, refresh_open_workspace as refresh_workspace_view, remove_category,
-        remove_guide, reorder_categories, select_and_import_attachment, set_category_archived,
-        set_guide_archived, update_category_details, update_guide, update_guide_details,
+        AttachmentExportError, AttachmentExportOutcome, AttachmentImportError,
+        AttachmentImportOutcome, AttachmentRemovalError, AttachmentRemovalOutcome,
+        AttachmentTextPreviewError, CategoryCreateError, CategoryOrderRevision,
+        CategoryRemoveError, CategoryReorderError, CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT,
+        GuideCreateError, GuideEdit, GuideRemoveError, GuideUpdateError, MarkdownImportError,
+        MarkdownImportPartialFailure, WorkspaceInitializationError, WorkspaceRefreshError,
+        confirm_and_approve_guide_tested, confirm_and_remove_attachment, create_category,
+        create_guide, import_markdown_collection, initialize_workspace, preview_attachment_text,
+        refresh_open_workspace as refresh_workspace_view, remove_category, remove_guide,
+        reorder_categories, select_and_export_attachment, select_and_import_attachment,
+        set_category_archived, set_guide_archived, update_category_details, update_guide,
+        update_guide_details,
     },
     domain::GuideStatus,
     git::{
@@ -601,6 +603,16 @@ struct AttachmentTextPreviewPayload {
 }
 
 #[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum AttachmentExportPayload {
+    Cancelled,
+    Exported {
+        #[serde(rename = "sizeBytes")]
+        size_bytes: u64,
+    },
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GuideBodyPayload {
     id: String,
@@ -951,6 +963,125 @@ fn attachment_text_preview_message(error: AttachmentTextPreviewError) -> String 
         }
         AttachmentTextPreviewError::Io => {
             "The Attachment could not be read. Check file access and try again.".to_owned()
+        }
+    }
+}
+
+#[tauri::command]
+fn export_open_guide_attachment(
+    guide_id: String,
+    attachment_id: String,
+    expected_revision: String,
+    workspace_session: String,
+    window: tauri::Window,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<AttachmentExportPayload, NativeCommandError> {
+    if guide_id.len() > 64
+        || attachment_id.len() > 64
+        || expected_revision.len() > 96
+        || workspace_session.is_empty()
+        || workspace_session.len() > 20
+        || !workspace_session.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(native_command_error(
+            "invalidInput",
+            "Guide or Attachment identity is too long.".to_owned(),
+        ));
+    }
+    let guide_id = GuideId::from_str(&guide_id)
+        .map_err(|_| native_command_error("invalidGuide", "Guide ID is invalid.".to_owned()))?;
+    let attachment_id = AttachmentId::from_str(&attachment_id).map_err(|_| {
+        native_command_error("invalidAttachment", "Attachment ID is invalid.".to_owned())
+    })?;
+    let expected_revision = Revision::from_str(&expected_revision).map_err(|_| {
+        native_command_error(
+            "invalidRevision",
+            "Guide revision is invalid. Reopen the Guide and try again.".to_owned(),
+        )
+    })?;
+    let guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable.".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_ref().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open.".to_owned())
+    })?;
+    if workspace.watch_session.to_string() != workspace_session {
+        return Err(native_command_error(
+            "workspaceChanged",
+            "The open Workspace changed. Export the Attachment again.".to_owned(),
+        ));
+    }
+    match select_and_export_attachment(
+        &window,
+        &workspace.view,
+        guide_id,
+        attachment_id,
+        expected_revision,
+    )
+    .map_err(|error| {
+        native_command_error(
+            attachment_export_code(error),
+            attachment_export_message(error),
+        )
+    })? {
+        AttachmentExportOutcome::Cancelled => Ok(AttachmentExportPayload::Cancelled),
+        AttachmentExportOutcome::Exported { size_bytes } => {
+            Ok(AttachmentExportPayload::Exported { size_bytes })
+        }
+    }
+}
+
+fn attachment_export_code(error: AttachmentExportError) -> &'static str {
+    match error {
+        AttachmentExportError::GuideNotFound => "notFound",
+        AttachmentExportError::AttachmentNotFound => "attachmentNotFound",
+        AttachmentExportError::RevisionConflict => "revisionConflict",
+        AttachmentExportError::AttachmentChanged => "attachmentChanged",
+        AttachmentExportError::DestinationExists => "destinationExists",
+        AttachmentExportError::UnsafeDestination => "unsafeDestination",
+        AttachmentExportError::UnsafeStorage => "unsafeStorage",
+        AttachmentExportError::UnsupportedFilesystem => "unsupportedFilesystem",
+        AttachmentExportError::ResourceLimit => "resourceLimit",
+        AttachmentExportError::Io => "io",
+        AttachmentExportError::ExportedDurabilityUnknown => "exportedDurabilityUnknown",
+    }
+}
+
+fn attachment_export_message(error: AttachmentExportError) -> String {
+    match error {
+        AttachmentExportError::GuideNotFound => "This Guide no longer exists.".to_owned(),
+        AttachmentExportError::AttachmentNotFound => {
+            "This Attachment is no longer declared by the Guide.".to_owned()
+        }
+        AttachmentExportError::RevisionConflict => {
+            "The Guide changed. Refresh it before exporting the Attachment.".to_owned()
+        }
+        AttachmentExportError::AttachmentChanged => {
+            "The Attachment changed or no longer matches its recorded metadata.".to_owned()
+        }
+        AttachmentExportError::DestinationExists => {
+            "That destination already exists. Choose a different filename; Rehow never overwrites exports.".to_owned()
+        }
+        AttachmentExportError::UnsafeDestination => {
+            "Rehow refused an unsafe export destination or symlinked folder.".to_owned()
+        }
+        AttachmentExportError::UnsafeStorage => {
+            "Rehow refused an unsafe Attachment path or file.".to_owned()
+        }
+        AttachmentExportError::UnsupportedFilesystem => {
+            "That destination filesystem cannot provide safe atomic export.".to_owned()
+        }
+        AttachmentExportError::ResourceLimit => {
+            "Attachment export exceeded the 64 MiB safe limit.".to_owned()
+        }
+        AttachmentExportError::Io => {
+            "The Attachment could not be exported. Check destination access and try again.".to_owned()
+        }
+        AttachmentExportError::ExportedDurabilityUnknown => {
+            "The Attachment was exported, but durability could not be confirmed. Check the chosen destination before retrying.".to_owned()
         }
     }
 }
@@ -5267,6 +5398,7 @@ pub fn run() {
             choose_workspace,
             create_open_category,
             create_open_guide,
+            export_open_guide_attachment,
             initialize_selected_workspace,
             import_open_guide_attachment,
             read_open_guide,
@@ -5308,8 +5440,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        APPLICATION_NAME, AttachmentTextPreviewPayload, CategoryPayload, DesktopState,
-        FolderFactsPayload, GitCloneApplyResultPayload, GitCloneCancelResultPayload,
+        APPLICATION_NAME, AttachmentExportPayload, AttachmentTextPreviewPayload, CategoryPayload,
+        DesktopState, FolderFactsPayload, GitCloneApplyResultPayload, GitCloneCancelResultPayload,
         GitCloneCompleteResultPayload, GitCloneLifecycle, GitClonePlanPayload,
         GitCommitCancelResultPayload, GitCommitPlanPayload, GitCommitRecoveryResultPayload,
         GitCommitResultPayload, GitInitPlanPayload, GitInitResultPayload, GitPushResultPayload,
@@ -5319,14 +5451,15 @@ mod tests {
         MarkdownImportDestinationResult, MarkdownImportLifecycle,
         MarkdownImportPreviewEntryPayload, MarkdownImportPreviewPayload, PendingGitPlanError,
         SearchHighlightPayload, SearchHitPayload, WorkspacePayload, WorkspaceWatchEventPayload,
-        attachment_removal_code, attachment_removal_message, attachment_text_preview_code,
-        attachment_text_preview_message, begin_markdown_import, category_create_code,
-        category_create_message, category_remove_code, category_remove_message,
-        category_reorder_code, category_reorder_message, category_update_code,
-        category_update_message, empty_git_payload, finish_markdown_import, git_clone_apply_code,
-        git_clone_apply_message, git_clone_code, git_clone_completion_confirmation,
-        git_clone_confirmation_fields, git_clone_materialize_code, git_clone_materialize_message,
-        git_clone_message, git_commit_code, git_commit_confirmation_fields, git_commit_message,
+        attachment_export_code, attachment_export_message, attachment_removal_code,
+        attachment_removal_message, attachment_text_preview_code, attachment_text_preview_message,
+        begin_markdown_import, category_create_code, category_create_message, category_remove_code,
+        category_remove_message, category_reorder_code, category_reorder_message,
+        category_update_code, category_update_message, empty_git_payload, finish_markdown_import,
+        git_clone_apply_code, git_clone_apply_message, git_clone_code,
+        git_clone_completion_confirmation, git_clone_confirmation_fields,
+        git_clone_materialize_code, git_clone_materialize_message, git_clone_message,
+        git_commit_code, git_commit_confirmation_fields, git_commit_message,
         git_commit_message_input_allowed, git_commit_recovery_confirmation, git_init_code,
         git_init_confirmation, git_init_message, git_push_ancestry_allowed,
         git_push_confirmation_fields, git_remote_code, git_remote_confirmation_fields,
@@ -5341,10 +5474,10 @@ mod tests {
     };
     use rehow_core::{
         application::{
-            AttachmentRemovalError, AttachmentTextPreviewError, CategoryCreateError,
-            CategoryRemoveError, CategoryReorderError, CategoryUpdateError, GuideCreateError,
-            GuideRemoveError, GuideUpdateError, MarkdownImportError, WorkspaceInitializationError,
-            WorkspaceRefreshError,
+            AttachmentExportError, AttachmentRemovalError, AttachmentTextPreviewError,
+            CategoryCreateError, CategoryRemoveError, CategoryReorderError, CategoryUpdateError,
+            GuideCreateError, GuideRemoveError, GuideUpdateError, MarkdownImportError,
+            WorkspaceInitializationError, WorkspaceRefreshError,
         },
         git::{
             GitCloneApplyError, GitCloneError, GitCloneMaterializeError, GitCloneValidation,
@@ -6244,6 +6377,30 @@ mod tests {
         assert!(
             attachment_text_preview_message(AttachmentTextPreviewError::AttachmentChanged)
                 .contains("recorded metadata")
+        );
+    }
+
+    #[test]
+    fn attachment_export_payload_and_errors_are_closed_and_pathless() {
+        assert_eq!(
+            serde_json::to_value(AttachmentExportPayload::Cancelled).unwrap(),
+            serde_json::json!({ "kind": "cancelled" })
+        );
+        assert_eq!(
+            serde_json::to_value(AttachmentExportPayload::Exported { size_bytes: 42 }).unwrap(),
+            serde_json::json!({ "kind": "exported", "sizeBytes": 42 })
+        );
+        assert_eq!(
+            attachment_export_code(AttachmentExportError::DestinationExists),
+            "destinationExists"
+        );
+        assert!(
+            attachment_export_message(AttachmentExportError::DestinationExists)
+                .contains("never overwrites")
+        );
+        assert!(
+            attachment_export_message(AttachmentExportError::ExportedDurabilityUnknown)
+                .contains("before retrying")
         );
     }
 }

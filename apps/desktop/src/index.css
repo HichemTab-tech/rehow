@@ -1130,6 +1130,7 @@ h1 {
   gap: 0.5rem;
 }
 
+.attachment-export-button,
 .attachment-preview-button,
 .attachment-remove-button {
   border: 0;
@@ -1143,15 +1144,18 @@ h1 {
   cursor: pointer;
 }
 
+.attachment-export-button,
 .attachment-preview-button {
   color: var(--accent-strong);
 }
 
+.attachment-export-button:hover:not(:disabled),
 .attachment-preview-button:hover:not(:disabled),
 .attachment-remove-button:hover:not(:disabled) {
   border-bottom-color: currentColor;
 }
 
+.attachment-export-button:disabled,
 .attachment-preview-button:disabled,
 .attachment-remove-button:disabled {
   cursor: wait;

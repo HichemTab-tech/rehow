@@ -37,6 +37,10 @@ type AttachmentTextPreviewPayload = {
   sanitized: boolean;
 };
 
+type AttachmentExportPayload =
+  | { kind: "cancelled" }
+  | { kind: "exported"; sizeBytes: number };
+
 type FolderFacts = {
   writable: boolean;
   existingGitRepository: boolean;
@@ -1232,6 +1236,22 @@ export function isAttachmentTextPreviewPayload(
   );
 }
 
+export function isAttachmentExportPayload(
+  value: unknown,
+): value is AttachmentExportPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as Partial<AttachmentExportPayload> &
+    Record<string, unknown>;
+  if (result.kind === "cancelled") return Object.keys(result).length === 1;
+  return (
+    result.kind === "exported" &&
+    Object.keys(result).length === 2 &&
+    Number.isSafeInteger(result.sizeBytes) &&
+    (result.sizeBytes as number) >= 0 &&
+    (result.sizeBytes as number) <= 64 * 1024 * 1024
+  );
+}
+
 function isWorkspacePayload(value: unknown): value is WorkspacePayload {
   if (typeof value !== "object" || value === null) return false;
   const workspace = value as Partial<WorkspacePayload> &
@@ -1647,6 +1667,7 @@ export function App() {
   const [verifyingGuide, setVerifyingGuide] = useState(false);
   const [importingAttachment, setImportingAttachment] = useState(false);
   const [previewingAttachmentId, setPreviewingAttachmentId] = useState("");
+  const [exportingAttachmentId, setExportingAttachmentId] = useState("");
   const [attachmentPreview, setAttachmentPreview] =
     useState<AttachmentTextPreviewPayload | null>(null);
   const [removingAttachmentId, setRemovingAttachmentId] = useState("");
@@ -1682,6 +1703,7 @@ export function App() {
   const lastPreviewAttachmentIdRef = useRef("");
   const attachmentPreviewOwnerRef = useRef("");
   const attachmentPreviewGenerationRef = useRef(0);
+  const attachmentExportGenerationRef = useRef(0);
   const attachmentRemoveButtonRefs = useRef(
     new Map<string, HTMLButtonElement>(),
   );
@@ -1776,6 +1798,7 @@ export function App() {
     verifyingGuide ||
     importingAttachment ||
     previewingAttachmentId !== "" ||
+    exportingAttachmentId !== "" ||
     removingAttachmentId !== "" ||
     updatingCategoryStatusId !== "" ||
     reorderingCategoryId !== "" ||
@@ -1865,7 +1888,9 @@ export function App() {
     if (attachmentPreviewOwnerRef.current === attachmentPreviewOwner) return;
     attachmentPreviewOwnerRef.current = attachmentPreviewOwner;
     attachmentPreviewGenerationRef.current += 1;
+    attachmentExportGenerationRef.current += 1;
     setPreviewingAttachmentId("");
+    setExportingAttachmentId("");
     setAttachmentPreview(null);
     if (attachmentPreviewDialogRef.current?.open) {
       attachmentPreviewDialogRef.current.close();
@@ -3905,6 +3930,7 @@ export function App() {
       workspace === null ||
       guideBody?.id !== selected.id ||
       previewingAttachmentId !== "" ||
+      exportingAttachmentId !== "" ||
       importingAttachment ||
       removingAttachmentId !== "" ||
       verifyingGuide ||
@@ -3964,6 +3990,70 @@ export function App() {
     }
   }
 
+  async function exportAttachment(attachmentId: string) {
+    if (
+      selected === null ||
+      workspace === null ||
+      guideBody?.id !== selected.id ||
+      previewingAttachmentId !== "" ||
+      exportingAttachmentId !== "" ||
+      importingAttachment ||
+      removingAttachmentId !== "" ||
+      verifyingGuide ||
+      updatingGuideStatus ||
+      removingGuide ||
+      editingGuide ||
+      editingGuideDetails
+    )
+      return;
+    const owner = attachmentPreviewOwnerKey(
+      workspace.watchSession,
+      selected.id,
+      guideBody.revision,
+    );
+    attachmentPreviewOwnerRef.current = owner;
+    const generation = attachmentExportGenerationRef.current + 1;
+    attachmentExportGenerationRef.current = generation;
+    setExportingAttachmentId(attachmentId);
+    setGuideStatusError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<unknown>("export_open_guide_attachment", {
+        guideId: selected.id,
+        attachmentId,
+        expectedRevision: guideBody.revision,
+        workspaceSession: workspace.watchSession,
+      });
+      if (!isAttachmentExportPayload(result)) {
+        throw new Error("Attachment export returned an invalid response.");
+      }
+      if (
+        attachmentExportGenerationRef.current !== generation ||
+        attachmentPreviewOwnerRef.current !== owner
+      )
+        return;
+      setAnnouncement(
+        result.kind === "exported"
+          ? `Attachment exported (${formatBytes(result.sizeBytes)}).`
+          : "Attachment export cancelled.",
+      );
+    } catch (error) {
+      if (
+        attachmentExportGenerationRef.current !== generation ||
+        attachmentPreviewOwnerRef.current !== owner
+      )
+        return;
+      const failure = nativeCommandError(error);
+      setGuideStatusError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => guideStatusErrorRef.current?.focus());
+    } finally {
+      if (attachmentExportGenerationRef.current === generation) {
+        setExportingAttachmentId("");
+      }
+    }
+  }
+
   function finishAttachmentPreview() {
     const attachmentId = lastPreviewAttachmentIdRef.current;
     setAttachmentPreview(null);
@@ -3980,6 +4070,7 @@ export function App() {
       removingAttachmentId !== "" ||
       importingAttachment ||
       previewingAttachmentId !== "" ||
+      exportingAttachmentId !== "" ||
       verifyingGuide ||
       updatingGuideStatus ||
       removingGuide ||
@@ -5585,6 +5676,28 @@ export function App() {
                       </div>
                       <div className="attachment-actions">
                         <button
+                          className="attachment-export-button"
+                          type="button"
+                          aria-label={`Export ${attachment.title}`}
+                          onClick={() => void exportAttachment(attachment.id)}
+                          disabled={
+                            guideBody?.id !== selected.id ||
+                            previewingAttachmentId !== "" ||
+                            exportingAttachmentId !== "" ||
+                            removingAttachmentId !== "" ||
+                            importingAttachment ||
+                            verifyingGuide ||
+                            updatingGuideStatus ||
+                            removingGuide ||
+                            editingGuide ||
+                            editingGuideDetails
+                          }
+                        >
+                          {exportingAttachmentId === attachment.id
+                            ? "Exporting…"
+                            : "Export"}
+                        </button>
+                        <button
                           ref={(node) => {
                             if (node) {
                               attachmentPreviewButtonRefs.current.set(
@@ -5606,6 +5719,7 @@ export function App() {
                           disabled={
                             guideBody?.id !== selected.id ||
                             previewingAttachmentId !== "" ||
+                            exportingAttachmentId !== "" ||
                             removingAttachmentId !== "" ||
                             importingAttachment ||
                             verifyingGuide ||
@@ -5640,6 +5754,7 @@ export function App() {
                             disabled={
                               guideBody?.id !== selected.id ||
                               previewingAttachmentId !== "" ||
+                              exportingAttachmentId !== "" ||
                               removingAttachmentId !== "" ||
                               importingAttachment ||
                               verifyingGuide ||
