@@ -6,11 +6,12 @@ use rehow_core::{
         AttachmentImportOutcome, AttachmentRemovalError, AttachmentRemovalOutcome,
         AttachmentRevealError, AttachmentTextPreviewError, CategoryCreateError,
         CategoryOrderRevision, CategoryRemoveError, CategoryReorderError, CategoryUpdateError,
-        GUIDE_BODY_INPUT_LIMIT, GuideCreateError, GuideEdit, GuideRemoveError, GuideUpdateError,
-        MarkdownImportError, MarkdownImportPartialFailure, WorkspaceInitializationError,
-        WorkspaceRefreshError, confirm_and_approve_guide_tested, confirm_and_remove_attachment,
-        create_category, create_guide, execute_attachment_reveal, import_markdown_collection,
-        initialize_workspace, prepare_attachment_reveal, preview_attachment_text,
+        ExternalLinkOpenError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError, GuideEdit,
+        GuideRemoveError, GuideUpdateError, MarkdownImportError, MarkdownImportPartialFailure,
+        WorkspaceInitializationError, WorkspaceRefreshError, confirm_and_approve_guide_tested,
+        confirm_and_remove_attachment, create_category, create_guide, execute_attachment_reveal,
+        execute_external_link_open, import_markdown_collection, initialize_workspace,
+        prepare_attachment_reveal, prepare_external_link_open, preview_attachment_text,
         refresh_open_workspace as refresh_workspace_view, remove_category, remove_guide,
         reorder_categories, select_and_export_attachment, select_and_import_attachment,
         set_category_archived, set_guide_archived, update_category_details, update_guide,
@@ -75,6 +76,7 @@ struct DesktopState {
     git_clone: Mutex<GitCloneLifecycle>,
     git_sync: Mutex<GitSyncLifecycle>,
     attachment_reveal_active: Arc<AtomicBool>,
+    external_link_open_active: Arc<AtomicBool>,
     next_watch_session: AtomicU64,
 }
 
@@ -96,14 +98,15 @@ impl Default for DesktopState {
             git_clone: Mutex::default(),
             git_sync: Mutex::default(),
             attachment_reveal_active: Arc::default(),
+            external_link_open_active: Arc::default(),
             next_watch_session: AtomicU64::default(),
         }
     }
 }
 
-struct AttachmentRevealReservation(Arc<AtomicBool>);
+struct SingleFlightReservation(Arc<AtomicBool>);
 
-impl AttachmentRevealReservation {
+impl SingleFlightReservation {
     fn acquire(active: Arc<AtomicBool>) -> Option<Self> {
         active
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -112,7 +115,7 @@ impl AttachmentRevealReservation {
     }
 }
 
-impl Drop for AttachmentRevealReservation {
+impl Drop for SingleFlightReservation {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
     }
@@ -640,6 +643,12 @@ struct AttachmentRevealPayload {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ExternalLinkOpenPayload {
+    requested: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GuideBodyPayload {
     id: String,
     revision: String,
@@ -1144,7 +1153,7 @@ async fn reveal_open_guide_attachment_parent(
         )
     })?;
     let active = app.state::<DesktopState>().attachment_reveal_active.clone();
-    let reservation = AttachmentRevealReservation::acquire(active).ok_or_else(|| {
+    let reservation = SingleFlightReservation::acquire(active).ok_or_else(|| {
         native_command_error(
             "operationActive",
             "Another Attachment folder is already being opened.".to_owned(),
@@ -1232,6 +1241,125 @@ fn attachment_reveal_message(error: AttachmentRevealError) -> String {
         AttachmentRevealError::Io => {
             "The Attachment folder could not be verified. Refresh the Workspace and try again."
                 .to_owned()
+        }
+    }
+}
+
+#[tauri::command]
+async fn open_guide_external_link(
+    guide_id: String,
+    expected_revision: String,
+    destination: String,
+    workspace_session: String,
+    app: tauri::AppHandle,
+) -> Result<ExternalLinkOpenPayload, NativeCommandError> {
+    if guide_id.len() > 64
+        || expected_revision.len() > 96
+        || destination.is_empty()
+        || destination.len() > 2_048
+        || workspace_session.is_empty()
+        || workspace_session.len() > 20
+        || !workspace_session.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(native_command_error(
+            "invalidInput",
+            "The Guide or link identity is invalid.".to_owned(),
+        ));
+    }
+    let guide_id = GuideId::from_str(&guide_id)
+        .map_err(|_| native_command_error("invalidGuide", "Guide ID is invalid.".to_owned()))?;
+    let expected_revision = Revision::from_str(&expected_revision).map_err(|_| {
+        native_command_error(
+            "invalidRevision",
+            "Guide revision is invalid. Reopen the Guide and try again.".to_owned(),
+        )
+    })?;
+    let active = app
+        .state::<DesktopState>()
+        .external_link_open_active
+        .clone();
+    let reservation = SingleFlightReservation::acquire(active).ok_or_else(|| {
+        native_command_error(
+            "operationActive",
+            "Another external link is already being opened.".to_owned(),
+        )
+    })?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _reservation = reservation;
+        let state = app.state::<DesktopState>();
+        let plan = {
+            let guard = state.workspace.lock().map_err(|_| {
+                native_command_error(
+                    "sessionUnavailable",
+                    "Workspace session is unavailable.".to_owned(),
+                )
+            })?;
+            let workspace = guard.as_ref().ok_or_else(|| {
+                native_command_error("workspaceUnavailable", "No Workspace is open.".to_owned())
+            })?;
+            if workspace.watch_session.to_string() != workspace_session {
+                return Err(native_command_error(
+                    "workspaceChanged",
+                    "The open Workspace changed. Open the link again.".to_owned(),
+                ));
+            }
+            prepare_external_link_open(&workspace.view, guide_id, expected_revision, &destination)
+                .map_err(|error| {
+                native_command_error(
+                    external_link_open_code(error),
+                    external_link_open_message(error),
+                )
+            })?
+        };
+        execute_external_link_open(plan).map_err(|error| {
+            native_command_error(
+                external_link_open_code(error),
+                external_link_open_message(error),
+            )
+        })?;
+        Ok(ExternalLinkOpenPayload { requested: true })
+    })
+    .await
+    .map_err(|_| {
+        native_command_error(
+            "operationUnavailable",
+            "The external-link worker stopped. Try again.".to_owned(),
+        )
+    })?
+}
+
+fn external_link_open_code(error: ExternalLinkOpenError) -> &'static str {
+    match error {
+        ExternalLinkOpenError::GuideNotFound => "notFound",
+        ExternalLinkOpenError::RevisionConflict => "revisionConflict",
+        ExternalLinkOpenError::LinkNotFound => "linkNotFound",
+        ExternalLinkOpenError::UnsafeStorage => "unsafeStorage",
+        ExternalLinkOpenError::ResourceLimit => "resourceLimit",
+        ExternalLinkOpenError::HandlerUnavailable => "handlerUnavailable",
+        ExternalLinkOpenError::Io => "io",
+    }
+}
+
+fn external_link_open_message(error: ExternalLinkOpenError) -> String {
+    match error {
+        ExternalLinkOpenError::GuideNotFound => "This Guide no longer exists.".to_owned(),
+        ExternalLinkOpenError::RevisionConflict => {
+            "The Guide changed. Refresh it before opening this link.".to_owned()
+        }
+        ExternalLinkOpenError::LinkNotFound => {
+            "This safe link is no longer present in the Guide. Refresh and try again.".to_owned()
+        }
+        ExternalLinkOpenError::UnsafeStorage => {
+            "Rehow refused an unsafe Guide file while opening the link.".to_owned()
+        }
+        ExternalLinkOpenError::ResourceLimit => {
+            "The Guide is too large to verify this link safely.".to_owned()
+        }
+        ExternalLinkOpenError::HandlerUnavailable => {
+            "No desktop application could open this link. Copy it and open it manually.".to_owned()
+        }
+        ExternalLinkOpenError::Io => {
+            "The Guide could not be verified. Refresh the Workspace and try again.".to_owned()
         }
     }
 }
@@ -5551,6 +5679,7 @@ pub fn run() {
             export_open_guide_attachment,
             initialize_selected_workspace,
             import_open_guide_attachment,
+            open_guide_external_link,
             read_open_guide,
             preview_open_guide_attachment_text,
             reveal_open_guide_attachment_parent,
@@ -5592,7 +5721,7 @@ pub fn run() {
 mod tests {
     use super::{
         APPLICATION_NAME, AttachmentExportPayload, AttachmentRevealPayload,
-        AttachmentRevealReservation, AttachmentTextPreviewPayload, CategoryPayload, DesktopState,
+        AttachmentTextPreviewPayload, CategoryPayload, DesktopState, ExternalLinkOpenPayload,
         FolderFactsPayload, GitCloneApplyResultPayload, GitCloneCancelResultPayload,
         GitCloneCompleteResultPayload, GitCloneLifecycle, GitClonePlanPayload,
         GitCommitCancelResultPayload, GitCommitPlanPayload, GitCommitRecoveryResultPayload,
@@ -5602,17 +5731,17 @@ mod tests {
         GitSyncRecoveryResultPayload, GuideBodyPayload, GuidePayload, MarkdownImportApplyPayload,
         MarkdownImportDestinationResult, MarkdownImportLifecycle,
         MarkdownImportPreviewEntryPayload, MarkdownImportPreviewPayload, PendingGitPlanError,
-        SearchHighlightPayload, SearchHitPayload, WorkspacePayload, WorkspaceWatchEventPayload,
-        attachment_export_code, attachment_export_message, attachment_removal_code,
-        attachment_removal_message, attachment_reveal_code, attachment_reveal_message,
-        attachment_text_preview_code, attachment_text_preview_message, begin_markdown_import,
-        category_create_code, category_create_message, category_remove_code,
+        SearchHighlightPayload, SearchHitPayload, SingleFlightReservation, WorkspacePayload,
+        WorkspaceWatchEventPayload, attachment_export_code, attachment_export_message,
+        attachment_removal_code, attachment_removal_message, attachment_reveal_code,
+        attachment_reveal_message, attachment_text_preview_code, attachment_text_preview_message,
+        begin_markdown_import, category_create_code, category_create_message, category_remove_code,
         category_remove_message, category_reorder_code, category_reorder_message,
-        category_update_code, category_update_message, empty_git_payload, finish_markdown_import,
-        git_clone_apply_code, git_clone_apply_message, git_clone_code,
-        git_clone_completion_confirmation, git_clone_confirmation_fields,
-        git_clone_materialize_code, git_clone_materialize_message, git_clone_message,
-        git_commit_code, git_commit_confirmation_fields, git_commit_message,
+        category_update_code, category_update_message, empty_git_payload, external_link_open_code,
+        external_link_open_message, finish_markdown_import, git_clone_apply_code,
+        git_clone_apply_message, git_clone_code, git_clone_completion_confirmation,
+        git_clone_confirmation_fields, git_clone_materialize_code, git_clone_materialize_message,
+        git_clone_message, git_commit_code, git_commit_confirmation_fields, git_commit_message,
         git_commit_message_input_allowed, git_commit_recovery_confirmation, git_init_code,
         git_init_confirmation, git_init_message, git_push_ancestry_allowed,
         git_push_confirmation_fields, git_remote_code, git_remote_confirmation_fields,
@@ -5629,8 +5758,8 @@ mod tests {
         application::{
             AttachmentExportError, AttachmentRemovalError, AttachmentRevealError,
             AttachmentTextPreviewError, CategoryCreateError, CategoryRemoveError,
-            CategoryReorderError, CategoryUpdateError, GuideCreateError, GuideRemoveError,
-            GuideUpdateError, MarkdownImportError, WorkspaceInitializationError,
+            CategoryReorderError, CategoryUpdateError, ExternalLinkOpenError, GuideCreateError,
+            GuideRemoveError, GuideUpdateError, MarkdownImportError, WorkspaceInitializationError,
             WorkspaceRefreshError,
         },
         git::{
@@ -6575,11 +6704,30 @@ mod tests {
     }
 
     #[test]
-    fn attachment_reveal_reservation_is_single_flight_and_recovers() {
+    fn blocking_action_reservation_is_single_flight_and_recovers() {
         let active = Arc::new(AtomicBool::new(false));
-        let reservation = AttachmentRevealReservation::acquire(active.clone()).unwrap();
-        assert!(AttachmentRevealReservation::acquire(active.clone()).is_none());
+        let reservation = SingleFlightReservation::acquire(active.clone()).unwrap();
+        assert!(SingleFlightReservation::acquire(active.clone()).is_none());
         drop(reservation);
-        assert!(AttachmentRevealReservation::acquire(active).is_some());
+        assert!(SingleFlightReservation::acquire(active).is_some());
+    }
+
+    #[test]
+    fn external_link_payload_and_errors_are_closed_and_url_free() {
+        assert_eq!(
+            serde_json::to_value(ExternalLinkOpenPayload { requested: true }).unwrap(),
+            serde_json::json!({ "requested": true })
+        );
+        assert_eq!(
+            external_link_open_code(ExternalLinkOpenError::LinkNotFound),
+            "linkNotFound"
+        );
+        assert_eq!(
+            external_link_open_code(ExternalLinkOpenError::HandlerUnavailable),
+            "handlerUnavailable"
+        );
+        let message = external_link_open_message(ExternalLinkOpenError::HandlerUnavailable);
+        assert!(message.contains("Copy it"));
+        assert!(!message.contains("http"));
     }
 }

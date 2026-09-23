@@ -43,6 +43,8 @@ type AttachmentExportPayload =
 
 type AttachmentRevealPayload = { revealed: true };
 
+type ExternalLinkOpenPayload = { requested: true };
+
 type FolderFacts = {
   writable: boolean;
   existingGitRepository: boolean;
@@ -1267,6 +1269,19 @@ export function isAttachmentRevealPayload(
   );
 }
 
+export function isExternalLinkOpenPayload(
+  value: unknown,
+): value is ExternalLinkOpenPayload {
+  const result = value as Partial<ExternalLinkOpenPayload> &
+    Record<string, unknown>;
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Object.keys(value).length === 1 &&
+    result.requested === true
+  );
+}
+
 function isWorkspacePayload(value: unknown): value is WorkspacePayload {
   if (typeof value !== "object" || value === null) return false;
   const workspace = value as Partial<WorkspacePayload> &
@@ -1684,6 +1699,7 @@ export function App() {
   const [previewingAttachmentId, setPreviewingAttachmentId] = useState("");
   const [exportingAttachmentId, setExportingAttachmentId] = useState("");
   const [revealingAttachmentId, setRevealingAttachmentId] = useState("");
+  const [openingExternalLink, setOpeningExternalLink] = useState("");
   const [attachmentPreview, setAttachmentPreview] =
     useState<AttachmentTextPreviewPayload | null>(null);
   const [removingAttachmentId, setRemovingAttachmentId] = useState("");
@@ -1721,6 +1737,8 @@ export function App() {
   const attachmentPreviewGenerationRef = useRef(0);
   const attachmentExportGenerationRef = useRef(0);
   const attachmentRevealGenerationRef = useRef(0);
+  const externalLinkOpenGenerationRef = useRef(0);
+  const externalLinkOwnerRef = useRef("");
   const attachmentRemoveButtonRefs = useRef(
     new Map<string, HTMLButtonElement>(),
   );
@@ -1905,12 +1923,15 @@ export function App() {
   useEffect(() => {
     if (attachmentPreviewOwnerRef.current === attachmentPreviewOwner) return;
     attachmentPreviewOwnerRef.current = attachmentPreviewOwner;
+    externalLinkOwnerRef.current = attachmentPreviewOwner;
     attachmentPreviewGenerationRef.current += 1;
     attachmentExportGenerationRef.current += 1;
     attachmentRevealGenerationRef.current += 1;
+    externalLinkOpenGenerationRef.current += 1;
     setPreviewingAttachmentId("");
     setExportingAttachmentId("");
     setRevealingAttachmentId("");
+    setOpeningExternalLink("");
     setAttachmentPreview(null);
     if (attachmentPreviewDialogRef.current?.open) {
       attachmentPreviewDialogRef.current.close();
@@ -4140,6 +4161,61 @@ export function App() {
     }
   }
 
+  async function openExternalGuideLink(destination: string) {
+    if (
+      selected === null ||
+      workspace === null ||
+      guideBody?.id !== selected.id ||
+      openingExternalLink !== "" ||
+      editingGuide ||
+      editingGuideDetails
+    )
+      return;
+    const owner = attachmentPreviewOwnerKey(
+      workspace.watchSession,
+      selected.id,
+      guideBody.revision,
+    );
+    externalLinkOwnerRef.current = owner;
+    const generation = externalLinkOpenGenerationRef.current + 1;
+    externalLinkOpenGenerationRef.current = generation;
+    setOpeningExternalLink(destination);
+    setGuideStatusError("");
+    setAnnouncement("Opening external link…");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<unknown>("open_guide_external_link", {
+        guideId: selected.id,
+        expectedRevision: guideBody.revision,
+        destination,
+        workspaceSession: workspace.watchSession,
+      });
+      if (!isExternalLinkOpenPayload(result)) {
+        throw new Error("External-link open returned an invalid response.");
+      }
+      if (
+        externalLinkOpenGenerationRef.current !== generation ||
+        externalLinkOwnerRef.current !== owner
+      )
+        return;
+      setAnnouncement("Choose an application to open the external link.");
+    } catch (error) {
+      if (
+        externalLinkOpenGenerationRef.current !== generation ||
+        externalLinkOwnerRef.current !== owner
+      )
+        return;
+      const failure = nativeCommandError(error);
+      setGuideStatusError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => guideStatusErrorRef.current?.focus());
+    } finally {
+      if (externalLinkOpenGenerationRef.current === generation) {
+        setOpeningExternalLink("");
+      }
+    }
+  }
+
   function finishAttachmentPreview() {
     const attachmentId = lastPreviewAttachmentIdRef.current;
     setAttachmentPreview(null);
@@ -5966,6 +6042,10 @@ export function App() {
                 <MarkdownDocument
                   document={guideBody.document}
                   onAnnouncement={setAnnouncement}
+                  onOpenExternalLink={(destination) =>
+                    void openExternalGuideLink(destination)
+                  }
+                  openingExternalLink={openingExternalLink}
                 />
               ) : (
                 <p className="guide-loading">Loading Guide…</p>

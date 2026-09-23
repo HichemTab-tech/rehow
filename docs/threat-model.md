@@ -49,7 +49,7 @@ Out of scope as a hard boundary: protection against a fully compromised same-use
 | --- | --- | --- | --- |
 | Malicious Markdown / XSS | `<script>`, event handlers, crafted URLs | Parse CommonMark/GFM in Rust; typed safe AST; raw HTML literal/disabled; React escaping; strict CSP | Malicious corpus, CSP production test, browser security review |
 | Embedded/remote content | tracking image, iframe, SVG script | Remote images/embeds disabled; managed Attachment IDs; bounded raster types; SVG deferred | Network-observation test, image decode limits |
-| Unsafe link | `javascript:`, encoded scheme, `file:` disclosure | Parse/normalize URL; allow `http/https/mailto`; guarded click/open; display destination | Unicode/control/encoding/link corpus |
+| Unsafe link | `javascript:`, encoded scheme, `file:` disclosure, forged renderer request | Parse/normalize URL; allow `http/https/mailto`; bind exact destination to the open Workspace session, Guide ID, current revision, and reparsed safe AST; require OpenURI portal v3+ with `ask=true` for an out-of-WebView choice on every request; redact destination from native results/errors | Unicode/control/encoding/link corpus, revision/race/redaction and mandatory-chooser-option tests, pathless IPC test |
 | Path traversal | `../../.ssh/id_ed25519`, absolute path | ID-based API; normalized relative paths; dirfd capability; reject absolute/parent/NUL | Unit/property/integration tests |
 | Symlink escape / TOCTOU | replace directory after check | Linux `openat2` beneath/no-magic/no-follow or component `openat` fallback; reject symlinks; final revalidation | Concurrent component/final swap adversarial tests |
 | Arbitrary filesystem access | compromised webview forges `/home/user` | Native-owned dialog; descriptor-bound selection token; no path-bearing IPC/generic commands; exact Tauri capability allowlist | Forged-path IPC negatives and capability snapshot |
@@ -96,7 +96,7 @@ If a required Git mutation cannot be made without repository-controlled code exe
 
 - Maximum limits are enforced before expensive parse/decode and documented in actionable diagnostics.
 - Parser returns a typed block/inline AST; code text is plain content.
-- External links never auto-open. Remote images do not load.
+- External links never auto-open or navigate the WebView. Core proves the exact URL exists in the current revision's safe AST, then a v3+ XDG portal receives it with `ask=true`; a renderer request cannot bypass the native application chooser. Remote images do not load.
 - Local Attachment resolution uses opaque `(workspace_handle, attachment_id)` and validates Guide ownership/hash/path.
 - SVG, HTML, PDF active scripting, video autoplay, and arbitrary file preview are outside v1 inline rendering. Attachments are never externally opened; executable/unknown types are inert text/reveal/export only.
 

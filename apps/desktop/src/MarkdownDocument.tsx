@@ -15,16 +15,25 @@ type Frame = {
 export function MarkdownDocument({
   document,
   onAnnouncement,
+  onOpenExternalLink,
+  openingExternalLink,
 }: {
   document: SafeMarkdownDocument;
   onAnnouncement: (message: string) => void;
+  onOpenExternalLink: (destination: string) => void;
+  openingExternalLink: string;
 }) {
   if (document.version !== 1) {
     return <p role="alert">This Guide uses an unsupported content version.</p>;
   }
   return (
     <div className="guide-markdown">
-      {renderEvents(document.events, onAnnouncement)}
+      {renderEvents(
+        document.events,
+        onAnnouncement,
+        onOpenExternalLink,
+        openingExternalLink,
+      )}
     </div>
   );
 }
@@ -32,6 +41,8 @@ export function MarkdownDocument({
 export function renderEvents(
   events: SafeMarkdownEvent[],
   onAnnouncement: (message: string) => void = () => undefined,
+  onOpenExternalLink: (destination: string) => void = () => undefined,
+  openingExternalLink = "",
 ) {
   const frames: Frame[] = [{ node: null, children: [], text: "", key: 0 }];
   let key = 1;
@@ -47,7 +58,14 @@ export function renderEvents(
       const completed = frames.pop();
       const parent = frames.at(-1);
       if (completed?.node !== null && completed !== undefined && parent) {
-        parent.children.push(renderContainer(completed, onAnnouncement));
+        parent.children.push(
+          renderContainer(
+            completed,
+            onAnnouncement,
+            onOpenExternalLink,
+            openingExternalLink,
+          ),
+        );
         parent.text += completed.text;
       }
       continue;
@@ -60,7 +78,14 @@ export function renderEvents(
     const completed = frames.pop();
     const parent = frames.at(-1);
     if (completed?.node !== null && completed !== undefined && parent) {
-      parent.children.push(renderContainer(completed, onAnnouncement));
+      parent.children.push(
+        renderContainer(
+          completed,
+          onAnnouncement,
+          onOpenExternalLink,
+          openingExternalLink,
+        ),
+      );
       parent.text += completed.text;
     }
   }
@@ -111,6 +136,8 @@ function renderLeaf(event: SafeMarkdownEvent, key: number) {
 function renderContainer(
   frame: Frame,
   onAnnouncement: (message: string) => void,
+  onOpenExternalLink: (destination: string) => void,
+  openingExternalLink: string,
 ): ReactNode {
   const { node, children, key, text } = frame;
   if (node === null) return children;
@@ -153,17 +180,24 @@ function renderContainer(
     case "strikethrough":
       return <s key={key}>{children}</s>;
     case "link":
-      return (
-        <span
-          className={
-            node.destination ? "markdown-link" : "markdown-link blocked"
-          }
+      return node.destination ? (
+        <button
+          aria-busy={openingExternalLink === node.destination || undefined}
+          aria-label={text.trim() === "" ? "Open External Link" : undefined}
+          className="markdown-link"
+          disabled={openingExternalLink !== ""}
           key={key}
-          title={
-            node.destination
-              ? `${node.destination} — opening external links is not enabled yet`
-              : "Unsafe or unsupported link blocked"
-          }
+          onClick={() => onOpenExternalLink(node.destination as string)}
+          title={`Open ${node.destination} in the desktop handler`}
+          type="button"
+        >
+          {children}
+        </button>
+      ) : (
+        <span
+          className="markdown-link blocked"
+          key={key}
+          title="Unsafe or unsupported link blocked"
         >
           {children}
         </span>

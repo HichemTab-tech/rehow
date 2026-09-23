@@ -22,6 +22,7 @@ import {
   isAttachmentRevealPayload,
   isAttachmentTextPreviewPayload,
   isCurrentWorkspaceWatchEvent,
+  isExternalLinkOpenPayload,
   isGitCloneApplyResultPayload,
   isGitCloneCancelResultPayload,
   isGitCloneCompleteResultPayload,
@@ -287,6 +288,17 @@ describe("application identity", () => {
       }),
     ).toBe(false);
     expect(isAttachmentRevealPayload({ revealed: false })).toBe(false);
+  });
+
+  it("accepts only a closed URL-free external-link result", () => {
+    expect(isExternalLinkOpenPayload({ requested: true })).toBe(true);
+    expect(
+      isExternalLinkOpenPayload({
+        requested: true,
+        destination: "https://example.com",
+      }),
+    ).toBe(false);
+    expect(isExternalLinkOpenPayload({ requested: false })).toBe(false);
   });
 
   it("describes root, ancestor, and unsafe Git facts", () => {
@@ -1126,6 +1138,8 @@ describe("safe Guide rendering", () => {
       createElement(MarkdownDocument, {
         document: { version: 2, events: [] },
         onAnnouncement: () => undefined,
+        onOpenExternalLink: () => undefined,
+        openingExternalLink: "",
       }),
     );
     expect(markup).toContain('role="alert"');
@@ -1140,6 +1154,16 @@ describe("safe Guide rendering", () => {
           events: [
             { kind: "start", node: { kind: "htmlBlock" } },
             { kind: "htmlLiteral", value: "<script>alert(1)</script>" },
+            { kind: "end" },
+            {
+              kind: "start",
+              node: {
+                kind: "link",
+                destination: "https://example.com/docs",
+                title: null,
+              },
+            },
+            { kind: "text", value: "safe link" },
             { kind: "end" },
             {
               kind: "start",
@@ -1159,10 +1183,16 @@ describe("safe Guide rendering", () => {
           ],
         },
         onAnnouncement: () => undefined,
+        onOpenExternalLink: () => undefined,
+        openingExternalLink: "",
       }),
     );
     expect(markup).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
     expect(markup).toContain("Unsafe or unsupported link blocked");
+    expect(markup).toContain('type="button"');
+    expect(markup).toContain(
+      "Open https://example.com/docs in the desktop handler",
+    );
     expect(markup).toContain("Image blocked: ");
     expect(markup).toContain('aria-label="Copy code"');
     expect(markup).not.toContain("dangerouslySetInnerHTML");

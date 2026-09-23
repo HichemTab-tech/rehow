@@ -19,7 +19,10 @@ use crate::{
         },
         verification::{VerificationFailure, verification_hash},
     },
-    markdown::{GuideReadinessError, validate_tested_readiness},
+    markdown::{
+        GuideReadinessError, SafeMarkdownContainer, SafeMarkdownEvent, parse_safe_markdown,
+        validate_tested_readiness,
+    },
     parsing::{parse_guide_source, parse_yaml_document},
     protocol::{
         AttachmentId, CategoryId, GuideId, OperationId, Revision, Snapshot, Timestamp,
@@ -2303,6 +2306,17 @@ pub enum AttachmentRevealError {
     Io,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExternalLinkOpenError {
+    GuideNotFound,
+    RevisionConflict,
+    LinkNotFound,
+    UnsafeStorage,
+    ResourceLimit,
+    HandlerUnavailable,
+    Io,
+}
+
 #[cfg(test)]
 thread_local! {
     static ATTACHMENT_PREVIEW_AFTER_READ_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
@@ -2693,6 +2707,124 @@ pub fn prepare_attachment_reveal(
 
 pub fn execute_attachment_reveal(plan: AttachmentRevealPlan) -> Result<(), AttachmentRevealError> {
     reveal_directory_via_portal(&plan.target)
+}
+
+pub struct ExternalLinkOpenPlan {
+    destination: String,
+}
+
+impl std::fmt::Debug for ExternalLinkOpenPlan {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ExternalLinkOpenPlan")
+            .field("destination", &"<redacted>")
+            .finish()
+    }
+}
+
+pub fn prepare_external_link_open(
+    workspace: &WorkspaceView,
+    guide_id: GuideId,
+    expected_revision: Revision,
+    destination: &str,
+) -> Result<ExternalLinkOpenPlan, ExternalLinkOpenError> {
+    if destination.is_empty() || destination.len() > 2_048 {
+        return Err(ExternalLinkOpenError::LinkNotFound);
+    }
+    let loaded = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides())
+        .find(|guide| guide.guide().id() == &guide_id)
+        .ok_or(ExternalLinkOpenError::GuideNotFound)?;
+    if loaded.revision() != expected_revision {
+        return Err(ExternalLinkOpenError::RevisionConflict);
+    }
+    read_managed_regular(
+        workspace,
+        loaded.relative_path(),
+        GUIDE_SOURCE_PREVIEW_LIMIT,
+        Some(expected_revision),
+    )
+    .map_err(map_external_link_storage_error)?;
+    let body = std::str::from_utf8(loaded.guide().body())
+        .map_err(|_| ExternalLinkOpenError::LinkNotFound)?;
+    let document = parse_safe_markdown(body).map_err(|_| ExternalLinkOpenError::LinkNotFound)?;
+    let retained = document.events.iter().any(|event| {
+        matches!(
+            event,
+            SafeMarkdownEvent::Start {
+                node: SafeMarkdownContainer::Link {
+                    destination: Some(candidate),
+                    ..
+                }
+            } if candidate == destination
+        )
+    });
+    if !retained {
+        return Err(ExternalLinkOpenError::LinkNotFound);
+    }
+    let mut confirmed = String::new();
+    confirmed
+        .try_reserve_exact(destination.len())
+        .map_err(|_| ExternalLinkOpenError::ResourceLimit)?;
+    confirmed.push_str(destination);
+    Ok(ExternalLinkOpenPlan {
+        destination: confirmed,
+    })
+}
+
+pub fn execute_external_link_open(plan: ExternalLinkOpenPlan) -> Result<(), ExternalLinkOpenError> {
+    use gio::{glib::prelude::ToVariant, prelude::DBusProxyExt};
+
+    let portal = gio::DBusProxy::for_bus_sync(
+        gio::BusType::Session,
+        gio::DBusProxyFlags::DO_NOT_CONNECT_SIGNALS,
+        None,
+        "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop",
+        "org.freedesktop.portal.OpenURI",
+        None::<&gio::Cancellable>,
+    )
+    .map_err(|_| ExternalLinkOpenError::HandlerUnavailable)?;
+    let version = portal
+        .cached_property("version")
+        .and_then(|value| value.get::<u32>())
+        .ok_or(ExternalLinkOpenError::HandlerUnavailable)?;
+    if version < 3 {
+        return Err(ExternalLinkOpenError::HandlerUnavailable);
+    }
+    let options = external_link_portal_options();
+    let parameters = ("", plan.destination.as_str(), options.end()).to_variant();
+    portal
+        .call_sync(
+            "OpenURI",
+            Some(&parameters),
+            gio::DBusCallFlags::NONE,
+            15_000,
+            None::<&gio::Cancellable>,
+        )
+        .map(|_| ())
+        .map_err(|_| ExternalLinkOpenError::HandlerUnavailable)
+}
+
+fn external_link_portal_options() -> gio::glib::VariantDict {
+    let options = gio::glib::VariantDict::new(None);
+    options.insert("ask", true);
+    options
+}
+
+fn map_external_link_storage_error(error: WorkspaceInspectError) -> ExternalLinkOpenError {
+    match error {
+        WorkspaceInspectError::ResourceLimit => ExternalLinkOpenError::ResourceLimit,
+        WorkspaceInspectError::UnsafeRoot => ExternalLinkOpenError::UnsafeStorage,
+        WorkspaceInspectError::ChangedDuringRead
+        | WorkspaceInspectError::NotFound
+        | WorkspaceInspectError::NotDirectory => ExternalLinkOpenError::RevisionConflict,
+        WorkspaceInspectError::PermissionDenied | WorkspaceInspectError::Io => {
+            ExternalLinkOpenError::Io
+        }
+    }
 }
 
 fn reveal_directory_via_portal(
@@ -4599,6 +4731,64 @@ mod tests {
             ),
             Err(AttachmentRevealError::UnsafeStorage)
         ));
+    }
+
+    #[test]
+    fn external_link_open_plan_is_exact_revision_bound_and_redacted() {
+        let destination = "https://example.com/help?source=rehow";
+        let guide = GUIDE.replace(
+            "Extract the archive.",
+            &format!("Read [the documentation]({destination}) and [blocked](file:///etc/passwd)."),
+        );
+        let (workspace, _state, view) = fixture("external-link", &guide);
+        let plan = prepare_external_link_open(
+            &view,
+            GuideId::from_str(GUIDE_ID).unwrap(),
+            revision(&view),
+            destination,
+        )
+        .unwrap();
+        assert_eq!(plan.destination, destination);
+        let debug = format!("{plan:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("example.com"));
+
+        assert!(matches!(
+            prepare_external_link_open(
+                &view,
+                GuideId::from_str(GUIDE_ID).unwrap(),
+                revision(&view),
+                "file:///etc/passwd",
+            ),
+            Err(ExternalLinkOpenError::LinkNotFound)
+        ));
+        assert!(matches!(
+            prepare_external_link_open(
+                &view,
+                GuideId::from_str(GUIDE_ID).unwrap(),
+                revision(&view),
+                "https://example.com/not-in-guide",
+            ),
+            Err(ExternalLinkOpenError::LinkNotFound)
+        ));
+
+        fs::write(
+            workspace.path().join(GUIDE_PATH),
+            guide.replace("the documentation", "changed documentation"),
+        )
+        .unwrap();
+        assert!(matches!(
+            prepare_external_link_open(
+                &view,
+                GuideId::from_str(GUIDE_ID).unwrap(),
+                revision(&view),
+                destination,
+            ),
+            Err(ExternalLinkOpenError::RevisionConflict)
+        ));
+
+        let portal_options = external_link_portal_options();
+        assert_eq!(portal_options.lookup::<bool>("ask").unwrap(), Some(true));
     }
 
     #[test]
