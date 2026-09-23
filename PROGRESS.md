@@ -342,7 +342,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Latest verified commit
 
-`2f3668a` — signed guarded Guide-file/shadcn foundation checkpoint; its configured signature verifies. This progress-ledger update follows that commit.
+`1ed5113` — signed final-release-readiness refresh; its configured signature verifies. The latest code checkpoint is signed `2f3668a`; this progress-ledger update follows both.
 
 ## Tests last run and results
 
@@ -546,6 +546,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Important files changed
 
+- Final release evidence: `docs/evidence/final-release-readiness.md` and `docs/installation.md` now include the external-conflict, guarded Guide-file, shadcn foundation, and current focused verification evidence at signed `1ed5113`.
 - Guarded Guide file/shadcn foundation: ADR 0058, the core held-file capability, pathless native portal command, Open File UI, `apps/desktop/components.json`, reviewed `Button`/`cn` source, lockfile, and aligned architecture/design/development/testing/threat docs are checkpointed at `2f3668a`.
 - External Guide conflicts: `crates/rehow-core/src/application.rs`, `apps/desktop/src-tauri/src/lib.rs`, `apps/desktop/src/{App.tsx,index.css,app.test.ts}`, and aligned architecture/design/testing docs are checkpointed at `f048360`.
 - Memory-safe search: ADR 0057, `docs/evidence/phase-4f-memory-safe-search.md`, the Guide metadata/body split, revision-bound lazy body reader, bounded anonymous record codec/backings, desktop/MCP mappings, adversarial tests, and aligned architecture/content/testing/threat/release docs are checkpointed at `5d8ab31`.
