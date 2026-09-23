@@ -61,6 +61,55 @@ use unicode_normalization::UnicodeNormalization;
 pub const GUIDE_BODY_INPUT_LIMIT: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GuideBodyReadError {
+    NotFound,
+    RevisionConflict,
+    InvalidGuide,
+    UnsafeStorage,
+    ResourceLimit,
+    Io,
+}
+
+pub fn read_guide_body(
+    workspace: &WorkspaceView,
+    guide_id: GuideId,
+    expected_revision: Revision,
+) -> Result<Box<[u8]>, GuideBodyReadError> {
+    let loaded = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides())
+        .find(|guide| guide.guide().id() == &guide_id)
+        .ok_or(GuideBodyReadError::NotFound)?;
+    if loaded.revision() != expected_revision {
+        return Err(GuideBodyReadError::RevisionConflict);
+    }
+    let source = read_managed_regular(
+        workspace,
+        loaded.relative_path(),
+        GUIDE_BODY_INPUT_LIMIT,
+        Some(expected_revision),
+    )
+    .map_err(|error| match error {
+        WorkspaceInspectError::ResourceLimit => GuideBodyReadError::ResourceLimit,
+        WorkspaceInspectError::UnsafeRoot => GuideBodyReadError::UnsafeStorage,
+        WorkspaceInspectError::ChangedDuringRead
+        | WorkspaceInspectError::NotFound
+        | WorkspaceInspectError::NotDirectory => GuideBodyReadError::RevisionConflict,
+        WorkspaceInspectError::PermissionDenied | WorkspaceInspectError::Io => {
+            GuideBodyReadError::Io
+        }
+    })?;
+    let parsed = parse_guide_source(source.into_boxed_slice())
+        .map_err(|_| GuideBodyReadError::InvalidGuide)?;
+    let bound = bind_guide(parsed).map_err(|_| GuideBodyReadError::InvalidGuide)?;
+    if bound.record().id() != &guide_id {
+        return Err(GuideBodyReadError::RevisionConflict);
+    }
+    copy_bytes(bound.record().body()).map_err(|_| GuideBodyReadError::ResourceLimit)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspaceRefreshError {
     NotFound,
     NotDirectory,
@@ -1500,8 +1549,9 @@ pub fn confirm_and_approve_guide_tested<W: HasWindowHandle + HasDisplayHandle + 
     if loaded.effective_status() == crate::domain::GuideStatus::Archived {
         return Err(GuideUpdateError::InvalidEdit);
     }
-    let body =
-        core::str::from_utf8(loaded.guide().body()).map_err(|_| GuideUpdateError::InvalidGuide)?;
+    let body_bytes = read_guide_body(workspace, guide_id, expected_revision)
+        .map_err(map_guide_body_update_error)?;
+    let body = core::str::from_utf8(&body_bytes).map_err(|_| GuideUpdateError::InvalidGuide)?;
     validate_tested_readiness(body).map_err(|error| match error {
         GuideReadinessError::MissingSteps
         | GuideReadinessError::EmptySteps
@@ -1556,8 +1606,9 @@ pub fn validate_guide_tested_approval(
     if loaded.effective_status() == crate::domain::GuideStatus::Tested {
         return Err(GuideTestedApprovalError::AlreadyTested);
     }
-    let body =
-        core::str::from_utf8(loaded.guide().body()).map_err(|_| GuideUpdateError::InvalidGuide)?;
+    let body_bytes = read_guide_body(workspace, guide_id, expected_revision)
+        .map_err(map_guide_body_update_error)?;
+    let body = core::str::from_utf8(&body_bytes).map_err(|_| GuideUpdateError::InvalidGuide)?;
     validate_tested_readiness(body).map_err(|error| match error {
         GuideReadinessError::MissingSteps
         | GuideReadinessError::EmptySteps
@@ -2740,14 +2791,20 @@ pub fn prepare_external_link_open(
     if loaded.revision() != expected_revision {
         return Err(ExternalLinkOpenError::RevisionConflict);
     }
-    read_managed_regular(
+    let source = read_managed_regular(
         workspace,
         loaded.relative_path(),
         GUIDE_SOURCE_PREVIEW_LIMIT,
         Some(expected_revision),
     )
     .map_err(map_external_link_storage_error)?;
-    let body = std::str::from_utf8(loaded.guide().body())
+    let parsed = parse_guide_source(source.into_boxed_slice())
+        .map_err(|_| ExternalLinkOpenError::LinkNotFound)?;
+    let bound = bind_guide(parsed).map_err(|_| ExternalLinkOpenError::LinkNotFound)?;
+    if bound.record().id() != &guide_id {
+        return Err(ExternalLinkOpenError::RevisionConflict);
+    }
+    let body = std::str::from_utf8(bound.record().body())
         .map_err(|_| ExternalLinkOpenError::LinkNotFound)?;
     let document = parse_safe_markdown(body).map_err(|_| ExternalLinkOpenError::LinkNotFound)?;
     let retained = document.events.iter().any(|event| {
@@ -2824,6 +2881,16 @@ fn map_external_link_storage_error(error: WorkspaceInspectError) -> ExternalLink
         WorkspaceInspectError::PermissionDenied | WorkspaceInspectError::Io => {
             ExternalLinkOpenError::Io
         }
+    }
+}
+
+fn map_guide_body_update_error(error: GuideBodyReadError) -> GuideUpdateError {
+    match error {
+        GuideBodyReadError::NotFound => GuideUpdateError::NotFound,
+        GuideBodyReadError::RevisionConflict => GuideUpdateError::RevisionConflict,
+        GuideBodyReadError::ResourceLimit => GuideUpdateError::ResourceLimit,
+        GuideBodyReadError::InvalidGuide => GuideUpdateError::InvalidGuide,
+        GuideBodyReadError::UnsafeStorage | GuideBodyReadError::Io => GuideUpdateError::Io,
     }
 }
 
@@ -4868,7 +4935,9 @@ mod tests {
             .find(|guide| guide.guide().title() == "01 install")
             .unwrap();
         assert_eq!(
-            installed.guide().body(),
+            read_guide_body(&view, *installed.guide().id(), installed.revision())
+                .unwrap()
+                .as_ref(),
             b"---\nstatus: tested\n---\n\n# Install\n"
         );
         assert_eq!(
@@ -6248,7 +6317,12 @@ mod tests {
         assert_eq!(loaded.guide().summary(), "Install a downloaded archive.");
         assert_eq!(loaded.guide().category_id(), &category);
         assert_eq!(loaded.guide().declared_status(), GuideStatus::Draft);
-        assert_eq!(loaded.guide().body(), NEW_GUIDE_BODY);
+        assert_eq!(
+            read_guide_body(&view, *loaded.guide().id(), loaded.revision())
+                .unwrap()
+                .as_ref(),
+            NEW_GUIDE_BODY
+        );
         assert_eq!(loaded.revision(), created.revision());
         assert!(loaded.relative_path().starts_with(&format!(
             "{}/install-a-tarball--",
@@ -6286,7 +6360,12 @@ mod tests {
 
         assert_eq!(loaded.guide().id(), &created.guide_id());
         assert_eq!(loaded.guide().declared_status(), GuideStatus::Draft);
-        assert_eq!(loaded.guide().body(), body);
+        assert_eq!(
+            read_guide_body(&view, *loaded.guide().id(), loaded.revision())
+                .unwrap()
+                .as_ref(),
+            body
+        );
         assert_eq!(loaded.guide().title(), "Source Guide");
         assert_eq!(loaded.guide().summary(), "Imported from source.md");
     }
@@ -6390,7 +6469,13 @@ mod tests {
         assert_ne!(outcome.revision(), original_revision);
         assert_eq!(revision(&view), outcome.revision());
         assert_eq!(
-            view.categories()[0].guides()[0].guide().body(),
+            read_guide_body(
+                &view,
+                *view.categories()[0].guides()[0].guide().id(),
+                view.categories()[0].guides()[0].revision(),
+            )
+            .unwrap()
+            .as_ref(),
             b"## Steps\n\nUse the verified command.\n"
         );
         let bytes = fs::read(workspace.path().join(GUIDE_PATH)).unwrap();
@@ -6754,7 +6839,16 @@ mod tests {
             guide.summary(),
             "Extract and register a downloaded application archive."
         );
-        assert_eq!(guide.body(), b"## Steps\n\nExtract the archive.\n");
+        assert_eq!(
+            read_guide_body(
+                &view,
+                *guide.id(),
+                view.categories()[0].guides()[0].revision()
+            )
+            .unwrap()
+            .as_ref(),
+            b"## Steps\n\nExtract the archive.\n"
+        );
         let bytes = fs::read(workspace.path().join(GUIDE_PATH)).unwrap();
         assert!(
             bytes
@@ -6801,7 +6895,12 @@ mod tests {
         let loaded = &view.categories()[0].guides()[0];
         assert_eq!(loaded.guide().tags(), ["linux", "Wayland"]);
         assert_eq!(loaded.guide().aliases(), ["manual install", "tar app"]);
-        assert_eq!(loaded.guide().body(), b"## Steps\n\nExtract the archive.\n");
+        assert_eq!(
+            read_guide_body(&view, *loaded.guide().id(), loaded.revision())
+                .unwrap()
+                .as_ref(),
+            b"## Steps\n\nExtract the archive.\n"
+        );
         assert_eq!(loaded.relative_path(), GUIDE_PATH);
         let bytes = fs::read(workspace.path().join(GUIDE_PATH)).unwrap();
         assert!(
@@ -6849,18 +6948,14 @@ mod tests {
         )
         .unwrap();
         let guide_id = created.guide_id();
-        let (source_path, original_body) = view
+        let source_loaded = view
             .categories()
             .iter()
             .flat_map(|category| category.guides())
             .find(|guide| guide.guide().id() == &guide_id)
-            .map(|guide| {
-                (
-                    guide.relative_path().to_owned(),
-                    guide.guide().body().to_owned(),
-                )
-            })
             .unwrap();
+        let source_path = source_loaded.relative_path().to_owned();
+        let original_body = read_guide_body(&view, guide_id, source_loaded.revision()).unwrap();
         let filename = source_path.rsplit_once('/').unwrap().1.to_owned();
         let destination_directory = view
             .categories()
@@ -6903,7 +6998,10 @@ mod tests {
         assert_eq!(matches[0].1.relative_path(), destination_path);
         assert_eq!(matches[0].1.revision(), moved.revision());
         assert_eq!(matches[0].1.guide().title(), "Moved Guide");
-        assert_eq!(matches[0].1.guide().body(), original_body);
+        assert_eq!(
+            read_guide_body(&view, guide_id, matches[0].1.revision()).unwrap(),
+            original_body
+        );
         assert_eq!(matches[0].1.guide().tags(), ["linux"]);
     }
 
@@ -7301,7 +7399,8 @@ mod tests {
         let (workspace, state, mut view) = fixture("guide-archive", GUIDE);
         let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
         let original_path = view.categories()[0].guides()[0].relative_path().to_owned();
-        let original_body = view.categories()[0].guides()[0].guide().body().to_owned();
+        let original_body =
+            read_guide_body(&view, guide_id, view.categories()[0].guides()[0].revision()).unwrap();
         let expected = revision(&view);
 
         let archived =
@@ -7310,7 +7409,10 @@ mod tests {
         let loaded = &view.categories()[0].guides()[0];
         assert_eq!(loaded.guide().declared_status(), GuideStatus::Archived);
         assert_eq!(loaded.relative_path(), original_path);
-        assert_eq!(loaded.guide().body(), original_body);
+        assert_eq!(
+            read_guide_body(&view, guide_id, loaded.revision()).unwrap(),
+            original_body
+        );
         let archived_bytes = fs::read(workspace.path().join(GUIDE_PATH)).unwrap();
         assert!(
             archived_bytes
@@ -7336,7 +7438,10 @@ mod tests {
         let loaded = &view.categories()[0].guides()[0];
         assert_eq!(loaded.guide().declared_status(), GuideStatus::Draft);
         assert_eq!(loaded.relative_path(), original_path);
-        assert_eq!(loaded.guide().body(), original_body);
+        assert_eq!(
+            read_guide_body(&view, guide_id, loaded.revision()).unwrap(),
+            original_body
+        );
         assert!(workspace.path().join(GUIDE_PATH).is_file());
     }
 

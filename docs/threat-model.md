@@ -16,6 +16,8 @@ Protected assets:
 
 Components in scope: Tauri webview/IPC adapter, Rust application/core/storage/search/Git code, Markdown renderer/Attachment protocol, Workspace files, watchers, local preferences/cache/state, standalone MCP server, Git child processes, installer/package, and external opener.
 
+Search derived state uses private anonymous temporary files with closed versioned length framing. It carries no filesystem authority and is never trusted as canonical content. Reads are positional and bounded by both the record and backing length; malformed/truncated/trailing records and impossible counts fail before large allocation as an unavailable index. A 64 MiB record limit, 65,536-value repeated-field limit, and pre-write 4 GiB physical prior-plus-candidate backing limit make hostile derived-state disk amplification fail closed without replacing the prior index. Revision reuse cannot cross Guide content changes. Eight-generation compaction is attempted only while prior backings are at most 2 GiB, so the still-live source plus replacement cannot bypass the 4 GiB transient cap; larger indexes remain incremental and subject to that same cap.
+
 Out of scope as a hard boundary: protection against a fully compromised same-user account or kernel. Rehow still minimizes accidental damage and malicious-content influence under that account.
 
 ## Trust boundaries

@@ -9,15 +9,15 @@ use rehow_core::{
     application::{
         AttachmentRemovalApproval, AttachmentRemovalError, AttachmentRemovalOutcome,
         CategoryCreateError, CategoryOrderRevision, CategoryRemoveError, CategoryReorderError,
-        CategoryUpdateError, GuideCreateError, GuideEdit, GuideTestedApprovalError,
-        GuideUpdateError, ManagedAttachmentAddError, ManagedAttachmentCandidate,
-        ManagedAttachmentDiscoveryError, add_managed_attachment_metadata,
-        approve_attachment_removal_after_native_confirmation,
+        CategoryUpdateError, GuideBodyReadError, GuideCreateError, GuideEdit,
+        GuideTestedApprovalError, GuideUpdateError, ManagedAttachmentAddError,
+        ManagedAttachmentCandidate, ManagedAttachmentDiscoveryError,
+        add_managed_attachment_metadata, approve_attachment_removal_after_native_confirmation,
         approve_guide_tested_after_native_confirmation, change_guide_category_at_revision,
         create_category_at_snapshot, create_guide_at_revision, list_managed_attachment_candidates,
-        refresh_open_workspace, remove_category_at_snapshot, reorder_categories_at_snapshot,
-        set_category_archived, update_category_details, update_guide,
-        validate_attachment_removal_approval, validate_guide_tested_approval,
+        read_guide_body, refresh_open_workspace, remove_category_at_snapshot,
+        reorder_categories_at_snapshot, set_category_archived, update_category_details,
+        update_guide, validate_attachment_removal_approval, validate_guide_tested_approval,
     },
     domain::{CategoryStatus, GuideStatus, RestorableGuideStatus},
     git::{
@@ -8156,6 +8156,9 @@ impl McpServer {
         .map_err(|error| match error {
             SearchError::QueryTooLarge => McpError::invalid_params("search query too large", None),
             SearchError::TooManyTerms => McpError::invalid_params("too many search terms", None),
+            SearchError::IndexUnavailable => {
+                McpError::internal_error("search index unavailable", None)
+            }
         })?;
         let mut results = Vec::new();
         for hit in hits {
@@ -8229,7 +8232,19 @@ impl McpServer {
         let (category, loaded) = find_guide(&view, &guide_id)
             .ok_or_else(|| McpError::invalid_params("Guide not found", None))?;
         let guide = loaded.guide();
-        let body = std::str::from_utf8(guide.body())
+        let body_bytes = read_guide_body(&view, guide_id, loaded.revision()).map_err(|error| {
+            let message = match error {
+                GuideBodyReadError::NotFound | GuideBodyReadError::RevisionConflict => {
+                    "Guide changed; refresh the Workspace"
+                }
+                GuideBodyReadError::InvalidGuide => "Guide Markdown is invalid",
+                GuideBodyReadError::UnsafeStorage => "Guide storage is unsafe",
+                GuideBodyReadError::ResourceLimit => "Guide exceeds the safe read limit",
+                GuideBodyReadError::Io => "Guide body unavailable",
+            };
+            McpError::internal_error(message, None)
+        })?;
+        let body = std::str::from_utf8(&body_bytes)
             .map_err(|_| McpError::internal_error("Guide body unavailable", None))?;
         let include_body = input.include_body.unwrap_or(true);
         let (returned_body, body_truncated) = truncate_utf8(body, max_body_bytes);
@@ -9083,6 +9098,10 @@ mod tests {
         sync::atomic::{AtomicBool, Ordering},
     };
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    fn retained_body(view: &WorkspaceView, guide: &LoadedGuide) -> Box<[u8]> {
+        read_guide_body(view, *guide.guide().id(), guide.revision()).unwrap()
+    }
 
     fn fixture_workspace(root: &std::path::Path) {
         fs::create_dir_all(root.join("categories/general")).unwrap();
@@ -12813,7 +12832,7 @@ mod tests {
         assert!(loaded.guide().tags().is_empty());
         assert!(loaded.guide().aliases().is_empty());
         assert_eq!(
-            loaded.guide().body(),
+            retained_body(&view, loaded).as_ref(),
             b"## Steps\n\n1. Describe the first step.\n"
         );
         drop(view);
@@ -14746,7 +14765,7 @@ mod tests {
                 guide.revision(),
                 guide.relative_path().to_owned(),
                 *guide.guide().category_id(),
-                guide.guide().body().to_owned(),
+                retained_body(&view, guide),
             )
         };
         let archived = writable
@@ -14772,7 +14791,7 @@ mod tests {
             let (_, guide) = find_guide(&view, &guide_id).unwrap();
             assert_eq!(guide.relative_path(), relative_path);
             assert_eq!(guide.guide().category_id(), &category_id);
-            assert_eq!(guide.guide().body(), body);
+            assert_eq!(retained_body(&view, guide), body);
         }
 
         let restored = writable
@@ -14791,7 +14810,7 @@ mod tests {
         let (_, guide) = find_guide(&view, &guide_id).unwrap();
         assert_eq!(guide.relative_path(), relative_path);
         assert_eq!(guide.guide().category_id(), &category_id);
-        assert_eq!(guide.guide().body(), body);
+        assert_eq!(retained_body(&view, guide), body);
     }
 
     #[test]
@@ -14870,7 +14889,7 @@ mod tests {
                     guide.revision(),
                     guide.relative_path().to_owned(),
                     *guide.guide().category_id(),
-                    guide.guide().body().to_owned(),
+                    retained_body(&view, guide),
                 )
             };
             let result = server
@@ -14893,7 +14912,7 @@ mod tests {
             let (_, guide) = find_guide(&view, &guide_id).unwrap();
             assert_eq!(guide.relative_path(), relative_path);
             assert_eq!(guide.guide().category_id(), &category_id);
-            assert_eq!(guide.guide().body(), body);
+            assert_eq!(retained_body(&view, guide), body);
             let new_revision = guide.revision();
             drop(view);
             assert_eq!(new_revision != revision, changed);
@@ -14989,7 +15008,7 @@ mod tests {
                 guide.guide().title().to_owned(),
                 guide.guide().summary().to_owned(),
                 guide.guide().aliases().to_vec(),
-                guide.guide().body().to_owned(),
+                retained_body(&view, guide),
             )
         };
         let tags = server
@@ -15014,7 +15033,7 @@ mod tests {
             assert_eq!(guide.guide().category_id(), &category_id);
             assert_eq!(guide.guide().title(), title);
             assert_eq!(guide.guide().summary(), summary);
-            assert_eq!(guide.guide().body(), body);
+            assert_eq!(retained_body(&view, guide), body);
         }
         assert!(
             fs::read_to_string(
@@ -15091,7 +15110,7 @@ mod tests {
         let (_, guide) = find_guide(&view, &guide_id).unwrap();
         assert!(guide.guide().aliases().is_empty());
         assert_eq!(guide.guide().tags(), &["linux", "archive"]);
-        assert_eq!(guide.guide().body(), body);
+        assert_eq!(retained_body(&view, guide), body);
     }
 
     #[test]
@@ -15190,7 +15209,7 @@ mod tests {
                 guide.guide().summary().to_owned(),
                 guide.guide().tags().to_vec(),
                 guide.guide().aliases().to_vec(),
-                guide.guide().body().to_owned(),
+                retained_body(&view, guide),
             )
         };
         let no_op = server
@@ -15235,7 +15254,7 @@ mod tests {
         assert_eq!(guide.guide().summary(), summary);
         assert_eq!(guide.guide().tags(), tags);
         assert_eq!(guide.guide().aliases(), aliases);
-        assert_eq!(guide.guide().body(), body);
+        assert_eq!(retained_body(&view, guide), body);
         drop(view);
         assert!(
             fs::read_to_string(workspace_root.path().join(destination_path))

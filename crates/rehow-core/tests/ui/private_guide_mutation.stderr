@@ -1,4 +1,4 @@
-error[E0616]: field `title` of struct `rehow_core::domain::Guide` is private
+error[E0616]: field `title` of struct `GuideMetadata` is private
  --> tests/ui/private_guide_mutation.rs:4:11
   |
 4 |     value.title = "changed".to_owned();

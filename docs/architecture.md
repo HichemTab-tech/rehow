@@ -92,9 +92,10 @@ Phase 1D has no filesystem, revision, inventory, clock, entropy, process, networ
 ### Search
 
 1. Query parsing normalizes Unicode/case, recognizes quoted phrases/path-like/command-like/error-like tokens, and retains literal intent.
-2. The field-aware index retrieves candidates.
+2. Changed revisions are normalized once into versioned length-framed records in private anonymous temporary files. The retained view holds metadata plus immutable record offsets, never all Guide bodies or normalized full text in RAM; unchanged records are reused and old generations are periodically compacted.
 3. Deterministic boosts rank exact normalized title, alias, command, path, and error matches deliberately; status/staleness and token coverage act as secondary signals.
 4. Results include matched fields and a bounded plain normalized excerpt with Unicode-scalar highlight ranges; the renderer validates the payload and creates text/`mark` nodes, never result HTML. Malformed files remain isolated.
+5. Opening or validating a Guide rereads its body through the retained root capability and exact revision, reparses it, and keeps that body only for the explicit operation. Search/index files are disposable and contain no canonical authority.
 
 ### Git
 
@@ -172,7 +173,7 @@ Workspace diagnostics cross the desktop boundary only as a closed issue kind plu
 
 ## Search/index design
 
-The index is versioned by application/index schema and stored beneath `$XDG_CACHE_HOME/rehow/workspaces/<workspace-id>-<root-hash>/search/<format-version>/` or held in memory. It contains no irreplaceable data and can be deleted/rebuilt.
+The current index keeps compact ranking descriptors in memory and puts normalized, versioned records in process-private anonymous temporary files. Guide bodies are reread only through the retained Workspace capability and exact revision. Derived records have 64 MiB per-record, 65,536 values per repeated field, and 4 GiB total live-backing limits; a one-over candidate fails before writing and cannot displace the prior index. The index contains no irreplaceable data and is dropped/rebuilt with the process or after an unavailable-record error. See ADR 0057.
 
 Indexed fields and initial relative boosts:
 

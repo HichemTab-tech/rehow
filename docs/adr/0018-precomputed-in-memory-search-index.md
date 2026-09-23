@@ -1,6 +1,6 @@
 # ADR 0018: Precomputed in-memory search index
 
-- Status: Accepted
+- Status: Superseded by ADR 0057
 - Date: 2026-09-19
 - Supersedes: ADR 0004's initial Tantivy presumption; all other ADR 0004 requirements remain active.
 

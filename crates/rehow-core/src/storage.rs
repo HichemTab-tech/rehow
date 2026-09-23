@@ -50,7 +50,7 @@ pub(crate) use recovery::{
 compile_error!("Rehow's confined Workspace storage currently requires Linux");
 
 use crate::{
-    domain::{Category, Guide, GuideStatus, WorkspaceManifest},
+    domain::{Category, GuideMetadata, GuideStatus, WorkspaceManifest},
     protocol::{Revision, Snapshot},
 };
 use std::{
@@ -2592,7 +2592,7 @@ pub struct LoadedCategory {
 pub struct LoadedGuide {
     relative_path: String,
     revision: Revision,
-    guide: Guide,
+    guide: GuideMetadata,
     effective_status: GuideStatus,
 }
 
@@ -2836,7 +2836,7 @@ impl LoadedGuide {
         self.revision
     }
 
-    pub fn guide(&self) -> &Guide {
+    pub fn guide(&self) -> &GuideMetadata {
         &self.guide
     }
 
@@ -3909,6 +3909,8 @@ fn inspect_open_root_with_index(
     let mut category_ids = HashSet::new();
     let mut guide_ids = HashSet::new();
     let mut guide_candidates = 0usize;
+    let mut search_builder = crate::search::SearchIndexBuilder::new(previous_index)
+        .map_err(|_| WorkspaceInspectError::Io)?;
     categories
         .try_reserve_exact(category_names.len())
         .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
@@ -4116,10 +4118,23 @@ fn inspect_open_root_with_index(
             } else {
                 bound_guide.record().declared_status()
             };
+            search_builder
+                .add(
+                    bound_guide.record(),
+                    revision,
+                    effective_status,
+                    category.name(),
+                )
+                .map_err(|error| match error {
+                    crate::search::SearchIndexBuildError::ResourceLimit => {
+                        WorkspaceInspectError::ResourceLimit
+                    }
+                    crate::search::SearchIndexBuildError::Io => WorkspaceInspectError::Io,
+                })?;
             guides.push(LoadedGuide {
                 relative_path: guide_path,
                 revision,
-                guide: bound_guide.into_record(),
+                guide: bound_guide.into_record().into_metadata(),
                 effective_status,
             });
         }
@@ -4147,7 +4162,10 @@ fn inspect_open_root_with_index(
 
     inspect_attachments(&root, &categories, &mut issues)?;
 
-    let search_index = crate::search::SearchIndex::reconcile(&categories, previous_index);
+    let search_index = search_builder.finish().map_err(|error| match error {
+        crate::search::SearchIndexBuildError::ResourceLimit => WorkspaceInspectError::ResourceLimit,
+        crate::search::SearchIndexBuildError::Io => WorkspaceInspectError::Io,
+    })?;
     Ok(WorkspaceInspection::Compatible(Box::new(WorkspaceView {
         _root: root,
         manifest,

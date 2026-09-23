@@ -6,12 +6,13 @@ use rehow_core::{
         AttachmentImportOutcome, AttachmentRemovalError, AttachmentRemovalOutcome,
         AttachmentRevealError, AttachmentTextPreviewError, CategoryCreateError,
         CategoryOrderRevision, CategoryRemoveError, CategoryReorderError, CategoryUpdateError,
-        ExternalLinkOpenError, GUIDE_BODY_INPUT_LIMIT, GuideCreateError, GuideEdit,
-        GuideRemoveError, GuideUpdateError, MarkdownImportError, MarkdownImportPartialFailure,
-        WorkspaceInitializationError, WorkspaceRefreshError, confirm_and_approve_guide_tested,
-        confirm_and_remove_attachment, create_category, create_guide, execute_attachment_reveal,
-        execute_external_link_open, import_markdown_collection, initialize_workspace,
-        prepare_attachment_reveal, prepare_external_link_open, preview_attachment_text,
+        ExternalLinkOpenError, GUIDE_BODY_INPUT_LIMIT, GuideBodyReadError, GuideCreateError,
+        GuideEdit, GuideRemoveError, GuideUpdateError, MarkdownImportError,
+        MarkdownImportPartialFailure, WorkspaceInitializationError, WorkspaceRefreshError,
+        confirm_and_approve_guide_tested, confirm_and_remove_attachment, create_category,
+        create_guide, execute_attachment_reveal, execute_external_link_open,
+        import_markdown_collection, initialize_workspace, prepare_attachment_reveal,
+        prepare_external_link_open, preview_attachment_text, read_guide_body,
         refresh_open_workspace as refresh_workspace_view, remove_category, remove_guide,
         reorder_categories, select_and_export_attachment, select_and_import_attachment,
         set_category_archived, set_guide_archived, update_category_details, update_guide,
@@ -887,7 +888,9 @@ fn guide_body_payload(
         .find(|loaded| loaded.guide().id() == guide_id)
         .ok_or_else(|| "Guide was not found".to_owned())?;
     let guide = loaded.guide();
-    let body = std::str::from_utf8(guide.body())
+    let body_bytes = read_guide_body(workspace, *guide.id(), loaded.revision())
+        .map_err(guide_body_read_message)?;
+    let body = std::str::from_utf8(&body_bytes)
         .map_err(|_| "Guide Markdown is not valid UTF-8".to_owned())?;
     let document = parse_safe_markdown(body).map_err(|error| error.to_string())?;
     Ok(GuideBodyPayload {
@@ -896,6 +899,19 @@ fn guide_body_payload(
         body: body.to_owned(),
         document,
     })
+}
+
+fn guide_body_read_message(error: GuideBodyReadError) -> String {
+    match error {
+        GuideBodyReadError::NotFound => "Guide was not found".to_owned(),
+        GuideBodyReadError::RevisionConflict => {
+            "Guide changed. Refresh the Workspace and try again".to_owned()
+        }
+        GuideBodyReadError::InvalidGuide => "Guide Markdown is invalid".to_owned(),
+        GuideBodyReadError::UnsafeStorage => "Guide storage is unsafe".to_owned(),
+        GuideBodyReadError::ResourceLimit => "Guide is too large to read safely".to_owned(),
+        GuideBodyReadError::Io => "Guide could not be read".to_owned(),
+    }
 }
 
 impl From<WorkspaceFolderFacts> for FolderFactsPayload {
@@ -1424,6 +1440,9 @@ fn search_open_workspace(
             rehow_core::search::SearchError::QueryTooLarge => "Search query is too long".to_owned(),
             rehow_core::search::SearchError::TooManyTerms => {
                 "Search query has too many terms".to_owned()
+            }
+            rehow_core::search::SearchError::IndexUnavailable => {
+                "Search index is unavailable. Refresh the Workspace and try again".to_owned()
             }
         })
 }

@@ -1,14 +1,17 @@
 //! Deterministic field-aware Workspace search.
 
 use crate::{
-    domain::GuideStatus,
+    domain::{Guide, GuideStatus},
     markdown::{SafeMarkdownContainer, SafeMarkdownEvent, parse_safe_markdown},
     protocol::{GuideId, Revision},
-    storage::{LoadedCategory, LoadedGuide, WorkspaceView},
+    storage::WorkspaceView,
 };
 use std::{
     cmp::Reverse,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
+    fs::File,
+    io::Write,
+    os::unix::fs::FileExt,
     sync::Arc,
 };
 use unicode_normalization::UnicodeNormalization;
@@ -134,6 +137,7 @@ impl SearchHit {
 pub enum SearchError {
     QueryTooLarge,
     TooManyTerms,
+    IndexUnavailable,
 }
 
 pub(crate) struct SearchIndex {
@@ -146,59 +150,276 @@ struct SearchDocument {
     status: GuideStatus,
     category: String,
     title: String,
-    fields: Arc<SearchFields>,
+    record: SearchRecord,
+}
+
+struct SearchBacking {
+    file: File,
+    length: u64,
+}
+
+#[derive(Clone)]
+struct SearchRecord {
+    backing: Arc<SearchBacking>,
+    offset: u64,
+    length: u32,
+}
+
+enum PendingRecord {
+    Existing(SearchRecord),
+    New { offset: u64, length: u32 },
+}
+
+struct PendingDocument {
+    guide_id: GuideId,
+    revision: Revision,
+    status: GuideStatus,
+    category: String,
+    title: String,
+    record: PendingRecord,
+}
+
+enum PendingSearchDocument {
+    Existing(Arc<SearchDocument>),
+    New(PendingDocument),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SearchIndexBuildError {
+    ResourceLimit,
+    Io,
+}
+
+pub(crate) struct SearchIndexBuilder<'a> {
+    previous: BTreeMap<GuideId, &'a Arc<SearchDocument>>,
+    file: File,
+    offset: u64,
+    retained_backing_bytes: u64,
+    documents: Vec<PendingSearchDocument>,
+    encoded: Vec<u8>,
+    compact: bool,
+}
+
+const SEARCH_BACKING_GENERATION_LIMIT: usize = 8;
+const MAX_SEARCH_RECORD_BYTES: usize = 64 * 1024 * 1024;
+const MAX_SEARCH_LIVE_BACKING_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_SEARCH_COMPACTION_SOURCE_BYTES: u64 = MAX_SEARCH_LIVE_BACKING_BYTES / 2;
+const MAX_SEARCH_VALUES_PER_FIELD: usize = 65_536;
+
+impl<'a> SearchIndexBuilder<'a> {
+    pub(crate) fn new(previous: Option<&'a SearchIndex>) -> Result<Self, SearchIndexBuildError> {
+        let (compact, retained_backing_bytes) = previous.map_or((false, 0), |index| {
+            let (generations, bytes) = index.backing_stats();
+            let compact = generations >= SEARCH_BACKING_GENERATION_LIMIT
+                && bytes <= MAX_SEARCH_COMPACTION_SOURCE_BYTES;
+            (compact, bytes)
+        });
+        let previous = previous
+            .map(|index| {
+                index
+                    .documents
+                    .iter()
+                    .map(|document| (document.guide_id, document))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(Self {
+            previous,
+            file: tempfile::tempfile().map_err(|_| SearchIndexBuildError::Io)?,
+            offset: 0,
+            retained_backing_bytes,
+            documents: Vec::new(),
+            encoded: Vec::new(),
+            compact,
+        })
+    }
+
+    pub(crate) fn add(
+        &mut self,
+        guide: &Guide,
+        revision: Revision,
+        status: GuideStatus,
+        category: &str,
+    ) -> Result<(), SearchIndexBuildError> {
+        self.documents
+            .try_reserve(1)
+            .map_err(|_| SearchIndexBuildError::ResourceLimit)?;
+        let guide_id = *guide.id();
+        let category = normalize(category);
+        let title = normalize(guide.title());
+        if !self.compact
+            && let Some(previous) = self.previous.get(&guide_id).filter(|document| {
+                document.revision == revision
+                    && document.status == status
+                    && document.category == category
+                    && document.title == title
+            })
+        {
+            self.documents
+                .push(PendingSearchDocument::Existing(Arc::clone(previous)));
+            return Ok(());
+        }
+        let record = if let Some(previous) = self
+            .previous
+            .get(&guide_id)
+            .filter(|document| document.revision == revision)
+        {
+            if self.compact {
+                previous
+                    .record
+                    .read_bytes(&mut self.encoded)
+                    .map_err(|_| SearchIndexBuildError::Io)?;
+                self.write_encoded_record()?
+            } else {
+                PendingRecord::Existing(previous.record.clone())
+            }
+        } else {
+            self.encoded.clear();
+            SearchFields::extract(guide).encode(&mut self.encoded)?;
+            self.write_encoded_record()?
+        };
+        self.documents
+            .push(PendingSearchDocument::New(PendingDocument {
+                guide_id,
+                revision,
+                status,
+                category,
+                title,
+                record,
+            }));
+        Ok(())
+    }
+
+    fn write_encoded_record(&mut self) -> Result<PendingRecord, SearchIndexBuildError> {
+        self.write_encoded_record_with_limits(
+            MAX_SEARCH_RECORD_BYTES,
+            MAX_SEARCH_LIVE_BACKING_BYTES,
+        )
+    }
+
+    fn write_encoded_record_with_limits(
+        &mut self,
+        record_limit: usize,
+        live_backing_limit: u64,
+    ) -> Result<PendingRecord, SearchIndexBuildError> {
+        if self.encoded.len() > record_limit {
+            return Err(SearchIndexBuildError::ResourceLimit);
+        }
+        let length =
+            u32::try_from(self.encoded.len()).map_err(|_| SearchIndexBuildError::ResourceLimit)?;
+        let next_offset = self
+            .offset
+            .checked_add(u64::from(length))
+            .ok_or(SearchIndexBuildError::ResourceLimit)?;
+        let total_live_bytes = self
+            .retained_backing_bytes
+            .checked_add(next_offset)
+            .ok_or(SearchIndexBuildError::ResourceLimit)?;
+        if total_live_bytes > live_backing_limit {
+            return Err(SearchIndexBuildError::ResourceLimit);
+        }
+        self.file
+            .write_all(&self.encoded)
+            .map_err(|_| SearchIndexBuildError::Io)?;
+        let offset = self.offset;
+        self.offset = next_offset;
+        Ok(PendingRecord::New { offset, length })
+    }
+
+    pub(crate) fn finish(mut self) -> Result<SearchIndex, SearchIndexBuildError> {
+        self.file.flush().map_err(|_| SearchIndexBuildError::Io)?;
+        let backing = Arc::new(SearchBacking {
+            file: self.file,
+            length: self.offset,
+        });
+        let documents = self
+            .documents
+            .into_iter()
+            .map(|document| match document {
+                PendingSearchDocument::Existing(document) => document,
+                PendingSearchDocument::New(document) => Arc::new(SearchDocument {
+                    guide_id: document.guide_id,
+                    revision: document.revision,
+                    status: document.status,
+                    category: document.category,
+                    title: document.title,
+                    record: match document.record {
+                        PendingRecord::Existing(record) => record,
+                        PendingRecord::New { offset, length } => SearchRecord {
+                            backing: Arc::clone(&backing),
+                            offset,
+                            length,
+                        },
+                    },
+                }),
+            })
+            .collect();
+        Ok(SearchIndex { documents })
+    }
+}
+
+impl SearchRecord {
+    fn read_bytes(&self, buffer: &mut Vec<u8>) -> Result<(), SearchError> {
+        let length = usize::try_from(self.length).map_err(|_| SearchError::IndexUnavailable)?;
+        let end = self
+            .offset
+            .checked_add(u64::from(self.length))
+            .ok_or(SearchError::IndexUnavailable)?;
+        if length > MAX_SEARCH_RECORD_BYTES || end > self.backing.length {
+            return Err(SearchError::IndexUnavailable);
+        }
+        buffer.clear();
+        buffer
+            .try_reserve_exact(length)
+            .map_err(|_| SearchError::IndexUnavailable)?;
+        buffer.resize(length, 0);
+        self.backing
+            .file
+            .read_exact_at(buffer, self.offset)
+            .map_err(|_| SearchError::IndexUnavailable)
+    }
+
+    fn read(&self, buffer: &mut Vec<u8>) -> Result<SearchFields, SearchError> {
+        self.read_bytes(buffer)?;
+        SearchFields::decode(buffer).ok_or(SearchError::IndexUnavailable)
+    }
 }
 
 impl SearchIndex {
-    pub(crate) fn reconcile(categories: &[LoadedCategory], previous: Option<&Self>) -> Self {
-        let previous = previous.map(|index| {
-            index
-                .documents
-                .iter()
-                .map(|document| (document.guide_id, document))
-                .collect::<BTreeMap<_, _>>()
-        });
-        let mut documents = Vec::with_capacity(
-            categories
-                .iter()
-                .map(|category| category.guides().len())
-                .sum(),
-        );
-        for category in categories {
-            let category_name = normalize(category.category().name());
-            for loaded in category.guides() {
-                let guide_id = *loaded.guide().id();
-                let previous_document = previous
-                    .as_ref()
-                    .and_then(|documents| documents.get(&guide_id))
-                    .filter(|document| document.revision == loaded.revision());
-                if let Some(document) = previous_document {
-                    if document.status == loaded.effective_status()
-                        && document.category == category_name
-                    {
-                        documents.push(Arc::clone(document));
-                    } else {
-                        documents.push(Arc::new(SearchDocument {
-                            guide_id,
-                            revision: loaded.revision(),
-                            status: loaded.effective_status(),
-                            category: category_name.clone(),
-                            title: document.title.clone(),
-                            fields: Arc::clone(&document.fields),
-                        }));
-                    }
-                } else {
-                    documents.push(Arc::new(SearchDocument {
-                        guide_id,
-                        revision: loaded.revision(),
-                        status: loaded.effective_status(),
-                        category: category_name.clone(),
-                        title: normalize(loaded.guide().title()),
-                        fields: Arc::new(SearchFields::extract(loaded)),
-                    }));
-                }
+    fn backing_stats(&self) -> (usize, u64) {
+        let mut seen = HashSet::new();
+        let mut bytes = 0u64;
+        for document in &self.documents {
+            let identity = Arc::as_ptr(&document.record.backing) as usize;
+            if seen.insert(identity) {
+                bytes = bytes.saturating_add(document.record.backing.length);
             }
         }
+        (seen.len(), bytes)
+    }
+
+    #[cfg(test)]
+    fn reconcile_prebuilt(refreshed: &Self, previous: &Self) -> Self {
+        let previous = previous
+            .documents
+            .iter()
+            .map(|document| (document.guide_id, document))
+            .collect::<BTreeMap<_, _>>();
+        let documents = refreshed
+            .documents
+            .iter()
+            .map(|document| {
+                previous
+                    .get(&document.guide_id)
+                    .filter(|prior| {
+                        prior.revision == document.revision
+                            && prior.status == document.status
+                            && prior.category == document.category
+                            && prior.title == document.title
+                    })
+                    .map_or_else(|| Arc::clone(document), |prior| Arc::clone(prior))
+            })
+            .collect();
         Self { documents }
     }
 
@@ -214,27 +435,28 @@ impl SearchIndex {
         if limit == 0 || parsed.terms.is_empty() {
             return Ok(Vec::new());
         }
-        let mut hits: Vec<(SearchHit, &str, &str, &SearchFields)> = Vec::new();
+        let mut hits: Vec<(SearchHit, usize)> = Vec::new();
+        let mut buffer = Vec::new();
 
-        for document in &self.documents {
+        for (document_index, document) in self.documents.iter().enumerate() {
             if allowed_guide_ids.is_some_and(|allowed| !allowed.contains(&document.guide_id)) {
                 continue;
             }
             if !status_scope.includes(document.status) {
                 continue;
             }
+            let fields = document.record.read(&mut buffer)?;
             if !parsed
                 .terms
                 .iter()
-                .all(|term| document.fields.contains(term, &document.category))
+                .all(|term| fields.contains(term, &document.category))
             {
                 continue;
             }
-            let (mut base_score, mut matched_fields) = document
-                .fields
-                .score(&parsed.normalized, &document.category);
+            let (mut base_score, mut matched_fields) =
+                fields.score(&parsed.normalized, &document.category);
             for term in &parsed.terms {
-                let (term_score, term_fields) = document.fields.score(term, &document.category);
+                let (term_score, term_fields) = fields.score(term, &document.category);
                 base_score = base_score.max(term_score);
                 matched_fields.extend(term_fields);
             }
@@ -258,30 +480,36 @@ impl SearchIndex {
                     excerpt_field: SearchMatchField::Body,
                     highlights: Vec::new(),
                 },
-                &document.title,
-                &document.category,
-                &document.fields,
+                document_index,
             ));
         }
 
-        hits.sort_by(|(left, left_title, _, _), (right, right_title, _, _)| {
+        hits.sort_by(|(left, left_index), (right, right_index)| {
             Reverse(left.score)
                 .cmp(&Reverse(right.score))
-                .then_with(|| left_title.cmp(right_title))
+                .then_with(|| {
+                    self.documents[*left_index]
+                        .title
+                        .cmp(&self.documents[*right_index].title)
+                })
                 .then_with(|| left.guide_id.cmp(&right.guide_id))
         });
         hits.truncate(limit);
-        Ok(hits
-            .into_iter()
-            .map(|(mut hit, _, category, fields)| {
-                let (field, excerpt, highlights) =
-                    fields.excerpt(&parsed, category, &hit.matched_fields);
-                hit.excerpt_field = field;
-                hit.excerpt = excerpt;
-                hit.highlights = highlights;
-                hit
-            })
-            .collect())
+        let mut completed = Vec::new();
+        completed
+            .try_reserve_exact(hits.len())
+            .map_err(|_| SearchError::IndexUnavailable)?;
+        for (mut hit, document_index) in hits {
+            let document = &self.documents[document_index];
+            let fields = document.record.read(&mut buffer)?;
+            let (field, excerpt, highlights) =
+                fields.excerpt(&parsed, &document.category, &hit.matched_fields);
+            hit.excerpt_field = field;
+            hit.excerpt = excerpt;
+            hit.highlights = highlights;
+            completed.push(hit);
+        }
+        Ok(completed)
     }
 }
 
@@ -371,7 +599,8 @@ impl SearchQuery {
     }
 }
 
-struct SearchFields {
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct SearchFields {
     title: String,
     aliases: Vec<String>,
     commands: Vec<String>,
@@ -384,8 +613,7 @@ struct SearchFields {
 }
 
 impl SearchFields {
-    fn extract(loaded: &LoadedGuide) -> Self {
-        let guide = loaded.guide();
+    pub(crate) fn extract(guide: &Guide) -> Self {
         let body_source = std::str::from_utf8(guide.body()).unwrap_or_default();
         let mut paths = guide
             .files_affected()
@@ -475,6 +703,42 @@ impl SearchFields {
             headings,
             body,
         }
+    }
+
+    fn encode(&self, output: &mut Vec<u8>) -> Result<(), SearchIndexBuildError> {
+        output
+            .try_reserve(4)
+            .map_err(|_| SearchIndexBuildError::ResourceLimit)?;
+        output.extend_from_slice(b"RHS1");
+        encode_string(output, &self.title)?;
+        encode_strings(output, &self.aliases)?;
+        encode_strings(output, &self.commands)?;
+        encode_strings(output, &self.paths)?;
+        encode_strings(output, &self.errors)?;
+        encode_strings(output, &self.tags)?;
+        encode_string(output, &self.summary)?;
+        encode_strings(output, &self.headings)?;
+        encode_string(output, &self.body)?;
+        Ok(())
+    }
+
+    fn decode(input: &[u8]) -> Option<Self> {
+        let mut decoder = SearchRecordDecoder::new(input);
+        if decoder.take(4)? != b"RHS1" {
+            return None;
+        }
+        let value = Self {
+            title: decoder.string()?,
+            aliases: decoder.strings()?,
+            commands: decoder.strings()?,
+            paths: decoder.strings()?,
+            errors: decoder.strings()?,
+            tags: decoder.strings()?,
+            summary: decoder.string()?,
+            headings: decoder.strings()?,
+            body: decoder.string()?,
+        };
+        (decoder.remaining() == 0).then_some(value)
     }
 
     fn contains(&self, term: &str, category: &str) -> bool {
@@ -626,6 +890,83 @@ impl SearchFields {
             .iter()
             .find(|value| matches_query(value, query))
             .map(String::as_str)
+    }
+}
+
+fn encode_u32(output: &mut Vec<u8>, value: usize) -> Result<(), SearchIndexBuildError> {
+    let value = u32::try_from(value).map_err(|_| SearchIndexBuildError::ResourceLimit)?;
+    output
+        .try_reserve(4)
+        .map_err(|_| SearchIndexBuildError::ResourceLimit)?;
+    output.extend_from_slice(&value.to_le_bytes());
+    Ok(())
+}
+
+fn encode_string(output: &mut Vec<u8>, value: &str) -> Result<(), SearchIndexBuildError> {
+    encode_u32(output, value.len())?;
+    output
+        .try_reserve(value.len())
+        .map_err(|_| SearchIndexBuildError::ResourceLimit)?;
+    output.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn encode_strings(output: &mut Vec<u8>, values: &[String]) -> Result<(), SearchIndexBuildError> {
+    if values.len() > MAX_SEARCH_VALUES_PER_FIELD {
+        return Err(SearchIndexBuildError::ResourceLimit);
+    }
+    encode_u32(output, values.len())?;
+    for value in values {
+        encode_string(output, value)?;
+    }
+    Ok(())
+}
+
+struct SearchRecordDecoder<'a> {
+    input: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> SearchRecordDecoder<'a> {
+    fn new(input: &'a [u8]) -> Self {
+        Self { input, offset: 0 }
+    }
+
+    fn remaining(&self) -> usize {
+        self.input.len().saturating_sub(self.offset)
+    }
+
+    fn take(&mut self, length: usize) -> Option<&'a [u8]> {
+        let end = self.offset.checked_add(length)?;
+        let value = self.input.get(self.offset..end)?;
+        self.offset = end;
+        Some(value)
+    }
+
+    fn u32(&mut self) -> Option<u32> {
+        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+
+    fn string(&mut self) -> Option<String> {
+        let length = usize::try_from(self.u32()?).ok()?;
+        let value = std::str::from_utf8(self.take(length)?).ok()?;
+        let mut owned = String::new();
+        owned.try_reserve_exact(length).ok()?;
+        owned.push_str(value);
+        Some(owned)
+    }
+
+    fn strings(&mut self) -> Option<Vec<String>> {
+        let count = usize::try_from(self.u32()?).ok()?;
+        if count > MAX_SEARCH_VALUES_PER_FIELD || count > self.remaining() / 4 {
+            return None;
+        }
+        let mut values = Vec::new();
+        values.try_reserve_exact(count).ok()?;
+        for _ in 0..count {
+            values.push(self.string()?);
+        }
+        Some(values)
     }
 }
 
@@ -875,6 +1216,148 @@ mod tests {
             panic!("expected compatible Workspace")
         };
         (temp, view)
+    }
+
+    #[test]
+    fn disk_record_round_trips_and_rejects_every_truncation() {
+        let fields = SearchFields {
+            title: "configure café".to_owned(),
+            aliases: vec!["setup\0alias".to_owned(), "second".to_owned()],
+            commands: vec!["printf '✓'".to_owned()],
+            paths: vec!["~/.config/rehow".to_owned()],
+            errors: vec!["error: permission denied".to_owned()],
+            tags: vec!["linux".to_owned(), "wayland".to_owned()],
+            summary: "bounded summary".to_owned(),
+            headings: vec!["verification".to_owned()],
+            body: "body with unicode λ and embedded \0 bytes".to_owned(),
+        };
+        let mut encoded = Vec::new();
+        fields.encode(&mut encoded).unwrap();
+        assert_eq!(SearchFields::decode(&encoded), Some(fields));
+        for end in 0..encoded.len() {
+            assert!(SearchFields::decode(&encoded[..end]).is_none(), "{end}");
+        }
+        let mut trailing = encoded.clone();
+        trailing.push(0);
+        assert!(SearchFields::decode(&trailing).is_none());
+        let mut bad_magic = encoded;
+        bad_magic[0] ^= 0xff;
+        assert!(SearchFields::decode(&bad_magic).is_none());
+
+        let mut invalid_utf8 = b"RHS1".to_vec();
+        invalid_utf8.extend_from_slice(&1u32.to_le_bytes());
+        invalid_utf8.push(0xff);
+        assert!(SearchFields::decode(&invalid_utf8).is_none());
+
+        let mut oversized_string = b"RHS1".to_vec();
+        oversized_string.extend_from_slice(&u32::MAX.to_le_bytes());
+        assert!(SearchFields::decode(&oversized_string).is_none());
+
+        let mut oversized_count = b"RHS1".to_vec();
+        oversized_count.extend_from_slice(&0u32.to_le_bytes());
+        oversized_count.extend_from_slice(&u32::MAX.to_le_bytes());
+        assert!(SearchFields::decode(&oversized_count).is_none());
+    }
+
+    #[test]
+    fn disk_record_limits_fail_before_writing_or_allocating() {
+        let mut record_limited = SearchIndexBuilder::new(None).unwrap();
+        record_limited.encoded.extend_from_slice(b"12345");
+        assert!(matches!(
+            record_limited.write_encoded_record_with_limits(4, 100),
+            Err(SearchIndexBuildError::ResourceLimit)
+        ));
+        assert_eq!(record_limited.file.metadata().unwrap().len(), 0);
+
+        let mut live_backing_limited = SearchIndexBuilder::new(None).unwrap();
+        live_backing_limited.retained_backing_bytes = 3;
+        live_backing_limited.compact = true;
+        live_backing_limited.encoded.extend_from_slice(b"12");
+        assert!(matches!(
+            live_backing_limited.write_encoded_record_with_limits(10, 4),
+            Err(SearchIndexBuildError::ResourceLimit)
+        ));
+        assert_eq!(live_backing_limited.file.metadata().unwrap().len(), 0);
+
+        let mut count = Vec::new();
+        count.extend_from_slice(
+            &u32::try_from(MAX_SEARCH_VALUES_PER_FIELD + 1)
+                .unwrap()
+                .to_le_bytes(),
+        );
+        count.resize(4 + (MAX_SEARCH_VALUES_PER_FIELD + 1) * 4, 0);
+        let mut decoder = SearchRecordDecoder::new(&count);
+        assert!(decoder.strings().is_none());
+    }
+
+    #[test]
+    fn disk_record_reads_reject_invalid_positions_and_lengths() {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"RHS1").unwrap();
+        let backing = Arc::new(SearchBacking { file, length: 4 });
+        let mut buffer = Vec::new();
+        let beyond_end = SearchRecord {
+            backing: Arc::clone(&backing),
+            offset: 1,
+            length: 4,
+        };
+        assert_eq!(
+            beyond_end.read_bytes(&mut buffer),
+            Err(SearchError::IndexUnavailable)
+        );
+        let oversized = SearchRecord {
+            backing,
+            offset: 0,
+            length: u32::try_from(MAX_SEARCH_RECORD_BYTES + 1).unwrap(),
+        };
+        assert_eq!(
+            oversized.read_bytes(&mut buffer),
+            Err(SearchError::IndexUnavailable)
+        );
+    }
+
+    #[test]
+    fn incremental_backings_compact_at_the_generation_limit() {
+        let temp = TestDirectory::new();
+        write_workspace(temp.path());
+        for generation in 0..SEARCH_BACKING_GENERATION_LIMIT {
+            let id = format!("0199a1d7-7b0d-7d8e-a38d-f936c5735e3{generation}");
+            guide(
+                temp.path(),
+                "linux",
+                &id,
+                &format!("Compaction {generation}"),
+                "Compaction fixture",
+                "[]",
+                "[]",
+                "draft",
+                "Initial body.\n",
+            );
+        }
+        let inspection = inspect_workspace(temp.path()).unwrap().into_parts().1;
+        let WorkspaceInspection::Compatible(mut workspace) = inspection else {
+            panic!("expected compatible Workspace")
+        };
+        for generation in 0..SEARCH_BACKING_GENERATION_LIMIT {
+            let id = format!("0199a1d7-7b0d-7d8e-a38d-f936c5735e3{generation}");
+            let guide_path = temp.path().join(format!("categories/linux/{id}.md"));
+            let mut source = fs::read_to_string(&guide_path).unwrap();
+            source.push_str(&format!("\nGeneration token {generation}.\n"));
+            fs::write(&guide_path, source).unwrap();
+            crate::storage::refresh_workspace(&mut workspace).unwrap();
+        }
+        assert_eq!(workspace.search_index().backing_stats().0, 1);
+        assert_eq!(
+            search_workspace(
+                &workspace,
+                &format!("generation token {}", SEARCH_BACKING_GENERATION_LIMIT - 1),
+                false,
+                10,
+            )
+            .unwrap()
+            .len(),
+            1
+        );
     }
 
     fn write_workspace(root: &Path) {
@@ -1141,7 +1624,10 @@ mod tests {
         assert_eq!(workspace.search_index().documents.len(), 4);
         let changed_after = indexed_document(workspace.search_index(), changed_id);
         assert!(!Arc::ptr_eq(&changed_before, &changed_after));
-        assert!(!Arc::ptr_eq(&changed_before.fields, &changed_after.fields));
+        assert!(!Arc::ptr_eq(
+            &changed_before.record.backing,
+            &changed_after.record.backing
+        ));
         assert!(Arc::ptr_eq(
             &unchanged_before,
             &indexed_document(workspace.search_index(), unchanged_id)
@@ -1213,7 +1699,10 @@ mod tests {
         );
         let linux_after = indexed_document(workspace.search_index(), linux_id);
         assert!(!Arc::ptr_eq(&linux_before, &linux_after));
-        assert!(Arc::ptr_eq(&linux_before.fields, &linux_after.fields));
+        assert!(Arc::ptr_eq(
+            &linux_before.record.backing,
+            &linux_after.record.backing
+        ));
         assert!(Arc::ptr_eq(
             &stable_desktop,
             &indexed_document(workspace.search_index(), stable_desktop_id)
@@ -1256,8 +1745,8 @@ mod tests {
         let archived_after = indexed_document(workspace.search_index(), archived_id);
         assert!(!Arc::ptr_eq(&archived_before, &archived_after));
         assert!(!Arc::ptr_eq(
-            &archived_before.fields,
-            &archived_after.fields
+            &archived_before.record.backing,
+            &archived_after.record.backing
         ));
         assert!(Arc::ptr_eq(
             &unchanged_before,
@@ -1310,22 +1799,21 @@ mod tests {
         let WorkspaceInspection::Compatible(refreshed) = refreshed else {
             panic!("expected refreshed performance Workspace");
         };
-
-        let started = std::time::Instant::now();
-        let reconciled =
-            SearchIndex::reconcile(refreshed.categories(), Some(workspace.search_index()));
-        let elapsed = started.elapsed();
-        let previous = workspace
+        let previous_documents = workspace
             .search_index()
             .documents
             .iter()
-            .map(|document| (document.guide_id, document))
+            .map(|document| (document.guide_id, Arc::clone(document)))
             .collect::<BTreeMap<_, _>>();
+        let started = std::time::Instant::now();
+        let reconciled =
+            SearchIndex::reconcile_prebuilt(refreshed.search_index(), workspace.search_index());
+        let elapsed = started.elapsed();
         let reused = reconciled
             .documents
             .iter()
             .filter(|document| {
-                previous
+                previous_documents
                     .get(&document.guide_id)
                     .is_some_and(|prior| Arc::ptr_eq(document, prior))
             })

@@ -9,7 +9,7 @@ pub(crate) mod mutation;
 pub(crate) mod verification;
 
 pub use guide::{
-    Applicability, ArchiveMetadata, Attachment, Guide, GuideReference, GuideStatus,
+    Applicability, ArchiveMetadata, Attachment, Guide, GuideMetadata, GuideReference, GuideStatus,
     RestorableGuideStatus, VerificationMetadata,
 };
 

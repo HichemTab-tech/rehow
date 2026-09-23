@@ -72,7 +72,7 @@ pub struct ArchiveMetadata {
     archived_from_status: RestorableGuideStatus,
     archived_at: Timestamp,
 }
-pub struct Guide {
+pub struct GuideMetadata {
     schema_version: u32,
     id: GuideId,
     title: String,
@@ -92,6 +92,9 @@ pub struct Guide {
     related_guide_ids: Option<Vec<GuideId>>,
     references: Option<Vec<GuideReference>>,
     attachments: Option<Vec<Attachment>>,
+}
+pub struct Guide {
+    metadata: GuideMetadata,
     body: Box<[u8]>,
 }
 
@@ -150,7 +153,7 @@ impl ArchiveMetadata {
         &self.archived_at
     }
 }
-impl Guide {
+impl GuideMetadata {
     pub fn schema_version(&self) -> u32 {
         self.schema_version
     }
@@ -208,8 +211,23 @@ impl Guide {
     pub fn attachments(&self) -> Option<&[Attachment]> {
         self.attachments.as_deref()
     }
+}
+
+impl core::ops::Deref for Guide {
+    type Target = GuideMetadata;
+
+    fn deref(&self) -> &Self::Target {
+        &self.metadata
+    }
+}
+
+impl Guide {
     pub fn body(&self) -> &[u8] {
         &self.body
+    }
+
+    pub(crate) fn into_metadata(self) -> GuideMetadata {
+        self.metadata
     }
 }
 
@@ -479,25 +497,27 @@ fn bind_guide_inner(parsed: ParsedGuideSource) -> Result<BoundGuide, GuideBindFa
     Ok(BoundGuide {
         parsed,
         record: Guide {
-            schema_version: 1,
-            id,
-            title,
-            summary,
-            category_id,
-            tags,
-            aliases,
-            declared_status,
-            created_at,
-            updated_at,
-            verification,
-            archive,
-            applies_to,
-            prerequisites,
-            warnings,
-            files_affected,
-            related_guide_ids,
-            references,
-            attachments,
+            metadata: GuideMetadata {
+                schema_version: 1,
+                id,
+                title,
+                summary,
+                category_id,
+                tags,
+                aliases,
+                declared_status,
+                created_at,
+                updated_at,
+                verification,
+                archive,
+                applies_to,
+                prerequisites,
+                warnings,
+                files_affected,
+                related_guide_ids,
+                references,
+                attachments,
+            },
             body,
         },
         unknown: GuideUnknownPartition {
