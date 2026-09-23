@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import {
   APPLICATION_NAME,
   App,
+  AttachmentTextPreviewContent,
+  attachmentPreviewOwnerKey,
   automaticRefreshBlocked,
   canMarkGuideTested,
   filterGuides,
@@ -16,6 +18,7 @@ import {
   guideMatchesSearchScope,
   hasUnsavedChanges,
   highlightedExcerptSegments,
+  isAttachmentTextPreviewPayload,
   isCurrentWorkspaceWatchEvent,
   isGitCloneApplyResultPayload,
   isGitCloneCancelResultPayload,
@@ -187,6 +190,70 @@ describe("application identity", () => {
         imported: 3,
       }),
     ).toBe(false);
+  });
+
+  it("accepts only bounded pathless Attachment text previews", () => {
+    const preview = {
+      title: "Example config",
+      text: "key=value\n",
+      sizeBytes: 10,
+      sanitized: false,
+    };
+    expect(isAttachmentTextPreviewPayload(preview)).toBe(true);
+    expect(
+      isAttachmentTextPreviewPayload({ ...preview, path: "/home/user/file" }),
+    ).toBe(false);
+    expect(
+      isAttachmentTextPreviewPayload({
+        ...preview,
+        text: "x".repeat(1024 * 1024 + 1),
+      }),
+    ).toBe(false);
+    expect(
+      isAttachmentTextPreviewPayload({
+        ...preview,
+        sizeBytes: 1024 * 1024 + 1,
+      }),
+    ).toBe(false);
+    expect(
+      isAttachmentTextPreviewPayload({
+        ...preview,
+        text: "safe\u202eexe.txt",
+        sanitized: true,
+      }),
+    ).toBe(false);
+    for (const invisible of [
+      "\u00ad",
+      "\u180e",
+      "\u2061",
+      "\ufe0f",
+      "\u{e0001}",
+    ]) {
+      expect(
+        isAttachmentTextPreviewPayload({
+          ...preview,
+          text: `unsafe${invisible}text`,
+          sanitized: true,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it("binds Attachment preview ownership to Workspace session and Guide revision", () => {
+    const current = attachmentPreviewOwnerKey(
+      "session-1",
+      "guide-1",
+      "revision-1",
+    );
+    expect(
+      attachmentPreviewOwnerKey("session-2", "guide-1", "revision-1"),
+    ).not.toBe(current);
+    expect(
+      attachmentPreviewOwnerKey("session-1", "guide-1", "revision-2"),
+    ).not.toBe(current);
+    expect(
+      attachmentPreviewOwnerKey("session-1", "guide-1", "revision-1"),
+    ).toBe(current);
   });
 
   it("describes root, ancestor, and unsafe Git facts", () => {
@@ -999,6 +1066,28 @@ describe("Guide search", () => {
 });
 
 describe("safe Guide rendering", () => {
+  it("renders Attachment preview content as inert text", () => {
+    const markup = renderToStaticMarkup(
+      createElement(AttachmentTextPreviewContent, {
+        preview: {
+          title: "Hostile <title>",
+          text: '<script src="file:///tmp/leak">run()</script>',
+          sizeBytes: 48,
+          sanitized: true,
+        },
+        onClose: () => undefined,
+      }),
+    );
+    expect(markup).toContain("Hostile &lt;title&gt;");
+    expect(markup).toContain(
+      "&lt;script src=&quot;file:///tmp/leak&quot;&gt;run()&lt;/script&gt;",
+    );
+    expect(markup).toContain("replacement symbols");
+    expect(markup).not.toContain("<script");
+    expect(markup).not.toContain("<a ");
+    expect(markup).not.toContain("<img");
+  });
+
   it("fails closed for an unsupported safe-document version", () => {
     const markup = renderToStaticMarkup(
       createElement(MarkdownDocument, {

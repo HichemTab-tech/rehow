@@ -30,6 +30,13 @@ type GuideBodyPayload = {
   document: SafeMarkdownDocument;
 };
 
+type AttachmentTextPreviewPayload = {
+  title: string;
+  text: string;
+  sizeBytes: number;
+  sanitized: boolean;
+};
+
 type FolderFacts = {
   writable: boolean;
   existingGitRepository: boolean;
@@ -1149,6 +1156,82 @@ function isBoundedText(value: unknown, minimum: number, maximum: number) {
   return length >= minimum && length <= maximum;
 }
 
+function isSafeAttachmentPreviewText(value: string) {
+  for (const character of value) {
+    const code = character.codePointAt(0);
+    if (code === undefined) return false;
+    if (
+      (code <= 0x1f && code !== 0x09 && code !== 0x0a) ||
+      (code >= 0x7f && code <= 0x9f) ||
+      (code >= 0xd800 && code <= 0xdfff) ||
+      isUnicode16InvisibleOrFormat(code) ||
+      (code >= 0x2028 && code <= 0x2029) ||
+      (code >= 0xfdd0 && code <= 0xfdef) ||
+      (code & 0xffff) === 0xfffe ||
+      (code & 0xffff) === 0xffff
+    )
+      return false;
+  }
+  return true;
+}
+
+function isUnicode16InvisibleOrFormat(code: number) {
+  return (
+    code === 0x00ad ||
+    code === 0x034f ||
+    (code >= 0x0600 && code <= 0x0605) ||
+    code === 0x061c ||
+    code === 0x06dd ||
+    code === 0x070f ||
+    (code >= 0x0890 && code <= 0x0891) ||
+    code === 0x08e2 ||
+    (code >= 0x115f && code <= 0x1160) ||
+    (code >= 0x17b4 && code <= 0x17b5) ||
+    (code >= 0x180b && code <= 0x180f) ||
+    (code >= 0x200b && code <= 0x200f) ||
+    (code >= 0x202a && code <= 0x202e) ||
+    (code >= 0x2060 && code <= 0x206f) ||
+    code === 0x3164 ||
+    (code >= 0xfe00 && code <= 0xfe0f) ||
+    code === 0xfeff ||
+    code === 0xffa0 ||
+    (code >= 0xfff0 && code <= 0xfffb) ||
+    code === 0x110bd ||
+    code === 0x110cd ||
+    (code >= 0x13430 && code <= 0x1343f) ||
+    (code >= 0x1bca0 && code <= 0x1bca3) ||
+    (code >= 0x1d173 && code <= 0x1d17a) ||
+    (code >= 0xe0000 && code <= 0xe0fff)
+  );
+}
+
+export function attachmentPreviewOwnerKey(
+  workspaceSession: string,
+  guideId: string,
+  guideRevision: string,
+) {
+  return JSON.stringify([workspaceSession, guideId, guideRevision]);
+}
+
+export function isAttachmentTextPreviewPayload(
+  value: unknown,
+): value is AttachmentTextPreviewPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const preview = value as Partial<AttachmentTextPreviewPayload> &
+    Record<string, unknown>;
+  return (
+    Object.keys(preview).length === 4 &&
+    isBoundedText(preview.title, 1, 200) &&
+    isSafeAttachmentPreviewText(preview.title as string) &&
+    isBoundedText(preview.text, 0, 1024 * 1024) &&
+    isSafeAttachmentPreviewText(preview.text as string) &&
+    Number.isSafeInteger(preview.sizeBytes) &&
+    (preview.sizeBytes as number) >= 0 &&
+    (preview.sizeBytes as number) <= 1024 * 1024 &&
+    typeof preview.sanitized === "boolean"
+  );
+}
+
 function isWorkspacePayload(value: unknown): value is WorkspacePayload {
   if (typeof value !== "object" || value === null) return false;
   const workspace = value as Partial<WorkspacePayload> &
@@ -1563,6 +1646,9 @@ export function App() {
   const [updatingGuideStatus, setUpdatingGuideStatus] = useState(false);
   const [verifyingGuide, setVerifyingGuide] = useState(false);
   const [importingAttachment, setImportingAttachment] = useState(false);
+  const [previewingAttachmentId, setPreviewingAttachmentId] = useState("");
+  const [attachmentPreview, setAttachmentPreview] =
+    useState<AttachmentTextPreviewPayload | null>(null);
   const [removingAttachmentId, setRemovingAttachmentId] = useState("");
   const [removingGuide, setRemovingGuide] = useState(false);
   const [guideStatusError, setGuideStatusError] = useState("");
@@ -1589,6 +1675,13 @@ export function App() {
   const guideStatusButtonRef = useRef<HTMLButtonElement>(null);
   const guideVerifyButtonRef = useRef<HTMLButtonElement>(null);
   const attachmentImportButtonRef = useRef<HTMLButtonElement>(null);
+  const attachmentPreviewDialogRef = useRef<HTMLDialogElement>(null);
+  const attachmentPreviewButtonRefs = useRef(
+    new Map<string, HTMLButtonElement>(),
+  );
+  const lastPreviewAttachmentIdRef = useRef("");
+  const attachmentPreviewOwnerRef = useRef("");
+  const attachmentPreviewGenerationRef = useRef(0);
   const attachmentRemoveButtonRefs = useRef(
     new Map<string, HTMLButtonElement>(),
   );
@@ -1682,6 +1775,7 @@ export function App() {
     updatingGuideStatus ||
     verifyingGuide ||
     importingAttachment ||
+    previewingAttachmentId !== "" ||
     removingAttachmentId !== "" ||
     updatingCategoryStatusId !== "" ||
     reorderingCategoryId !== "" ||
@@ -1753,6 +1847,30 @@ export function App() {
     window.addEventListener("hashchange", revealGuideTarget);
     return () => window.removeEventListener("hashchange", revealGuideTarget);
   }, []);
+
+  useEffect(() => {
+    const dialog = attachmentPreviewDialogRef.current;
+    if (attachmentPreview !== null && dialog && !dialog.open) {
+      dialog.showModal();
+    }
+  }, [attachmentPreview]);
+
+  const attachmentPreviewOwner = attachmentPreviewOwnerKey(
+    workspace?.watchSession ?? "",
+    selected?.id ?? "",
+    (guideBody?.id === selected?.id ? guideBody?.revision : undefined) ?? "",
+  );
+
+  useEffect(() => {
+    if (attachmentPreviewOwnerRef.current === attachmentPreviewOwner) return;
+    attachmentPreviewOwnerRef.current = attachmentPreviewOwner;
+    attachmentPreviewGenerationRef.current += 1;
+    setPreviewingAttachmentId("");
+    setAttachmentPreview(null);
+    if (attachmentPreviewDialogRef.current?.open) {
+      attachmentPreviewDialogRef.current.close();
+    }
+  }, [attachmentPreviewOwner]);
 
   useEffect(() => {
     const next = searchStatePath(
@@ -3648,6 +3766,7 @@ export function App() {
   async function changeGuideArchived() {
     if (
       selected === null ||
+      workspace === null ||
       guideBody?.id !== selected.id ||
       updatingGuideStatus ||
       verifyingGuide ||
@@ -3780,6 +3899,79 @@ export function App() {
     }
   }
 
+  async function previewAttachmentText(attachmentId: string) {
+    if (
+      selected === null ||
+      workspace === null ||
+      guideBody?.id !== selected.id ||
+      previewingAttachmentId !== "" ||
+      importingAttachment ||
+      removingAttachmentId !== "" ||
+      verifyingGuide ||
+      updatingGuideStatus ||
+      removingGuide ||
+      editingGuide ||
+      editingGuideDetails
+    )
+      return;
+    lastPreviewAttachmentIdRef.current = attachmentId;
+    const workspaceSession = workspace.watchSession;
+    const owner = attachmentPreviewOwnerKey(
+      workspaceSession,
+      selected.id,
+      guideBody.revision,
+    );
+    attachmentPreviewOwnerRef.current = owner;
+    const generation = attachmentPreviewGenerationRef.current + 1;
+    attachmentPreviewGenerationRef.current = generation;
+    setPreviewingAttachmentId(attachmentId);
+    setGuideStatusError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<unknown>(
+        "preview_open_guide_attachment_text",
+        {
+          guideId: selected.id,
+          attachmentId,
+          expectedRevision: guideBody.revision,
+          workspaceSession,
+        },
+      );
+      if (!isAttachmentTextPreviewPayload(result)) {
+        throw new Error("Attachment preview returned an invalid response.");
+      }
+      if (
+        attachmentPreviewGenerationRef.current !== generation ||
+        attachmentPreviewOwnerRef.current !== owner
+      )
+        return;
+      setAttachmentPreview(result);
+      setAnnouncement(`${result.title} opened as inert text.`);
+    } catch (error) {
+      if (
+        attachmentPreviewGenerationRef.current !== generation ||
+        attachmentPreviewOwnerRef.current !== owner
+      )
+        return;
+      const failure = nativeCommandError(error);
+      setGuideStatusError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => guideStatusErrorRef.current?.focus());
+    } finally {
+      if (attachmentPreviewGenerationRef.current === generation) {
+        setPreviewingAttachmentId("");
+      }
+    }
+  }
+
+  function finishAttachmentPreview() {
+    const attachmentId = lastPreviewAttachmentIdRef.current;
+    setAttachmentPreview(null);
+    requestAnimationFrame(() =>
+      attachmentPreviewButtonRefs.current.get(attachmentId)?.focus(),
+    );
+  }
+
   async function removeAttachment(attachmentId: string) {
     if (
       selected === null ||
@@ -3787,6 +3979,7 @@ export function App() {
       guideBody?.id !== selected.id ||
       removingAttachmentId !== "" ||
       importingAttachment ||
+      previewingAttachmentId !== "" ||
       verifyingGuide ||
       updatingGuideStatus ||
       removingGuide ||
@@ -5390,26 +5583,29 @@ export function App() {
                           {formatBytes(attachment.sizeBytes)}
                         </small>
                       </div>
-                      {selected.status !== "Archived" && (
+                      <div className="attachment-actions">
                         <button
                           ref={(node) => {
                             if (node) {
-                              attachmentRemoveButtonRefs.current.set(
+                              attachmentPreviewButtonRefs.current.set(
                                 attachment.id,
                                 node,
                               );
                             } else {
-                              attachmentRemoveButtonRefs.current.delete(
+                              attachmentPreviewButtonRefs.current.delete(
                                 attachment.id,
                               );
                             }
                           }}
-                          className="attachment-remove-button"
+                          className="attachment-preview-button"
                           type="button"
-                          aria-label={`Remove ${attachment.title}`}
-                          onClick={() => void removeAttachment(attachment.id)}
+                          aria-label={`Preview ${attachment.title} as text`}
+                          onClick={() =>
+                            void previewAttachmentText(attachment.id)
+                          }
                           disabled={
                             guideBody?.id !== selected.id ||
+                            previewingAttachmentId !== "" ||
                             removingAttachmentId !== "" ||
                             importingAttachment ||
                             verifyingGuide ||
@@ -5419,11 +5615,46 @@ export function App() {
                             editingGuideDetails
                           }
                         >
-                          {removingAttachmentId === attachment.id
-                            ? "Removing…"
-                            : "Remove"}
+                          {previewingAttachmentId === attachment.id
+                            ? "Opening…"
+                            : "View Text"}
                         </button>
-                      )}
+                        {selected.status !== "Archived" && (
+                          <button
+                            ref={(node) => {
+                              if (node) {
+                                attachmentRemoveButtonRefs.current.set(
+                                  attachment.id,
+                                  node,
+                                );
+                              } else {
+                                attachmentRemoveButtonRefs.current.delete(
+                                  attachment.id,
+                                );
+                              }
+                            }}
+                            className="attachment-remove-button"
+                            type="button"
+                            aria-label={`Remove ${attachment.title}`}
+                            onClick={() => void removeAttachment(attachment.id)}
+                            disabled={
+                              guideBody?.id !== selected.id ||
+                              previewingAttachmentId !== "" ||
+                              removingAttachmentId !== "" ||
+                              importingAttachment ||
+                              verifyingGuide ||
+                              updatingGuideStatus ||
+                              removingGuide ||
+                              editingGuide ||
+                              editingGuideDetails
+                            }
+                          >
+                            {removingAttachmentId === attachment.id
+                              ? "Removing…"
+                              : "Remove"}
+                          </button>
+                        )}
+                      </div>
                     </li>
                   ))}
                 </ul>
@@ -6011,9 +6242,75 @@ export function App() {
           ) : null}
         </span>
       </footer>
+      <dialog
+        ref={attachmentPreviewDialogRef}
+        className="attachment-preview-dialog"
+        aria-labelledby="attachment-preview-title"
+        aria-describedby={
+          attachmentPreview?.sanitized
+            ? "attachment-preview-sanitized"
+            : undefined
+        }
+        onClose={finishAttachmentPreview}
+      >
+        {attachmentPreview !== null ? (
+          <AttachmentTextPreviewContent
+            preview={attachmentPreview}
+            onClose={() => attachmentPreviewDialogRef.current?.close()}
+          />
+        ) : null}
+      </dialog>
       <div className="sr-only" aria-live="polite">
         {announcement}
       </div>
+    </div>
+  );
+}
+
+export function AttachmentTextPreviewContent({
+  preview,
+  onClose,
+}: {
+  preview: AttachmentTextPreviewPayload;
+  onClose: () => void;
+}) {
+  return (
+    <div className="attachment-preview-frame">
+      <header>
+        <div>
+          <p className="eyebrow">Attachment · Inert Text</p>
+          <h2 id="attachment-preview-title">{preview.title}</h2>
+          <p>{formatBytes(preview.sizeBytes)}</p>
+        </div>
+        <button
+          type="button"
+          className="attachment-preview-close"
+          onClick={onClose}
+        >
+          Close
+        </button>
+      </header>
+      {preview.sanitized ? (
+        <p
+          id="attachment-preview-sanitized"
+          className="attachment-preview-notice"
+        >
+          Unsafe control or direction characters are shown as replacement
+          symbols.
+        </p>
+      ) : null}
+      <textarea
+        className="attachment-preview-content"
+        aria-label="Attachment text"
+        name="attachment-preview"
+        value={preview.text}
+        readOnly
+        rows={20}
+        wrap="off"
+        autoComplete="off"
+        spellCheck={false}
+        translate="no"
+      />
     </div>
   );
 }

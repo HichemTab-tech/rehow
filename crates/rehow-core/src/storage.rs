@@ -3019,6 +3019,28 @@ pub fn inspect_selected_workspace(
     })
 }
 
+pub(crate) fn read_managed_regular(
+    workspace: &WorkspaceView,
+    relative_path: &str,
+    limit: usize,
+    expected_revision: Option<Revision>,
+) -> Result<Vec<u8>, WorkspaceInspectError> {
+    let target = workspace
+        ._root
+        .open_managed_target(relative_path)
+        .map_err(map_clone_destination_error)?;
+    let bytes = match target.state(limit).map_err(map_clone_destination_error)? {
+        linux::ManagedState::Missing => return Err(WorkspaceInspectError::ChangedDuringRead),
+        linux::ManagedState::Regular(state) => state.bytes,
+    };
+    if expected_revision
+        .is_some_and(|expected| document_revision(relative_path, &bytes) != expected)
+    {
+        return Err(WorkspaceInspectError::ChangedDuringRead);
+    }
+    Ok(bytes)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_document_update<E, F>(
     workspace: &WorkspaceView,

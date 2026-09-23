@@ -38,7 +38,8 @@ use crate::{
         execute_document_move, execute_document_remove, execute_document_update,
         execute_document_update_cancellable, execute_managed_attachment_add,
         execute_multi_document_update, execute_workspace_initialize, open_initialized_workspace,
-        preview_attachment_import, preview_attachment_removal, refresh_workspace,
+        preview_attachment_import, preview_attachment_removal, read_managed_regular,
+        refresh_workspace,
     },
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -2212,6 +2213,233 @@ pub struct ManagedAttachmentCandidate {
     inner: StorageManagedAttachmentCandidate,
 }
 
+const ATTACHMENT_TEXT_PREVIEW_LIMIT: usize = 1024 * 1024;
+const GUIDE_SOURCE_PREVIEW_LIMIT: usize = 2 * 1024 * 1024;
+
+#[derive(Eq, PartialEq)]
+pub struct AttachmentTextPreview {
+    title: String,
+    text: String,
+    size_bytes: u64,
+    sanitized: bool,
+}
+
+impl std::fmt::Debug for AttachmentTextPreview {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AttachmentTextPreview")
+            .field("size_bytes", &self.size_bytes)
+            .field("sanitized", &self.sanitized)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AttachmentTextPreview {
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn size_bytes(&self) -> u64 {
+        self.size_bytes
+    }
+
+    pub fn sanitized(&self) -> bool {
+        self.sanitized
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachmentTextPreviewError {
+    GuideNotFound,
+    AttachmentNotFound,
+    RevisionConflict,
+    AttachmentChanged,
+    TooLarge,
+    Binary,
+    UnsafeStorage,
+    ResourceLimit,
+    Io,
+}
+
+#[cfg(test)]
+thread_local! {
+    static ATTACHMENT_PREVIEW_AFTER_READ_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_attachment_preview_after_read_hook(hook: impl FnOnce() + 'static) {
+    ATTACHMENT_PREVIEW_AFTER_READ_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+fn run_attachment_preview_after_read_hook() {
+    #[cfg(test)]
+    ATTACHMENT_PREVIEW_AFTER_READ_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+pub fn preview_attachment_text(
+    workspace: &WorkspaceView,
+    guide_id: GuideId,
+    attachment_id: AttachmentId,
+    expected_revision: Revision,
+) -> Result<AttachmentTextPreview, AttachmentTextPreviewError> {
+    let loaded = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides())
+        .find(|guide| guide.guide().id() == &guide_id)
+        .ok_or(AttachmentTextPreviewError::GuideNotFound)?;
+    if loaded.revision() != expected_revision {
+        return Err(AttachmentTextPreviewError::RevisionConflict);
+    }
+    let attachment = loaded
+        .guide()
+        .attachments()
+        .unwrap_or_default()
+        .iter()
+        .find(|attachment| attachment.id() == &attachment_id)
+        .ok_or(AttachmentTextPreviewError::AttachmentNotFound)?;
+    let expected_prefix = format!("attachments/{guide_id}/");
+    if !attachment.path().starts_with(&expected_prefix) {
+        return Err(AttachmentTextPreviewError::UnsafeStorage);
+    }
+    verify_preview_guide_revision(workspace, loaded.relative_path(), expected_revision)?;
+    let bytes = read_managed_regular(
+        workspace,
+        attachment.path(),
+        ATTACHMENT_TEXT_PREVIEW_LIMIT,
+        None,
+    )
+    .map_err(map_attachment_preview_read_error)?;
+    if attachment
+        .size_bytes()
+        .is_some_and(|expected| expected != bytes.len() as u64)
+    {
+        return Err(AttachmentTextPreviewError::AttachmentChanged);
+    }
+    use sha2::Digest;
+    let expected_digest =
+        decode_sha256(attachment.sha256()).ok_or(AttachmentTextPreviewError::UnsafeStorage)?;
+    if sha2::Sha256::digest(&bytes).as_slice() != expected_digest {
+        return Err(AttachmentTextPreviewError::AttachmentChanged);
+    }
+    let source = std::str::from_utf8(&bytes).map_err(|_| AttachmentTextPreviewError::Binary)?;
+    let (text, text_sanitized) = sanitize_attachment_preview(source)?;
+    let (title, title_sanitized) = sanitize_attachment_preview(attachment.title())?;
+    run_attachment_preview_after_read_hook();
+    verify_preview_guide_revision(workspace, loaded.relative_path(), expected_revision)?;
+    Ok(AttachmentTextPreview {
+        title,
+        text,
+        size_bytes: bytes.len() as u64,
+        sanitized: text_sanitized || title_sanitized,
+    })
+}
+
+fn verify_preview_guide_revision(
+    workspace: &WorkspaceView,
+    relative_path: &str,
+    expected_revision: Revision,
+) -> Result<(), AttachmentTextPreviewError> {
+    read_managed_regular(
+        workspace,
+        relative_path,
+        GUIDE_SOURCE_PREVIEW_LIMIT,
+        Some(expected_revision),
+    )
+    .map(|_| ())
+    .map_err(|error| match error {
+        WorkspaceInspectError::ResourceLimit => AttachmentTextPreviewError::ResourceLimit,
+        WorkspaceInspectError::UnsafeRoot => AttachmentTextPreviewError::UnsafeStorage,
+        WorkspaceInspectError::ChangedDuringRead
+        | WorkspaceInspectError::NotFound
+        | WorkspaceInspectError::NotDirectory => AttachmentTextPreviewError::RevisionConflict,
+        WorkspaceInspectError::PermissionDenied | WorkspaceInspectError::Io => {
+            AttachmentTextPreviewError::Io
+        }
+    })
+}
+
+fn map_attachment_preview_read_error(error: WorkspaceInspectError) -> AttachmentTextPreviewError {
+    match error {
+        WorkspaceInspectError::ResourceLimit => AttachmentTextPreviewError::TooLarge,
+        WorkspaceInspectError::UnsafeRoot => AttachmentTextPreviewError::UnsafeStorage,
+        WorkspaceInspectError::ChangedDuringRead
+        | WorkspaceInspectError::NotFound
+        | WorkspaceInspectError::NotDirectory => AttachmentTextPreviewError::AttachmentChanged,
+        WorkspaceInspectError::PermissionDenied | WorkspaceInspectError::Io => {
+            AttachmentTextPreviewError::Io
+        }
+    }
+}
+
+fn sanitize_attachment_preview(source: &str) -> Result<(String, bool), AttachmentTextPreviewError> {
+    let mut text = String::new();
+    text.try_reserve(source.len())
+        .map_err(|_| AttachmentTextPreviewError::ResourceLimit)?;
+    let mut sanitized = false;
+    for character in source.chars() {
+        let value = character as u32;
+        let unsafe_scalar = (character.is_control() && !matches!(character, '\n' | '\t'))
+            || is_unicode_16_invisible_or_format(character)
+            || matches!(value, 0x2028..=0x2029 | 0xfdd0..=0xfdef)
+            || matches!(value & 0xffff, 0xfffe | 0xffff);
+        let displayed = if unsafe_scalar {
+            sanitized = true;
+            '\u{fffd}'
+        } else {
+            character
+        };
+        if text.len().saturating_add(displayed.len_utf8()) > ATTACHMENT_TEXT_PREVIEW_LIMIT {
+            return Err(AttachmentTextPreviewError::TooLarge);
+        }
+        text.try_reserve(displayed.len_utf8())
+            .map_err(|_| AttachmentTextPreviewError::ResourceLimit)?;
+        text.push(displayed);
+    }
+    Ok((text, sanitized))
+}
+
+fn is_unicode_16_invisible_or_format(character: char) -> bool {
+    // Keep this in exact parity with the approval helper's Unicode 16
+    // Format/Default_Ignorable_Code_Point policy and the renderer validator.
+    matches!(
+        character,
+        '\u{00ad}'
+            | '\u{034f}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061c}'
+            | '\u{06dd}'
+            | '\u{070f}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08e2}'
+            | '\u{115f}'..='\u{1160}'
+            | '\u{17b4}'..='\u{17b5}'
+            | '\u{180b}'..='\u{180f}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{206f}'
+            | '\u{3164}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{feff}'
+            | '\u{ffa0}'
+            | '\u{fff0}'..='\u{fffb}'
+            | '\u{110bd}'
+            | '\u{110cd}'
+            | '\u{13430}'..='\u{1343f}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0000}'..='\u{e0fff}'
+    )
+}
+
 impl std::fmt::Debug for ManagedAttachmentCandidate {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -3505,6 +3733,163 @@ mod tests {
         let target = empty_target(&workspace);
         let view = initialize_workspace(&target, state.path(), None, "Personal Rehow").unwrap();
         (workspace, state, view)
+    }
+
+    fn attachment_preview_fixture(
+        label: &str,
+        content: &[u8],
+    ) -> (TestDirectory, Box<WorkspaceView>, AttachmentId, PathBuf) {
+        use sha2::Digest;
+
+        let attachment_id = AttachmentId::from_str("0199a264-ef5f-73b4-a238-a71ba1509930").unwrap();
+        let sha256 = sha2::Sha256::digest(content)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let relative_path = format!("attachments/{GUIDE_ID}/preview.txt");
+        let guide = GUIDE.replacen(
+            "status: draft\n",
+            &format!(
+                "attachments:\n  - id: {attachment_id}\n    path: {relative_path}\n    title: Preview notes\n    sha256: {sha256}\n    size_bytes: {}\nstatus: draft\n",
+                content.len()
+            ),
+            1,
+        );
+        let (workspace, _state, mut view) = fixture(label, &guide);
+        let directory = workspace.path().join(format!("attachments/{GUIDE_ID}"));
+        fs::create_dir_all(&directory).unwrap();
+        fs::set_permissions(
+            workspace.path().join("attachments"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let attachment_path = workspace.path().join(relative_path);
+        fs::write(&attachment_path, content).unwrap();
+        fs::set_permissions(&attachment_path, fs::Permissions::from_mode(0o600)).unwrap();
+        refresh_workspace(&mut view).unwrap();
+        (workspace, view, attachment_id, attachment_path)
+    }
+
+    #[test]
+    fn attachment_text_preview_is_pathless_bounded_and_sanitized() {
+        let content = "first line\nunsafe \u{1b} direction \u{202e} soft\u{00ad} \u{180e} math\u{2061} variant\u{fe0f} tag\u{e0001} text\ttail\n".as_bytes();
+        let (_workspace, view, attachment_id, _path) =
+            attachment_preview_fixture("attachment-text-preview", content);
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let preview =
+            preview_attachment_text(&view, guide_id, attachment_id, revision(&view)).unwrap();
+
+        assert_eq!(preview.title(), "Preview notes");
+        assert_eq!(preview.size_bytes(), content.len() as u64);
+        assert!(preview.sanitized());
+        assert_eq!(
+            preview.text(),
+            "first line\nunsafe � direction � soft� � math� variant� tag� text\ttail\n"
+        );
+        assert!(!format!("{preview:?}").contains("first line"));
+    }
+
+    #[test]
+    fn attachment_text_preview_refuses_stale_binary_and_changed_content() {
+        let (workspace, view, attachment_id, attachment_path) =
+            attachment_preview_fixture("attachment-text-refusals", b"same");
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let expected = revision(&view);
+        fs::write(&attachment_path, b"lame").unwrap();
+        assert_eq!(
+            preview_attachment_text(&view, guide_id, attachment_id, expected),
+            Err(AttachmentTextPreviewError::AttachmentChanged)
+        );
+
+        let (_binary_workspace, binary_view, binary_id, _binary_path) =
+            attachment_preview_fixture("attachment-binary-preview", b"binary\0\xff");
+        assert_eq!(
+            preview_attachment_text(&binary_view, guide_id, binary_id, revision(&binary_view)),
+            Err(AttachmentTextPreviewError::Binary)
+        );
+
+        let current = fs::read_to_string(workspace.path().join(GUIDE_PATH)).unwrap();
+        fs::write(
+            workspace.path().join(GUIDE_PATH),
+            current.replace("Install a Tarball", "Install changed tarball"),
+        )
+        .unwrap();
+        assert_eq!(
+            preview_attachment_text(&view, guide_id, attachment_id, expected),
+            Err(AttachmentTextPreviewError::RevisionConflict)
+        );
+    }
+
+    #[test]
+    fn attachment_text_preview_refuses_links_special_files_and_oversize_input() {
+        let (workspace, view, attachment_id, attachment_path) =
+            attachment_preview_fixture("attachment-text-unsafe", b"safe text\n");
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let expected = revision(&view);
+        let outside = workspace.path().join("outside.txt");
+        fs::write(&outside, b"safe text\n").unwrap();
+
+        fs::remove_file(&attachment_path).unwrap();
+        symlink(&outside, &attachment_path).unwrap();
+        assert_eq!(
+            preview_attachment_text(&view, guide_id, attachment_id, expected),
+            Err(AttachmentTextPreviewError::UnsafeStorage)
+        );
+
+        fs::remove_file(&attachment_path).unwrap();
+        fs::write(&attachment_path, b"safe text\n").unwrap();
+        let hardlink = workspace.path().join("hardlink.txt");
+        fs::hard_link(&attachment_path, &hardlink).unwrap();
+        assert_eq!(
+            preview_attachment_text(&view, guide_id, attachment_id, expected),
+            Err(AttachmentTextPreviewError::UnsafeStorage)
+        );
+
+        fs::remove_file(&hardlink).unwrap();
+        fs::remove_file(&attachment_path).unwrap();
+        let fifo = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(
+            attachment_path.as_os_str(),
+        ))
+        .unwrap();
+        // SAFETY: the path is a valid NUL-free CString inside the isolated fixture.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert_eq!(
+            preview_attachment_text(&view, guide_id, attachment_id, expected),
+            Err(AttachmentTextPreviewError::UnsafeStorage)
+        );
+
+        let oversized = vec![b'x'; ATTACHMENT_TEXT_PREVIEW_LIMIT + 1];
+        let (_large_workspace, large_view, large_id, _large_path) =
+            attachment_preview_fixture("attachment-text-oversize", &oversized);
+        assert_eq!(
+            preview_attachment_text(&large_view, guide_id, large_id, revision(&large_view)),
+            Err(AttachmentTextPreviewError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn attachment_text_preview_rechecks_the_guide_after_reading() {
+        let (workspace, view, attachment_id, _attachment_path) =
+            attachment_preview_fixture("attachment-text-guide-race", b"stable\n");
+        let guide_path = workspace.path().join(GUIDE_PATH);
+        set_attachment_preview_after_read_hook(move || {
+            let current = fs::read_to_string(&guide_path).unwrap();
+            fs::write(
+                &guide_path,
+                current.replace("Install a Tarball", "Install changed tarball"),
+            )
+            .unwrap();
+        });
+        assert_eq!(
+            preview_attachment_text(
+                &view,
+                GuideId::from_str(GUIDE_ID).unwrap(),
+                attachment_id,
+                revision(&view),
+            ),
+            Err(AttachmentTextPreviewError::RevisionConflict)
+        );
     }
 
     #[test]

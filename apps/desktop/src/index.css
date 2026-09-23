@@ -1097,6 +1097,7 @@ h1 {
 
 .guide-attachments li {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
@@ -1122,6 +1123,14 @@ h1 {
   color: var(--muted);
 }
 
+.attachment-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.attachment-preview-button,
 .attachment-remove-button {
   border: 0;
   border-bottom: 1px solid transparent;
@@ -1134,13 +1143,112 @@ h1 {
   cursor: pointer;
 }
 
+.attachment-preview-button {
+  color: var(--accent-strong);
+}
+
+.attachment-preview-button:hover:not(:disabled),
 .attachment-remove-button:hover:not(:disabled) {
   border-bottom-color: currentColor;
 }
 
+.attachment-preview-button:disabled,
 .attachment-remove-button:disabled {
   cursor: wait;
   opacity: 0.55;
+}
+
+.attachment-preview-dialog {
+  width: min(52rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+  margin: auto;
+  border: 1px solid var(--divider-strong);
+  border-radius: 4px;
+  padding: 0;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  color: var(--text);
+  background: var(--reader);
+  box-shadow: 0 18px 60px rgb(0 0 0 / 28%);
+}
+
+.attachment-preview-dialog::backdrop {
+  background: rgb(12 16 13 / 58%);
+}
+
+.attachment-preview-frame {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  max-height: calc(100dvh - 2rem);
+}
+
+.attachment-preview-frame > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--divider);
+  padding: 1rem 1.1rem;
+}
+
+.attachment-preview-frame h2,
+.attachment-preview-frame p {
+  margin: 0;
+}
+
+.attachment-preview-frame h2 {
+  overflow-wrap: anywhere;
+  font-size: 1rem;
+  text-wrap: balance;
+}
+
+.attachment-preview-frame header > div > p:last-child {
+  margin-top: 0.25rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.attachment-preview-close {
+  min-height: 2.25rem;
+  border: 1px solid var(--divider-strong);
+  border-radius: 3px;
+  padding: 0.35rem 0.7rem;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+  cursor: pointer;
+}
+
+.attachment-preview-close:hover {
+  border-color: var(--accent);
+  background: var(--selection);
+}
+
+.attachment-preview-notice {
+  border-bottom: 1px solid var(--divider);
+  padding: 0.65rem 1.1rem;
+  color: var(--warning);
+  background: var(--warning-bg);
+  font-size: 0.8rem;
+}
+
+.attachment-preview-content {
+  box-sizing: border-box;
+  width: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  min-height: 12rem;
+  border: 0;
+  border-radius: 0;
+  padding: 1rem 1.1rem 1.25rem;
+  color: var(--text);
+  background: var(--code);
+  white-space: pre;
+  resize: none;
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  tab-size: 4;
 }
 .guide-status-button {
   color: var(--warning);
