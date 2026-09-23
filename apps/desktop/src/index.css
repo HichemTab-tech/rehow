@@ -1043,6 +1043,103 @@ kbd {
   color: var(--accent-strong);
   text-decoration: underline;
 }
+.external-conflict {
+  max-width: none;
+  margin: 0 0 24px;
+  padding: 16px 18px;
+  border: 1px solid color-mix(in srgb, var(--warning) 38%, var(--divider));
+  border-left: 3px solid var(--warning);
+  background: var(--warning-bg);
+}
+.external-conflict-copy {
+  max-width: 68ch;
+}
+.external-conflict-kicker {
+  color: var(--warning);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.external-conflict-heading {
+  display: block;
+  margin: 3px 0 5px;
+  font-size: 16px;
+}
+.external-conflict p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.external-conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.external-conflict .button-danger {
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--divider));
+  color: var(--warning);
+}
+.external-compare {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid color-mix(in srgb, var(--warning) 28%, var(--divider));
+}
+.external-compare-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.external-compare-title,
+.external-compare-label {
+  display: block;
+  margin: 0 0 7px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 750;
+}
+.external-compare dl {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+.external-compare-row {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 8px;
+}
+.external-compare dt {
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.external-compare dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.external-compare textarea {
+  width: 100%;
+  min-height: 13rem;
+  resize: vertical;
+  overscroll-behavior: contain;
+  border: 1px solid var(--divider-strong);
+  background: var(--reader);
+  color: var(--text);
+  font-family: ui-monospace, "JetBrains Mono", "DejaVu Sans Mono", monospace;
+  font-size: 11px;
+  line-height: 1.55;
+}
+.external-compare .external-compare-revision {
+  color: var(--faint);
+  font-family: ui-monospace, "JetBrains Mono", "DejaVu Sans Mono", monospace;
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
 .guide-header {
   padding-bottom: 25px;
   border-bottom: 1px solid var(--divider);
@@ -1683,6 +1780,10 @@ h1 {
 .guide-reader section {
   max-width: 74ch;
   padding-top: 27px;
+}
+.guide-reader section.external-compare {
+  max-width: none;
+  padding-top: 16px;
 }
 .reader-placeholder {
   display: grid;
@@ -2406,6 +2507,9 @@ button.markdown-link:disabled {
   }
   .guide-reader {
     padding: 25px 20px 68px;
+  }
+  .external-compare-grid {
+    grid-template-columns: 1fr;
   }
   .result-row {
     padding-block: 14px;

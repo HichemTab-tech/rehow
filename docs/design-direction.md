@@ -1,7 +1,7 @@
 # Design Direction
 
 Status: Reference Desk approved for implementation
-Last reviewed with web-design-guidelines: 2026-09-18 (Phase 2A implemented shell; closure pass)
+Last reviewed with web-design-guidelines: 2026-09-24 (external Guide conflict workflow; static pass)
 
 ## Experience principles
 
@@ -134,7 +134,7 @@ Use system theme and `color-scheme`. State always includes icon/text/structure, 
 - **Indexing:** already indexed results stay usable; determinate counts when known in `aria-live="polite"`; no full-screen spinner for local work.
 - **Malformed Guide:** row/reader identifies safe relative file and offers validation/open-underlying-file/copy-details actions.
 - **Workspace missing/non-writable/newer:** distinguish moved, unmounted, permission, and version cases with safe read-only/retry paths.
-- **External change/conflict:** reader-top persistent banner with timestamps and Reload/Compare/Keep Draft semantics; never overwrite silently.
+- **External change/conflict:** the implemented reader-top persistent panel provides side-by-side content/detail comparison plus explicit Reload from Disk and Keep Draft actions; it never overwrites silently.
 - **Git unavailable/auth/diverged/conflicted:** content remains fully usable; status strip explains the next safe action.
 - **Very long content:** long title/path/error/command, deep outline, tables, 200% text scaling, and translation expansion remain operable.
 

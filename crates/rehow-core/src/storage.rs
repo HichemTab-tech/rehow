@@ -4817,7 +4817,7 @@ fn push_issue(
     Ok(())
 }
 
-fn document_revision(relative_path: &str, bytes: &[u8]) -> Revision {
+pub(crate) fn document_revision(relative_path: &str, bytes: &[u8]) -> Revision {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"rehow-document-revision-v1\0");
     hash_frame(&mut hasher, relative_path.as_bytes());

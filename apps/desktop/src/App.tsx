@@ -25,6 +25,11 @@ type GuideSummary = {
 
 type GuideBodyPayload = {
   id: string;
+  title: string;
+  summary: string;
+  categoryId: string;
+  tags: string[];
+  aliases: string[];
   revision: string;
   body: string;
   document: SafeMarkdownDocument;
@@ -40,6 +45,15 @@ type GuideBodyPayload = {
   filesAffected: string[];
   relatedGuideIds: string[];
   references: Array<{ title: string; url: string }>;
+};
+
+type GuideConflictDraft = {
+  title: string;
+  summary: string;
+  category: string;
+  tags: string[];
+  aliases: string[];
+  body: string;
 };
 
 type AttachmentTextPreviewPayload = {
@@ -1811,6 +1825,111 @@ function SearchExcerpt({ hit }: { hit: SearchHitPayload }) {
   );
 }
 
+export function ExternalGuideComparison({
+  draft,
+  disk,
+  diskCategory,
+  bodyChanged,
+  detailsChanged,
+}: {
+  draft: GuideConflictDraft;
+  disk: GuideBodyPayload;
+  diskCategory: string;
+  bodyChanged: boolean;
+  detailsChanged: boolean;
+}) {
+  return (
+    <section
+      className="external-compare"
+      aria-label="Guide conflict comparison"
+    >
+      {detailsChanged ? (
+        <div className="external-compare-grid">
+          <div>
+            <strong className="external-compare-title">
+              Your Draft Details
+            </strong>
+            <dl>
+              <div className="external-compare-row">
+                <dt>Title</dt>
+                <dd>{draft.title}</dd>
+              </div>
+              <div className="external-compare-row">
+                <dt>Summary</dt>
+                <dd>{draft.summary}</dd>
+              </div>
+              <div className="external-compare-row">
+                <dt>Category</dt>
+                <dd>{draft.category}</dd>
+              </div>
+              <div className="external-compare-row">
+                <dt>Tags</dt>
+                <dd>{draft.tags.join(", ") || "None"}</dd>
+              </div>
+              <div className="external-compare-row">
+                <dt>Aliases</dt>
+                <dd>{draft.aliases.join(", ") || "None"}</dd>
+              </div>
+            </dl>
+          </div>
+          <div>
+            <strong className="external-compare-title">Current on Disk</strong>
+            <dl>
+              <div className="external-compare-row">
+                <dt>Title</dt>
+                <dd>{disk.title}</dd>
+              </div>
+              <div className="external-compare-row">
+                <dt>Summary</dt>
+                <dd>{disk.summary}</dd>
+              </div>
+              <div className="external-compare-row">
+                <dt>Category</dt>
+                <dd>{diskCategory}</dd>
+              </div>
+              <div className="external-compare-row">
+                <dt>Tags</dt>
+                <dd>{disk.tags.join(", ") || "None"}</dd>
+              </div>
+              <div className="external-compare-row">
+                <dt>Aliases</dt>
+                <dd>{disk.aliases.join(", ") || "None"}</dd>
+              </div>
+            </dl>
+          </div>
+        </div>
+      ) : null}
+      {bodyChanged ? (
+        <div className="external-compare-grid external-compare-body">
+          <label>
+            <span className="external-compare-label">Your Draft Content</span>
+            <textarea
+              readOnly
+              spellCheck={false}
+              translate="no"
+              value={draft.body}
+            />
+          </label>
+          <label>
+            <span className="external-compare-label">Current on Disk</span>
+            <textarea
+              readOnly
+              spellCheck={false}
+              translate="no"
+              value={disk.body}
+            />
+          </label>
+        </div>
+      ) : null}
+      {disk.revision === "" ? null : (
+        <p className="external-compare-revision" translate="no">
+          Disk revision: {disk.revision}
+        </p>
+      )}
+    </section>
+  );
+}
+
 export function GuideContext({
   guide,
   guides,
@@ -2043,6 +2162,10 @@ export function App() {
   const [savingNewGuide, setSavingNewGuide] = useState(false);
   const [guideCreateError, setGuideCreateError] = useState("");
   const [guideBody, setGuideBody] = useState<GuideBodyPayload | null>(null);
+  const [externalGuidePreview, setExternalGuidePreview] =
+    useState<GuideBodyPayload | null>(null);
+  const [previewingExternalGuide, setPreviewingExternalGuide] = useState(false);
+  const [externalConflictError, setExternalConflictError] = useState("");
   const [editingGuideDetails, setEditingGuideDetails] = useState(false);
   const [detailTitle, setDetailTitle] = useState("");
   const [detailSummary, setDetailSummary] = useState("");
@@ -2141,6 +2264,10 @@ export function App() {
   const workspaceIdRef = useRef("");
   const workspaceSessionRef = useRef("");
   const editGenerationRef = useRef(0);
+  const externalPreviewGenerationRef = useRef(0);
+  const externalPreviewOwnerRef = useRef("");
+  const externalCompareButtonRef = useRef<HTMLButtonElement>(null);
+  const externalComparisonRef = useRef<HTMLDivElement>(null);
   const guides = workspace?.guides ?? [];
   const scopedGuides = useMemo(
     () =>
@@ -2244,6 +2371,11 @@ export function App() {
       workspace.watchStatus === "degraded" ||
       watchDegradedWorkspaceId === workspace.id);
   const openWorkspaceWatchSession = workspace?.watchSession ?? "";
+  const externalPreviewOwner = JSON.stringify([
+    externalChangePending,
+    openWorkspaceWatchSession,
+    selected?.id ?? "",
+  ]);
   const gitSyncReadyForInspection =
     workspace !== null &&
     gitStatus?.kind === "ready" &&
@@ -2508,13 +2640,22 @@ export function App() {
     if (autoRefreshBlocked) {
       if (!workspaceOperationBusy) {
         setAnnouncement(
-          "Files changed outside Rehow. Finish or discard your edits, then refresh.",
+          "Files changed outside Rehow. Compare them, keep your draft, or reload from disk.",
         );
       }
       return;
     }
     refreshWorkspaceFromEffect();
   }, [autoRefreshBlocked, externalChangePending, workspaceOperationBusy]);
+
+  useEffect(() => {
+    if (externalPreviewOwnerRef.current === externalPreviewOwner) return;
+    externalPreviewOwnerRef.current = externalPreviewOwner;
+    externalPreviewGenerationRef.current += 1;
+    setExternalGuidePreview(null);
+    setExternalConflictError("");
+    setPreviewingExternalGuide(false);
+  }, [externalPreviewOwner]);
 
   useEffect(() => {
     function handleShortcut(event: KeyboardEvent) {
@@ -2949,9 +3090,79 @@ export function App() {
     }
   }
 
-  async function refreshWorkspace(automatic = false) {
+  async function previewExternalGuide() {
+    if (
+      workspace === null ||
+      selected === null ||
+      (!dirtyGuide && !dirtyGuideDetails) ||
+      previewingExternalGuide
+    )
+      return;
+    const generation = ++externalPreviewGenerationRef.current;
+    setPreviewingExternalGuide(true);
+    setExternalConflictError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const preview = await invoke<GuideBodyPayload>(
+        "preview_external_open_guide",
+        { guideId: selected.id },
+      );
+      if (
+        generation !== externalPreviewGenerationRef.current ||
+        preview.id !== selected.id
+      )
+        return;
+      setExternalGuidePreview(preview);
+      setAnnouncement("Showing your draft beside the current Guide on disk.");
+      requestAnimationFrame(() => externalComparisonRef.current?.focus());
+    } catch (error) {
+      if (generation !== externalPreviewGenerationRef.current) return;
+      setExternalConflictError(nativeCommandError(error).message);
+    } finally {
+      if (generation === externalPreviewGenerationRef.current) {
+        setPreviewingExternalGuide(false);
+      }
+    }
+  }
+
+  function keepExternalDraft() {
+    externalPreviewGenerationRef.current += 1;
+    setExternalGuidePreview(null);
+    setExternalConflictError("");
+    setPreviewingExternalGuide(false);
+    setAnnouncement(
+      "Your draft is preserved. Rehow will not replace it until you reload or save deliberately.",
+    );
+    requestAnimationFrame(() => {
+      if (editingGuide) editorRef.current?.focus();
+      else detailTitleRef.current?.focus();
+    });
+  }
+
+  function reloadExternalGuide() {
+    if (
+      !window.confirm(
+        "Discard all unsaved edits and reload current Workspace files from disk?",
+      )
+    )
+      return;
+    externalPreviewGenerationRef.current += 1;
+    setExternalGuidePreview(null);
+    setExternalConflictError("");
+    void refreshWorkspace(false, true);
+  }
+
+  async function refreshWorkspace(
+    automatic = false,
+    discardAlreadyConfirmed = false,
+  ) {
     if (workspace === null || refreshingWorkspace) return;
-    if (automatic ? autoRefreshBlocked : !confirmDiscard()) return;
+    if (
+      automatic
+        ? autoRefreshBlocked
+        : !discardAlreadyConfirmed && !confirmDiscard()
+    )
+      return;
     const previousSelectedId = selectedId;
     const previousSelectedTitle = selected?.title ?? "The selected Guide";
     const startedEditGeneration = editGenerationRef.current;
@@ -6056,6 +6267,105 @@ export function App() {
             <button className="back-button" type="button" onClick={closeReader}>
               ← Back to Results
             </button>
+            {externalChangePending && (dirtyGuide || dirtyGuideDetails) ? (
+              <section
+                className="external-conflict"
+                aria-labelledby="external-conflict-heading"
+              >
+                <div className="external-conflict-copy">
+                  <span className="external-conflict-kicker">
+                    Changed on Disk
+                  </span>
+                  <strong
+                    className="external-conflict-heading"
+                    id="external-conflict-heading"
+                  >
+                    Your Draft Is Preserved
+                  </strong>
+                  <p>
+                    This Guide may have changed outside Rehow. Compare both
+                    versions before deciding which one to keep.
+                  </p>
+                </div>
+                <div className="external-conflict-actions">
+                  <button
+                    ref={externalCompareButtonRef}
+                    className="button"
+                    type="button"
+                    disabled={previewingExternalGuide || workspaceOperationBusy}
+                    onClick={() => void previewExternalGuide()}
+                  >
+                    {previewingExternalGuide ? "Comparing…" : "Compare"}
+                  </button>
+                  <button
+                    className="button"
+                    type="button"
+                    disabled={workspaceOperationBusy}
+                    onClick={keepExternalDraft}
+                  >
+                    Keep Draft
+                  </button>
+                  <button
+                    className="button button-danger"
+                    type="button"
+                    disabled={workspaceOperationBusy}
+                    onClick={reloadExternalGuide}
+                  >
+                    Reload from Disk
+                  </button>
+                </div>
+                {externalConflictError !== "" ? (
+                  <p className="editor-error" role="alert">
+                    {externalConflictError}
+                  </p>
+                ) : null}
+                {externalGuidePreview !== null ? (
+                  <div ref={externalComparisonRef} tabIndex={-1}>
+                    <ExternalGuideComparison
+                      bodyChanged={dirtyGuide}
+                      detailsChanged={dirtyGuideDetails}
+                      disk={externalGuidePreview}
+                      diskCategory={
+                        workspace?.categories.find(
+                          ({ id }) => id === externalGuidePreview.categoryId,
+                        )?.name ?? "Unknown Category"
+                      }
+                      draft={{
+                        title: editingGuideDetails
+                          ? detailTitle
+                          : selected.title,
+                        summary: editingGuideDetails
+                          ? detailSummary
+                          : selected.summary,
+                        category:
+                          workspace?.categories.find(
+                            ({ id }) =>
+                              id ===
+                              (editingGuideDetails
+                                ? detailCategoryId
+                                : selected.categoryId),
+                          )?.name ?? selected.category,
+                        tags: editingGuideDetails
+                          ? detailTags
+                              .split(/\r?\n/)
+                              .map((term) => term.trim())
+                              .filter(Boolean)
+                          : selected.tags,
+                        aliases: editingGuideDetails
+                          ? detailAliases
+                              .split(/\r?\n/)
+                              .map((term) => term.trim())
+                              .filter(Boolean)
+                          : selected.aliases,
+                        body: editingGuide
+                          ? draftBody
+                          : (guideBody?.body ?? ""),
+                      }}
+                    />
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
             <header className="guide-header">
               <div className="breadcrumbs">
                 <span>{selected.category}</span>

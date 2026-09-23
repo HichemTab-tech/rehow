@@ -99,6 +99,8 @@ Phase 6D2 adds an exact twenty-six-tool surface. Tests prove bounded Attachment 
 
 Use the most stable Tauri/WebDriver-compatible automation available at Phase 2 and retain manual smoke coverage where Linux WebKit automation is incomplete. Tests launch the production-like native app against a temporary Workspace and exercise open/create/search/read/edit/restart/conflict. Never rely exclusively on the Vite browser view because native IPC, CSP, WebKitGTK, window behavior, and file dialogs are product behavior.
 
+External Guide conflict coverage proves that the core can reread the selected on-disk Guide without mutating the retained view, that the native payload remains pathless and safe-Markdown-backed, and that hostile draft/disk text stays inert in the comparison. Reload requires explicit confirmation; Keep Draft leaves the editor state intact.
+
 ## Required coverage matrix
 
 | Area | Minimum cases |

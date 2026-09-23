@@ -35,7 +35,7 @@ use crate::{
         DocumentRemoveError, DocumentUpdateError, DocumentUpdateRequest, EmptyWorkspaceTarget,
         ManagedAttachmentCandidate as StorageManagedAttachmentCandidate, MarkdownImportSelection,
         MultiDocumentUpdateError, WorkspaceInitializeError, WorkspaceInspectError, WorkspaceView,
-        category_inventory_snapshot, discover_managed_attachment_candidates,
+        category_inventory_snapshot, discover_managed_attachment_candidates, document_revision,
         execute_attachment_import, execute_attachment_removal, execute_category_create,
         execute_category_document_update, execute_category_remove, execute_document_create,
         execute_document_move, execute_document_remove, execute_document_update,
@@ -107,6 +107,60 @@ pub fn read_guide_body(
         return Err(GuideBodyReadError::RevisionConflict);
     }
     copy_bytes(bound.record().body()).map_err(|_| GuideBodyReadError::ResourceLimit)
+}
+
+pub struct CurrentGuideSnapshot {
+    revision: Revision,
+    guide: crate::domain::Guide,
+}
+
+impl CurrentGuideSnapshot {
+    pub fn revision(&self) -> Revision {
+        self.revision
+    }
+
+    pub fn guide(&self) -> &crate::domain::Guide {
+        &self.guide
+    }
+}
+
+pub fn read_current_guide_snapshot(
+    workspace: &WorkspaceView,
+    guide_id: GuideId,
+) -> Result<CurrentGuideSnapshot, GuideBodyReadError> {
+    let loaded = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides())
+        .find(|guide| guide.guide().id() == &guide_id)
+        .ok_or(GuideBodyReadError::NotFound)?;
+    let source = read_managed_regular(
+        workspace,
+        loaded.relative_path(),
+        GUIDE_BODY_INPUT_LIMIT,
+        None,
+    )
+    .map_err(|error| match error {
+        WorkspaceInspectError::ResourceLimit => GuideBodyReadError::ResourceLimit,
+        WorkspaceInspectError::UnsafeRoot => GuideBodyReadError::UnsafeStorage,
+        WorkspaceInspectError::ChangedDuringRead
+        | WorkspaceInspectError::NotFound
+        | WorkspaceInspectError::NotDirectory => GuideBodyReadError::RevisionConflict,
+        WorkspaceInspectError::PermissionDenied | WorkspaceInspectError::Io => {
+            GuideBodyReadError::Io
+        }
+    })?;
+    let revision = document_revision(loaded.relative_path(), &source);
+    let parsed = parse_guide_source(source.into_boxed_slice())
+        .map_err(|_| GuideBodyReadError::InvalidGuide)?;
+    let bound = bind_guide(parsed).map_err(|_| GuideBodyReadError::InvalidGuide)?;
+    if bound.record().id() != &guide_id {
+        return Err(GuideBodyReadError::RevisionConflict);
+    }
+    Ok(CurrentGuideSnapshot {
+        revision,
+        guide: bound.into_record(),
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5258,6 +5312,33 @@ mod tests {
             "Added Externally"
         );
         assert_eq!(view.issues().len(), 1);
+    }
+
+    #[test]
+    fn current_guide_snapshot_reads_external_bytes_without_mutating_the_open_view() {
+        let (workspace, _state, view) = fixture("current-guide-snapshot", GUIDE);
+        let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
+        let retained_revision = revision(&view);
+        let changed = GUIDE
+            .replace("Install a Tarball", "Install the Current Tarball")
+            .replace("Extract the archive.", "Extract the changed archive.");
+        fs::write(workspace.path().join(GUIDE_PATH), changed).unwrap();
+
+        let snapshot = read_current_guide_snapshot(&view, guide_id).unwrap();
+        assert_ne!(snapshot.revision(), retained_revision);
+        assert_eq!(snapshot.guide().title(), "Install the Current Tarball");
+        assert_eq!(
+            snapshot.guide().body(),
+            b"## Steps\n\nExtract the changed archive.\n"
+        );
+        assert_eq!(
+            view.categories()[0].guides()[0].revision(),
+            retained_revision
+        );
+        assert_eq!(
+            view.categories()[0].guides()[0].guide().title(),
+            "Install a Tarball"
+        );
     }
 
     #[test]

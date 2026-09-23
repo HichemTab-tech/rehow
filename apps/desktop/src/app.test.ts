@@ -8,6 +8,7 @@ import {
   attachmentPreviewOwnerKey,
   automaticRefreshBlocked,
   canMarkGuideTested,
+  ExternalGuideComparison,
   filterGuides,
   focusGitCommitReview,
   focusGitSyncAction,
@@ -1256,6 +1257,11 @@ describe("safe Guide rendering", () => {
       createElement(GuideContext, {
         guide: {
           id: "guide-id",
+          title: "Install a Tarball",
+          summary: "Install a downloaded archive.",
+          categoryId: "category-id",
+          tags: ["linux"],
+          aliases: ["manual install"],
           revision: `rev:v1:${"11".repeat(32)}`,
           body: "",
           document: { version: 1, events: [] },
@@ -1308,6 +1314,49 @@ describe("safe Guide rendering", () => {
     expect(markup).toContain("Unavailable Guide");
     expect(markup).not.toContain("<script>");
     expect(markup).not.toContain("href=");
+  });
+
+  it("compares an external Guide with the local draft as inert text", () => {
+    const markup = renderToStaticMarkup(
+      createElement(ExternalGuideComparison, {
+        draft: {
+          title: "Draft <title>",
+          summary: "Local summary",
+          category: "Linux",
+          tags: ["local"],
+          aliases: [],
+          body: '<script src="file:///tmp/local">local()</script>',
+        },
+        disk: {
+          id: "guide-id",
+          title: "Disk <title>",
+          summary: "Disk summary",
+          categoryId: "category-id",
+          tags: ["disk"],
+          aliases: [],
+          revision: `rev:v1:${"22".repeat(32)}`,
+          body: '<img src="file:///tmp/disk">',
+          document: { version: 1, events: [] },
+          createdAt: "2026-09-05T10:03:00Z",
+          lastVerifiedAt: null,
+          appliesTo: [],
+          prerequisites: [],
+          warnings: [],
+          filesAffected: [],
+          relatedGuideIds: [],
+          references: [],
+        },
+        diskCategory: "Linux",
+        bodyChanged: true,
+        detailsChanged: true,
+      }),
+    );
+    expect(markup).toContain("Draft &lt;title&gt;");
+    expect(markup).toContain("Disk &lt;title&gt;");
+    expect(markup).toContain("Your Draft Content");
+    expect(markup).toContain("Current on Disk");
+    expect(markup).not.toContain("<script");
+    expect(markup).not.toContain("<img");
   });
 
   it("renders bounded Workspace issue recovery guidance as inert text", () => {

@@ -14,11 +14,11 @@ use rehow_core::{
         confirm_and_approve_guide_tested, confirm_and_remove_attachment, create_category,
         create_guide, execute_attachment_reveal, execute_external_link_open,
         import_markdown_collection, initialize_workspace, prepare_attachment_reveal,
-        prepare_external_link_open, preview_attachment_text, read_guide_body,
-        refresh_open_workspace as refresh_workspace_view, remove_category, remove_guide,
-        reorder_categories, select_and_export_attachment, select_and_import_attachment,
-        set_category_archived, set_guide_archived, update_category_details, update_guide,
-        update_guide_details,
+        prepare_external_link_open, preview_attachment_text, read_current_guide_snapshot,
+        read_guide_body, refresh_open_workspace as refresh_workspace_view, remove_category,
+        remove_guide, reorder_categories, select_and_export_attachment,
+        select_and_import_attachment, set_category_archived, set_guide_archived,
+        update_category_details, update_guide, update_guide_details,
     },
     domain::GuideStatus,
     git::{
@@ -694,6 +694,11 @@ struct ExternalLinkOpenPayload {
 #[serde(rename_all = "camelCase")]
 struct GuideBodyPayload {
     id: String,
+    title: String,
+    summary: String,
+    category_id: String,
+    tags: Vec<String>,
+    aliases: Vec<String>,
     revision: String,
     body: String,
     document: SafeMarkdownDocument,
@@ -947,12 +952,25 @@ fn guide_body_payload(
     let guide = loaded.guide();
     let body_bytes = read_guide_body(workspace, *guide.id(), loaded.revision())
         .map_err(guide_body_read_message)?;
-    let body = std::str::from_utf8(&body_bytes)
+    guide_body_payload_from_parts(guide, loaded.revision(), &body_bytes)
+}
+
+fn guide_body_payload_from_parts(
+    guide: &rehow_core::domain::GuideMetadata,
+    revision: Revision,
+    body_bytes: &[u8],
+) -> Result<GuideBodyPayload, String> {
+    let body = std::str::from_utf8(body_bytes)
         .map_err(|_| "Guide Markdown is not valid UTF-8".to_owned())?;
     let document = parse_safe_markdown(body).map_err(|error| error.to_string())?;
     Ok(GuideBodyPayload {
         id: guide.id().to_string(),
-        revision: loaded.revision().to_string(),
+        title: guide.title().to_owned(),
+        summary: guide.summary().to_owned(),
+        category_id: guide.category_id().to_string(),
+        tags: guide.tags().to_vec(),
+        aliases: guide.aliases().to_vec(),
+        revision: revision.to_string(),
         body: body.to_owned(),
         document,
         created_at: guide.created_at().to_string(),
@@ -1003,6 +1021,18 @@ fn guide_body_read_message(error: GuideBodyReadError) -> String {
     }
 }
 
+fn guide_body_read_native_error(error: GuideBodyReadError) -> NativeCommandError {
+    let code = match error {
+        GuideBodyReadError::NotFound => "guideNotFound",
+        GuideBodyReadError::RevisionConflict => "revisionConflict",
+        GuideBodyReadError::InvalidGuide => "invalidGuide",
+        GuideBodyReadError::UnsafeStorage => "unsafeStorage",
+        GuideBodyReadError::ResourceLimit => "resourceLimit",
+        GuideBodyReadError::Io => "ioFailure",
+    };
+    native_command_error(code, guide_body_read_message(error))
+}
+
 impl From<WorkspaceFolderFacts> for FolderFactsPayload {
     fn from(facts: WorkspaceFolderFacts) -> Self {
         Self {
@@ -1029,6 +1059,32 @@ fn read_open_guide(
         .as_ref()
         .ok_or_else(|| "No Workspace is open".to_owned())?;
     guide_body_payload(&workspace.view, &guide_id)
+}
+
+#[tauri::command]
+fn preview_external_open_guide(
+    guide_id: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<GuideBodyPayload, NativeCommandError> {
+    let guide_id = GuideId::from_str(&guide_id)
+        .map_err(|_| native_command_error("invalidGuide", "Guide ID is invalid.".to_owned()))?;
+    let guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable.".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_ref().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open.".to_owned())
+    })?;
+    let snapshot = read_current_guide_snapshot(&workspace.view, guide_id)
+        .map_err(guide_body_read_native_error)?;
+    guide_body_payload_from_parts(
+        snapshot.guide(),
+        snapshot.revision(),
+        snapshot.guide().body(),
+    )
+    .map_err(|message| native_command_error("invalidGuide", message))
 }
 
 #[tauri::command]
@@ -6021,6 +6077,7 @@ pub fn run() {
             import_open_guide_attachment,
             load_desktop_preferences,
             open_guide_external_link,
+            preview_external_open_guide,
             read_open_guide,
             preview_open_guide_attachment_text,
             reveal_open_guide_attachment_parent,
@@ -6783,6 +6840,11 @@ mod tests {
     fn guide_read_payload_has_revision_source_and_safe_document() {
         let payload = GuideBodyPayload {
             id: "0199a1d7-7b0d-7d8e-a38d-f936c5735e10".to_owned(),
+            title: "Install a Tarball".to_owned(),
+            summary: "Install a downloaded archive.".to_owned(),
+            category_id: "0199a1c2-d334-7d17-bd9c-f8b6ba3a5551".to_owned(),
+            tags: vec!["linux".to_owned()],
+            aliases: vec!["manual install".to_owned()],
             revision: format!("rev:v1:{}", "11".repeat(32)),
             body: "<script>no</script>".to_owned(),
             document: parse_safe_markdown("<script>no</script>").unwrap(),
@@ -6803,7 +6865,7 @@ mod tests {
             }],
         };
         let json = serde_json::to_value(payload).unwrap();
-        assert_eq!(json.as_object().unwrap().len(), 12);
+        assert_eq!(json.as_object().unwrap().len(), 17);
         assert_eq!(json["body"], "<script>no</script>");
         assert_eq!(json["revision"], format!("rev:v1:{}", "11".repeat(32)));
         assert_eq!(json["document"]["version"], 1);
