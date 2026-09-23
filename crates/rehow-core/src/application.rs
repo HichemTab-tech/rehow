@@ -37,9 +37,9 @@ use crate::{
         execute_category_document_update, execute_category_remove, execute_document_create,
         execute_document_move, execute_document_remove, execute_document_update,
         execute_document_update_cancellable, execute_managed_attachment_add,
-        execute_multi_document_update, execute_workspace_initialize, open_initialized_workspace,
-        preview_attachment_import, preview_attachment_removal, read_managed_regular,
-        refresh_workspace,
+        execute_multi_document_update, execute_workspace_initialize, managed_reveal_parent,
+        open_initialized_workspace, preview_attachment_import, preview_attachment_removal,
+        read_managed_regular, refresh_workspace,
     },
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -2291,6 +2291,18 @@ pub enum AttachmentExportError {
     ExportedDurabilityUnknown,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachmentRevealError {
+    GuideNotFound,
+    AttachmentNotFound,
+    RevisionConflict,
+    AttachmentChanged,
+    UnsafeStorage,
+    ResourceLimit,
+    HandlerUnavailable,
+    Io,
+}
+
 #[cfg(test)]
 thread_local! {
     static ATTACHMENT_PREVIEW_AFTER_READ_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
@@ -2653,6 +2665,151 @@ fn publish_export(
             Err(AttachmentExportError::UnsupportedFilesystem)
         }
         _ => Err(AttachmentExportError::Io),
+    }
+}
+
+pub struct AttachmentRevealPlan {
+    target: crate::storage::ManagedRevealParent,
+}
+
+impl std::fmt::Debug for AttachmentRevealPlan {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AttachmentRevealPlan")
+            .field("target", &"<directory capability>")
+            .finish()
+    }
+}
+
+pub fn prepare_attachment_reveal(
+    workspace: &WorkspaceView,
+    guide_id: GuideId,
+    attachment_id: AttachmentId,
+    expected_revision: Revision,
+) -> Result<AttachmentRevealPlan, AttachmentRevealError> {
+    prepare_attachment_reveal_parent(workspace, guide_id, attachment_id, expected_revision)
+        .map(|target| AttachmentRevealPlan { target })
+}
+
+pub fn execute_attachment_reveal(plan: AttachmentRevealPlan) -> Result<(), AttachmentRevealError> {
+    reveal_directory_via_portal(&plan.target)
+}
+
+fn reveal_directory_via_portal(
+    target: &crate::storage::ManagedRevealParent,
+) -> Result<(), AttachmentRevealError> {
+    use gio::{glib::prelude::ToVariant, prelude::UnixFDListExtManual};
+
+    let descriptor = target
+        .duplicate_descriptor()
+        .map_err(map_attachment_reveal_storage_error)?;
+    let descriptors = gio::UnixFDList::new();
+    let handle = descriptors
+        .append(descriptor)
+        .map_err(|_| AttachmentRevealError::HandlerUnavailable)?;
+    let options = gio::glib::VariantDict::new(None);
+    options.insert("writable", false);
+    options.insert("ask", false);
+    let parameters = ("", gio::glib::variant::Handle(handle), options.end()).to_variant();
+    let connection = gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>)
+        .map_err(|_| AttachmentRevealError::HandlerUnavailable)?;
+    connection
+        .call_with_unix_fd_list_sync(
+            Some("org.freedesktop.portal.Desktop"),
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.OpenURI",
+            "OpenFile",
+            Some(&parameters),
+            None::<&gio::glib::VariantTy>,
+            gio::DBusCallFlags::NONE,
+            15_000,
+            Some(&descriptors),
+            None::<&gio::Cancellable>,
+        )
+        .map(|_| ())
+        .map_err(|_| AttachmentRevealError::HandlerUnavailable)
+}
+
+fn prepare_attachment_reveal_parent(
+    workspace: &WorkspaceView,
+    guide_id: GuideId,
+    attachment_id: AttachmentId,
+    expected_revision: Revision,
+) -> Result<crate::storage::ManagedRevealParent, AttachmentRevealError> {
+    let (loaded, attachment) = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides())
+        .find(|guide| guide.guide().id() == &guide_id)
+        .ok_or(AttachmentRevealError::GuideNotFound)
+        .and_then(|loaded| {
+            if loaded.revision() != expected_revision {
+                Err(AttachmentRevealError::RevisionConflict)
+            } else {
+                let attachment = loaded
+                    .guide()
+                    .attachments()
+                    .unwrap_or_default()
+                    .iter()
+                    .find(|attachment| attachment.id() == &attachment_id)
+                    .ok_or(AttachmentRevealError::AttachmentNotFound)?;
+                Ok((loaded, attachment))
+            }
+        })?;
+    if !attachment
+        .path()
+        .starts_with(&format!("attachments/{guide_id}/"))
+    {
+        return Err(AttachmentRevealError::UnsafeStorage);
+    }
+    verify_export_guide_revision(workspace, loaded.relative_path(), expected_revision)
+        .map_err(map_attachment_reveal_export_error)?;
+    let bytes = read_managed_regular(workspace, attachment.path(), ATTACHMENT_EXPORT_LIMIT, None)
+        .map_err(map_attachment_reveal_storage_error)?;
+    if attachment
+        .size_bytes()
+        .is_some_and(|expected| expected != bytes.len() as u64)
+    {
+        return Err(AttachmentRevealError::AttachmentChanged);
+    }
+    use sha2::Digest;
+    let expected_digest =
+        decode_sha256(attachment.sha256()).ok_or(AttachmentRevealError::UnsafeStorage)?;
+    if sha2::Sha256::digest(&bytes).as_slice() != expected_digest {
+        return Err(AttachmentRevealError::AttachmentChanged);
+    }
+    run_attachment_preview_after_read_hook();
+    verify_export_guide_revision(workspace, loaded.relative_path(), expected_revision)
+        .map_err(map_attachment_reveal_export_error)?;
+    managed_reveal_parent(workspace, attachment.path()).map_err(map_attachment_reveal_storage_error)
+}
+
+fn map_attachment_reveal_export_error(error: AttachmentExportError) -> AttachmentRevealError {
+    match error {
+        AttachmentExportError::RevisionConflict => AttachmentRevealError::RevisionConflict,
+        AttachmentExportError::AttachmentChanged => AttachmentRevealError::AttachmentChanged,
+        AttachmentExportError::UnsafeStorage => AttachmentRevealError::UnsafeStorage,
+        AttachmentExportError::ResourceLimit => AttachmentRevealError::ResourceLimit,
+        AttachmentExportError::Io => AttachmentRevealError::Io,
+        AttachmentExportError::GuideNotFound
+        | AttachmentExportError::AttachmentNotFound
+        | AttachmentExportError::DestinationExists
+        | AttachmentExportError::UnsafeDestination
+        | AttachmentExportError::UnsupportedFilesystem
+        | AttachmentExportError::ExportedDurabilityUnknown => AttachmentRevealError::Io,
+    }
+}
+
+fn map_attachment_reveal_storage_error(error: WorkspaceInspectError) -> AttachmentRevealError {
+    match error {
+        WorkspaceInspectError::ResourceLimit => AttachmentRevealError::ResourceLimit,
+        WorkspaceInspectError::UnsafeRoot => AttachmentRevealError::UnsafeStorage,
+        WorkspaceInspectError::ChangedDuringRead
+        | WorkspaceInspectError::NotFound
+        | WorkspaceInspectError::NotDirectory => AttachmentRevealError::AttachmentChanged,
+        WorkspaceInspectError::PermissionDenied | WorkspaceInspectError::Io => {
+            AttachmentRevealError::Io
+        }
     }
 }
 
@@ -4341,6 +4498,107 @@ mod tests {
             Err(AttachmentExportError::RevisionConflict)
         );
         assert!(!target.exists());
+    }
+
+    #[test]
+    fn attachment_reveal_prepares_only_the_verified_parent_directory() {
+        let (workspace, view, attachment_id, _attachment_path) =
+            attachment_preview_fixture("attachment-reveal", b"stable");
+        let target = prepare_attachment_reveal_parent(
+            &view,
+            GuideId::from_str(GUIDE_ID).unwrap(),
+            attachment_id,
+            revision(&view),
+        )
+        .unwrap();
+        let original = workspace.path().join(format!("attachments/{GUIDE_ID}"));
+        let original_metadata = fs::metadata(&original).unwrap();
+        let descriptor = fs::File::from(target.duplicate_descriptor().unwrap());
+        let descriptor_metadata = descriptor.metadata().unwrap();
+        assert_eq!(descriptor_metadata.dev(), original_metadata.dev());
+        assert_eq!(descriptor_metadata.ino(), original_metadata.ino());
+
+        let moved = workspace
+            .path()
+            .join(format!("attachments/{GUIDE_ID}-moved"));
+        fs::rename(&original, &moved).unwrap();
+        symlink(&moved, &original).unwrap();
+        let raced_descriptor = fs::File::from(target.duplicate_descriptor().unwrap());
+        let raced_metadata = raced_descriptor.metadata().unwrap();
+        assert_eq!(raced_metadata.dev(), original_metadata.dev());
+        assert_eq!(raced_metadata.ino(), original_metadata.ino());
+
+        fs::remove_file(&original).unwrap();
+        let outside = workspace.path().join("outside-parent");
+        fs::create_dir(&outside).unwrap();
+        symlink(&outside, &original).unwrap();
+        let outside_metadata = fs::metadata(&outside).unwrap();
+        let post_swap_descriptor = fs::File::from(target.duplicate_descriptor().unwrap());
+        let post_swap_metadata = post_swap_descriptor.metadata().unwrap();
+        assert_eq!(post_swap_metadata.ino(), original_metadata.ino());
+        assert_ne!(post_swap_metadata.ino(), outside_metadata.ino());
+    }
+
+    #[test]
+    fn attachment_reveal_refuses_linked_source_and_guide_race() {
+        let (workspace, view, attachment_id, attachment_path) =
+            attachment_preview_fixture("attachment-reveal-refusal", b"stable");
+        let outside = workspace.path().join("outside.bin");
+        fs::write(&outside, b"stable").unwrap();
+        fs::remove_file(&attachment_path).unwrap();
+        symlink(&outside, &attachment_path).unwrap();
+        assert!(matches!(
+            prepare_attachment_reveal_parent(
+                &view,
+                GuideId::from_str(GUIDE_ID).unwrap(),
+                attachment_id,
+                revision(&view),
+            ),
+            Err(AttachmentRevealError::UnsafeStorage)
+        ));
+
+        fs::remove_file(&attachment_path).unwrap();
+        fs::write(&attachment_path, b"stable").unwrap();
+        let guide_path = workspace.path().join(GUIDE_PATH);
+        set_attachment_preview_after_read_hook(move || {
+            let current = fs::read_to_string(&guide_path).unwrap();
+            fs::write(
+                &guide_path,
+                current.replace("Install a Tarball", "Install changed tarball"),
+            )
+            .unwrap();
+        });
+        assert!(matches!(
+            prepare_attachment_reveal_parent(
+                &view,
+                GuideId::from_str(GUIDE_ID).unwrap(),
+                attachment_id,
+                revision(&view),
+            ),
+            Err(AttachmentRevealError::RevisionConflict)
+        ));
+    }
+
+    #[test]
+    fn attachment_reveal_refuses_raced_intermediate_symlink() {
+        let (workspace, view, attachment_id, _attachment_path) =
+            attachment_preview_fixture("attachment-reveal-parent-race", b"stable");
+        let attachments = workspace.path().join("attachments");
+        let moved = workspace.path().join("attachments-moved");
+        set_attachment_preview_after_read_hook(move || {
+            fs::rename(&attachments, &moved).unwrap();
+            symlink(&moved, &attachments).unwrap();
+        });
+
+        assert!(matches!(
+            prepare_attachment_reveal_parent(
+                &view,
+                GuideId::from_str(GUIDE_ID).unwrap(),
+                attachment_id,
+                revision(&view),
+            ),
+            Err(AttachmentRevealError::UnsafeStorage)
+        ));
     }
 
     #[test]

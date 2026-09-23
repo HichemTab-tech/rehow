@@ -3041,6 +3041,27 @@ pub(crate) fn read_managed_regular(
     Ok(bytes)
 }
 
+pub(crate) struct ManagedRevealParent {
+    directory: linux::DirectoryCapability,
+}
+
+impl ManagedRevealParent {
+    pub(crate) fn duplicate_descriptor(&self) -> Result<OwnedFd, WorkspaceInspectError> {
+        self.directory.duplicate_descriptor().map_err(map_io)
+    }
+}
+
+pub(crate) fn managed_reveal_parent(
+    workspace: &WorkspaceView,
+    relative_path: &str,
+) -> Result<ManagedRevealParent, WorkspaceInspectError> {
+    let directory = workspace
+        ._root
+        .open_managed_parent(relative_path)
+        .map_err(map_clone_destination_error)?;
+    Ok(ManagedRevealParent { directory })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_document_update<E, F>(
     workspace: &WorkspaceView,
@@ -5483,6 +5504,30 @@ mod linux {
             Err(MutationIoError::Unsafe)
         }
 
+        pub(super) fn open_managed_parent(
+            &self,
+            relative_path: &str,
+        ) -> Result<Self, MutationIoError> {
+            if !super::recovery::valid_active_path(relative_path) {
+                return Err(MutationIoError::Unsafe);
+            }
+            let mut parts = relative_path.split('/').peekable();
+            let mut directory = self.duplicate().map_err(|_| MutationIoError::Io)?;
+            while let Some(part) = parts.next() {
+                if parts.peek().is_none() {
+                    return Ok(directory);
+                }
+                directory = directory
+                    .open_directory(part)
+                    .map_err(|error| match error {
+                        OpenDirectoryError::Missing => MutationIoError::Conflict,
+                        OpenDirectoryError::Unsafe => MutationIoError::Unsafe,
+                        OpenDirectoryError::Io(_) => MutationIoError::Io,
+                    })?;
+            }
+            Err(MutationIoError::Unsafe)
+        }
+
         pub(super) fn verify_empty_workspace_root(&self) -> Result<(), MutationIoError> {
             let entries = self.entries(20_000).map_err(|error| match error {
                 WorkspaceInspectError::ResourceLimit => MutationIoError::TooLarge,
@@ -7380,6 +7425,10 @@ mod linux {
                     capability_hash: self.capability_hash,
                 })
             }
+        }
+
+        pub(super) fn duplicate_descriptor(&self) -> Result<OwnedFd, io::Error> {
+            self.duplicate().map(|directory| directory.descriptor)
         }
 
         fn ensure_private_directory(&self, name: &str) -> Result<Self, MutationIoError> {

@@ -1130,6 +1130,7 @@ h1 {
   gap: 0.5rem;
 }
 
+.attachment-reveal-button,
 .attachment-export-button,
 .attachment-preview-button,
 .attachment-remove-button {
@@ -1144,17 +1145,20 @@ h1 {
   cursor: pointer;
 }
 
+.attachment-reveal-button,
 .attachment-export-button,
 .attachment-preview-button {
   color: var(--accent-strong);
 }
 
+.attachment-reveal-button:hover:not(:disabled),
 .attachment-export-button:hover:not(:disabled),
 .attachment-preview-button:hover:not(:disabled),
 .attachment-remove-button:hover:not(:disabled) {
   border-bottom-color: currentColor;
 }
 
+.attachment-reveal-button:disabled,
 .attachment-export-button:disabled,
 .attachment-preview-button:disabled,
 .attachment-remove-button:disabled {

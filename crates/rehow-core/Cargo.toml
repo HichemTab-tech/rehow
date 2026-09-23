@@ -34,6 +34,7 @@ uuid = { version = "=1.26.0", default-features = false, features = ["std", "v7"]
 yaml-edit = { version = "=0.3.1", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+gio = { version = "=0.18.4", default-features = false }
 libc = { version = "=0.2.189", default-features = false }
 
 [dev-dependencies]

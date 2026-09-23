@@ -4,12 +4,13 @@ use rehow_core::{
     application::{
         AttachmentExportError, AttachmentExportOutcome, AttachmentImportError,
         AttachmentImportOutcome, AttachmentRemovalError, AttachmentRemovalOutcome,
-        AttachmentTextPreviewError, CategoryCreateError, CategoryOrderRevision,
-        CategoryRemoveError, CategoryReorderError, CategoryUpdateError, GUIDE_BODY_INPUT_LIMIT,
-        GuideCreateError, GuideEdit, GuideRemoveError, GuideUpdateError, MarkdownImportError,
-        MarkdownImportPartialFailure, WorkspaceInitializationError, WorkspaceRefreshError,
-        confirm_and_approve_guide_tested, confirm_and_remove_attachment, create_category,
-        create_guide, import_markdown_collection, initialize_workspace, preview_attachment_text,
+        AttachmentRevealError, AttachmentTextPreviewError, CategoryCreateError,
+        CategoryOrderRevision, CategoryRemoveError, CategoryReorderError, CategoryUpdateError,
+        GUIDE_BODY_INPUT_LIMIT, GuideCreateError, GuideEdit, GuideRemoveError, GuideUpdateError,
+        MarkdownImportError, MarkdownImportPartialFailure, WorkspaceInitializationError,
+        WorkspaceRefreshError, confirm_and_approve_guide_tested, confirm_and_remove_attachment,
+        create_category, create_guide, execute_attachment_reveal, import_markdown_collection,
+        initialize_workspace, prepare_attachment_reveal, preview_attachment_text,
         refresh_open_workspace as refresh_workspace_view, remove_category, remove_guide,
         reorder_categories, select_and_export_attachment, select_and_import_attachment,
         set_category_archived, set_guide_archived, update_category_details, update_guide,
@@ -73,6 +74,7 @@ struct DesktopState {
     git_commit: Mutex<GitCommitLifecycle>,
     git_clone: Mutex<GitCloneLifecycle>,
     git_sync: Mutex<GitSyncLifecycle>,
+    attachment_reveal_active: Arc<AtomicBool>,
     next_watch_session: AtomicU64,
 }
 
@@ -93,8 +95,26 @@ impl Default for DesktopState {
             git_commit: Mutex::default(),
             git_clone: Mutex::default(),
             git_sync: Mutex::default(),
+            attachment_reveal_active: Arc::default(),
             next_watch_session: AtomicU64::default(),
         }
+    }
+}
+
+struct AttachmentRevealReservation(Arc<AtomicBool>);
+
+impl AttachmentRevealReservation {
+    fn acquire(active: Arc<AtomicBool>) -> Option<Self> {
+        active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self(active))
+    }
+}
+
+impl Drop for AttachmentRevealReservation {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -614,6 +634,12 @@ enum AttachmentExportPayload {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct AttachmentRevealPayload {
+    revealed: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GuideBodyPayload {
     id: String,
     revision: String,
@@ -1082,6 +1108,130 @@ fn attachment_export_message(error: AttachmentExportError) -> String {
         }
         AttachmentExportError::ExportedDurabilityUnknown => {
             "The Attachment was exported, but durability could not be confirmed. Check the chosen destination before retrying.".to_owned()
+        }
+    }
+}
+
+#[tauri::command]
+async fn reveal_open_guide_attachment_parent(
+    guide_id: String,
+    attachment_id: String,
+    expected_revision: String,
+    workspace_session: String,
+    app: tauri::AppHandle,
+) -> Result<AttachmentRevealPayload, NativeCommandError> {
+    if guide_id.len() > 64
+        || attachment_id.len() > 64
+        || expected_revision.len() > 96
+        || workspace_session.is_empty()
+        || workspace_session.len() > 20
+        || !workspace_session.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(native_command_error(
+            "invalidInput",
+            "Guide or Attachment identity is too long.".to_owned(),
+        ));
+    }
+    let guide_id = GuideId::from_str(&guide_id)
+        .map_err(|_| native_command_error("invalidGuide", "Guide ID is invalid.".to_owned()))?;
+    let attachment_id = AttachmentId::from_str(&attachment_id).map_err(|_| {
+        native_command_error("invalidAttachment", "Attachment ID is invalid.".to_owned())
+    })?;
+    let expected_revision = Revision::from_str(&expected_revision).map_err(|_| {
+        native_command_error(
+            "invalidRevision",
+            "Guide revision is invalid. Reopen the Guide and try again.".to_owned(),
+        )
+    })?;
+    let active = app.state::<DesktopState>().attachment_reveal_active.clone();
+    let reservation = AttachmentRevealReservation::acquire(active).ok_or_else(|| {
+        native_command_error(
+            "operationActive",
+            "Another Attachment folder is already being opened.".to_owned(),
+        )
+    })?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _reservation = reservation;
+        let state = app.state::<DesktopState>();
+        let plan = {
+            let guard = state.workspace.lock().map_err(|_| {
+                native_command_error(
+                    "sessionUnavailable",
+                    "Workspace session is unavailable.".to_owned(),
+                )
+            })?;
+            let workspace = guard.as_ref().ok_or_else(|| {
+                native_command_error("workspaceUnavailable", "No Workspace is open.".to_owned())
+            })?;
+            if workspace.watch_session.to_string() != workspace_session {
+                return Err(native_command_error(
+                    "workspaceChanged",
+                    "The open Workspace changed. Show the Attachment folder again.".to_owned(),
+                ));
+            }
+            prepare_attachment_reveal(&workspace.view, guide_id, attachment_id, expected_revision)
+                .map_err(|error| {
+                native_command_error(
+                    attachment_reveal_code(error),
+                    attachment_reveal_message(error),
+                )
+            })?
+        };
+        execute_attachment_reveal(plan).map_err(|error| {
+            native_command_error(
+                attachment_reveal_code(error),
+                attachment_reveal_message(error),
+            )
+        })?;
+        Ok(AttachmentRevealPayload { revealed: true })
+    })
+    .await
+    .map_err(|_| {
+        native_command_error(
+            "operationUnavailable",
+            "The Attachment folder worker stopped. Try again.".to_owned(),
+        )
+    })?
+}
+
+fn attachment_reveal_code(error: AttachmentRevealError) -> &'static str {
+    match error {
+        AttachmentRevealError::GuideNotFound => "notFound",
+        AttachmentRevealError::AttachmentNotFound => "attachmentNotFound",
+        AttachmentRevealError::RevisionConflict => "revisionConflict",
+        AttachmentRevealError::AttachmentChanged => "attachmentChanged",
+        AttachmentRevealError::UnsafeStorage => "unsafeStorage",
+        AttachmentRevealError::ResourceLimit => "resourceLimit",
+        AttachmentRevealError::HandlerUnavailable => "handlerUnavailable",
+        AttachmentRevealError::Io => "io",
+    }
+}
+
+fn attachment_reveal_message(error: AttachmentRevealError) -> String {
+    match error {
+        AttachmentRevealError::GuideNotFound => "This Guide no longer exists.".to_owned(),
+        AttachmentRevealError::AttachmentNotFound => {
+            "This Attachment is no longer declared by the Guide.".to_owned()
+        }
+        AttachmentRevealError::RevisionConflict => {
+            "The Guide changed. Refresh it before showing the Attachment folder.".to_owned()
+        }
+        AttachmentRevealError::AttachmentChanged => {
+            "The Attachment changed or no longer matches its recorded metadata.".to_owned()
+        }
+        AttachmentRevealError::UnsafeStorage => {
+            "Rehow refused an unsafe Attachment path or folder.".to_owned()
+        }
+        AttachmentRevealError::ResourceLimit => {
+            "Attachment verification exceeded the 64 MiB safe limit.".to_owned()
+        }
+        AttachmentRevealError::HandlerUnavailable => {
+            "No desktop file manager could show this folder. Export the Attachment instead."
+                .to_owned()
+        }
+        AttachmentRevealError::Io => {
+            "The Attachment folder could not be verified. Refresh the Workspace and try again."
+                .to_owned()
         }
     }
 }
@@ -5403,6 +5553,7 @@ pub fn run() {
             import_open_guide_attachment,
             read_open_guide,
             preview_open_guide_attachment_text,
+            reveal_open_guide_attachment_parent,
             refresh_open_workspace,
             remove_open_category,
             remove_open_guide_attachment,
@@ -5440,8 +5591,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        APPLICATION_NAME, AttachmentExportPayload, AttachmentTextPreviewPayload, CategoryPayload,
-        DesktopState, FolderFactsPayload, GitCloneApplyResultPayload, GitCloneCancelResultPayload,
+        APPLICATION_NAME, AttachmentExportPayload, AttachmentRevealPayload,
+        AttachmentRevealReservation, AttachmentTextPreviewPayload, CategoryPayload, DesktopState,
+        FolderFactsPayload, GitCloneApplyResultPayload, GitCloneCancelResultPayload,
         GitCloneCompleteResultPayload, GitCloneLifecycle, GitClonePlanPayload,
         GitCommitCancelResultPayload, GitCommitPlanPayload, GitCommitRecoveryResultPayload,
         GitCommitResultPayload, GitInitPlanPayload, GitInitResultPayload, GitPushResultPayload,
@@ -5452,8 +5604,9 @@ mod tests {
         MarkdownImportPreviewEntryPayload, MarkdownImportPreviewPayload, PendingGitPlanError,
         SearchHighlightPayload, SearchHitPayload, WorkspacePayload, WorkspaceWatchEventPayload,
         attachment_export_code, attachment_export_message, attachment_removal_code,
-        attachment_removal_message, attachment_text_preview_code, attachment_text_preview_message,
-        begin_markdown_import, category_create_code, category_create_message, category_remove_code,
+        attachment_removal_message, attachment_reveal_code, attachment_reveal_message,
+        attachment_text_preview_code, attachment_text_preview_message, begin_markdown_import,
+        category_create_code, category_create_message, category_remove_code,
         category_remove_message, category_reorder_code, category_reorder_message,
         category_update_code, category_update_message, empty_git_payload, finish_markdown_import,
         git_clone_apply_code, git_clone_apply_message, git_clone_code,
@@ -5474,10 +5627,11 @@ mod tests {
     };
     use rehow_core::{
         application::{
-            AttachmentExportError, AttachmentRemovalError, AttachmentTextPreviewError,
-            CategoryCreateError, CategoryRemoveError, CategoryReorderError, CategoryUpdateError,
-            GuideCreateError, GuideRemoveError, GuideUpdateError, MarkdownImportError,
-            WorkspaceInitializationError, WorkspaceRefreshError,
+            AttachmentExportError, AttachmentRemovalError, AttachmentRevealError,
+            AttachmentTextPreviewError, CategoryCreateError, CategoryRemoveError,
+            CategoryReorderError, CategoryUpdateError, GuideCreateError, GuideRemoveError,
+            GuideUpdateError, MarkdownImportError, WorkspaceInitializationError,
+            WorkspaceRefreshError,
         },
         git::{
             GitCloneApplyError, GitCloneError, GitCloneMaterializeError, GitCloneValidation,
@@ -6402,5 +6556,30 @@ mod tests {
             attachment_export_message(AttachmentExportError::ExportedDurabilityUnknown)
                 .contains("before retrying")
         );
+    }
+
+    #[test]
+    fn attachment_reveal_payload_and_errors_are_closed_and_pathless() {
+        assert_eq!(
+            serde_json::to_value(AttachmentRevealPayload { revealed: true }).unwrap(),
+            serde_json::json!({ "revealed": true })
+        );
+        assert_eq!(
+            attachment_reveal_code(AttachmentRevealError::HandlerUnavailable),
+            "handlerUnavailable"
+        );
+        assert!(
+            attachment_reveal_message(AttachmentRevealError::HandlerUnavailable).contains("Export")
+        );
+        assert!(attachment_reveal_message(AttachmentRevealError::UnsafeStorage).contains("unsafe"));
+    }
+
+    #[test]
+    fn attachment_reveal_reservation_is_single_flight_and_recovers() {
+        let active = Arc::new(AtomicBool::new(false));
+        let reservation = AttachmentRevealReservation::acquire(active.clone()).unwrap();
+        assert!(AttachmentRevealReservation::acquire(active.clone()).is_none());
+        drop(reservation);
+        assert!(AttachmentRevealReservation::acquire(active).is_some());
     }
 }

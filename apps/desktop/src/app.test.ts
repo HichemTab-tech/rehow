@@ -19,6 +19,7 @@ import {
   hasUnsavedChanges,
   highlightedExcerptSegments,
   isAttachmentExportPayload,
+  isAttachmentRevealPayload,
   isAttachmentTextPreviewPayload,
   isCurrentWorkspaceWatchEvent,
   isGitCloneApplyResultPayload,
@@ -275,6 +276,17 @@ describe("application identity", () => {
         sizeBytes: 64 * 1024 * 1024 + 1,
       }),
     ).toBe(false);
+  });
+
+  it("accepts only a closed pathless Attachment reveal result", () => {
+    expect(isAttachmentRevealPayload({ revealed: true })).toBe(true);
+    expect(
+      isAttachmentRevealPayload({
+        revealed: true,
+        path: "/home/user/Workspace/attachments",
+      }),
+    ).toBe(false);
+    expect(isAttachmentRevealPayload({ revealed: false })).toBe(false);
   });
 
   it("describes root, ancestor, and unsafe Git facts", () => {

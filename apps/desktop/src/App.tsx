@@ -41,6 +41,8 @@ type AttachmentExportPayload =
   | { kind: "cancelled" }
   | { kind: "exported"; sizeBytes: number };
 
+type AttachmentRevealPayload = { revealed: true };
+
 type FolderFacts = {
   writable: boolean;
   existingGitRepository: boolean;
@@ -1252,6 +1254,19 @@ export function isAttachmentExportPayload(
   );
 }
 
+export function isAttachmentRevealPayload(
+  value: unknown,
+): value is AttachmentRevealPayload {
+  const result = value as Partial<AttachmentRevealPayload> &
+    Record<string, unknown>;
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Object.keys(value).length === 1 &&
+    result.revealed === true
+  );
+}
+
 function isWorkspacePayload(value: unknown): value is WorkspacePayload {
   if (typeof value !== "object" || value === null) return false;
   const workspace = value as Partial<WorkspacePayload> &
@@ -1668,6 +1683,7 @@ export function App() {
   const [importingAttachment, setImportingAttachment] = useState(false);
   const [previewingAttachmentId, setPreviewingAttachmentId] = useState("");
   const [exportingAttachmentId, setExportingAttachmentId] = useState("");
+  const [revealingAttachmentId, setRevealingAttachmentId] = useState("");
   const [attachmentPreview, setAttachmentPreview] =
     useState<AttachmentTextPreviewPayload | null>(null);
   const [removingAttachmentId, setRemovingAttachmentId] = useState("");
@@ -1704,6 +1720,7 @@ export function App() {
   const attachmentPreviewOwnerRef = useRef("");
   const attachmentPreviewGenerationRef = useRef(0);
   const attachmentExportGenerationRef = useRef(0);
+  const attachmentRevealGenerationRef = useRef(0);
   const attachmentRemoveButtonRefs = useRef(
     new Map<string, HTMLButtonElement>(),
   );
@@ -1799,6 +1816,7 @@ export function App() {
     importingAttachment ||
     previewingAttachmentId !== "" ||
     exportingAttachmentId !== "" ||
+    revealingAttachmentId !== "" ||
     removingAttachmentId !== "" ||
     updatingCategoryStatusId !== "" ||
     reorderingCategoryId !== "" ||
@@ -1889,8 +1907,10 @@ export function App() {
     attachmentPreviewOwnerRef.current = attachmentPreviewOwner;
     attachmentPreviewGenerationRef.current += 1;
     attachmentExportGenerationRef.current += 1;
+    attachmentRevealGenerationRef.current += 1;
     setPreviewingAttachmentId("");
     setExportingAttachmentId("");
+    setRevealingAttachmentId("");
     setAttachmentPreview(null);
     if (attachmentPreviewDialogRef.current?.open) {
       attachmentPreviewDialogRef.current.close();
@@ -3931,6 +3951,7 @@ export function App() {
       guideBody?.id !== selected.id ||
       previewingAttachmentId !== "" ||
       exportingAttachmentId !== "" ||
+      revealingAttachmentId !== "" ||
       importingAttachment ||
       removingAttachmentId !== "" ||
       verifyingGuide ||
@@ -3997,6 +4018,7 @@ export function App() {
       guideBody?.id !== selected.id ||
       previewingAttachmentId !== "" ||
       exportingAttachmentId !== "" ||
+      revealingAttachmentId !== "" ||
       importingAttachment ||
       removingAttachmentId !== "" ||
       verifyingGuide ||
@@ -4054,6 +4076,70 @@ export function App() {
     }
   }
 
+  async function revealAttachmentParent(attachmentId: string) {
+    if (
+      selected === null ||
+      workspace === null ||
+      guideBody?.id !== selected.id ||
+      previewingAttachmentId !== "" ||
+      exportingAttachmentId !== "" ||
+      revealingAttachmentId !== "" ||
+      importingAttachment ||
+      removingAttachmentId !== "" ||
+      verifyingGuide ||
+      updatingGuideStatus ||
+      removingGuide ||
+      editingGuide ||
+      editingGuideDetails
+    )
+      return;
+    const owner = attachmentPreviewOwnerKey(
+      workspace.watchSession,
+      selected.id,
+      guideBody.revision,
+    );
+    attachmentPreviewOwnerRef.current = owner;
+    const generation = attachmentRevealGenerationRef.current + 1;
+    attachmentRevealGenerationRef.current = generation;
+    setRevealingAttachmentId(attachmentId);
+    setGuideStatusError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<unknown>(
+        "reveal_open_guide_attachment_parent",
+        {
+          guideId: selected.id,
+          attachmentId,
+          expectedRevision: guideBody.revision,
+          workspaceSession: workspace.watchSession,
+        },
+      );
+      if (!isAttachmentRevealPayload(result)) {
+        throw new Error("Attachment reveal returned an invalid response.");
+      }
+      if (
+        attachmentRevealGenerationRef.current !== generation ||
+        attachmentPreviewOwnerRef.current !== owner
+      )
+        return;
+      setAnnouncement("Attachment folder opened.");
+    } catch (error) {
+      if (
+        attachmentRevealGenerationRef.current !== generation ||
+        attachmentPreviewOwnerRef.current !== owner
+      )
+        return;
+      const failure = nativeCommandError(error);
+      setGuideStatusError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => guideStatusErrorRef.current?.focus());
+    } finally {
+      if (attachmentRevealGenerationRef.current === generation) {
+        setRevealingAttachmentId("");
+      }
+    }
+  }
+
   function finishAttachmentPreview() {
     const attachmentId = lastPreviewAttachmentIdRef.current;
     setAttachmentPreview(null);
@@ -4071,6 +4157,7 @@ export function App() {
       importingAttachment ||
       previewingAttachmentId !== "" ||
       exportingAttachmentId !== "" ||
+      revealingAttachmentId !== "" ||
       verifyingGuide ||
       updatingGuideStatus ||
       removingGuide ||
@@ -5676,6 +5763,31 @@ export function App() {
                       </div>
                       <div className="attachment-actions">
                         <button
+                          className="attachment-reveal-button"
+                          type="button"
+                          aria-label={`Show the folder containing ${attachment.title}`}
+                          onClick={() =>
+                            void revealAttachmentParent(attachment.id)
+                          }
+                          disabled={
+                            guideBody?.id !== selected.id ||
+                            previewingAttachmentId !== "" ||
+                            exportingAttachmentId !== "" ||
+                            revealingAttachmentId !== "" ||
+                            removingAttachmentId !== "" ||
+                            importingAttachment ||
+                            verifyingGuide ||
+                            updatingGuideStatus ||
+                            removingGuide ||
+                            editingGuide ||
+                            editingGuideDetails
+                          }
+                        >
+                          {revealingAttachmentId === attachment.id
+                            ? "Opening…"
+                            : "Show Folder"}
+                        </button>
+                        <button
                           className="attachment-export-button"
                           type="button"
                           aria-label={`Export ${attachment.title}`}
@@ -5684,6 +5796,7 @@ export function App() {
                             guideBody?.id !== selected.id ||
                             previewingAttachmentId !== "" ||
                             exportingAttachmentId !== "" ||
+                            revealingAttachmentId !== "" ||
                             removingAttachmentId !== "" ||
                             importingAttachment ||
                             verifyingGuide ||
@@ -5720,6 +5833,7 @@ export function App() {
                             guideBody?.id !== selected.id ||
                             previewingAttachmentId !== "" ||
                             exportingAttachmentId !== "" ||
+                            revealingAttachmentId !== "" ||
                             removingAttachmentId !== "" ||
                             importingAttachment ||
                             verifyingGuide ||
@@ -5755,6 +5869,7 @@ export function App() {
                               guideBody?.id !== selected.id ||
                               previewingAttachmentId !== "" ||
                               exportingAttachmentId !== "" ||
+                              revealingAttachmentId !== "" ||
                               removingAttachmentId !== "" ||
                               importingAttachment ||
                               verifyingGuide ||
