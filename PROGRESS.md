@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 2 onboarding is complete through ADR 0051. Phase 3 safe Attachment handling, guarded external Guide links, and actionable Workspace issue recovery guidance are complete. ADR 0057 closes the retained-memory/search-capacity gap at signed checkpoint `5d8ab31`. Phase 7A packaging remains qualified through the current-host menu smoke.
+Completion audit after ADR 0057. Signed checkpoint `d19030a` restores the last compatible Workspace and adds disabled-by-default startup/scheduled Git inspection settings. Guide context presentation is the current audited product gap. Phase 7A packaging remains qualified through the current-host menu smoke.
 
 ## Current task
 
-The autonomous implementation backlog is closed. Resume only the documented release metadata decisions and disposable graphical Ubuntu qualification.
+Expose the already canonical Guide warnings, prerequisites, applicability, files affected, references, relationships, and verification context in the reader.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Phase 2 safely copies ordinary Markdown into new draft-only Workspaces. Phase 3 provides pathless Attachment preview/export/reveal, guarded external Guide links, and bounded actionable Workspace diagnostics. Retained Workspace/search memory is bounded and benchmarked. Product completion now requires only final human/environment release qualification.
+Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Core Workspace/Guide/Git/MCP behavior is implemented and retained Workspace/search memory is bounded. Durable recent-Workspace/preferences behavior is accepted at `d19030a`; full Guide context presentation is the remaining audited desktop gap before human release qualification.
 
 ## Completed work
 
@@ -167,7 +167,7 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 
 ## Work in progress
 
-- No code work is in progress. Final release readiness is audited in `docs/evidence/final-release-readiness.md`; remaining steps require human metadata choices and a disposable graphical Ubuntu environment. Untracked `x` remains unrelated and untouched.
+- Guide context reader implementation is next. Desktop preferences/recent-Workspace restore is accepted at `d19030a`. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
@@ -175,6 +175,7 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
 - Phase 6: complete, including the final managed Attachment discovery/metadata-add mutation.
+- Desktop reader: expose existing canonical Guide warnings, prerequisites, applicability, files affected, references, related Guides, and verification context; commands/body already render safely.
 - Phase 7: development `.deb`/`.rpm` packaging, clean-container install/remove qualification, and the glibc 2.39 floor are implemented; graphical desktop runtime matrix, release metadata/signing, and final audits remain.
 
 ## Known bugs
@@ -183,6 +184,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Design and accessibility findings
 
+- 2026-09-23: The desktop Settings dialog passed the freshly fetched Web Interface Guidelines after adding labeled/named controls, native dialog focus/Escape behavior, inline focused errors, polite status, explicit dark-theme select colors, overscroll containment, visible global focus treatment, and narrow bounded layout. Automatic inspections never move focus; they only expose the existing review panel.
 - 2026-09-23: Actionable Workspace issues passed the freshly fetched Web Interface Guidelines. The warning is a named semantic button; the modal has native focus/Escape behavior, deterministic return focus, explicit accessible name/description, long-path wrapping, overscroll containment, bounded/content-visible list items, narrow wrapping, specific next steps, and an existing refresh action with polite feedback. Static review found no issue; the established shell geometry is unchanged.
 - 2026-09-23: Guarded external Guide links passed the freshly fetched Web Interface Guidelines. Safe links are semantic inline action buttons because navigation is delegated to a native portal; keyboard activation, visible focus/hover, busy/disabled state, polite feedback, actionable errors, and native chooser messaging are present. Inline text geometry is unchanged, so no screenshot rerun was required.
 - 2026-09-23: Attachment parent reveal passed the freshly fetched Web Interface Guidelines. `Show Folder` is a named semantic button with visible focus/hover, `Opening…` busy copy, mutually exclusive operations, stale-response suppression, polite feedback, and actionable export fallback. The existing narrow-safe Attachment row geometry is unchanged, so no separate screenshot checkpoint was required.
@@ -219,6 +221,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Security findings
 
+- Desktop preferences contain no secrets and never expose the remembered absolute Workspace path to the renderer. Owner/type/link/mode/size checks, no-follow descriptor-relative access, private modes, atomic replacement, serialized load-modify-save operations, bounded schema/path decoding, and normal safe Workspace reinspection fail closed. Startup/scheduled Git activity cannot apply or push and retains the existing explicit confirmation gates. Security self-review found no unresolved blocker/high issue.
 - ADR 0057 keeps bodies behind the retained root capability and exact revision, and keeps search state private, anonymous, disposable, and non-authoritative. Codec corruption, impossible counts, record overrun, and positional failures fail closed. Hard limits are 64 MiB per encoded record, 65,536 values per repeated field, and 4 GiB across physically live prior plus candidate backings; compaction counts the still-live source. The initial review's disk-amplification and pre-allocation findings plus its compaction-accounting correction were fixed. Final Security Reviewer verdict: PASS.
 - Actionable Workspace diagnostics disclose only scanner-owned relative locations and a closed issue kind, capped at 100 with count/truncation correlation. The renderer rejects unknown kinds, overlong/control-bearing paths, and extra fields; React renders inert escaped text. There is no absolute path, file content, opener, mutation, automatic repair, or MCP expansion. Security self-review: PASS.
 - Guarded external Guide links bind the open Workspace session, Guide ID, exact revision, and exact destination retained in the reparsed safe AST, then reread the confined Guide. Only OpenURI portal v3+ with privately fixed `ask=true` is accepted; renderer input cannot bypass the native chooser or choose a process. IPC/results/errors/Debug are URL-redacted. The initial confused-deputy finding was corrected; final Security Reviewer verdict: PASS with no blocker/high/medium finding.
@@ -332,10 +335,11 @@ No known regression in accepted phases. On the current development host, default
 
 ## Latest verified commit
 
-`5d8ab31` — signed bounded retained-memory/search checkpoint; its configured signature verifies. This progress-ledger update follows that commit.
+`d19030a` — signed desktop preferences/recent-Workspace restore and scheduled inspection checkpoint; its configured signature verifies. This progress-ledger update follows that commit.
 
 ## Tests last run and results
 
+- 2026-09-23: Desktop preferences/recent-Workspace restore passes 50 Vitest tests, 36 desktop Rust tests, `pnpm check`, strict desktop all-target/all-feature Clippy, Cargo formatting/check, contract drift, and whitespace checks on the existing Node 26.2.0/pnpm 11.20.0 toolchain. Coverage includes closed/pathless renderer payloads, allowed schedule values, non-UTF-8 paths, private modes, malformed schema, symlink and oversize refusal. No runtime or package-manager installation/switch occurred.
 - 2026-09-23: Memory-safe search checkpoint `5d8ab31` passes the final locked all-target/all-feature Workspace test gate: 491 core tests pass with 2 intentional network/performance ignores, plus 18 error-contract, 13 protocol, public-API/trybuild, 11 unknown-YAML, 33 desktop Rust, 92 MCP, 3 approval-helper integration, and 1 stdio integration tests. Thirteen focused search tests pass after security corrections. `pnpm check`, 48 Vitest tests, production Vite/Cargo build, strict Clippy with warnings denied, Cargo formatting, Bootstrap validation (17 files, 57 ADRs, 8 agents), contract drift, and whitespace checks pass. The release corpus records 1.533 s cold, 13.484 ms warm p95, and 10,228 KiB peak RSS; single-Guide reconciliation is 0.667 ms with 4,999/5,000 descriptors reused. The only intermediate failure was the corrected expected compiler diagnostic changing from `Guide` to `GuideMetadata`. Final Security Reviewer verdict: PASS.
 - 2026-09-23: Actionable Workspace issue checkpoint `b7ac3ce` passes `pnpm check/test/build`, 487 core tests with 2 intentional network/performance ignores, 33 desktop Rust tests, 92 MCP tests, 48 Vitest tests, all remaining contract/integration suites, strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, Bootstrap validation (17 required files, 56 ADRs, 8 pinned agents), and whitespace checks. Closed issue mapping, truncation correlation, hostile display-control rejection, inert rendering, recovery copy, and strict refreshed/created Workspace response validation pass. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
 - 2026-09-23: Guarded external-link checkpoint `50177c7` passes `pnpm check/test/build`, 487 core tests with 2 intentional network/performance ignores, 33 desktop Rust tests, 92 MCP tests, 47 Vitest tests, all remaining contract/integration suites, strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, Bootstrap validation (17 required files, 55 ADRs, 8 pinned agents), and whitespace checks. Exact safe-link/revision binding, URL redaction, closed IPC, mandatory portal chooser options, and semantic UI rendering pass. Final Security Reviewer verdict: PASS. Existing Node 26.2.0 and installed pnpm 11.20.0 were used without installation or switching.
@@ -658,7 +662,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Next recommended action
 
-Ask the user for the license, production version, stable reverse-DNS application identifier, and intended first-release package formats. Then run the documented installed-package journey in a disposable graphical Ubuntu 24.04 Wayland/X11 environment. Do not reopen accepted feature phases.
+Implement the bounded Guide-context reader slice. After the completion audit closes, return to the documented human release metadata decisions and disposable graphical Ubuntu journey.
 
 ## Recommended agent role and reasoning effort
 
@@ -667,9 +671,9 @@ Primary Orchestrator with zero routine agents. Use one specialist only if a rele
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read `docs/evidence/final-release-readiness.md`, `docs/installation.md`, ADR 0057, and `docs/evidence/phase-4f-memory-safe-search.md`.
+2. Read `docs/product-spec.md`, `docs/content-model.md`, and the desktop payload/reader code for the Guide-context task.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed memory-safe search checkpoint `5d8ab31` plus the following progress-ledger commit; do not touch unrelated untracked `x`.
+4. Verify the latest signed checkpoint and the focused desktop tests; do not touch unrelated untracked `x`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
-7. Read `docs/evidence/final-release-readiness.md`. Resume only the named release gates; do not sign, publish, push, create external resources, install packages, or change the active Node/pnpm toolchain without user authorization.
+7. Continue the Guide-context reader slice with zero routine agents. Do not sign, publish, push, create external resources, install packages, or change the active Node/pnpm toolchain without user authorization.
