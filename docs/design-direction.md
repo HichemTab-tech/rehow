@@ -1,7 +1,7 @@
 # Design Direction
 
 Status: Reference Desk approved for implementation
-Last reviewed with web-design-guidelines: 2026-09-24 (external Guide conflict workflow; static pass)
+Last reviewed with web-design-guidelines: 2026-09-24 (external conflict and guarded Open File workflows; static pass)
 
 ## Experience principles
 
@@ -121,6 +121,7 @@ Use system theme and `color-scheme`. State always includes icon/text/structure, 
 - Arrow keys move results, `Enter` opens, `Esc` returns focus, and focus restoration is deterministic after dialogs/drawers.
 - All actions use semantic buttons/links. Icon-only actions have an accessible name and visible tooltip.
 - Copy shows a polite, non-disruptive status. It never changes status to tested and never executes content.
+- A loaded Guide exposes a named Open File action. Native code opens only the exact revision through the desktop portal's application chooser; the renderer never sees or supplies a path.
 - Destructive actions use a precise confirmation or dependable undo; broad changes preview targets.
 - Navigation warns on unsaved edits. External changes show Reload, Compare, and safe draft-preservation options.
 - Lists over 50 visible items are virtualized; search work does not run expensively on the UI thread per keystroke.

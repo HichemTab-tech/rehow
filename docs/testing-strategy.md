@@ -101,6 +101,8 @@ Use the most stable Tauri/WebDriver-compatible automation available at Phase 2 a
 
 External Guide conflict coverage proves that the core can reread the selected on-disk Guide without mutating the retained view, that the native payload remains pathless and safe-Markdown-backed, and that hostile draft/disk text stays inert in the comparison. Reload requires explicit confirmation; Keep Draft leaves the editor state intact.
 
+Guarded Guide-file opening tests prove exact revision and stable-inode retention, link refusal, pathless native results/errors, stale renderer-result invalidation, and a fixed read-only portal handoff. No test opens personal content or grants a renderer-selected path.
+
 ## Required coverage matrix
 
 | Area | Minimum cases |

@@ -40,9 +40,9 @@ use crate::{
         execute_category_document_update, execute_category_remove, execute_document_create,
         execute_document_move, execute_document_remove, execute_document_update,
         execute_document_update_cancellable, execute_managed_attachment_add,
-        execute_multi_document_update, execute_workspace_initialize, managed_reveal_parent,
-        open_initialized_workspace, preview_attachment_import, preview_attachment_removal,
-        read_managed_regular, refresh_workspace,
+        execute_multi_document_update, execute_workspace_initialize, managed_open_file,
+        managed_reveal_parent, open_initialized_workspace, preview_attachment_import,
+        preview_attachment_removal, read_managed_regular, refresh_workspace,
     },
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -2412,6 +2412,16 @@ pub enum AttachmentRevealError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GuideFileOpenError {
+    GuideNotFound,
+    RevisionConflict,
+    UnsafeStorage,
+    ResourceLimit,
+    HandlerUnavailable,
+    Io,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExternalLinkOpenError {
     GuideNotFound,
     RevisionConflict,
@@ -2812,6 +2822,90 @@ pub fn prepare_attachment_reveal(
 
 pub fn execute_attachment_reveal(plan: AttachmentRevealPlan) -> Result<(), AttachmentRevealError> {
     reveal_directory_via_portal(&plan.target)
+}
+
+pub struct GuideFileOpenPlan {
+    target: crate::storage::ManagedOpenFile,
+}
+
+impl std::fmt::Debug for GuideFileOpenPlan {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuideFileOpenPlan")
+            .field("target", &"<file capability>")
+            .finish()
+    }
+}
+
+pub fn prepare_guide_file_open(
+    workspace: &WorkspaceView,
+    guide_id: GuideId,
+    expected_revision: Revision,
+) -> Result<GuideFileOpenPlan, GuideFileOpenError> {
+    let loaded = workspace
+        .categories()
+        .iter()
+        .flat_map(|category| category.guides())
+        .find(|guide| guide.guide().id() == &guide_id)
+        .ok_or(GuideFileOpenError::GuideNotFound)?;
+    if loaded.revision() != expected_revision {
+        return Err(GuideFileOpenError::RevisionConflict);
+    }
+    managed_open_file(
+        workspace,
+        loaded.relative_path(),
+        GUIDE_BODY_INPUT_LIMIT,
+        expected_revision,
+    )
+    .map(|target| GuideFileOpenPlan { target })
+    .map_err(map_guide_file_open_storage_error)
+}
+
+pub fn execute_guide_file_open(plan: GuideFileOpenPlan) -> Result<(), GuideFileOpenError> {
+    use gio::{glib::prelude::ToVariant, prelude::UnixFDListExtManual};
+
+    let descriptor = plan
+        .target
+        .duplicate_descriptor()
+        .map_err(map_guide_file_open_storage_error)?;
+    let descriptors = gio::UnixFDList::new();
+    let handle = descriptors
+        .append(descriptor)
+        .map_err(|_| GuideFileOpenError::HandlerUnavailable)?;
+    let options = gio::glib::VariantDict::new(None);
+    options.insert("writable", false);
+    options.insert("ask", true);
+    let parameters = ("", gio::glib::variant::Handle(handle), options.end()).to_variant();
+    let connection = gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>)
+        .map_err(|_| GuideFileOpenError::HandlerUnavailable)?;
+    connection
+        .call_with_unix_fd_list_sync(
+            Some("org.freedesktop.portal.Desktop"),
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.OpenURI",
+            "OpenFile",
+            Some(&parameters),
+            None::<&gio::glib::VariantTy>,
+            gio::DBusCallFlags::NONE,
+            15_000,
+            Some(&descriptors),
+            None::<&gio::Cancellable>,
+        )
+        .map(|_| ())
+        .map_err(|_| GuideFileOpenError::HandlerUnavailable)
+}
+
+fn map_guide_file_open_storage_error(error: WorkspaceInspectError) -> GuideFileOpenError {
+    match error {
+        WorkspaceInspectError::ResourceLimit => GuideFileOpenError::ResourceLimit,
+        WorkspaceInspectError::UnsafeRoot => GuideFileOpenError::UnsafeStorage,
+        WorkspaceInspectError::ChangedDuringRead
+        | WorkspaceInspectError::NotFound
+        | WorkspaceInspectError::NotDirectory => GuideFileOpenError::RevisionConflict,
+        WorkspaceInspectError::PermissionDenied | WorkspaceInspectError::Io => {
+            GuideFileOpenError::Io
+        }
+    }
 }
 
 pub struct ExternalLinkOpenPlan {
@@ -4796,6 +4890,49 @@ mod tests {
         let post_swap_metadata = post_swap_descriptor.metadata().unwrap();
         assert_eq!(post_swap_metadata.ino(), original_metadata.ino());
         assert_ne!(post_swap_metadata.ino(), outside_metadata.ino());
+    }
+
+    #[test]
+    fn guide_file_open_plan_retains_only_the_exact_revision_file() {
+        let (workspace, _state, view) = fixture("guide-file-open", GUIDE);
+        let expected = revision(&view);
+        let plan =
+            prepare_guide_file_open(&view, GuideId::from_str(GUIDE_ID).unwrap(), expected).unwrap();
+        assert_eq!(
+            format!("{plan:?}"),
+            "GuideFileOpenPlan { target: \"<file capability>\" }"
+        );
+        let mut file = File::from(plan.target.duplicate_descriptor().unwrap());
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, GUIDE.as_bytes());
+
+        fs::write(
+            workspace.path().join(GUIDE_PATH),
+            GUIDE.replace("Install a Tarball", "Changed outside Rehow"),
+        )
+        .unwrap();
+        assert_eq!(
+            prepare_guide_file_open(&view, GuideId::from_str(GUIDE_ID).unwrap(), expected,)
+                .unwrap_err(),
+            GuideFileOpenError::RevisionConflict
+        );
+    }
+
+    #[test]
+    fn guide_file_open_refuses_symlink_substitution() {
+        let (workspace, _state, view) = fixture("guide-file-open-symlink", GUIDE);
+        let expected = revision(&view);
+        let path = workspace.path().join(GUIDE_PATH);
+        let outside = workspace.path().join("outside.md");
+        fs::write(&outside, GUIDE).unwrap();
+        fs::remove_file(&path).unwrap();
+        symlink(&outside, &path).unwrap();
+        assert_eq!(
+            prepare_guide_file_open(&view, GuideId::from_str(GUIDE_ID).unwrap(), expected,)
+                .unwrap_err(),
+            GuideFileOpenError::UnsafeStorage
+        );
     }
 
     #[test]

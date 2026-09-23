@@ -1,6 +1,7 @@
 import type { SafeMarkdownDocument } from "@rehow/contracts";
 import type { FormEvent } from "react";
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { Button } from "./components/ui/button";
 import { MarkdownDocument } from "./MarkdownDocument";
 
 export const APPLICATION_NAME = "Rehow";
@@ -2184,6 +2185,7 @@ export function App() {
   const [previewingAttachmentId, setPreviewingAttachmentId] = useState("");
   const [exportingAttachmentId, setExportingAttachmentId] = useState("");
   const [revealingAttachmentId, setRevealingAttachmentId] = useState("");
+  const [openingGuideFile, setOpeningGuideFile] = useState(false);
   const [openingExternalLink, setOpeningExternalLink] = useState("");
   const [attachmentPreview, setAttachmentPreview] =
     useState<AttachmentTextPreviewPayload | null>(null);
@@ -2228,6 +2230,7 @@ export function App() {
   const attachmentPreviewGenerationRef = useRef(0);
   const attachmentExportGenerationRef = useRef(0);
   const attachmentRevealGenerationRef = useRef(0);
+  const guideFileOpenGenerationRef = useRef(0);
   const externalLinkOpenGenerationRef = useRef(0);
   const externalLinkOwnerRef = useRef("");
   const attachmentRemoveButtonRefs = useRef(
@@ -2330,6 +2333,7 @@ export function App() {
     previewingAttachmentId !== "" ||
     exportingAttachmentId !== "" ||
     revealingAttachmentId !== "" ||
+    openingGuideFile ||
     removingAttachmentId !== "" ||
     updatingCategoryStatusId !== "" ||
     reorderingCategoryId !== "" ||
@@ -2559,10 +2563,12 @@ export function App() {
     attachmentPreviewGenerationRef.current += 1;
     attachmentExportGenerationRef.current += 1;
     attachmentRevealGenerationRef.current += 1;
+    guideFileOpenGenerationRef.current += 1;
     externalLinkOpenGenerationRef.current += 1;
     setPreviewingAttachmentId("");
     setExportingAttachmentId("");
     setRevealingAttachmentId("");
+    setOpeningGuideFile(false);
     setOpeningExternalLink("");
     setAttachmentPreview(null);
     if (attachmentPreviewDialogRef.current?.open) {
@@ -4924,6 +4930,59 @@ export function App() {
     }
   }
 
+  async function openGuideFile() {
+    if (
+      selected === null ||
+      workspace === null ||
+      guideBody?.id !== selected.id ||
+      workspaceOperationBusy ||
+      editingGuide ||
+      editingGuideDetails
+    )
+      return;
+    const owner = attachmentPreviewOwnerKey(
+      workspace.watchSession,
+      selected.id,
+      guideBody.revision,
+    );
+    const generation = guideFileOpenGenerationRef.current + 1;
+    guideFileOpenGenerationRef.current = generation;
+    setOpeningGuideFile(true);
+    setGuideStatusError("");
+    setAnnouncement("Opening Guide file…");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<unknown>("open_guide_file", {
+        guideId: selected.id,
+        expectedRevision: guideBody.revision,
+        workspaceSession: workspace.watchSession,
+      });
+      if (!isExternalLinkOpenPayload(result)) {
+        throw new Error("Guide-file open returned an invalid response.");
+      }
+      if (
+        guideFileOpenGenerationRef.current !== generation ||
+        attachmentPreviewOwnerRef.current !== owner
+      )
+        return;
+      setAnnouncement("Choose an application to open the Guide file.");
+    } catch (error) {
+      if (
+        guideFileOpenGenerationRef.current !== generation ||
+        attachmentPreviewOwnerRef.current !== owner
+      )
+        return;
+      const failure = nativeCommandError(error);
+      setGuideStatusError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => guideStatusErrorRef.current?.focus());
+    } finally {
+      if (guideFileOpenGenerationRef.current === generation) {
+        setOpeningGuideFile(false);
+      }
+    }
+  }
+
   async function openExternalGuideLink(destination: string) {
     if (
       selected === null ||
@@ -6288,31 +6347,29 @@ export function App() {
                   </p>
                 </div>
                 <div className="external-conflict-actions">
-                  <button
+                  <Button
                     ref={externalCompareButtonRef}
-                    className="button"
                     type="button"
                     disabled={previewingExternalGuide || workspaceOperationBusy}
                     onClick={() => void previewExternalGuide()}
                   >
                     {previewingExternalGuide ? "Comparing…" : "Compare"}
-                  </button>
-                  <button
-                    className="button"
+                  </Button>
+                  <Button
                     type="button"
                     disabled={workspaceOperationBusy}
                     onClick={keepExternalDraft}
                   >
                     Keep Draft
-                  </button>
-                  <button
-                    className="button button-danger"
+                  </Button>
+                  <Button
+                    variant="danger"
                     type="button"
                     disabled={workspaceOperationBusy}
                     onClick={reloadExternalGuide}
                   >
                     Reload from Disk
-                  </button>
+                  </Button>
                 </div>
                 {externalConflictError !== "" ? (
                   <p className="editor-error" role="alert">
@@ -6373,117 +6430,135 @@ export function App() {
               <div className="title-line">
                 <h1>{selected.title}</h1>
                 <Status value={selected.status} />
-                {workspace?.facts.writable &&
-                  !editingGuide &&
-                  !editingGuideDetails && (
-                    <div className="guide-header-actions">
-                      <button
-                        ref={editDetailsButtonRef}
-                        className="button guide-edit-button"
-                        type="button"
-                        onClick={beginEditingGuideDetails}
-                        disabled={
-                          guideBody?.id !== selected.id ||
-                          updatingGuideStatus ||
-                          verifyingGuide ||
-                          importingAttachment ||
-                          removingAttachmentId !== "" ||
-                          removingGuide
-                        }
-                      >
-                        Edit Details
-                      </button>
-                      <button
-                        ref={editButtonRef}
-                        className="button guide-edit-button"
-                        type="button"
-                        onClick={beginEditing}
-                        disabled={
-                          guideBody?.id !== selected.id ||
-                          updatingGuideStatus ||
-                          verifyingGuide ||
-                          importingAttachment ||
-                          removingAttachmentId !== "" ||
-                          removingGuide
-                        }
-                      >
-                        Edit Content
-                      </button>
-                      {canMarkGuideTested(selected.status) && (
+                {!editingGuide && !editingGuideDetails && (
+                  <div className="guide-header-actions">
+                    <button
+                      className="button guide-edit-button"
+                      type="button"
+                      onClick={() => void openGuideFile()}
+                      disabled={
+                        guideBody?.id !== selected.id || workspaceOperationBusy
+                      }
+                    >
+                      {openingGuideFile ? "Opening…" : "Open File"}
+                    </button>
+                    {workspace?.facts.writable ? (
+                      <>
                         <button
-                          ref={guideVerifyButtonRef}
-                          className="button guide-verify-button"
-                          type="button"
-                          onClick={() => void markGuideTested()}
-                          disabled={
-                            guideBody?.id !== selected.id ||
-                            verifyingGuide ||
-                            importingAttachment ||
-                            removingAttachmentId !== "" ||
-                            updatingGuideStatus ||
-                            removingGuide
-                          }
-                        >
-                          {verifyingGuide ? "Confirming…" : "Mark Tested"}
-                        </button>
-                      )}
-                      {selected.status !== "Archived" && (
-                        <button
-                          ref={attachmentImportButtonRef}
+                          ref={editDetailsButtonRef}
                           className="button guide-edit-button"
                           type="button"
-                          onClick={() => void importAttachment()}
+                          onClick={beginEditingGuideDetails}
                           disabled={
                             guideBody?.id !== selected.id ||
+                            openingGuideFile ||
+                            updatingGuideStatus ||
+                            verifyingGuide ||
                             importingAttachment ||
                             removingAttachmentId !== "" ||
-                            verifyingGuide ||
-                            updatingGuideStatus ||
                             removingGuide
                           }
                         >
-                          {importingAttachment
-                            ? "Importing…"
-                            : "Add Attachment"}
+                          Edit Details
                         </button>
-                      )}
-                      <button
-                        ref={guideStatusButtonRef}
-                        className="button guide-status-button"
-                        type="button"
-                        onClick={() => void changeGuideArchived()}
-                        disabled={
-                          guideBody?.id !== selected.id ||
-                          updatingGuideStatus ||
-                          verifyingGuide ||
-                          importingAttachment ||
-                          removingAttachmentId !== "" ||
-                          removingGuide
-                        }
-                      >
-                        {guideLifecycleLabel(
-                          selected.status,
-                          updatingGuideStatus,
+                        <button
+                          ref={editButtonRef}
+                          className="button guide-edit-button"
+                          type="button"
+                          onClick={beginEditing}
+                          disabled={
+                            guideBody?.id !== selected.id ||
+                            openingGuideFile ||
+                            updatingGuideStatus ||
+                            verifyingGuide ||
+                            importingAttachment ||
+                            removingAttachmentId !== "" ||
+                            removingGuide
+                          }
+                        >
+                          Edit Content
+                        </button>
+                        {canMarkGuideTested(selected.status) && (
+                          <button
+                            ref={guideVerifyButtonRef}
+                            className="button guide-verify-button"
+                            type="button"
+                            onClick={() => void markGuideTested()}
+                            disabled={
+                              guideBody?.id !== selected.id ||
+                              openingGuideFile ||
+                              verifyingGuide ||
+                              importingAttachment ||
+                              removingAttachmentId !== "" ||
+                              updatingGuideStatus ||
+                              removingGuide
+                            }
+                          >
+                            {verifyingGuide ? "Confirming…" : "Mark Tested"}
+                          </button>
                         )}
-                      </button>
-                      <button
-                        ref={guideRemoveButtonRef}
-                        className="button guide-remove-button"
-                        type="button"
-                        onClick={() => void removeGuide()}
-                        disabled={
-                          guideBody?.id !== selected.id ||
-                          updatingGuideStatus ||
-                          verifyingGuide ||
-                          importingAttachment ||
-                          removingAttachmentId !== "" ||
-                          removingGuide
-                        }
-                      >
-                        {removingGuide ? "Deleting…" : "Delete Guide"}
-                      </button>
-                    </div>
-                  )}
+                        {selected.status !== "Archived" && (
+                          <button
+                            ref={attachmentImportButtonRef}
+                            className="button guide-edit-button"
+                            type="button"
+                            onClick={() => void importAttachment()}
+                            disabled={
+                              guideBody?.id !== selected.id ||
+                              openingGuideFile ||
+                              importingAttachment ||
+                              removingAttachmentId !== "" ||
+                              verifyingGuide ||
+                              updatingGuideStatus ||
+                              removingGuide
+                            }
+                          >
+                            {importingAttachment
+                              ? "Importing…"
+                              : "Add Attachment"}
+                          </button>
+                        )}
+                        <button
+                          ref={guideStatusButtonRef}
+                          className="button guide-status-button"
+                          type="button"
+                          onClick={() => void changeGuideArchived()}
+                          disabled={
+                            guideBody?.id !== selected.id ||
+                            openingGuideFile ||
+                            updatingGuideStatus ||
+                            verifyingGuide ||
+                            importingAttachment ||
+                            removingAttachmentId !== "" ||
+                            removingGuide
+                          }
+                        >
+                          {guideLifecycleLabel(
+                            selected.status,
+                            updatingGuideStatus,
+                          )}
+                        </button>
+                        <button
+                          ref={guideRemoveButtonRef}
+                          className="button guide-remove-button"
+                          type="button"
+                          onClick={() => void removeGuide()}
+                          disabled={
+                            guideBody?.id !== selected.id ||
+                            openingGuideFile ||
+                            updatingGuideStatus ||
+                            verifyingGuide ||
+                            importingAttachment ||
+                            removingAttachmentId !== "" ||
+                            removingGuide
+                          }
+                        >
+                          {removingGuide ? "Deleting…" : "Delete Guide"}
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
+                )}
               </div>
               {guideStatusError !== "" && (
                 <p

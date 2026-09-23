@@ -121,7 +121,7 @@ Names are stable internal API candidates; schemas are generated before UI implem
 ### Category/Guide/search
 
 - `category_list/create/update/reorder/archive/restore/remove_plan/remove`.
-- `guide_list/read/create/update_title/tidy_path/change_category/status/archive/restore/delete_plan/delete/validate`.
+- `guide_list/read/create/update_title/tidy_path/change_category/status/archive/restore/delete_plan/delete/validate`; the desktop-only guarded `open_file` action accepts ID/session/revision, never a renderer path.
 - `import_choose_source`, `attachment_choose_source` — native dialogs returning bounded source-selection tokens.
 - `attachment_add_plan/add/remove_plan/remove/view_text/view_raster/reveal_parent` — no external open/execute operation.
 - `search_query`, `search_rebuild`, `related_guides`, `duplicate_candidates`.
@@ -199,6 +199,7 @@ The desktop offers Active, Tested, Draft, Stale, Archived, and All scopes. Tauri
 - Emit embedded raw-HTML source as escaped literal/unsupported nodes. There is no HAST/HTML-string sanitization path.
 - Allow only `http`, `https`, and `mailto` external links, plus validated managed Attachment references. Block `javascript`, `data`, `file`, custom command schemes, control characters, and deceptive malformed URLs.
 - External links are semantic actions with destination context, never WebView navigation. A renderer request sends the open Workspace session, Guide ID, exact revision, and displayed destination; core rereads the confined Guide and proves that exact URL is retained in its safe body AST or canonical Reference metadata. It then requires OpenURI portal version 3 and `ask=true`, so every request needs an out-of-WebView application choice. The native response and errors contain no URL.
+- Opening a Guide's Markdown source is desktop-only and pathless: Rust resolves the core-owned relative path, retains a no-follow one-link regular-file descriptor, verifies exact bytes/revision and current directory-entry identity, then gives only a read-only duplicate to XDG Desktop Portal `OpenFile` with `ask=true`. It is not a generic opener and grants no shell or Attachment authority.
 - Images load only managed Attachments by default; no remote tracking pixels.
 - Copy copies literal command text only. No Run button or executable terminal integration.
 
@@ -244,7 +245,7 @@ The desktop stores schema-v1 preferences in an owner-only XDG configuration file
 
 ## Dependency and platform policy
 
-- Pin major versions and commit lockfiles. Review generated shadcn source.
+- Pin major versions and commit lockfiles. shadcn/ui is source-owned: `components.json`, the reviewed `Button` primitive, and its utility live under `apps/desktop/`; Rehow variants deliberately retain the Reference Desk visual language rather than raw defaults.
 - Use the user-approved installed host toolchain—currently Node 26.2.0 and pnpm 11.3.0—without installing or switching it, with React 19, Vite 8, Vitest 5, Tailwind 4, and Tauri 2 major lines; exact dependency versions are captured by manifests and lockfiles.
 - Use Rust stable pinned in `rust-toolchain.toml` once the oldest supported Tauri/plugin floor is validated.
 - Linux uses WebKitGTK 4.1. Avoid essential UI that depends on bleeding-edge CSS or WebGL. Test oldest supported distro plus GNOME/KDE/wlroots Wayland and X11.

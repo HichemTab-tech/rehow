@@ -1,13 +1,13 @@
 # Development Guide
 
-Status: active development through Phase 6E3B
-Last updated: 2026-09-22
+Status: active development through completion audit
+Last updated: 2026-09-24
 
 ## Prerequisites
 
 - Git 2.x.
 - Node 26.2.0, using the version already available on the project host by explicit user direction.
-- pnpm 11.3.0, using the version currently available on the project host without installing or switching it, and pinned through the root `packageManager`.
+- pnpm 11.20.0, using the version currently available on the project host without installing or switching it, and pinned through the root `packageManager`.
 - Current stable Rust toolchain pinned by `rust-toolchain.toml` once scaffolded. Available bootstrap host: Cargo/Rust 1.98.0.
 - Linux Tauri/WebKitGTK build dependencies for the distribution.
 
@@ -19,7 +19,7 @@ Current stack baseline:
 - Vite: major 8; `@vitejs/plugin-react` compatible major.
 - Vitest: major 5.
 - Tailwind CSS and `@tailwindcss/vite`: major 4.
-- shadcn CLI: major 4; generated component source is reviewed/committed.
+- shadcn/ui: project-owned `components.json`, reviewed component source, and exact locked utility dependencies; no global CLI installation.
 
 Exact packages are chosen by Phase 1 packets and captured in lockfiles/Cargo.lock. Do not install global Tauri/shadcn CLIs or use floating `latest` in reproducible scripts.
 

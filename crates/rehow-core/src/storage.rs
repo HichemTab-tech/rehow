@@ -3062,6 +3062,36 @@ pub(crate) fn managed_reveal_parent(
     Ok(ManagedRevealParent { directory })
 }
 
+pub(crate) struct ManagedOpenFile {
+    file: File,
+}
+
+impl ManagedOpenFile {
+    pub(crate) fn duplicate_descriptor(&self) -> Result<OwnedFd, WorkspaceInspectError> {
+        self.file.try_clone().map(Into::into).map_err(map_io)
+    }
+}
+
+pub(crate) fn managed_open_file(
+    workspace: &WorkspaceView,
+    relative_path: &str,
+    limit: usize,
+    expected_revision: Revision,
+) -> Result<ManagedOpenFile, WorkspaceInspectError> {
+    let target = workspace
+        ._root
+        .open_managed_target(relative_path)
+        .map_err(map_clone_destination_error)?;
+    let (file, bytes) = target
+        .open_stable_regular(relative_path, limit)
+        .map_err(map_clone_destination_error)?
+        .ok_or(WorkspaceInspectError::ChangedDuringRead)?;
+    if document_revision(relative_path, &bytes) != expected_revision {
+        return Err(WorkspaceInspectError::ChangedDuringRead);
+    }
+    Ok(ManagedOpenFile { file })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_document_update<E, F>(
     workspace: &WorkspaceView,
@@ -7930,6 +7960,86 @@ mod linux {
                 size,
                 mode,
             })
+        }
+
+        pub(super) fn open_stable_regular(
+            &self,
+            relative_path: &str,
+            limit: usize,
+        ) -> Result<Option<(File, Vec<u8>)>, MutationIoError> {
+            if !super::recovery::valid_active_path(relative_path) {
+                return Err(MutationIoError::Unsafe);
+            }
+            let name = component(&self.name).map_err(|_| MutationIoError::Unsafe)?;
+            // SAFETY: directory descriptor and validated component are valid.
+            let raw = unsafe {
+                libc::openat(
+                    self.directory.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+                )
+            };
+            if raw < 0 {
+                return match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::ENOENT) => Ok(None),
+                    Some(libc::ELOOP) | Some(libc::ENXIO) | Some(libc::ENODEV) => {
+                        Err(MutationIoError::Unsafe)
+                    }
+                    _ => Err(MutationIoError::Io),
+                };
+            }
+            // SAFETY: successful openat returns a newly owned descriptor.
+            let mut file = unsafe { File::from_raw_fd(raw) };
+            let before = file.metadata().map_err(|_| MutationIoError::Io)?;
+            if !before.file_type().is_file()
+                || before.nlink() != 1
+                || before.mode() & 0o7777 > 0o777
+            {
+                return Err(MutationIoError::Unsafe);
+            }
+            if before.len() > limit as u64 {
+                return Err(MutationIoError::TooLarge);
+            }
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(before.len() as usize)
+                .map_err(|_| MutationIoError::TooLarge)?;
+            Read::by_ref(&mut file)
+                .take((limit as u64).saturating_add(1))
+                .read_to_end(&mut bytes)
+                .map_err(|_| MutationIoError::Io)?;
+            if bytes.len() > limit {
+                return Err(MutationIoError::TooLarge);
+            }
+            let after = file.metadata().map_err(|_| MutationIoError::Io)?;
+            if !same_metadata(&before, &after) || bytes.len() as u64 != after.len() {
+                return Err(MutationIoError::Conflict);
+            }
+            let mut current = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: retained directory, validated name, and output storage are valid.
+            if unsafe {
+                libc::fstatat(
+                    self.directory.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    current.as_mut_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            } != 0
+            {
+                return Err(MutationIoError::Conflict);
+            }
+            // SAFETY: successful fstatat initialized the structure.
+            let current = unsafe { current.assume_init() };
+            if current.st_mode & libc::S_IFMT != libc::S_IFREG
+                || current.st_nlink != 1
+                || current.st_dev != after.dev()
+                || current.st_ino != after.ino()
+            {
+                return Err(MutationIoError::Conflict);
+            }
+            file.seek(SeekFrom::Start(0))
+                .map_err(|_| MutationIoError::Io)?;
+            Ok(Some((file, bytes)))
         }
 
         pub(super) fn open_attachment_file(
