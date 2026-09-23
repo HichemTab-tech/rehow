@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 2 onboarding is complete through ADR 0051. Phase 3 safe Attachment text preview and export are complete through signed checkpoint `6d30cd2`; guarded reveal/open remains. Phase 7A packaging remains qualified through the current-host menu smoke.
+Phase 2 onboarding is complete through ADR 0051. Phase 3 safe Attachment text preview, export, and parent reveal are complete through signed checkpoint `4305a5c`. Phase 7A packaging remains qualified through the current-host menu smoke.
 
 ## Current task
 
-Define the guarded native reveal/open policy required to open underlying Attachment files without creating renderer path or command authority.
+Record the completed guarded Attachment parent-reveal checkpoint, then begin final release qualification.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Phase 2 safely copies ordinary Markdown into new draft-only Workspaces. Phase 3 now provides pathless, inert, revision-bound UTF-8 Attachment preview and safe native-selected absent-only export. Product completion still requires guarded Attachment reveal/open and final release qualification.
+Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Phase 2 safely copies ordinary Markdown into new draft-only Workspaces. Phase 3 now provides pathless, inert, revision-bound Attachment preview, absent-only export, and descriptor-confined parent reveal. Product completion still requires final release qualification.
 
 ## Completed work
 
@@ -160,14 +160,15 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 - Closed the initial migration/adoption decision at signed checkpoint `ec366e8`: v1 has no invented older schema or exposed migration mutation; the compatibility registry can grow only with a complete migration/backup ADR and fixtures, while in-place Markdown adoption remains deferred in favor of safe copy import.
 - Added safe Attachment text preview at signed checkpoint `cb5920a`: pathless IPC, retained-root/no-follow stable reads, exact Guide revision and Attachment metadata binding, 1 MiB limits, SHA-256/size verification, complete Unicode-16 invisible-format sanitization, inert read-only rendering, and Workspace/session/revision stale-result invalidation. The full gate and correction-only Security Reviewer pass.
 - Added safe Attachment export at signed checkpoint `6d30cd2`: a native Save dialog retains destination authority; core verifies exact source revision/identity/size/SHA-256; no-symlink destination ancestry and private unnamed output prevent path races/partial files; absent-only publication never overwrites. The full gate, current-guideline review, and Security Reviewer pass.
+- Added safe Attachment parent reveal at signed checkpoint `4305a5c`: exact session/Guide revision/Attachment identity and SHA-256 precede a no-follow parent capability; GIO sends only its duplicated directory descriptor to XDG Desktop Portal `OpenFile`; no pathname, URI, Attachment descriptor, shell, or arbitrary process crosses the boundary. The async command is single-flight and releases the Workspace mutex before the portal call. The full gate and final Security Reviewer correction review pass.
 
 ## Work in progress
 
-- Only this progress-ledger update is intentionally uncommitted. Attachment export is signed through `6d30cd2`. Untracked `x` remains unrelated and untouched.
+- Only this progress-ledger update is intentionally uncommitted. Attachment parent reveal is signed through `4305a5c`. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
-- Guarded Attachment reveal/open remains incomplete; safe text preview and export are complete. Migration implementation is intentionally absent until a real older schema exists; in-place Markdown adoption is deferred from v1.
+- Attachment text preview, export, and guarded parent reveal are complete. Direct Attachment external-open remains intentionally prohibited. Migration implementation is intentionally absent until a real older schema exists; in-place Markdown adoption is deferred from v1.
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
 - Phase 6: complete, including the final managed Attachment discovery/metadata-add mutation.
@@ -179,6 +180,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Design and accessibility findings
 
+- 2026-09-23: Attachment parent reveal passed the freshly fetched Web Interface Guidelines. `Show Folder` is a named semantic button with visible focus/hover, `Opening…` busy copy, mutually exclusive operations, stale-response suppression, polite feedback, and actionable export fallback. The existing narrow-safe Attachment row geometry is unchanged, so no separate screenshot checkpoint was required.
 - 2026-09-23: Attachment export passed the freshly fetched Web Interface Guidelines. The named button has visible hover/focus, specific Title Case/busy copy, mutually exclusive state, polite feedback, actionable errors, native-dialog focus return, and narrow-safe wrapping. The bounded row action preserves accepted shell geometry, so no separate screenshot checkpoint was required.
 - 2026-09-23: Attachment text preview passed the freshly fetched Web Interface Guidelines after modal overscroll, hover, title/wrapping, read-only keyboard scrolling, and focus restoration corrections. The bounded modal preserves the accepted shell geometry, so no separate shell screenshot checkpoint was required.
 - 2026-09-19: Phase 5D2D passed the freshly fetched Web Interface Guidelines and wide/narrow visual review at 1200×800 light and 480×800 dark. The Design Reviewer found one medium forced-dark primary-button contrast issue; mirroring the accepted dark foreground and regenerating the capture closed it. Final verdict is PASS with no blocker/high/medium finding.
@@ -212,6 +214,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Security findings
 
+- Attachment parent reveal exposes no path, URI, Attachment descriptor, content, shell, or arbitrary-process authority. Core binds the exact Workspace session, Guide revision, Attachment ID, size, and SHA-256, then passes only a duplicated no-follow-opened parent-directory descriptor to the fixed XDG Desktop Portal `OpenFile` endpoint. Retained-inode and leaf/intermediate symlink races are covered; native execution is async/single-flight and drops the Workspace mutex before the bounded portal call. Final correction review: PASS with no blocker/high/medium finding.
 - Attachment export exposes no source/destination path or bytes through IPC. It binds the open Workspace session and exact Guide revision, validates a confined stable single-link source and metadata digest/size, retains no-symlink destination ancestry, and publishes an unnamed `0600` inode absent-only. Existing/raced leaves are preserved; post-publication durability ambiguity is explicit. Final Security Reviewer verdict: PASS.
 - Attachment text preview exposes no path or arbitrary-read authority. Core resolves declared metadata internally, rereads the exact Guide revision around a confined stable read, verifies size/SHA-256, rejects links/special/changed inputs, sanitizes the complete Unicode-16 Format/Default-Ignorable set, and caps input/output at 1 MiB. Renderer ownership binds Workspace session, Guide ID, and exact revision. The correction-only Security Reviewer verdict is PASS.
 - Phase 2C copy import keeps both source and destination behind retained native capabilities, revalidates hierarchy/identity/content before writes, imports draft-only content, and preserves exact partial outcomes. Workspace initialization journals the scaffold and manifest; its marker is atomically displaced into operation-bound recovery trash and verified there, so a raced substitute is preserved and reported. The final Security Reviewer verdict is PASS with no actionable finding.
@@ -319,10 +322,11 @@ No known regression in accepted phases. On the current development host, default
 
 ## Latest verified commit
 
-`6d30cd2` — signed safe Attachment export checkpoint; its configured signature verifies. This progress-ledger update follows that commit.
+`4305a5c` — signed safe Attachment parent-reveal checkpoint; its configured signature verifies. This progress-ledger update follows that commit.
 
 ## Tests last run and results
 
+- 2026-09-23: Attachment parent-reveal checkpoint `4305a5c` passes `pnpm check/test/build`, 486 core tests with 2 intentional network/performance ignores, 18 error-contract tests, 13 protocol tests, public-API/trybuild and unknown-YAML suites, 32 desktop Rust tests, 92 MCP tests, 3 approval-helper integration tests, 1 stdio integration test, and 46 Vitest tests. Strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, Bootstrap validation (17 required files, 54 ADRs, 8 pinned agents), contract drift, production Vite/Cargo builds, and whitespace checks pass. Focused coverage proves retained parent inode identity across leaf swaps, intermediate-symlink refusal, closed/pathless IPC, and single-flight recovery. The final Security Reviewer correction verdict is PASS. Existing Node 26.2.0 and installed pnpm 11.20.0 were used without installation or switching.
 - 2026-09-23: Attachment export checkpoint `6d30cd2` passes `cargo test --workspace --all-features` (483 core tests passed, 2 intentional network/performance ignores, plus 18 error-contract, 13 protocol, public-API/trybuild, unknown-YAML, 30 desktop Rust, 92 MCP, 3 approval-helper integration, and 1 stdio integration tests), strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, `pnpm check`, 45 Vitest tests, production frontend/Cargo build, Bootstrap validation (17 required files, 53 ADRs, 8 pinned agents), and whitespace checks. The final Security Reviewer verdict is PASS. Existing Node 26.2.0 and already-installed pnpm 11.20.0 were used without installation or switching.
 - 2026-09-23: Attachment preview checkpoint `cb5920a` passes `cargo test --workspace --all-features` (480 core tests passed, 2 intentional network/performance ignores, plus 18 error-contract, 13 protocol, public-API/trybuild, unknown-YAML, 29 desktop Rust, 92 MCP, 3 approval-helper integration, and 1 stdio integration tests), strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, `pnpm check`, 44 Vitest tests, production frontend/Cargo build, Bootstrap validation (17 required files, 52 ADRs, 8 pinned agents), and whitespace checks. The correction-only Security Reviewer verdict is PASS. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
 - 2026-09-23: ADR 0051 checkpoint `ec366e8` passes Bootstrap validation with 17 required files, 51 ADRs, and 8 pinned agents plus whitespace checks; its configured signature verifies. This documentation-only decision adds no runtime code or dependency.
@@ -515,6 +519,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Important files changed
 
+- Attachment parent reveal: ADR 0054, `docs/task-packets/phase-3-attachment-reveal.md`, `docs/evidence/phase-3-attachment-reveal.md`, descriptor-only core portal handoff, async/single-flight native command, Reference Desk action, and adversarial tests are checkpointed at `4305a5c`.
 - Attachment export: ADR 0053, `docs/task-packets/phase-3-attachment-export.md`, `docs/evidence/phase-3-attachment-export.md`, core source/destination confinement, pathless native command/result, Reference Desk action, and adversarial tests are checkpointed at `6d30cd2`.
 - Attachment text preview: ADR 0052, `docs/task-packets/phase-3-attachment-text-preview.md`, `docs/evidence/phase-3-attachment-text-preview.md`, core confined reading/application logic, the pathless async native command, inert modal UI, and adversarial tests are checkpointed at `cb5920a`.
 - ADR 0051 and aligned product/content/implementation specifications freeze the empty initial migration registry and defer in-place Markdown adoption at signed checkpoint `ec366e8`.
@@ -636,7 +641,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Next recommended action
 
-Specify guarded native Attachment reveal/open. Keep renderer IPC pathless; require exact Guide/Attachment revision and content identity; use no shell and a fixed desktop-portal/file-manager mechanism; never execute Attachment content.
+Begin final release qualification: reconcile the product definition of done against accepted Phase 2–7 evidence, run the remaining graphical/native accessibility and failure-state smoke matrix that is possible on the current host, and document any credential/signing/publication checkpoints without attempting them.
 
 ## Recommended agent role and reasoning effort
 
@@ -645,9 +650,9 @@ Primary Orchestrator with zero routine agents. Use one specialist only for a man
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read `docs/content-model.md`, `docs/threat-model.md`, ADRs 0052–0053, and their packet/evidence; guarded reveal/open does not yet have an approved packet.
+2. Read `docs/implementation-plan.md`, `docs/testing-strategy.md`, `docs/installation.md`, and the Phase 7 evidence. Attachment behavior is accepted through ADR 0054.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed Attachment-export checkpoint `6d30cd2` plus the following progress-ledger commit; do not touch unrelated untracked `x`.
+4. Verify signed Attachment parent-reveal checkpoint `4305a5c` plus the following progress-ledger commit; do not touch unrelated untracked `x`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
-7. Specify guarded native Attachment reveal/open before implementation. Reuse retained capabilities, verify metadata/content identity, expose no renderer path, invoke no shell, and never execute Attachment content.
+7. Begin the final release-qualification audit from documented acceptance criteria. Do not sign, publish, push, create external resources, install packages, or change the active Node/pnpm toolchain without user authorization.
