@@ -52,7 +52,7 @@ Milestones:
 1. Scaffold React/Vite/Tailwind/shadcn and minimal Tauri v2 shell with restrictive CSP/capabilities.
 2. Implement typed IPC/session handles and Workspace inspection matrix.
 3. Implement first-launch Create/Open and current/old/newer/malformed/read-only behavior. Reserve a clearly unavailable Clone/Connect affordance for development only; operational Git onboarding arrives in Phase 5 and is required before product completion.
-4. Implement copy import for ordinary Markdown and migration/adoption dry-run/backup foundation.
+4. Implement copy import for ordinary Markdown; freeze the empty initial migration registry and defer in-place adoption. The first real old-schema entry must land with its dry-run, verified backup, and explicit-confirmation implementation.
 5. Build the Reference Desk shell including responsive panes and required onboarding/error states.
 
 Gate:
@@ -60,7 +60,7 @@ Gate:
 - Production app launches as a native window without a local server.
 - Inspection fixtures cover every specified class plus Git/nested/writability dimensions.
 - No write occurs during inspect/open-read-only; create refuses changed/nonempty targets.
-- Copy import leaves sources untouched; migration has verified backup and explicit confirmation.
+- Copy import leaves sources untouched. No migration action is exposed while the initial old-version registry is empty; every future migration must have a verified backup and explicit confirmation.
 - UI unit/integration/keyboard/accessibility tests pass.
 - Screenshots at the design matrix sizes are visually reviewed with current guidelines; findings resolved/recorded.
 - Security review covers Tauri capabilities/CSP/dialog paths/import.

@@ -114,12 +114,12 @@ These do not block Phase 1 and should be resolved at their named gates:
 
 - Exact distribution matrix (`deb`, `rpm`, AppImage) after oldest-distro/Wayland validation — Phase 7.
 - Whether optional scheduled sync ships in v1 or remains deferred after Git usability testing — Phase 5.
-- Whether in-place Markdown adoption is safe enough to ship in v1, versus copy-only import — Phase 2 security gate.
 - Whether remote Streamable HTTP MCP transport is useful; v1 requires local stdio only — post-v1 unless requested.
 - Default maximum Attachment size and optional MIME allowlist — Phase 3, before implementation.
 
 ## Deferred features
 
+- In-place Markdown adoption; v1 uses reviewed copy import and never reorganizes a source collection.
 - Cross-device automation beyond user-initiated Git.
 - Rich WYSIWYG editing; initial editing is structured metadata plus Markdown source/preview.
 - Saved searches, Favorites, and custom status taxonomies.

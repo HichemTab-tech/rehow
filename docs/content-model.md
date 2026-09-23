@@ -59,7 +59,7 @@ Required keys: `schema_version`, `workspace_id`, `name`, `created_at`, `updated_
 Compatibility:
 
 - `schema_version == 1`: current and writable after validation.
-- supported older positive integer: inspect as `older_supported`; open read-only until the user accepts a migration plan and verified backup.
+- supported older positive integer: inspect as `older_supported`; open read-only until the user accepts a migration plan and verified backup. The v1 registry is empty because schema v1 is the first released format; adding an entry requires an exact migration ADR and fixtures.
 - greater than the application's maximum: `newer_unsupported`, read-only inspection only.
 - missing, duplicate, non-integer, zero, negative, greater than `u32::MAX`, or structurally invalid version: malformed.
 
@@ -306,10 +306,11 @@ Scan a user-selected ordinary collection without following symlinks, show includ
 
 ### In-place adoption (decision deferred)
 
-Would add a manifest/Category descriptors and modify/move Markdown. It must produce an exact dry-run, backup, collision list, schema round-trip warning, and explicit confirmation. If any file cannot round-trip safely, offer copy import only. Never offer adoption for an unrelated nonempty folder without suitable Markdown.
+Deferred from v1 by ADRs 0050 and 0051. Adoption would add a manifest/Category descriptors and modify or move Markdown. It must produce an exact dry-run, backup, collision list, schema round-trip warning, and explicit confirmation. If any file cannot round-trip safely, offer copy import only. Never offer adoption for an unrelated nonempty folder without suitable Markdown.
 
 ## Migration rules
 
+- Schema v1 is the first released format, so its supported-older-version registry is empty and no migration apply action is exposed.
 - Every migration has source/target versions, preconditions, deterministic transform, fixture tests, backup verification, journaled steps, post-validation, and documented rollback by backup restore.
 - Migrations do not cross unsupported versions implicitly.
 - Unknown metadata survives unless an ADR explicitly deprecates a conflicting key and the migration preserves it under a namespaced extension.
