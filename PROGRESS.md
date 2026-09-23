@@ -1,19 +1,19 @@
 # Rehow Progress
 
-Last updated: 2026-09-22
+Last updated: 2026-09-23
 State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 2C ordinary-Markdown copy import is active. Its read-only source preview is implemented and verified; destination selection and apply are next. Phase 7A packaging remains qualified through the current-host menu smoke.
+Phase 2C ordinary-Markdown copy import is complete at signed checkpoint `5591e86`. Phase 2D adoption/migration dry-run and verified-backup foundations are next. Phase 7A packaging remains qualified through the current-host menu smoke.
 
 ## Current task
 
-Implement descriptor-confined destination selection and copy imported Markdown into a new Workspace as draft Guides.
+Specify and implement safe Workspace adoption/migration planning with read-only dry-run, compatibility checks, explicit confirmation, and verified backup before mutation.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Phase 2C now safely previews ordinary Markdown collections without exposing paths or modifying sources. Product completion still requires import apply/recovery, migration foundations, Attachment viewing/export/reveal, and final release qualification.
+Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Phase 2C now safely previews and copies ordinary Markdown collections into new draft-only Workspaces without exposing paths or modifying sources. Product completion still requires adoption/migration foundations, Attachment viewing/export/reveal, and final release qualification.
 
 ## Completed work
 
@@ -156,14 +156,15 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 - Established the oldest current binary baseline at signed checkpoint `7932118`: a complete Ubuntu 24.04 install/link/MCP/remove journey passes, all five executables require at most glibc 2.39, and both package formats now fail their smoke gate if a future executable raises that ABI floor.
 - Verified packaged application-menu resolution at signed evidence checkpoint `bd6eb20`: `gtk-launch Rehow` resolved the extracted package's desktop entry and kept the packaged binary alive on the current Wayland session with the documented host-scoped DMABUF workaround; stdout/stderr were empty and the exact temporary tree/process were removed.
 - Implemented descriptor-retained ordinary-Markdown import preview at signed checkpoint `3e33e89`: deterministic bounded scanning rejects links/special/malformed/oversized content, reports normalization without changing sources, returns only inert relative labels, and presents an accessible cancelable Reference Desk review state.
+- Completed ordinary-Markdown copy import at signed checkpoint `5591e86`: destination authority stays native and pathless; sources are identity/content revalidated and remain unchanged; initialization and draft-Guide creation are recoverable; partial success reports an exact valid prefix; concurrent marker substitution is atomically preserved rather than deleted. The final Security Reviewer verdict is PASS.
 
 ## Work in progress
 
-- Only this progress-ledger update is intentionally uncommitted. The import preview is signed through `3e33e89`; destination/apply is not implemented. Untracked `x` remains unrelated and untouched.
+- Only this progress-ledger update is intentionally uncommitted. Import apply is signed through `5591e86`. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
-- Markdown copy-import destination/apply, Workspace adoption/migration, and Attachment viewing/export/reveal remain incomplete.
+- Workspace adoption/migration and Attachment viewing/export/reveal remain incomplete.
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
 - Phase 6: complete, including the final managed Attachment discovery/metadata-add mutation.
@@ -171,7 +172,7 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 
 ## Known bugs
 
-No known regression in accepted phases. On the current development host, default Wayland launch exits with a GDK protocol error; the targeted `WEBKIT_DISABLE_DMABUF_RENDERER=1` invocation and X11 both stay alive, so driver/WebKitGTK qualification remains open and no global fallback is configured. If the process is killed after the initialization manifest commits but before `categories/` is durably created, reopening classifies the folder as malformed with `categoriesMissing`; an explicit descriptor-bound repair flow is still required and Rehow never auto-adopts the residue. An interrupted Category create can similarly leave an empty private Category directory; inspection reports a missing descriptor and never deletes or adopts it automatically. An interrupted Guide create can leave a recovery journal or same-directory temp; the scan does not execute recovery automatically, so the explicit recovery UX remains required. Phase 1E-A currently retains all parsed Guide bodies in native memory for the session; broad IPC is bounded, but streaming/lazy native reread is still required before claiming the 2 GiB worst-case scan budget is production-memory-safe. Automatic watching can degrade on unsupported/network filesystems or exhausted kernel limits; visible degraded state, refocus reconciliation, and manual refresh remain the recovery path. Safe links are intentionally inert until the guarded native opener exists.
+No known regression in accepted phases. On the current development host, default Wayland launch exits with a GDK protocol error; the targeted `WEBKIT_DISABLE_DMABUF_RENDERER=1` invocation and X11 both stay alive, so driver/WebKitGTK qualification remains open and no global fallback is configured. An interrupted Category create can leave an empty private Category directory; inspection reports a missing descriptor and never deletes or adopts it automatically. An interrupted Guide create can leave a recovery journal or same-directory temp; the scan does not execute recovery automatically, so the explicit recovery UX remains required. Phase 1E-A currently retains all parsed Guide bodies in native memory for the session; broad IPC is bounded, but streaming/lazy native reread is still required before claiming the 2 GiB worst-case scan budget is production-memory-safe. Automatic watching can degrade on unsupported/network filesystems or exhausted kernel limits; visible degraded state, refocus reconciliation, and manual refresh remain the recovery path. Safe links are intentionally inert until the guarded native opener exists.
 
 ## Design and accessibility findings
 
@@ -206,6 +207,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Security findings
 
+- Phase 2C copy import keeps both source and destination behind retained native capabilities, revalidates hierarchy/identity/content before writes, imports draft-only content, and preserves exact partial outcomes. Workspace initialization journals the scaffold and manifest; its marker is atomically displaced into operation-bound recovery trash and verified there, so a raced substitute is preserved and reported. The final Security Reviewer verdict is PASS with no actionable finding.
 - Highest risks: symlink/TOCTOU escape, frontmatter loss, concurrent lost updates, Git-triggered execution, Markdown/WebView injection/file disclosure, crash consistency, watcher/index staleness, duplicate IDs, MCP prompt injection/data overexposure.
 - Baseline controls and required adversarial gates are documented. Phase 1B now supplies implementation evidence for bounded public protocols and parser-neutral YAML construction; filesystem, Git, renderer, and MCP mutation controls remain future-phase gates.
 - Managed Git commit/recovery follows the accepted confined core and malicious-repository gates. MCP safe sync reuses the accepted Phase 5D lifecycle with approval before network/credentials, separate mutation approval, launch-captured authentication, exact retained classification, shared lifecycle exclusion, exact pathless pull recovery, and a distinct warning for uncertain push publication. Final Security Reviewer verdict: PASS.
@@ -304,16 +306,17 @@ No known regression in accepted phases. On the current development host, default
 ## Blockers and human checkpoints
 
 - No product decision, security-review, or manual-test blocker. Routine work uses zero extra agents; one specialist is used only at mandatory acceptance gates.
-- The active existing host tools are Node 26.2.0 and pnpm 11.3.0. The repository guard now matches that pair per user direction; no install or version switch was performed, and `pnpm check` passes.
+- The active existing host tools are Node 26.2.0 and pnpm 11.20.0. The repository accepts pnpm 11 per user direction; no install or version switch was performed, and `pnpm check` passes.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`3e33e89` — signed descriptor-confined Markdown import preview implementation and evidence; its configured signature verifies. This progress-ledger update follows that commit.
+`5591e86` — signed descriptor-confined Markdown copy-import implementation and evidence; its configured signature verifies. This progress-ledger update follows that commit.
 
 ## Tests last run and results
 
+- 2026-09-23: Phase 2C apply checkpoint `5591e86` passes `cargo test --workspace --all-features` (476 core library tests passed, 2 intentional network/performance ignores, plus protocol/API/desktop/MCP/integration/doc suites), strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, `pnpm check`, 41 Vitest tests, production frontend/Cargo build, and whitespace checks. Marker interruption/substitution, source symlink/hardlink/socket replacement, hierarchy changes, content drift, draft-only trust, and exact valid-prefix recovery pass. The final Security Reviewer verdict is PASS. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
 - 2026-09-22: Phase 2C preview checkpoint `3e33e89` passes 26 core storage tests, the native closed/pathless payload test, 40 Vitest tests, `pnpm check`, strict core/desktop all-target/all-feature Clippy, Cargo/Biome formatting, Bootstrap validation (17 required files, 50 ADRs, 8 pinned agents), and whitespace checks. Symlink, hardlink, FIFO, malformed content, normalization, depth, hostile-label, source-preservation, and zero-accepted-file cases pass. No Node/pnpm installation or switch occurred.
 - 2026-09-22: Signed checkpoint `bd6eb20` records a package-extracted `gtk-launch Rehow` smoke on the current Wayland session. With the already diagnosed invocation-scoped `WEBKIT_DISABLE_DMABUF_RENDERER=1`, the packaged process remained alive for three seconds with empty stdout/stderr; the exact process and ignored temporary tree were removed. No package was installed.
 - 2026-09-22: Checkpoint `7932118` passes a complete ephemeral Ubuntu 24.04 package install, installed-status check, all-five-executable check, desktop dynamic-link check, empty-configuration MCP refusal, package removal, and unrelated Workspace-sentinel preservation. Direct and extracted `.deb`/`.rpm` ABI inspection reports `GLIBC_2.39` for Rehow/Git helpers/MCP and `GLIBC_2.34` for the approval helper. The enforcing bundle smoke, `pnpm check`, whitespace check, and signed-commit verification pass. No host package or Node/pnpm version was installed or switched.
@@ -498,10 +501,11 @@ No known regression in accepted phases. On the current development host, default
 
 ## Known test failures
 
-No product test failure. The repository uses the existing active Node 26.2.0 and pnpm 11.3.0 selected by the user; no install or version switch occurred. `pnpm tauri:build` historically emits the packet-approved informational warning that `dev.rehow.app` ends in macOS's `.app` suffix; Linux no-bundle output succeeds.
+No product test failure. The repository uses the existing active Node 26.2.0 and pnpm 11.20.0 selected by the user; no install or version switch occurred. `pnpm tauri:build` historically emits the packet-approved informational warning that `dev.rehow.app` ends in macOS's `.app` suffix; Linux no-bundle output succeeds.
 
 ## Important files changed
 
+- Phase 2C apply: ADR 0050, `docs/task-packets/phase-2c-markdown-import-apply.md`, `docs/evidence/phase-2c-markdown-import-apply.md`, core import/recovery code, native pathless lifecycle, and Reference Desk destination/apply UI are checkpointed at `5591e86`.
 - Phase 2C preview: ADR 0050, `docs/task-packets/phase-2c-markdown-import-preview.md`, `docs/evidence/phase-2c-markdown-import-preview.md`, core storage scanning, the native selection capability/payload, and the Reference Desk review UI are checkpointed at `3e33e89`.
 - Phase 7A: `apps/desktop/src-tauri/tauri.conf.json`, `apps/desktop/src-tauri/icons/rehow-*.png`, `scripts/prepare-release-binaries.sh`, `scripts/test-linux-bundles.sh`, `scripts/blake3-file.mjs`, `docs/installation.md`, and `docs/evidence/phase-7a-linux-bundles.md` implement and document development `.deb`/`.rpm` bundles.
 - `AGENTS.md`, `PROGRESS.md`
@@ -619,7 +623,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Next recommended action
 
-Implement destination selection and apply for the accepted Markdown preview: revalidate and retain bounded normalized source bodies, initialize a new Workspace and Category, create draft Guides with valid-prefix recovery, and leave all source bytes untouched.
+Define the smallest safe Phase 2D adoption/migration foundation: read-only plan first, exact compatibility and effect set, verified backup, explicit confirmation, revision/concurrency protection, and no silent folder reorganization.
 
 ## Recommended agent role and reasoning effort
 
@@ -628,9 +632,9 @@ Primary Orchestrator with zero routine agents. Use one specialist only for a man
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read ADR 0050, `docs/task-packets/phase-2c-markdown-import-preview.md`, and `docs/evidence/phase-2c-markdown-import-preview.md`.
+2. Read `docs/implementation-plan.md`, `docs/content-model.md`, `docs/threat-model.md`, and ADR 0050; Phase 2D does not yet have an approved packet.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed import-preview checkpoint `3e33e89` plus the following progress-ledger commit; do not touch unrelated untracked `x`.
+4. Verify signed import-apply checkpoint `5591e86` plus the following progress-ledger commit; do not touch unrelated untracked `x`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
-7. Implement the separate destination/apply boundary; keep source content read-only, reject symlink/path races, create only draft Guides, preserve a valid destination prefix after interruption, and defer in-place adoption.
+7. Specify Phase 2D before implementation. Keep planning read-only; require a verified backup and explicit native confirmation before any adoption/migration mutation.
