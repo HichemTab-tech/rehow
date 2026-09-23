@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-Phase 2C ordinary-Markdown copy import is complete at signed checkpoint `5591e86`. Phase 2D adoption/migration dry-run and verified-backup foundations are next. Phase 7A packaging remains qualified through the current-host menu smoke.
+Phase 2 onboarding is complete through ADR 0051 and signed checkpoint `ec366e8`: copy import ships, the initial old-schema registry is truthfully empty, and in-place adoption is deferred. Phase 3's remaining Attachment view/export/reveal access is next. Phase 7A packaging remains qualified through the current-host menu smoke.
 
 ## Current task
 
-Specify and implement safe Workspace adoption/migration planning with read-only dry-run, compatibility checks, explicit confirmation, and verified backup before mutation.
+Specify and implement the smallest safe native Attachment access slice without exposing host paths or turning Rehow into a command runner.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Phase 2C now safely previews and copies ordinary Markdown collections into new draft-only Workspaces without exposing paths or modifying sources. Product completion still requires adoption/migration foundations, Attachment viewing/export/reveal, and final release qualification.
+Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Phase 2 safely copies ordinary Markdown into new draft-only Workspaces, and ADR 0051 closes the initial migration/adoption foundation: schema v1 is the first released format, so no migration action or fake legacy schema exists; any future old-version entry must arrive with its exact binder, dry-run, verified backup, journal, confirmation, restore evidence, and tests. Product completion still requires Attachment viewing/export/reveal and final release qualification.
 
 ## Completed work
 
@@ -157,14 +157,15 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 - Verified packaged application-menu resolution at signed evidence checkpoint `bd6eb20`: `gtk-launch Rehow` resolved the extracted package's desktop entry and kept the packaged binary alive on the current Wayland session with the documented host-scoped DMABUF workaround; stdout/stderr were empty and the exact temporary tree/process were removed.
 - Implemented descriptor-retained ordinary-Markdown import preview at signed checkpoint `3e33e89`: deterministic bounded scanning rejects links/special/malformed/oversized content, reports normalization without changing sources, returns only inert relative labels, and presents an accessible cancelable Reference Desk review state.
 - Completed ordinary-Markdown copy import at signed checkpoint `5591e86`: destination authority stays native and pathless; sources are identity/content revalidated and remain unchanged; initialization and draft-Guide creation are recoverable; partial success reports an exact valid prefix; concurrent marker substitution is atomically preserved rather than deleted. The final Security Reviewer verdict is PASS.
+- Closed the initial migration/adoption decision at signed checkpoint `ec366e8`: v1 has no invented older schema or exposed migration mutation; the compatibility registry can grow only with a complete migration/backup ADR and fixtures, while in-place Markdown adoption remains deferred in favor of safe copy import.
 
 ## Work in progress
 
-- Only this progress-ledger update is intentionally uncommitted. Import apply is signed through `5591e86`. Untracked `x` remains unrelated and untouched.
+- Only this progress-ledger update is intentionally uncommitted. The migration baseline is signed through `ec366e8`. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
-- Workspace adoption/migration and Attachment viewing/export/reveal remain incomplete.
+- Attachment viewing/export/reveal remains incomplete. Migration implementation is intentionally absent until a real older schema exists; in-place Markdown adoption is deferred from v1.
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
 - Phase 6: complete, including the final managed Attachment discovery/metadata-add mutation.
@@ -312,10 +313,11 @@ No known regression in accepted phases. On the current development host, default
 
 ## Latest verified commit
 
-`5591e86` — signed descriptor-confined Markdown copy-import implementation and evidence; its configured signature verifies. This progress-ledger update follows that commit.
+`ec366e8` — signed initial schema migration/adoption baseline; its configured signature verifies. This progress-ledger update follows that commit.
 
 ## Tests last run and results
 
+- 2026-09-23: ADR 0051 checkpoint `ec366e8` passes Bootstrap validation with 17 required files, 51 ADRs, and 8 pinned agents plus whitespace checks; its configured signature verifies. This documentation-only decision adds no runtime code or dependency.
 - 2026-09-23: Phase 2C apply checkpoint `5591e86` passes `cargo test --workspace --all-features` (476 core library tests passed, 2 intentional network/performance ignores, plus protocol/API/desktop/MCP/integration/doc suites), strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, `pnpm check`, 41 Vitest tests, production frontend/Cargo build, and whitespace checks. Marker interruption/substitution, source symlink/hardlink/socket replacement, hierarchy changes, content drift, draft-only trust, and exact valid-prefix recovery pass. The final Security Reviewer verdict is PASS. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
 - 2026-09-22: Phase 2C preview checkpoint `3e33e89` passes 26 core storage tests, the native closed/pathless payload test, 40 Vitest tests, `pnpm check`, strict core/desktop all-target/all-feature Clippy, Cargo/Biome formatting, Bootstrap validation (17 required files, 50 ADRs, 8 pinned agents), and whitespace checks. Symlink, hardlink, FIFO, malformed content, normalization, depth, hostile-label, source-preservation, and zero-accepted-file cases pass. No Node/pnpm installation or switch occurred.
 - 2026-09-22: Signed checkpoint `bd6eb20` records a package-extracted `gtk-launch Rehow` smoke on the current Wayland session. With the already diagnosed invocation-scoped `WEBKIT_DISABLE_DMABUF_RENDERER=1`, the packaged process remained alive for three seconds with empty stdout/stderr; the exact process and ignored temporary tree were removed. No package was installed.
@@ -505,6 +507,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Important files changed
 
+- ADR 0051 and aligned product/content/implementation specifications freeze the empty initial migration registry and defer in-place Markdown adoption at signed checkpoint `ec366e8`.
 - Phase 2C apply: ADR 0050, `docs/task-packets/phase-2c-markdown-import-apply.md`, `docs/evidence/phase-2c-markdown-import-apply.md`, core import/recovery code, native pathless lifecycle, and Reference Desk destination/apply UI are checkpointed at `5591e86`.
 - Phase 2C preview: ADR 0050, `docs/task-packets/phase-2c-markdown-import-preview.md`, `docs/evidence/phase-2c-markdown-import-preview.md`, core storage scanning, the native selection capability/payload, and the Reference Desk review UI are checkpointed at `3e33e89`.
 - Phase 7A: `apps/desktop/src-tauri/tauri.conf.json`, `apps/desktop/src-tauri/icons/rehow-*.png`, `scripts/prepare-release-binaries.sh`, `scripts/test-linux-bundles.sh`, `scripts/blake3-file.mjs`, `docs/installation.md`, and `docs/evidence/phase-7a-linux-bundles.md` implement and document development `.deb`/`.rpm` bundles.
@@ -623,7 +626,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Next recommended action
 
-Define the smallest safe Phase 2D adoption/migration foundation: read-only plan first, exact compatibility and effect set, verified backup, explicit confirmation, revision/concurrency protection, and no silent folder reorganization.
+Define the smallest safe Attachment access boundary, preferring descriptor-confined read/export before any external opener. Keep renderer IPC pathless and treat filenames, MIME, and bytes as untrusted.
 
 ## Recommended agent role and reasoning effort
 
@@ -632,9 +635,9 @@ Primary Orchestrator with zero routine agents. Use one specialist only for a man
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read `docs/implementation-plan.md`, `docs/content-model.md`, `docs/threat-model.md`, and ADR 0050; Phase 2D does not yet have an approved packet.
+2. Read `docs/content-model.md`, `docs/threat-model.md`, ADR 0049, and ADR 0051; Attachment view/export/reveal does not yet have an approved packet.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed import-apply checkpoint `5591e86` plus the following progress-ledger commit; do not touch unrelated untracked `x`.
+4. Verify signed migration-baseline checkpoint `ec366e8` plus the following progress-ledger commit; do not touch unrelated untracked `x`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
-7. Specify Phase 2D before implementation. Keep planning read-only; require a verified backup and explicit native confirmation before any adoption/migration mutation.
+7. Specify Attachment access before implementation. Reuse retained capabilities, verify metadata/content identity, expose no path, and do not execute Attachment content.
