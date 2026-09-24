@@ -1,6 +1,6 @@
 # Release process
 
-Status: Linux x86_64 automation implemented; publication and signing remain deliberate maintainer actions
+Status: Linux x86_64 automation implemented and `v0.1.0` published; signing remains a deliberate maintainer decision
 Last updated: 2026-09-24
 
 ## Supported release platform

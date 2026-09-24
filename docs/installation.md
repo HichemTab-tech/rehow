@@ -70,6 +70,12 @@ On Arch Linux or Omarchy:
 sudo pacman -U ./target/release/bundle/arch/rehow-0.1.0-1-x86_64.pkg.tar.zst
 ```
 
+For the published build, download `rehow-0.1.0-1-x86_64.pkg.tar.zst` from the [v0.1.0 release](https://github.com/HichemTab-tech/rehow/releases/tag/v0.1.0), then run:
+
+```sh
+sudo pacman -U ~/Downloads/rehow-0.1.0-1-x86_64.pkg.tar.zst
+```
+
 No install is performed by the build or smoke-test scripts.
 
 User Workspaces are never placed inside the application installation directory. Default preferences/cache/state follow XDG locations. Uninstall removes application-owned binaries/launchers/cache only; it preserves every user-selected Workspace and asks before removing local recovery state.

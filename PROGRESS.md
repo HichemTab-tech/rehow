@@ -5,20 +5,21 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-The compact final requirements audit is closed. Phase 7 now has first-release metadata, reproducible PR/push/manual CI, least-privilege existing-release publication, and native Debian, RPM, and Arch/Omarchy packages. Hosted Release run `35990325063` passed from signed tag commit `596123a` and published the original Debian/RPM assets. Native Arch packaging is implemented and locally qualified; clean graphical qualification remains open.
+The compact final requirements audit is closed. Phase 7 now has first-release metadata, reproducible PR/push/manual CI, least-privilege existing-release publication, and native Debian, RPM, and Arch/Omarchy packages. Hosted Release run `35990325063` passed from signed tag commit `596123a`; the existing release now contains all three packages and a verified three-entry checksum inventory. Clean graphical qualification remains open.
 
 ## Current task
 
-Commit the native Arch packaging checkpoint, add its package and updated checksum inventory to the existing `v0.1.0` release from that tag's published Debian payload, then install the downloaded Arch asset on Omarchy. Do not move the published tag.
+Push signed native Arch packaging checkpoint `c2d88cd` when authorized, then install the published `rehow-0.1.0-1-x86_64.pkg.tar.zst` on Omarchy. Do not move the published tag.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, the current Arch/Omarchy host, and a disposable native pacman install/remove container. Version `0.1.0`, stable identifier `me.hichemtab-tech.rehow`, MIT licensing, and `.deb`/`.rpm`/`.pkg.tar.zst` targets are selected. PR/push/manual CI and split-privilege published-release automation are implemented under ADR 0059. Hosted Release run `35990325063` passed from signed tag commit `596123a`; graphical Ubuntu qualification remains open.
+Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, the current Arch/Omarchy host, and a disposable native pacman install/remove container. Version `0.1.0`, stable identifier `me.hichemtab-tech.rehow`, MIT licensing, and `.deb`/`.rpm`/`.pkg.tar.zst` targets are selected. PR/push/manual CI and split-privilege published-release automation are implemented under ADR 0059. Hosted Release run `35990325063` passed from signed tag commit `596123a`; the Arch artifact was subsequently built from that release's exact Debian payload and published without moving the tag. Graphical Ubuntu qualification remains open.
 
 ## Completed work
 
 - Added immutable-action-pinned GitHub CI for pull requests, `master`, and manual dispatch plus a split-privilege published-release workflow. Ubuntu 24.04 runs the full checks/tests and builds/smokes `.deb`/`.rpm`/Arch packages; an isolated write-authorized job validates exactly those packages plus SHA-256 checksums before uploading to an existing matching release. ADR 0059 and `docs/release.md` record the Linux-only policy, native Omarchy path, retry path, and signing exclusions.
 - Added a reviewed `makepkg` template and build script for `rehow-0.1.0-1-x86_64.pkg.tar.zst`. It repackages the exact inspected Debian `/usr` payload without stripping inside a digest-pinned, network-disabled Arch container. Cross-format byte comparison, package metadata, ABI/helper binding, and disposable pacman install/remove gates pass without changing the host.
+- Published the native Arch artifact to `v0.1.0` from the exact existing Debian release payload and replaced `Rehow_0.1.0_SHA256SUMS.txt` with verified entries for all three packages. The published Arch SHA-256 is `835723c7cd3cc8f45b8f94c8c7e653d8e21455344d2a0f26b371eac1a6e3b572`; the tag remains at `596123a`.
 - Added the public-facing README with an actual Reference Desk screenshot, implemented capabilities, pre-release status, build/package paths, Workspace and MCP boundaries, safety principles, development entry points, and MIT license link.
 - Inspected repository/Git history/status: no initial files/commits/remotes.
 - Inspected toolchain: Git 2.55.0, Node 26.2.0, current machine pnpm 11.20.0, Rust/Cargo 1.98.0; no standalone global Tauri CLI. No Node/pnpm installation or switch was performed.
@@ -346,11 +347,12 @@ No known product regression remains uncorrected in accepted phases. Hosted Ubunt
 
 ## Latest verified commit
 
-`596123a` — signed hosted SSH fixture recovery-state checkpoint; its configured signature verifies and GitHub Release run `35990325063` passed from this tag commit.
+`c2d88cd` — signed native Arch package/workflow checkpoint; its configured signature verifies. This documentation-only follow-up records the subsequently published asset and is intentionally not claimed as part of `c2d88cd`.
 
 ## Tests last run and results
 
 - 2026-09-24: Native Arch packaging passes shell syntax, workflow YAML parsing, deterministic payload checksum validation, digest-pinned/network-disabled unprivileged `makepkg`, Arch `.PKGINFO`/`.BUILDINFO`/`.MTREE` checks, exact Debian-to-Arch `/usr` byte comparison, all five executable modes/link counts, helper digest binding, license/desktop/icon checks, the glibc 2.39 ABI ceiling, and a disposable networkless `pacman -U`/`pacman -R` journey. Artifact: `target/release/bundle/arch/rehow-0.1.0-1-x86_64.pkg.tar.zst`. No host package, Node version, or pnpm version was installed or switched.
+- 2026-09-24: The published `v0.1.0` Debian/RPM assets were downloaded into a temporary directory, the Arch package was rebuilt from the downloaded Debian payload, and the full three-format smoke plus disposable pacman install/remove gate passed. GitHub now reports the Arch asset at 8,519,316 bytes with SHA-256 `835723c7cd3cc8f45b8f94c8c7e653d8e21455344d2a0f26b371eac1a6e3b572`; the replacement checksum file verifies all three release assets.
 - 2026-09-24: Hermetic SSH daemon-fixture correction passes the exact authenticated SSH clone/sync loopback test, strict core all-target/all-feature Clippy, Cargo formatting, `pnpm check`, contract drift, Bootstrap validation (17 required files, 59 ADRs, 8 pinned agents), whitespace checks, and signed-commit verification. A disposable Ubuntu 24.04 container confirms an unprivileged daemon with generated host key and the standard runtime directory can listen. The fixture reads `/dev/null` configuration, binds only `127.0.0.1`, and caps early-exit stderr at 8 KiB. Existing Node 26.2.0 and pnpm 11.20.0 were unchanged; hosted confirmation remains pending.
 - 2026-09-24: Ubuntu `sshd` runtime correction passes the exact authenticated SSH clone/sync loopback test, Cargo formatting, both workflow YAML parses, `pnpm check`, contract drift, Bootstrap validation (17 required files, 59 ADRs, 8 pinned agents), whitespace checks, and signed-commit verification. The Arch host correctly lacks `/run/sshd`; only disposable Ubuntu build jobs create the standard root-owned `0755` directory. Existing Node 26.2.0 and pnpm 11.20.0 were unchanged. Hosted confirmation remains pending.
 - 2026-09-24: Portable OpenSSH fixture correction passes the exact authenticated SSH clone/sync loopback test, strict core all-target/all-feature Clippy, Cargo formatting, both workflow YAML parses, `pnpm check`, contract drift, Bootstrap validation (17 required files, 59 ADRs, 8 pinned agents), whitespace checks, and signed-commit verification. CI/release now install `openssh-client` and `openssh-server`; the fixture selects only fixed Ubuntu `/usr/sbin/sshd` or Arch `/usr/bin/sshd`. Existing Node 26.2.0 and pnpm 11.20.0 were unchanged. Hosted confirmation remains pending.
@@ -557,7 +559,7 @@ No known product regression remains uncorrected in accepted phases. Hosted Ubunt
 
 ## Known test failures
 
-No product regression is known. Hosted Release run `35990325063` completed successfully after the SSH fixture corrections. The new Arch path passes local construction, extraction, metadata, payload identity, and disposable pacman install/remove checks; its updated workflow has not yet run on GitHub. The repository uses the existing active Node 26.2.0 and pnpm 11.20.0 selected by the user; no install or version switch occurred.
+No product regression is known. Hosted Release run `35990325063` completed successfully after the SSH fixture corrections. The new Arch path passes local construction, extraction, metadata, payload identity, disposable pacman install/remove, and exact published-asset checksum checks; its updated workflow has not yet run on GitHub. The repository uses the existing active Node 26.2.0 and pnpm 11.20.0 selected by the user; no install or version switch occurred.
 
 ## Important files changed
 
@@ -692,7 +694,7 @@ No product regression is known. Hosted Release run `35990325063` completed succe
 
 ## Next recommended action
 
-Create the signed Arch-packaging checkpoint, build the Arch artifact from the exact published `v0.1.0` Debian asset, update that release's checksum inventory without moving its tag, and install the downloaded `.pkg.tar.zst` on Omarchy. Afterward push the checkpoint when authorized so future releases build all three formats automatically.
+Push signed checkpoint `c2d88cd` when authorized so future releases build all three formats automatically. The user can now download `rehow-0.1.0-1-x86_64.pkg.tar.zst` from `v0.1.0` and install it with `sudo pacman -U`; host installation remains an explicit user action.
 
 ## Recommended agent role and reasoning effort
 
@@ -703,7 +705,7 @@ Primary Orchestrator with zero routine agents. Use one specialist only if a rele
 1. Read `AGENTS.md` and this file.
 2. Read `docs/evidence/final-release-readiness.md`, `docs/installation.md`, `docs/release.md`, and ADR 0059.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `596123a` and hosted Release run `35990325063`, then resume the native Arch package publication/install action recorded above; do not move `v0.1.0` or touch unrelated untracked `x` if it reappears.
+4. Verify signed checkpoint `c2d88cd`, hosted Release run `35990325063`, and the four-asset `v0.1.0` inventory, then resume with the explicit push or host-install action recorded above; do not move `v0.1.0` or touch unrelated untracked `x` if it reappears.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
-7. The user authorized adding the Arch release asset in this session. Do not push code, create another release/tag, install a host package, or change the active Node/pnpm toolchain without separate authorization.
+7. The authorized Arch release asset is published. Do not push code, create another release/tag, install a host package, or change the active Node/pnpm toolchain without separate authorization.
