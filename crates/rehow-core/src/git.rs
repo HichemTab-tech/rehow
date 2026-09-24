@@ -15911,7 +15911,7 @@ mod tests {
             .find(|candidate| Path::new(candidate).is_file())
             .expect("OpenSSH server must exist at a fixed Ubuntu or Arch path");
         let sshd = Command::new(sshd_executable)
-            .args(["-D", "-e", "-p"])
+            .args(["-D", "-e", "-f", "/dev/null", "-p"])
             .arg(port.to_string())
             .arg("-h")
             .arg(&host_key)
@@ -15934,12 +15934,16 @@ mod tests {
                 "-o",
                 "PermitRootLogin=no",
                 "-o",
+                "AddressFamily=inet",
+                "-o",
+                "ListenAddress=127.0.0.1",
+                "-o",
             ])
             .arg(format!("AllowUsers={user}"))
             .args(["-o", "LogLevel=ERROR"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
         let mut sshd = ChildGuard(sshd);
@@ -15948,7 +15952,21 @@ mod tests {
             if TcpStream::connect(&address).is_ok() {
                 break;
             }
-            assert!(sshd.0.try_wait().unwrap().is_none());
+            if let Some(status) = sshd.0.try_wait().unwrap() {
+                let mut stderr = Vec::new();
+                sshd.0
+                    .stderr
+                    .take()
+                    .unwrap()
+                    .take(8_193)
+                    .read_to_end(&mut stderr)
+                    .unwrap();
+                assert!(stderr.len() <= 8_192, "sshd stderr exceeded test bound");
+                panic!(
+                    "hermetic loopback sshd exited with {status}: {}",
+                    String::from_utf8_lossy(&stderr)
+                );
+            }
             thread::sleep(Duration::from_millis(5));
         }
         assert!(TcpStream::connect(&address).is_ok());
