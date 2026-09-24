@@ -65,7 +65,7 @@ GUI apps may not inherit shell startup `PATH`; Git discovery and smoke tests mus
 
 ## Hosted CI and releases
 
-`.github/workflows/ci.yml` runs the Linux check, test, production package, and bundle-smoke gate for pull requests, pushes to `master`, and manual dispatch. GitHub-hosted runners may deny Bubblewrap's loopback setup inside a fresh network namespace; CI explicitly permits only that exact capability failure to skip the packaged credential-proxy sandbox smoke. The smoke remains mandatory on capable local/self-hosted Linux, and every other failure remains fatal. `.github/workflows/release.yml` rebuilds the exact matching version tag and uploads `.deb`, `.rpm`, and checksums only after a GitHub Release is published. The build job is read-only and isolated from the separate write-authorized upload job. Exact maintainer steps, retry behavior, platform limits, and signing exclusions are in `docs/release.md` and ADR 0059.
+`.github/workflows/ci.yml` runs the full Linux check, test, production package, and bundle-smoke gate for pull requests, pushes to `master`, and manual dispatch. Ubuntu 24.04 hosted runners restrict unprivileged user-namespace capabilities through AppArmor by default, so the workflow enables the documented ephemeral runner controls and requires a real networkless Bubblewrap preflight before any project gate. No sandbox test is skipped. `.github/workflows/release.yml` rebuilds the exact matching version tag and uploads `.deb`, `.rpm`, and checksums only after a GitHub Release is published. The build job is read-only and isolated from the separate write-authorized upload job. Exact maintainer steps, retry behavior, platform limits, and signing exclusions are in `docs/release.md` and ADR 0059.
 
 ## Test hygiene
 

@@ -70,6 +70,31 @@ jobs:
       - name: Install project dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Enable Bubblewrap user namespaces
+        run: |
+          current_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
+          if [ -n "$current_userns" ] && [ "$current_userns" != "1" ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+
+          current_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+          if [ -n "$current_apparmor" ] && [ "$current_apparmor" != "0" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+          /usr/bin/bwrap \
+            --die-with-parent \
+            --new-session \
+            --unshare-all \
+            --ro-bind /usr /usr \
+            --symlink usr/bin /bin \
+            --symlink usr/lib /lib \
+            --symlink usr/lib /lib64 \
+            --proc /proc \
+            --dev /dev \
+            --tmpfs /tmp \
+            -- /usr/bin/true
+
       - name: Check formatting, types, lint, and contracts
         run: |
           cargo fmt --all --check
@@ -77,11 +102,6 @@ jobs:
           pnpm check
 
       - name: Run unit and integration tests
-        env:
-          # GitHub-hosted runners can deny Bubblewrap's loopback setup in a
-          # fresh network namespace. The smoke script skips only that exact
-          # capability failure; all other sandbox failures remain fatal.
-          REHOW_ALLOW_BWRAP_NETWORK_NAMESPACE_SKIP: "1"
         run: |
           pnpm test
           pnpm test:integration
