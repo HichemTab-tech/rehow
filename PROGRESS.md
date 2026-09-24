@@ -5,18 +5,19 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-The compact final requirements audit is closed. Phase 7A now has first-release metadata and freshly built `.deb`/`.rpm` artifacts; clean graphical qualification remains open.
+The compact final requirements audit is closed. Phase 7 now has first-release metadata, reproducible PR/push/manual CI, and least-privilege existing-release publication for qualified Linux packages; clean graphical qualification remains open.
 
 ## Current task
 
-Qualify the installed `0.1.0` packages in a disposable graphical Ubuntu 24.04 Wayland/X11 environment.
+Checkpoint the Linux CI/release automation, then obtain its first hosted GitHub Actions run and qualify the installed `0.1.0` packages in a disposable graphical Ubuntu 24.04 Wayland/X11 environment.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Version `0.1.0`, stable identifier `me.hichemtab-tech.rehow`, MIT licensing, and both `.deb`/`.rpm` targets are selected. Remaining release work needs disposable graphical Ubuntu qualification.
+Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Version `0.1.0`, stable identifier `me.hichemtab-tech.rehow`, MIT licensing, and both `.deb`/`.rpm` targets are selected. PR/push/manual CI and published-release asset automation are implemented under ADR 0059. Remaining release work needs its first hosted workflow evidence and disposable graphical Ubuntu qualification.
 
 ## Completed work
 
+- Added immutable-action-pinned GitHub CI for pull requests, `master`, and manual dispatch plus a split-privilege published-release workflow. Ubuntu 24.04 runs the full checks/tests and builds/smokes `.deb`/`.rpm`; an isolated write-authorized job validates exactly those packages plus SHA-256 checksums before uploading to an existing matching release. ADR 0059 and `docs/release.md` record the Linux-only policy, Omarchy/Arch packaging gap, retry path, and signing exclusions.
 - Added the public-facing README with an actual Reference Desk screenshot, implemented capabilities, pre-release status, build/package paths, Workspace and MCP boundaries, safety principles, development entry points, and MIT license link.
 - Inspected repository/Git history/status: no initial files/commits/remotes.
 - Inspected toolchain: Git 2.55.0, Node 26.2.0, current machine pnpm 11.20.0, Rust/Cargo 1.98.0; no standalone global Tauri CLI. No Node/pnpm installation or switch was performed.
@@ -170,7 +171,7 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 
 ## Work in progress
 
-- No code work is in progress. Remaining work is graphical Ubuntu qualification. Untracked `x` remains unrelated and untouched.
+- CI/release automation is being checkpointed. Remaining work is its first hosted run and graphical Ubuntu qualification. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
@@ -178,7 +179,7 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
 - Phase 6: complete, including the final managed Attachment discovery/metadata-add mutation.
-- Phase 7: `.deb`/`.rpm` packaging, version/identifier/MIT metadata, clean-container install/remove qualification, and the glibc 2.39 floor are implemented; graphical desktop runtime matrix, signing/publication authorization, and final audits remain.
+- Phase 7: `.deb`/`.rpm` packaging, version/identifier/MIT metadata, clean-container install/remove qualification, the glibc 2.39 floor, PR CI, and existing-release asset automation are implemented; first hosted-workflow evidence, graphical desktop runtime matrix, Arch-compatible packaging, signing/publication authorization, and final audits remain.
 
 ## Known bugs
 
@@ -226,6 +227,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Security findings
 
+- ADR 0059 keeps repository code and release credentials in different jobs. The build job has read-only contents permission; every action uses an immutable commit; the publish job checks out/executes no repository code, accepts exactly three named regular artifacts, validates checksum grammar and hashes, confirms an existing non-draft release, and uploads explicit names only. It cannot create a tag/release. Local workflow syntax, action pins, tag/version binding, inventory, and checksum tests pass; the first hosted run remains required.
 - ADR 0058 accepts only Workspace session, Guide ID, and exact revision. Core retains a bounded one-link regular-file descriptor, verifies bytes/metadata/current inode identity, and passes only a read-only duplicate to XDG Portal `OpenFile` with fixed `ask=true`/`writable=false`. IPC and errors are pathless; external-change and symlink-substitution tests pass.
 - External comparison accepts only the selected stable Guide ID. Rust resolves its core-owned relative path from the retained Workspace capability, rejects unsafe/changed/malformed storage, verifies the stable ID, and returns no path. The snapshot never mutates the retained view; Reload is separate and explicitly confirmed. Focused core/native/UI tests and strict Clippy pass.
 - Selected-Guide context stays out of the Workspace list payload and renders only escaped text/fixed controls. Reference opening now accepts an exact URL only when the freshly reread revision retains it in the safe body AST or canonical validated Reference metadata; session/revision binding, portal `ask=true`, single-flight behavior, and URL-redacted native results/errors remain unchanged. Core and inert-rendering adversarial tests pass; security self-review found no unresolved blocker/high issue.
@@ -347,6 +349,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Tests last run and results
 
+- 2026-09-24: Linux CI/release automation passes checksum-verified actionlint 1.7.9, Ruby YAML parsing, all eight immutable action-reference checks, stable tag/version validation, exact real-package three-file inventory/checksum validation, Cargo format, strict all-target/all-feature Clippy, `pnpm check`, 52 Vitest tests, 494/496 core tests with 2 intentional ignores plus all protocol/API/unknown-YAML suites, 37 desktop tests, 92 MCP tests, 3 approval-helper tests, 1 stdio test, contract/integration checks, production Tauri `.deb`/`.rpm` builds, bundle/digest/license/desktop/icon/ABI smoke, Bootstrap validation (17 required files, 59 ADRs, 8 pinned agents), and whitespace checks. Existing Node 26.2.0 and pnpm 11.20.0 were unchanged.
 - 2026-09-24: README link targets, `pnpm check`, contract drift, and whitespace checks pass on the unchanged installed toolchain.
 - 2026-09-24: MIT licensing passes `pnpm check`, locked all-Workspace/all-target/all-feature Cargo check, production Tauri `.deb`/`.rpm` build, and the complete bundle smoke. Both packages contain a byte-identical `/usr/lib/Rehow/LICENSE`; package metadata declares MIT. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
 - 2026-09-24: First-release metadata passes the offline all-Workspace/all-target/all-feature Cargo check, `pnpm check`, production `pnpm tauri:build`, bundle extraction/digest/desktop-entry/icon checks for both formats, the glibc 2.39 ABI-floor gate, Bootstrap validation (17 required files, 58 ADRs, 8 pinned agents), and whitespace checks. Fresh artifacts are `Rehow_0.1.0_amd64.deb` and `Rehow-0.1.0-1.x86_64.rpm`. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
@@ -550,6 +553,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Important files changed
 
+- Hosted automation: `.github/workflows/ci.yml`, `.github/workflows/release.yml`, ADR 0059, and `docs/release.md`; aligned README, installation, development, testing, threat-model, implementation-plan, and agent-map text defines exact gates and platform/security limits.
 - Public project entry point: `README.md` links verified product imagery and the authoritative installation, content-model, MCP, security, development, product, architecture, progress, and license documents.
 - Release metadata: `LICENSE`, Cargo/npm/Tauri metadata, installer paths, bundle smoke defaults, and readiness documentation consistently use MIT, `0.1.0`, and `me.hichemtab-tech.rehow`; `.deb` and `.rpm` remain the first-release targets.
 - Guarded Guide file/shadcn foundation: ADR 0058, the core held-file capability, pathless native portal command, Open File UI, `apps/desktop/components.json`, reviewed `Button`/`cn` source, lockfile, and aligned architecture/design/development/testing/threat docs are checkpointed at `2f3668a`.
@@ -680,7 +684,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Next recommended action
 
-Run the documented installed-package journey in a disposable graphical Ubuntu 24.04 Wayland/X11 environment.
+After the workflow commit is deliberately pushed, inspect the first GitHub `CI` run and correct any hosted-runner-only failure. Then run the documented installed-package journey in a disposable graphical Ubuntu 24.04 Wayland/X11 environment. Do not publish a release solely to test the release job; manual dispatch requires an existing published tag.
 
 ## Recommended agent role and reasoning effort
 
@@ -689,9 +693,9 @@ Primary Orchestrator with zero routine agents. Use one specialist only if a rele
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read `docs/evidence/final-release-readiness.md` and `docs/installation.md`.
+2. Read `docs/evidence/final-release-readiness.md`, `docs/installation.md`, `docs/release.md`, and ADR 0059.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify the latest signed checkpoint and run `pnpm check` plus `scripts/test-linux-bundles.sh`; do not touch unrelated untracked `x`.
+4. Verify the latest signed checkpoint, inspect the latest GitHub `CI` run if the commit was pushed, and run `pnpm check` plus `scripts/test-linux-bundles.sh`; do not touch unrelated untracked `x`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
 7. Resume only the named human release gates. Do not publish, push, create external resources, install packages, or change the active Node/pnpm toolchain without user authorization.

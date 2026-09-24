@@ -2,6 +2,8 @@
 
 > Remember how you did it.
 
+[![CI](https://github.com/HichemTab-tech/rehow/actions/workflows/ci.yml/badge.svg)](https://github.com/HichemTab-tech/rehow/actions/workflows/ci.yml)
+
 Rehow is a Linux-first, local desktop knowledge application for preserving and finding repeatable technical instructions. Guides stay in a user-selected Workspace as human-readable Markdown, so the content remains portable, inspectable, and Git-compatible.
 
 ![Rehow Reference Desk showing search results and a Guide](docs/evidence/screenshots/reference-desk-wide-light.png)
@@ -92,6 +94,8 @@ cargo test --workspace --all-features
 ```
 
 Start with [development setup](docs/development.md), then consult the [product specification](docs/product-spec.md), [architecture](docs/architecture.md), and [current progress](PROGRESS.md).
+
+Pull requests run the complete Linux check/package gate. Published GitHub Releases trigger verified `.deb`/`.rpm` builds; see the [release process and platform policy](docs/release.md).
 
 ## License
 

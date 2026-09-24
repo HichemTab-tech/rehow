@@ -103,6 +103,8 @@ External Guide conflict coverage proves that the core can reread the selected on
 
 Guarded Guide-file opening tests prove exact revision and stable-inode retention, link refusal, pathless native results/errors, stale renderer-result invalidation, and a fixed read-only portal handoff. No test opens personal content or grants a renderer-selected path.
 
+Release workflow tests require YAML parse success, immutable full-commit action references, accepted/rejected tag-version fixtures, exact three-file inventory, checksum grammar/hash verification, and proof that repository code runs only in the read-only build job. The first hosted run additionally proves Ubuntu runner packages and GitHub event/context behavior; local workflow inspection cannot substitute for that evidence.
+
 ## Required coverage matrix
 
 | Area | Minimum cases |

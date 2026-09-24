@@ -168,6 +168,7 @@ Milestones:
 - Wayland/X11/WebKitGTK matrix and targeted graphics diagnostics.
 - Optional user-configured Hyprland/Omarchy shortcut instructions without modifying managed files.
 - MCP install/client configuration and version compatibility.
+- Read-only pull-request CI plus least-privilege, existing-release-only Linux package publication (implemented under ADR 0059).
 - Recovery/manual, performance, accessibility, visual, and threat-model final audits.
 
 Gate:

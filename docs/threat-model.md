@@ -14,7 +14,7 @@ Protected assets:
 - Guide trust status (`tested`) and audit meaning.
 - Correctness of revisions, backups, recovery, search results, and MCP change reports.
 
-Components in scope: Tauri webview/IPC adapter, Rust application/core/storage/search/Git code, Markdown renderer/Attachment protocol, Workspace files, watchers, local preferences/cache/state, standalone MCP server, Git child processes, installer/package, and external opener.
+Components in scope: Tauri webview/IPC adapter, Rust application/core/storage/search/Git code, Markdown renderer/Attachment protocol, Workspace files, watchers, local preferences/cache/state, standalone MCP server, Git child processes, installer/package, GitHub Actions release boundary, and external opener.
 
 Search derived state uses private anonymous temporary files with closed versioned length framing. It carries no filesystem authority and is never trusted as canonical content. Reads are positional and bounded by both the record and backing length; malformed/truncated/trailing records and impossible counts fail before large allocation as an unavailable index. A 64 MiB record limit, 65,536-value repeated-field limit, and pre-write 4 GiB physical prior-plus-candidate backing limit make hostile derived-state disk amplification fail closed without replacing the prior index. Revision reuse cannot cross Guide content changes. Eight-generation compaction is attempted only while prior backings are at most 2 GiB, so the still-live source plus replacement cannot bypass the 4 GiB transient cap; larger indexes remain incremental and subject to that same cap.
 
@@ -30,6 +30,7 @@ Out of scope as a hard boundary: protection against a fully compromised same-use
 6. **MCP client → server:** caller may be buggy, prompt-injected, or hostile.
 7. **Rehow → external opener:** URLs/files cross into other applications.
 8. **Concurrent writer → revisioned mutation:** external editors, Git, desktop, and MCP do not honor one another's in-process state.
+9. **Release source → CI artifact → GitHub Release:** tagged repository code is untrusted while building and must not receive publication credentials; the publishing job accepts only the exact closed artifact inventory produced by the read-only build job.
 
 ## Security invariants
 
@@ -44,6 +45,7 @@ Out of scope as a hard boundary: protection against a fully compromised same-use
 - Planned Phase 1D-C mutation capability remains private, tied to one owned reconciled artifact, accepts only closed typed intents, and returns a fully reparsed/rebound candidate rather than reusable offsets or edits. Phase 1E will reread and replan against the current revision before applying anything.
 - Git actions use an audited primitive, never user/Guide-generated arguments or a shell.
 - Secrets/content are excluded from logs and errors by default.
+- GitHub Actions use immutable action commits and least-privilege job tokens. Repository code runs only in read-only jobs; the release write token exists only in a separate job that executes no repository code, validates an exact three-file inventory and checksums, and uploads only explicit filenames to an already-published matching tag.
 
 ## Threats and controls
 
@@ -80,6 +82,7 @@ Out of scope as a hard boundary: protection against a fully compromised same-use
 | Index poisoning/corruption | malformed doc crashes all search | per-document isolation, plain-text fields, query limits, disposable generation swap | malformed/corrupt/rebuild tests |
 | Attachment bomb/special file | huge image, FIFO, device, hardlink | fresh `0600` copy, nlink=1, byte/pixel/sniff limits, inert text/raster only, never external-open file | Attachment adversarial tests |
 | Backup/recovery loss | cleanup removes only good copy | validated manifest/hash, local permission, visible retention, no silent pruning, restore to new dir default | restore drills and crash tests |
+| CI/release supply-chain abuse | pull request exfiltrates a token, mutable action changes behavior, tag publishes extra assets | no release token in build job; immutable action SHAs; version/tag binding; exact artifact inventory and checksum validation; explicit filenames; existing-release-only upload | workflow syntax/static review, action-ref verification, fork-PR permission review, release dry run before publication |
 
 ## Git risk analysis
 

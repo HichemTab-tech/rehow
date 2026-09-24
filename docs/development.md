@@ -63,6 +63,10 @@ The Tauri CLI is a pinned project dependency invoked through pnpm. `pnpm tauri:d
 
 GUI apps may not inherit shell startup `PATH`; Git discovery and smoke tests must run from an application-menu-like environment. Wayland lacks reliable global window coordinates and some effects/always-on-top support, so developers must not encode those expectations.
 
+## Hosted CI and releases
+
+`.github/workflows/ci.yml` runs the full Linux check, test, production package, and bundle-smoke gate for pull requests, pushes to `master`, and manual dispatch. `.github/workflows/release.yml` rebuilds the exact matching version tag and uploads `.deb`, `.rpm`, and checksums only after a GitHub Release is published. The build job is read-only and isolated from the separate write-authorized upload job. Exact maintainer steps, retry behavior, platform limits, and signing exclusions are in `docs/release.md` and ADR 0059.
+
 ## Test hygiene
 
 - Rust `tempfile`/fixture helpers create unique Workspaces and Git repos under test temporary directories.

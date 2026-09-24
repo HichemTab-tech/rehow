@@ -25,6 +25,7 @@ Build Rehow: a polished, Linux-first, local desktop knowledge tool for finding a
 - `crates/rehow-core/` — canonical Rust `domain`, `protocol`, `markdown`, `storage`, `search`, `git`, and `application` modules.
 - `crates/rehow-mcp/` — separately runnable stdio MCP server.
 - `packages/contracts/` — generated/checked TypeScript-facing contracts only; Rust schemas remain authoritative.
+- `.github/workflows/` — read-only PR/push CI and isolated existing-release asset publication.
 - `docs/` — product, architecture, security, design, testing, operations, and ADRs.
 - `docs/task-packets/` — implementation-ready packets; use `TEMPLATE.md`.
 - `.codex/agents/` — project-scoped role configurations.

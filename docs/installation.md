@@ -1,6 +1,6 @@
 # Installation and Desktop Integration
 
-Status: development `.deb`/`.rpm` bundles implemented and smoke-tested; clean-machine release qualification remains open
+Status: local `.deb`/`.rpm` release candidates implemented and smoke-tested; clean graphical release qualification remains open
 Last updated: 2026-09-24
 
 ## Supported baseline
@@ -13,11 +13,13 @@ Initial package priority:
 2. AppImage only after independent Wayland/XWayland and upgrade/uninstall testing.
 3. An Arch user package recipe may follow, but Rehow will not modify Omarchy-managed files.
 
+Omarchy uses Arch Linux. It does not require different Rehow application code, but it does require an Arch-compatible package such as a reviewed PKGBUILD/AUR entry or a separately qualified AppImage. The current `.deb` and `.rpm` must not be force-installed or converted for Omarchy. Release automation and the platform policy are documented in `docs/release.md`.
+
 Relevant Tauri references: [Linux prerequisites](https://v2.tauri.app/start/prerequisites/), [AppImage distribution](https://v2.tauri.app/distribute/appimage/), and [Linux graphics diagnostics](https://v2.tauri.app/develop/debug/linux-graphics/).
 
 The development `.deb` and `.rpm` have completed dependency-resolving install and package-owned uninstall checks in ephemeral Debian 13 and Fedora 44 containers. This is compatibility evidence, not the minimum supported baseline; graphical menu launch and older baselines remain release gates.
 
-## Development packages
+## Local release-candidate packages
 
 Build both native Linux packages with the repository's active Node, pnpm, and Rust toolchain:
 
@@ -25,7 +27,7 @@ Build both native Linux packages with the repository's active Node, pnpm, and Ru
 pnpm tauri:build
 ```
 
-This produces development-version artifacts under:
+This produces locally built release-candidate artifacts under:
 
 - `target/release/bundle/deb/Rehow_0.1.0_amd64.deb`
 - `target/release/bundle/rpm/Rehow-0.1.0-1.x86_64.rpm`

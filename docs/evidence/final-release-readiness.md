@@ -12,15 +12,17 @@ Date: 2026-09-24
 - ADR 0057 closes the retained-memory gap: Guide bodies are revision-checked lazy reads and normalized search records are bounded anonymous disk-backed state. The deterministic 5,000-Guide/52.7 MiB benchmark measured 1.533 s cold indexing, 13.484 ms warm p95, and 10,228 KiB peak RSS.
 - The complete repository gate passes after actionable Workspace issue reporting and the memory-safe search change: 489 pre-review core tests with 2 intentional network/performance ignores, all protocol/API/unknown-YAML suites, 33 desktop Rust tests, 92 MCP tests, 48 Vitest tests, strict Clippy/format/type/contract checks, and production Vite/Cargo builds. Post-review adversarial bound corrections pass 13 focused search tests and the final full gate is recorded in `PROGRESS.md`.
 - The 2026-09-24 completion-audit deltas additionally pass 52 Vitest tests, all 37 desktop Rust tests, focused external-conflict and Guide-opener core tests, strict core/desktop Clippy, type/lint/contract checks, bootstrap validation with 58 ADRs, and the production Vite build. No earlier accepted MCP/Git/storage surface was changed by these deltas.
-- Development `.deb` and `.rpm` artifacts, package contents, independent MCP execution, uninstall preservation, ABI floor, current-host menu resolution, Debian 13 installation, Fedora 44 installation, and Ubuntu 24.04 baseline compatibility have recorded evidence in `phase-7a-linux-bundles.md` and `PROGRESS.md`.
+- Local `.deb` and `.rpm` release candidates, package contents, independent MCP execution, uninstall preservation, ABI floor, current-host menu resolution, Debian 13 installation, Fedora 44 installation, and Ubuntu 24.04 baseline compatibility have recorded evidence in `phase-7a-linux-bundles.md` and `PROGRESS.md`.
 - Current visual evidence covers wide/narrow, light/dark, focus, 200% scaling, search, Git clone/commit/sync, and bounded Attachment actions. Fresh static guideline reviews also cover the external-conflict and Open File controls; current web-interface guideline reviews pass.
+- ADR 0059 adds immutable-action-pinned Ubuntu 24.04 CI for pull requests, `master`, and manual dispatch plus an existing-release-only asset workflow. Local workflow lint, tag/version binding, exact artifact inventory/checksums, the complete test gate, and fresh `.deb`/`.rpm` smoke pass. The first hosted run remains required because local evidence cannot prove GitHub runner packages and event contexts.
 
 ## Remaining technical acceptance
 
-1. Run the installed package on a clean graphical Ubuntu 24.04 baseline through both supported Wayland and X11 sessions without a terminal-provided environment, then record WebKitGTK/graphics results. The current host needs the invocation-scoped `WEBKIT_DISABLE_DMABUF_RENDERER=1` workaround for Wayland and therefore cannot close this matrix alone.
-2. On that disposable graphical system, complete one install-to-recovery journey: create/open/import, edit/search/copy, Git unavailable and available states, MCP handshake, restart, external conflict, documented recovery, and uninstall with Workspace bytes preserved.
-3. Complete the final keyboard-only and screen-reader smoke on the installed native build. Automated semantic/focus/live-region checks and prior screenshot reviews do not replace this manual gate.
-4. After those results, perform the final combined security, accessibility, visual, installation, and documentation audit. Do not rerun accepted subsystem reviews unless the release correction changes them.
+1. Obtain a successful hosted run of `.github/workflows/ci.yml` for the exact release candidate and resolve any GitHub-runner-only dependency or context failure.
+2. Run the installed package on a clean graphical Ubuntu 24.04 baseline through both supported Wayland and X11 sessions without a terminal-provided environment, then record WebKitGTK/graphics results. The current host needs the invocation-scoped `WEBKIT_DISABLE_DMABUF_RENDERER=1` workaround for Wayland and therefore cannot close this matrix alone.
+3. On that disposable graphical system, complete one install-to-recovery journey: create/open/import, edit/search/copy, Git unavailable and available states, MCP handshake, restart, external conflict, documented recovery, and uninstall with Workspace bytes preserved.
+4. Complete the final keyboard-only and screen-reader smoke on the installed native build. Automated semantic/focus/live-region checks and prior screenshot reviews do not replace this manual gate.
+5. After those results, perform the final combined security, accessibility, visual, installation, and documentation audit. Do not rerun accepted subsystem reviews unless the release correction changes them.
 
 ## Human checkpoints
 
@@ -30,4 +32,4 @@ Date: 2026-09-24
 
 ## Efficient restart
 
-Do not reopen completed feature phases. Resume with access to one disposable graphical Ubuntu 24.04 environment. If that environment is unavailable, report release qualification as blocked rather than applying a global graphics workaround without evidence.
+Do not reopen completed feature phases. Resume by inspecting the first hosted CI run after this checkpoint is deliberately pushed, then use one disposable graphical Ubuntu 24.04 environment. If that environment is unavailable, report graphical release qualification as blocked rather than applying a global graphics workaround without evidence.
