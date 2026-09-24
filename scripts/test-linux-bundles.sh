@@ -4,8 +4,8 @@ set -euo pipefail
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$repository_root"
 
-deb_bundle="${1:-target/release/bundle/deb/Rehow_0.0.0_amd64.deb}"
-rpm_bundle="${2:-target/release/bundle/rpm/Rehow-0.0.0-1.x86_64.rpm}"
+deb_bundle="${1:-target/release/bundle/deb/Rehow_0.1.0_amd64.deb}"
+rpm_bundle="${2:-target/release/bundle/rpm/Rehow-0.1.0-1.x86_64.rpm}"
 test -f "$deb_bundle"
 test -f "$rpm_bundle"
 

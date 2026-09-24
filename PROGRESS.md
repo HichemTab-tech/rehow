@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-The compact final requirements audit is closed at signed checkpoint `2f3668a`: loaded Guide files open through a guarded portal capability and the desktop now owns reviewed shadcn/ui source. Phase 7A packaging remains qualified through the current-host menu smoke.
+The compact final requirements audit is closed. Phase 7A now has first-release metadata and freshly built `.deb`/`.rpm` artifacts; clean graphical qualification remains open.
 
 ## Current task
 
-Await the documented human release metadata decisions and disposable graphical Ubuntu qualification.
+Qualify the installed `0.1.0` packages in a disposable graphical Ubuntu 24.04 Wayland/X11 environment.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Core Workspace/Guide/Git/MCP behavior is implemented, retained Workspace/search memory is bounded, dirty Guide conflicts are explicit, loaded Guide files open safely, and the required shadcn/ui source foundation is present. Remaining work requires human release choices or a disposable graphical Ubuntu environment.
+Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Version `0.1.0`, stable identifier `me.hichemtab-tech.rehow`, and both `.deb`/`.rpm` targets are selected. Remaining release work needs a project-license choice and disposable graphical Ubuntu qualification.
 
 ## Completed work
 
@@ -169,7 +169,7 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 
 ## Work in progress
 
-- No code work is in progress. Remaining steps are human release metadata and graphical Ubuntu qualification. Untracked `x` remains unrelated and untouched.
+- Release metadata is being checkpointed. Remaining steps are the project-license choice and graphical Ubuntu qualification. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
@@ -177,7 +177,7 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
 - Phase 6: complete, including the final managed Attachment discovery/metadata-add mutation.
-- Phase 7: development `.deb`/`.rpm` packaging, clean-container install/remove qualification, and the glibc 2.39 floor are implemented; graphical desktop runtime matrix, release metadata/signing, and final audits remain.
+- Phase 7: `.deb`/`.rpm` packaging, version/identifier metadata, clean-container install/remove qualification, and the glibc 2.39 floor are implemented; graphical desktop runtime matrix, license/signing/publication decisions, and final audits remain.
 
 ## Known bugs
 
@@ -333,7 +333,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Blockers and human checkpoints
 
-- Final release metadata needs a human choice of project license, production version, and stable reverse-DNS application identifier. Artifact signing/publication additionally requires explicit authorization and credentials.
+- Final release metadata needs only a human choice of project license. Version `0.1.0`, identifier `me.hichemtab-tech.rehow`, and both Linux package formats are selected. Artifact signing/publication additionally requires explicit authorization and credentials.
 - Final graphical acceptance needs access to one disposable Ubuntu 24.04 graphical environment with Wayland and X11. The current host's normal Wayland launch fails in WebKit/GDK unless the invocation-scoped DMABUF workaround is used; evidence does not justify a global launcher workaround.
 - Routine work uses zero extra agents; one specialist is used only at mandatory acceptance gates.
 - The active existing host tools are Node 26.2.0 and pnpm 11.20.0. The repository accepts pnpm 11 per user direction; no install or version switch was performed, and `pnpm check` passes.
@@ -342,10 +342,11 @@ No known regression in accepted phases. On the current development host, default
 
 ## Latest verified commit
 
-`1ed5113` — signed final-release-readiness refresh; its configured signature verifies. The latest code checkpoint is signed `2f3668a`; this progress-ledger update follows both.
+`3e91dbc` — signed release-readiness refresh; its configured signature verifies. The release-metadata update described here follows it and is verified in the working tree before checkpointing.
 
 ## Tests last run and results
 
+- 2026-09-24: First-release metadata passes the offline all-Workspace/all-target/all-feature Cargo check, `pnpm check`, production `pnpm tauri:build`, bundle extraction/digest/desktop-entry/icon checks for both formats, the glibc 2.39 ABI-floor gate, Bootstrap validation (17 required files, 58 ADRs, 8 pinned agents), and whitespace checks. Fresh artifacts are `Rehow_0.1.0_amd64.deb` and `Rehow-0.1.0-1.x86_64.rpm`. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
 - 2026-09-24: Guarded Guide-file/shadcn checkpoint `2f3668a` passes `pnpm check`, 52 Vitest tests, 2 focused core opener tests, all 37 desktop Rust tests, strict core/desktop all-target/all-feature Clippy, Cargo/Biome formatting, contract drift, bootstrap validation (17 required files, 58 ADRs, 8 agents), production Vite build, and whitespace checks. The built renderer is 99.63 kB gzip. Existing Node 26.2.0 and pnpm 11.20.0 were used; only exact project dependencies were added.
 - 2026-09-24: Conflict checkpoint `f048360` passes `pnpm check`, 52 Vitest tests, the focused current-snapshot core test, all 36 desktop Rust tests, strict core/desktop all-target/all-feature Clippy, Cargo/Biome formatting, contract drift, the production Vite build, and whitespace checks. The current Web Interface Guidelines static review passes. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
 - 2026-09-23: Guide-context checkpoint `0e5f617` passes 51 Vitest tests, 493 core tests (491 pass and 2 intentional network/performance ignores), 36 desktop Rust tests, `pnpm check`, strict core/desktop all-target/all-feature Clippy, Cargo formatting, contract drift, production Vite build, whitespace checks, and wide/narrow visual inspection. Coverage includes canonical metadata projection, hostile text escaping, missing related Guides, and exact revision-bound Reference portal authority. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
@@ -542,11 +543,11 @@ No known regression in accepted phases. On the current development host, default
 
 ## Known test failures
 
-No product test failure. The repository uses the existing active Node 26.2.0 and pnpm 11.20.0 selected by the user; no install or version switch occurred. `pnpm tauri:build` historically emits the packet-approved informational warning that `dev.rehow.app` ends in macOS's `.app` suffix; Linux no-bundle output succeeds.
+No product test failure. The repository uses the existing active Node 26.2.0 and pnpm 11.20.0 selected by the user; no install or version switch occurred. The old `.app`-suffix warning is resolved by the production identifier.
 
 ## Important files changed
 
-- Final release evidence: `docs/evidence/final-release-readiness.md` and `docs/installation.md` now include the external-conflict, guarded Guide-file, shadcn foundation, and current focused verification evidence at signed `1ed5113`.
+- Release metadata: Cargo, desktop/contracts packages, Tauri configuration, installer paths, bundle smoke defaults, and readiness documentation consistently use `0.1.0` and `me.hichemtab-tech.rehow`; `.deb` and `.rpm` remain the first-release targets.
 - Guarded Guide file/shadcn foundation: ADR 0058, the core held-file capability, pathless native portal command, Open File UI, `apps/desktop/components.json`, reviewed `Button`/`cn` source, lockfile, and aligned architecture/design/development/testing/threat docs are checkpointed at `2f3668a`.
 - External Guide conflicts: `crates/rehow-core/src/application.rs`, `apps/desktop/src-tauri/src/lib.rs`, `apps/desktop/src/{App.tsx,index.css,app.test.ts}`, and aligned architecture/design/testing docs are checkpointed at `f048360`.
 - Memory-safe search: ADR 0057, `docs/evidence/phase-4f-memory-safe-search.md`, the Guide metadata/body split, revision-bound lazy body reader, bounded anonymous record codec/backings, desktop/MCP mappings, adversarial tests, and aligned architecture/content/testing/threat/release docs are checkpointed at `5d8ab31`.
@@ -675,7 +676,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Next recommended action
 
-Ask the user for the license, production version, stable reverse-DNS application identifier, and intended first-release package formats. Then run the documented installed-package journey in a disposable graphical Ubuntu 24.04 Wayland/X11 environment.
+Obtain the project-license choice, then run the documented installed-package journey in a disposable graphical Ubuntu 24.04 Wayland/X11 environment.
 
 ## Recommended agent role and reasoning effort
 
@@ -684,9 +685,9 @@ Primary Orchestrator with zero routine agents. Use one specialist only if a rele
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read `docs/evidence/final-release-readiness.md`, `docs/installation.md`, ADR 0058, and the external-conflict architecture/design/testing updates.
+2. Read `docs/evidence/final-release-readiness.md` and `docs/installation.md`.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `2f3668a` and the focused desktop tests; do not touch unrelated untracked `x`.
+4. Verify the latest signed checkpoint and run `pnpm check` plus `scripts/test-linux-bundles.sh`; do not touch unrelated untracked `x`.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
 7. Resume only the named human release gates. Do not publish, push, create external resources, install packages, or change the active Node/pnpm toolchain without user authorization.

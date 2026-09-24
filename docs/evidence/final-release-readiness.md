@@ -25,8 +25,7 @@ Date: 2026-09-24
 ## Human checkpoints
 
 - Choose the project license. Rehow cannot invent redistribution rights.
-- Approve a production version and stable reverse-DNS application identifier to replace `0.0.0` and `dev.rehow.app`.
-- Decide whether the first release advertises both `.deb` and `.rpm`; AppImage remains deferred unless separately qualified.
+- Version `0.1.0`, stable identifier `me.hichemtab-tech.rehow`, and first-release `.deb` plus `.rpm` targets are selected; AppImage remains deferred unless separately qualified.
 - Provide explicit authorization and the required credentials only when artifact signing or publication is requested. No push, release, account/repository creation, signing, or publication is authorized by this audit.
 
 ## Efficient restart

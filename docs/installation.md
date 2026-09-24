@@ -27,8 +27,8 @@ pnpm tauri:build
 
 This produces development-version artifacts under:
 
-- `target/release/bundle/deb/Rehow_0.0.0_amd64.deb`
-- `target/release/bundle/rpm/Rehow-0.0.0-1.x86_64.rpm`
+- `target/release/bundle/deb/Rehow_0.1.0_amd64.deb`
+- `target/release/bundle/rpm/Rehow-0.1.0-1.x86_64.rpm`
 
 The bundle hook builds the desktop binary, fixed Git helpers, standalone MCP server, and graphical MCP approval helper. It embeds the exact approval-helper BLAKE3 digest into `rehow-mcp`; the package smoke test verifies that binding and the one-link executable layout:
 
@@ -36,7 +36,7 @@ The bundle hook builds the desktop binary, fixed Git helpers, standalone MCP ser
 scripts/test-linux-bundles.sh
 ```
 
-Version `0.0.0` identifies these as development artifacts, not a public release. Release version, production application identifier, license, signing, and publication require explicit decisions before distribution.
+Version `0.1.0` and application identifier `me.hichemtab-tech.rehow` are the first-release defaults. The project license, signing, and publication still require explicit authorization before distribution.
 
 ## Desktop application installation
 
@@ -50,13 +50,13 @@ Packages install:
 Install a locally built package using the system package manager, which may request the user's normal authorization:
 
 ```sh
-sudo apt install ./target/release/bundle/deb/Rehow_0.0.0_amd64.deb
+sudo apt install ./target/release/bundle/deb/Rehow_0.1.0_amd64.deb
 ```
 
 or:
 
 ```sh
-sudo dnf install ./target/release/bundle/rpm/Rehow-0.0.0-1.x86_64.rpm
+sudo dnf install ./target/release/bundle/rpm/Rehow-0.1.0-1.x86_64.rpm
 ```
 
 No install is performed by the build or smoke-test scripts.
