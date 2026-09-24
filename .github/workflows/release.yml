@@ -62,6 +62,8 @@ jobs:
             libssl-dev \
             libwebkit2gtk-4.1-dev \
             librsvg2-dev \
+            openssh-client \
+            openssh-server \
             patchelf \
             pkg-config \
             xdg-utils

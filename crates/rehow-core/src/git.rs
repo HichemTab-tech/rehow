@@ -15906,7 +15906,11 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         let user = std::env::var("USER").unwrap();
-        let sshd = Command::new("/usr/bin/sshd")
+        let sshd_executable = ["/usr/sbin/sshd", "/usr/bin/sshd"]
+            .into_iter()
+            .find(|candidate| Path::new(candidate).is_file())
+            .expect("OpenSSH server must exist at a fixed Ubuntu or Arch path");
+        let sshd = Command::new(sshd_executable)
             .args(["-D", "-e", "-p"])
             .arg(port.to_string())
             .arg("-h")
