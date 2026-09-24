@@ -1,0 +1,98 @@
+# Rehow
+
+> Remember how you did it.
+
+Rehow is a Linux-first, local desktop knowledge application for preserving and finding repeatable technical instructions. Guides stay in a user-selected Workspace as human-readable Markdown, so the content remains portable, inspectable, and Git-compatible.
+
+![Rehow Reference Desk showing search results and a Guide](docs/evidence/screenshots/reference-desk-wide-light.png)
+
+## What Rehow does
+
+- Searches titles, aliases, Tags, Categories, commands, paths, error messages, and full Guide content.
+- Keeps prerequisites, warnings, steps, verification, rollback, troubleshooting, references, and Attachments together.
+- Creates, edits, moves, archives, restores, and safely deletes Guides with revision and conflict protection.
+- Detects external file changes without silently overwriting unsaved work.
+- Supports optional Git initialization, commits, cloning, and guarded synchronization without storing credentials.
+- Includes a separately usable local MCP server for safe AI-assisted Guide workflows.
+- Works without Git, MCP, a network connection, or an AI service.
+
+Commands shown in Guides are inert documentation. Rehow never executes them.
+
+## Current status
+
+Rehow `0.1.0` is a functional pre-release. The desktop application, Markdown Workspace, search, Git workflows, Attachments, and MCP server are implemented and tested. `.deb` and `.rpm` packages build successfully; final clean Ubuntu graphical qualification and publication remain pending.
+
+Linux package baseline: x86_64, glibc 2.39 or newer, and WebKitGTK 4.1. Ubuntu 24.04, Debian 13, and Fedora 44 are the currently qualified package families. See [installation and desktop integration](docs/installation.md) for details and known graphics notes.
+
+## Build and run
+
+The repository uses Node 26.2.0, pnpm 11, and Rust 1.98.0. With those tools already available:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm tauri:dev
+```
+
+Build the native `.deb` and `.rpm` packages:
+
+```sh
+pnpm tauri:build
+scripts/test-linux-bundles.sh
+```
+
+Generated packages are written to:
+
+- `target/release/bundle/deb/Rehow_0.1.0_amd64.deb`
+- `target/release/bundle/rpm/Rehow-0.1.0-1.x86_64.rpm`
+
+Rehow is a Tauri desktop application. It does not require a permanently running local web server.
+
+## Workspace format
+
+A Workspace is an ordinary folder containing a versioned manifest, Category descriptors, Markdown Guides, and managed Attachments. Markdown and YAML are the source of truth; search indexes and caches are disposable.
+
+Rehow does not silently adopt, reorganize, migrate, or overwrite an existing folder. Writes are confined to the opened Workspace, atomic, recoverable, and revision-checked. The format and compatibility rules are documented in [the content model](docs/content-model.md).
+
+## MCP server
+
+The local stdio MCP server can be used independently of the desktop application. It receives its allowed Workspaces at startup and never accepts arbitrary filesystem paths through tool calls.
+
+Start it in read-only mode during development:
+
+```sh
+cargo run -p rehow-mcp -- \
+  --workspace personal=/absolute/path/to/workspace
+```
+
+Mutation, broad-operation, and Git-write permissions are separate opt-in startup grants. Tested status and destructive operations still require explicit native approval. See [MCP setup and workflow](docs/mcp-setup.md) for client configuration and the complete authority model.
+
+## Safety principles
+
+- Workspace content, Markdown, filenames, Git repositories, and MCP inputs are treated as untrusted.
+- Raw Markdown HTML is disabled, and external links require a native application chooser.
+- Managed paths reject traversal, symlink escape, unsafe hard links, and changed-during-read files.
+- Git operations do not install hooks, invoke a shell, force-push, hard-reset, discard changes, or resolve ambiguous conflicts.
+- Rehow never requests or stores access tokens, passwords, or private SSH keys.
+- AI-created or AI-edited Guides are not marked `tested`; only the user can approve an exact Guide revision as tested.
+
+The complete security analysis is in the [threat model](docs/threat-model.md).
+
+## Development
+
+Common verification commands:
+
+```sh
+pnpm check
+pnpm test
+pnpm test:integration
+pnpm build
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+```
+
+Start with [development setup](docs/development.md), then consult the [product specification](docs/product-spec.md), [architecture](docs/architecture.md), and [current progress](PROGRESS.md).
+
+## License
+
+Rehow is available under the [MIT License](LICENSE).

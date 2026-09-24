@@ -17,6 +17,7 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 
 ## Completed work
 
+- Added the public-facing README with an actual Reference Desk screenshot, implemented capabilities, pre-release status, build/package paths, Workspace and MCP boundaries, safety principles, development entry points, and MIT license link.
 - Inspected repository/Git history/status: no initial files/commits/remotes.
 - Inspected toolchain: Git 2.55.0, Node 26.2.0, current machine pnpm 11.20.0, Rust/Cargo 1.98.0; no standalone global Tauri CLI. No Node/pnpm installation or switch was performed.
 - Checked current official Codex custom-agent and AGENTS.md configuration documentation.
@@ -346,6 +347,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Tests last run and results
 
+- 2026-09-24: README link targets, `pnpm check`, contract drift, and whitespace checks pass on the unchanged installed toolchain.
 - 2026-09-24: MIT licensing passes `pnpm check`, locked all-Workspace/all-target/all-feature Cargo check, production Tauri `.deb`/`.rpm` build, and the complete bundle smoke. Both packages contain a byte-identical `/usr/lib/Rehow/LICENSE`; package metadata declares MIT. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
 - 2026-09-24: First-release metadata passes the offline all-Workspace/all-target/all-feature Cargo check, `pnpm check`, production `pnpm tauri:build`, bundle extraction/digest/desktop-entry/icon checks for both formats, the glibc 2.39 ABI-floor gate, Bootstrap validation (17 required files, 58 ADRs, 8 pinned agents), and whitespace checks. Fresh artifacts are `Rehow_0.1.0_amd64.deb` and `Rehow-0.1.0-1.x86_64.rpm`. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
 - 2026-09-24: Guarded Guide-file/shadcn checkpoint `2f3668a` passes `pnpm check`, 52 Vitest tests, 2 focused core opener tests, all 37 desktop Rust tests, strict core/desktop all-target/all-feature Clippy, Cargo/Biome formatting, contract drift, bootstrap validation (17 required files, 58 ADRs, 8 agents), production Vite build, and whitespace checks. The built renderer is 99.63 kB gzip. Existing Node 26.2.0 and pnpm 11.20.0 were used; only exact project dependencies were added.
@@ -548,6 +550,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Important files changed
 
+- Public project entry point: `README.md` links verified product imagery and the authoritative installation, content-model, MCP, security, development, product, architecture, progress, and license documents.
 - Release metadata: `LICENSE`, Cargo/npm/Tauri metadata, installer paths, bundle smoke defaults, and readiness documentation consistently use MIT, `0.1.0`, and `me.hichemtab-tech.rehow`; `.deb` and `.rpm` remain the first-release targets.
 - Guarded Guide file/shadcn foundation: ADR 0058, the core held-file capability, pathless native portal command, Open File UI, `apps/desktop/components.json`, reviewed `Button`/`cn` source, lockfile, and aligned architecture/design/development/testing/threat docs are checkpointed at `2f3668a`.
 - External Guide conflicts: `crates/rehow-core/src/application.rs`, `apps/desktop/src-tauri/src/lib.rs`, `apps/desktop/src/{App.tsx,index.css,app.test.ts}`, and aligned architecture/design/testing docs are checkpointed at `f048360`.
