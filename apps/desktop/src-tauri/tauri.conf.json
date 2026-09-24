@@ -34,6 +34,12 @@
     "active": true,
     "targets": ["deb", "rpm"],
     "category": "Utility",
+    "copyright": "Copyright (c) 2026 Hichem Taboukouyout",
+    "license": "MIT",
+    "licenseFile": "../../../LICENSE",
+    "resources": {
+      "../../../LICENSE": "LICENSE"
+    },
     "shortDescription": "Remember how you did it.",
     "longDescription": "A local-first desktop knowledge tool for preserving and finding repeatable technical Guides.",
     "icon": [

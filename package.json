@@ -1,6 +1,7 @@
 {
   "name": "rehow",
   "private": true,
+  "license": "MIT",
   "packageManager": "pnpm@11.20.0",
   "engines": {
     "node": "26.2.0",

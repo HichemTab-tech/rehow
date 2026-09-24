@@ -13,7 +13,7 @@ Qualify the installed `0.1.0` packages in a disposable graphical Ubuntu 24.04 Wa
 
 ## Overall status
 
-Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Version `0.1.0`, stable identifier `me.hichemtab-tech.rehow`, and both `.deb`/`.rpm` targets are selected. Remaining release work needs a project-license choice and disposable graphical Ubuntu qualification.
+Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Version `0.1.0`, stable identifier `me.hichemtab-tech.rehow`, MIT licensing, and both `.deb`/`.rpm` targets are selected. Remaining release work needs disposable graphical Ubuntu qualification.
 
 ## Completed work
 
@@ -169,7 +169,7 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 
 ## Work in progress
 
-- No code work is in progress. Remaining steps are the project-license choice and graphical Ubuntu qualification. Untracked `x` remains unrelated and untouched.
+- No code work is in progress. Remaining work is graphical Ubuntu qualification. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
@@ -177,7 +177,7 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
 - Phase 6: complete, including the final managed Attachment discovery/metadata-add mutation.
-- Phase 7: `.deb`/`.rpm` packaging, version/identifier metadata, clean-container install/remove qualification, and the glibc 2.39 floor are implemented; graphical desktop runtime matrix, license/signing/publication decisions, and final audits remain.
+- Phase 7: `.deb`/`.rpm` packaging, version/identifier/MIT metadata, clean-container install/remove qualification, and the glibc 2.39 floor are implemented; graphical desktop runtime matrix, signing/publication authorization, and final audits remain.
 
 ## Known bugs
 
@@ -333,7 +333,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Blockers and human checkpoints
 
-- Final release metadata needs only a human choice of project license. Version `0.1.0`, identifier `me.hichemtab-tech.rehow`, and both Linux package formats are selected. Artifact signing/publication additionally requires explicit authorization and credentials.
+- MIT, version `0.1.0`, identifier `me.hichemtab-tech.rehow`, and both Linux package formats are selected. Artifact signing/publication still requires explicit authorization and credentials.
 - Final graphical acceptance needs access to one disposable Ubuntu 24.04 graphical environment with Wayland and X11. The current host's normal Wayland launch fails in WebKit/GDK unless the invocation-scoped DMABUF workaround is used; evidence does not justify a global launcher workaround.
 - Routine work uses zero extra agents; one specialist is used only at mandatory acceptance gates.
 - The active existing host tools are Node 26.2.0 and pnpm 11.20.0. The repository accepts pnpm 11 per user direction; no install or version switch was performed, and `pnpm check` passes.
@@ -342,10 +342,11 @@ No known regression in accepted phases. On the current development host, default
 
 ## Latest verified commit
 
-`4289018` — signed first-release metadata checkpoint; its configured signature verifies.
+`6e7e1c1` — signed release-metadata progress checkpoint; its configured signature verifies. The MIT-license delta described here follows it and is verified before checkpointing.
 
 ## Tests last run and results
 
+- 2026-09-24: MIT licensing passes `pnpm check`, locked all-Workspace/all-target/all-feature Cargo check, production Tauri `.deb`/`.rpm` build, and the complete bundle smoke. Both packages contain a byte-identical `/usr/lib/Rehow/LICENSE`; package metadata declares MIT. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
 - 2026-09-24: First-release metadata passes the offline all-Workspace/all-target/all-feature Cargo check, `pnpm check`, production `pnpm tauri:build`, bundle extraction/digest/desktop-entry/icon checks for both formats, the glibc 2.39 ABI-floor gate, Bootstrap validation (17 required files, 58 ADRs, 8 pinned agents), and whitespace checks. Fresh artifacts are `Rehow_0.1.0_amd64.deb` and `Rehow-0.1.0-1.x86_64.rpm`. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
 - 2026-09-24: Guarded Guide-file/shadcn checkpoint `2f3668a` passes `pnpm check`, 52 Vitest tests, 2 focused core opener tests, all 37 desktop Rust tests, strict core/desktop all-target/all-feature Clippy, Cargo/Biome formatting, contract drift, bootstrap validation (17 required files, 58 ADRs, 8 agents), production Vite build, and whitespace checks. The built renderer is 99.63 kB gzip. Existing Node 26.2.0 and pnpm 11.20.0 were used; only exact project dependencies were added.
 - 2026-09-24: Conflict checkpoint `f048360` passes `pnpm check`, 52 Vitest tests, the focused current-snapshot core test, all 36 desktop Rust tests, strict core/desktop all-target/all-feature Clippy, Cargo/Biome formatting, contract drift, the production Vite build, and whitespace checks. The current Web Interface Guidelines static review passes. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
@@ -547,13 +548,13 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Important files changed
 
-- Release metadata: Cargo, desktop/contracts packages, Tauri configuration, installer paths, bundle smoke defaults, and readiness documentation consistently use `0.1.0` and `me.hichemtab-tech.rehow`; `.deb` and `.rpm` remain the first-release targets.
+- Release metadata: `LICENSE`, Cargo/npm/Tauri metadata, installer paths, bundle smoke defaults, and readiness documentation consistently use MIT, `0.1.0`, and `me.hichemtab-tech.rehow`; `.deb` and `.rpm` remain the first-release targets.
 - Guarded Guide file/shadcn foundation: ADR 0058, the core held-file capability, pathless native portal command, Open File UI, `apps/desktop/components.json`, reviewed `Button`/`cn` source, lockfile, and aligned architecture/design/development/testing/threat docs are checkpointed at `2f3668a`.
 - External Guide conflicts: `crates/rehow-core/src/application.rs`, `apps/desktop/src-tauri/src/lib.rs`, `apps/desktop/src/{App.tsx,index.css,app.test.ts}`, and aligned architecture/design/testing docs are checkpointed at `f048360`.
 - Memory-safe search: ADR 0057, `docs/evidence/phase-4f-memory-safe-search.md`, the Guide metadata/body split, revision-bound lazy body reader, bounded anonymous record codec/backings, desktop/MCP mappings, adversarial tests, and aligned architecture/content/testing/threat/release docs are checkpointed at `5d8ab31`.
 - Actionable Workspace issues: ADR 0056, its task packet/evidence, bounded native payload, strict renderer validation, Reference Desk recovery panel, styles, and tests are checkpointed at `b7ac3ce`.
 - Guarded external links: ADR 0055, `docs/task-packets/phase-3-guarded-external-links.md`, `docs/evidence/phase-3-guarded-external-links.md`, core revision/safe-AST/portal boundary, pathless native adapter, semantic reader action, and adversarial tests are checkpointed at `50177c7`.
-- Final release audit: `docs/evidence/final-release-readiness.md` distinguishes accepted product evidence, the remaining clean graphical/manual journey, and license/identity/signing/publication human checkpoints.
+- Final release audit: `docs/evidence/final-release-readiness.md` distinguishes accepted product evidence, the remaining clean graphical/manual journey, and signing/publication authorization checkpoints.
 - Attachment parent reveal: ADR 0054, `docs/task-packets/phase-3-attachment-reveal.md`, `docs/evidence/phase-3-attachment-reveal.md`, descriptor-only core portal handoff, async/single-flight native command, Reference Desk action, and adversarial tests are checkpointed at `4305a5c`.
 - Attachment export: ADR 0053, `docs/task-packets/phase-3-attachment-export.md`, `docs/evidence/phase-3-attachment-export.md`, core source/destination confinement, pathless native command/result, Reference Desk action, and adversarial tests are checkpointed at `6d30cd2`.
 - Attachment text preview: ADR 0052, `docs/task-packets/phase-3-attachment-text-preview.md`, `docs/evidence/phase-3-attachment-text-preview.md`, core confined reading/application logic, the pathless async native command, inert modal UI, and adversarial tests are checkpointed at `cb5920a`.
@@ -676,7 +677,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Next recommended action
 
-Obtain the project-license choice, then run the documented installed-package journey in a disposable graphical Ubuntu 24.04 Wayland/X11 environment.
+Run the documented installed-package journey in a disposable graphical Ubuntu 24.04 Wayland/X11 environment.
 
 ## Recommended agent role and reasoning effort
 

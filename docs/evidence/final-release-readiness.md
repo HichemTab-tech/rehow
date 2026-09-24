@@ -24,10 +24,10 @@ Date: 2026-09-24
 
 ## Human checkpoints
 
-- Choose the project license. Rehow cannot invent redistribution rights.
+- The user selected the MIT License; repository and package metadata now record it.
 - Version `0.1.0`, stable identifier `me.hichemtab-tech.rehow`, and first-release `.deb` plus `.rpm` targets are selected; AppImage remains deferred unless separately qualified.
 - Provide explicit authorization and the required credentials only when artifact signing or publication is requested. No push, release, account/repository creation, signing, or publication is authorized by this audit.
 
 ## Efficient restart
 
-Do not reopen completed feature phases. Resume with the project-license choice and access to one disposable graphical Ubuntu 24.04 environment. If that environment is unavailable, report release qualification as blocked rather than applying a global graphics workaround without evidence.
+Do not reopen completed feature phases. Resume with access to one disposable graphical Ubuntu 24.04 environment. If that environment is unavailable, report release qualification as blocked rather than applying a global graphics workaround without evidence.

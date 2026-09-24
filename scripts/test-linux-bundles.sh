@@ -38,6 +38,10 @@ for package_root in "$smoke_root/deb" "$smoke_root/rpm"; do
   grep -Fxq 'Terminal=false' "$desktop_file"
   grep -Fxq 'Categories=Utility;' "$desktop_file"
 
+  license_file="$package_root/usr/lib/Rehow/LICENSE"
+  test -f "$license_file"
+  cmp LICENSE "$license_file"
+
   for size in 32 128 256 512; do
     icon="$package_root/usr/share/icons/hicolor/${size}x${size}/apps/rehow.png"
     test -f "$icon"
