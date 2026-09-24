@@ -1,17 +1,21 @@
 # Rehow MCP setup and workflow
 
-Status: implemented development contract; packaged binary paths are finalized in Phase 7
-Last updated: 2026-09-22
+Status: implemented and packaged
+Last updated: 2026-09-24
 
 Rehow's MCP server is a local stdio executable. It has no HTTP listener, does not need an API key, and can run without the desktop application. It can access only Workspaces named explicitly at process startup.
+
+Installed Linux packages provide `/usr/bin/rehow-mcp`. Rehow's **Settings → AI & MCP** panel generates Bash commands for Codex or ChatGPT without exposing the native Workspace path to the renderer. The commands prompt for paths and tunnel IDs as data; do not splice a path into shell source.
 
 ## Choose the minimum authority
 
 Start read-only:
 
-```sh
-/absolute/path/to/rehow-mcp \
-  --workspace personal=/absolute/path/to/workspace
+```bash
+printf 'Workspace path: '
+IFS= read -r REHOW_WORKSPACE_PATH
+/usr/bin/rehow-mcp \
+  --workspace "personal=$REHOW_WORKSPACE_PATH"
 ```
 
 Add only the flags needed for that Workspace alias:
@@ -35,10 +39,11 @@ Repeat `--workspace alias=/absolute/path` for up to 16 compatible, non-overlappi
 
 The installed Codex CLI can create a local stdio entry without editing TOML by hand:
 
-```sh
-codex mcp add rehow -- \
-  /absolute/path/to/rehow-mcp \
-  --workspace personal=/absolute/path/to/workspace
+```bash
+printf 'Workspace path: '
+IFS= read -r REHOW_WORKSPACE_PATH
+codex mcp add rehow -- /usr/bin/rehow-mcp \
+  --workspace "personal=$REHOW_WORKSPACE_PATH"
 ```
 
 For an explicit configuration, add the following to the desired Codex `config.toml` layer and restart the client:
@@ -73,7 +78,37 @@ For local clients whose documentation specifies the common `mcpServers` JSON sha
 }
 ```
 
-Confirm the exact configuration location and restart behavior in that client's current documentation. Rehow does not edit client configuration automatically.
+Confirm the exact configuration location and restart behavior in that client's current documentation. Escape the path according to TOML or JSON rules when editing those formats. Rehow does not edit client configuration automatically.
+
+## ChatGPT with Secure MCP Tunnel
+
+ChatGPT is hosted and cannot directly launch a local stdio process. Use [OpenAI Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels/) to keep Rehow private and make the local stdio server reachable through an outbound connection.
+
+Create a tunnel in OpenAI Platform settings and obtain a tunnel ID plus runtime API key. After installing the current public `tunnel-client`, initialize a local stdio profile:
+
+```bash
+IFS= read -rsp 'Runtime API key: ' CONTROL_PLANE_API_KEY
+printf '\nWorkspace path: '
+IFS= read -r REHOW_WORKSPACE_PATH
+printf 'Tunnel ID: '
+IFS= read -r REHOW_TUNNEL_ID
+export CONTROL_PLANE_API_KEY
+printf -v REHOW_MCP_COMMAND '%q ' \
+  /usr/bin/rehow-mcp \
+  --workspace "personal=$REHOW_WORKSPACE_PATH"
+tunnel-client init \
+  --sample sample_mcp_stdio_local \
+  --profile rehow \
+  --tunnel-id "$REHOW_TUNNEL_ID" \
+  --mcp-command "$REHOW_MCP_COMMAND"
+
+tunnel-client doctor --profile rehow --explain
+tunnel-client run --profile rehow
+```
+
+Keep `tunnel-client run` healthy while using Rehow from ChatGPT. Enable ChatGPT Developer Mode, then go to ChatGPT Plugins, create a developer-mode app, choose **Tunnel**, and select or enter the tunnel ID. Platform tunnel permissions and ChatGPT Developer Mode are separate account/workspace controls. `CONTROL_PLANE_API_KEY` is required by `tunnel-client`; Rehow never reads or stores it.
+
+For write access, add only the alias-specific Rehow flags described above inside `--mcp-command`. The Settings panel builds these combinations. Secure MCP Tunnel is a private development/integration transport; it is not a public plugin-submission endpoint.
 
 ## Verify the connection
 

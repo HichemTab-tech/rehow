@@ -125,7 +125,7 @@ The final instructions must use current Omarchy/Hyprland guidance and tell the u
 
 ## MCP installation plan
 
-`rehow-mcp` is a separate executable/package entry point. It runs without the desktop over stdio and receives uniquely aliased Workspace roots in the MCP client's user-controlled configuration. Copyable Codex and generic local-client examples, capability profiles, verification, troubleshooting, removal, and the end-to-end “Add this to Rehow” workflow are in `docs/mcp-setup.md`.
+`rehow-mcp` is a separate executable/package entry point installed at `/usr/bin/rehow-mcp`. It runs without the desktop over stdio and receives uniquely aliased Workspace roots in the MCP client's user-controlled configuration. The desktop's **Settings → AI & MCP** panel generates copyable Codex and ChatGPT Secure MCP Tunnel commands with explicit capability profiles; detailed verification, troubleshooting, removal, and the end-to-end “Add this to Rehow” workflow are in `docs/mcp-setup.md`.
 
 The read-only development invocation is:
 
@@ -137,7 +137,7 @@ Repeat `--workspace alias=/absolute/path` for up to 16 non-overlapping compatibl
 
 Packagers must install `rehow-mcp` and `rehow-mcp-approve` as separate one-link sibling files; Cargo's hard-linked build artifacts are not an install layout and are intentionally rejected by the helper provenance gate.
 
-Rehow never edits global MCP client configuration automatically and never asks for an API key. The server has no network listener in the initial release.
+Rehow never edits global MCP client configuration automatically and never asks for an API key. The server has no network listener in the initial release. ChatGPT access uses the user-operated OpenAI Secure MCP Tunnel and keeps its runtime key outside Rehow.
 
 ## Uninstall behavior
 

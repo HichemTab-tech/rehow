@@ -8,18 +8,22 @@ import {
   attachmentPreviewOwnerKey,
   automaticRefreshBlocked,
   canMarkGuideTested,
+  chatGptTunnelSetupCommand,
+  codexMcpSetupCommand,
   ExternalGuideComparison,
   filterGuides,
   focusGitCommitReview,
   focusGitSyncAction,
   GuideContext,
   gitFactLabel,
+  gitRemoteActionLabel,
   gitStatusLabel,
   gitSyncPresentation,
   guideLifecycleLabel,
   guideMatchesSearchScope,
   hasUnsavedChanges,
   highlightedExcerptSegments,
+  initialRemoteName,
   isAttachmentExportPayload,
   isAttachmentRevealPayload,
   isAttachmentTextPreviewPayload,
@@ -34,6 +38,8 @@ import {
   isGitCommitPlanPayload,
   isGitCommitRecoveryResultPayload,
   isGitCommitResultPayload,
+  isGitIdentityPlanPayload,
+  isGitIdentityResultPayload,
   isGitInitPlanPayload,
   isGitInitResultPayload,
   isGitPushResultPayload,
@@ -58,6 +64,7 @@ import {
   normalizedGuideDetails,
   normalizedGuideMetadata,
   normalizedGuideTerms,
+  normalizedMcpAlias,
   normalizedRemoteName,
   normalizedRemoteUrl,
   normalizedWorkspaceName,
@@ -413,6 +420,8 @@ describe("application identity", () => {
       conflicts: 0,
       remotes: ["origin"],
       remoteCount: 1,
+      identity: "configured" as const,
+      globalIdentity: "available" as const,
       failure: null,
     };
     expect(isGitStatusPayload(status)).toBe(true);
@@ -438,6 +447,66 @@ describe("application identity", () => {
     };
     expect(isGitStatusPayload(recovery)).toBe(true);
     expect(gitStatusLabel(recovery)).toBe("Git operation needs recovery");
+  });
+
+  it("accepts only closed Git identity payloads", () => {
+    const token = `plan:v1:${"A".repeat(43)}`;
+    expect(
+      isGitIdentityPlanPayload({ planToken: token, source: "global" }),
+    ).toBe(true);
+    expect(
+      isGitIdentityPlanPayload({
+        planToken: token,
+        source: "global",
+        email: "private@example.test",
+      }),
+    ).toBe(false);
+    expect(isGitIdentityResultPayload({ configured: true })).toBe(true);
+    expect(
+      isGitIdentityResultPayload({ configured: true, path: "/private" }),
+    ).toBe(false);
+  });
+
+  it("uses remote state for safe Git actions", () => {
+    expect(gitRemoteActionLabel(0)).toBe("Connect Remote");
+    expect(initialRemoteName(0)).toBe("origin");
+    expect(gitRemoteActionLabel(1)).toBe("Add Remote");
+    expect(initialRemoteName(33)).toBe("");
+  });
+
+  it("builds least-authority MCP setup templates", () => {
+    expect(normalizedMcpAlias("personal")).toBe("personal");
+    expect(normalizedMcpAlias("../../escape")).toBeNull();
+    const codex = codexMcpSetupCommand("personal", "readOnly");
+    expect(codex).toContain("IFS= read -r REHOW_WORKSPACE_PATH");
+    expect(codex).toContain(
+      'codex mcp add rehow -- /usr/bin/rehow-mcp --workspace "personal=$REHOW_WORKSPACE_PATH"',
+    );
+    expect(codex).not.toContain("/absolute/path/to/workspace");
+    expect(codexMcpSetupCommand("personal", "write")).toContain(
+      "--allow-write personal",
+    );
+    const tunnel = chatGptTunnelSetupCommand("personal", "git");
+    expect(tunnel).toContain("tunnel-client init");
+    expect(tunnel).toContain(`\${CONTROL_PLANE_API_KEY:-}`);
+    expect(tunnel).toContain("IFS= read -r REHOW_TUNNEL_ID");
+    expect(tunnel).toContain("printf -v REHOW_MCP_COMMAND '%q '");
+    expect(tunnel).toContain('--tunnel-id "$REHOW_TUNNEL_ID"');
+    expect(tunnel).toContain("--allow-git-write personal");
+    expect(tunnel).not.toContain("api_key");
+    expect(tunnel).not.toContain("tunnel_…");
+    for (const hostilePath of [
+      "a path",
+      "a'quote",
+      'a"quote',
+      "$(touch pwned)",
+      "`touch pwned`",
+      "a\\path",
+      "a\npath",
+    ]) {
+      expect(codex).not.toContain(hostilePath);
+      expect(tunnel).not.toContain(hostilePath);
+    }
   });
 
   it("accepts only closed Git initialization plan and result payloads", () => {
@@ -667,6 +736,8 @@ describe("application identity", () => {
       conflicts: 0,
       remotes: ["origin"],
       remoteCount: 1,
+      identity: "configured",
+      globalIdentity: "available",
       failure: null,
     };
     const calls: Array<[string, Record<string, unknown> | undefined]> = [];

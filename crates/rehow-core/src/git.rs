@@ -15,11 +15,12 @@ mod ssh_sandbox;
 
 pub use credential_proxy::run_git_credential_proxy;
 pub use https_credentials::{
-    GitHttpsCredentialBackingProvenance, GitHttpsCredentialBackingStatus,
-    GitHttpsCredentialProvenance, GitHttpsCredentialProxyProvenance, GitHttpsCredentialProxyStatus,
+    GitGlobalIdentityProvenance, GitGlobalIdentityStatus, GitHttpsCredentialBackingProvenance,
+    GitHttpsCredentialBackingStatus, GitHttpsCredentialProvenance,
+    GitHttpsCredentialProxyProvenance, GitHttpsCredentialProxyStatus,
     GitHttpsCredentialResourceError, GitHttpsCredentialResources, GitHttpsCredentialStatus,
-    capture_git_https_credential_backing_provenance, capture_git_https_credential_provenance,
-    capture_git_https_credential_proxy_provenance,
+    capture_git_global_identity_provenance, capture_git_https_credential_backing_provenance,
+    capture_git_https_credential_provenance, capture_git_https_credential_proxy_provenance,
 };
 pub use ssh_proxy::run_git_ssh_proxy;
 pub use ssh_sandbox::{
@@ -597,6 +598,23 @@ pub enum GitRepositoryStatus {
     Ready(GitWorkingTreeStatus),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitIdentityState {
+    Configured,
+    Missing,
+    Invalid,
+}
+
+impl GitIdentityState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Configured => "configured",
+            Self::Missing => "missing",
+            Self::Invalid => "invalid",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GitWorkingTreeStatus {
     branch: Option<String>,
@@ -610,6 +628,7 @@ pub struct GitWorkingTreeStatus {
     conflicts: u32,
     remotes: Vec<String>,
     remote_count: u32,
+    identity: GitIdentityState,
 }
 
 impl GitWorkingTreeStatus {
@@ -645,6 +664,9 @@ impl GitWorkingTreeStatus {
     }
     pub fn remote_count(&self) -> u32 {
         self.remote_count
+    }
+    pub fn identity(&self) -> GitIdentityState {
+        self.identity
     }
     pub fn clean(&self) -> bool {
         self.changed == 0 && self.untracked == 0 && self.conflicts == 0
@@ -1148,6 +1170,81 @@ pub struct GitRemotePlan {
     config_revision: [u8; 32],
     candidate_hash: [u8; 32],
     config_mode: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitIdentitySource {
+    Manual,
+    Global,
+}
+
+pub struct GitIdentityPlan {
+    token: PlanToken,
+    workspace_id: String,
+    manifest_revision: Revision,
+    root_capability_hash: [u8; 32],
+    identity: GitCommitIdentity,
+    source: GitIdentitySource,
+    expected_config: Vec<u8>,
+    candidate_config: Vec<u8>,
+    config_revision: [u8; 32],
+    candidate_hash: [u8; 32],
+    config_mode: u32,
+}
+
+impl fmt::Debug for GitIdentityPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitIdentityPlan")
+            .field("token", &"<redacted>")
+            .field("workspace_id", &self.workspace_id)
+            .field("manifest_revision", &self.manifest_revision)
+            .field("root_capability_hash", &"<redacted>")
+            .field("identity", &self.identity)
+            .field("source", &self.source)
+            .field("expected_config", &"<redacted>")
+            .field("candidate_config", &"<redacted>")
+            .field("config_revision", &"<redacted>")
+            .field("candidate_hash", &"<redacted>")
+            .field("config_mode", &self.config_mode)
+            .finish()
+    }
+}
+
+impl GitIdentityPlan {
+    pub fn token(&self) -> &PlanToken {
+        &self.token
+    }
+
+    pub fn name(&self) -> &str {
+        &self.identity.name
+    }
+
+    pub fn email(&self) -> &str {
+        &self.identity.email
+    }
+
+    pub fn source(&self) -> GitIdentitySource {
+        self.source
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitIdentityError {
+    InvalidIdentity,
+    AlreadyConfigured,
+    LocalIdentityInvalid,
+    GlobalIdentityMissing,
+    GlobalIdentityUnsafe,
+    NotRepository,
+    MalformedConfig,
+    RecoveryRequired,
+    PlanStale,
+    Unsafe,
+    TooLarge,
+    Unsupported,
+    GitUnavailable,
+    Io,
 }
 
 impl fmt::Debug for GitRemotePlan {
@@ -6557,6 +6654,195 @@ pub fn apply_git_remote_connect(
         .map_err(map_git_remote_storage)
 }
 
+pub fn plan_git_identity_set(
+    workspace: &WorkspaceView,
+    name: &str,
+    email: &str,
+) -> Result<GitIdentityPlan, GitIdentityError> {
+    let identity =
+        validate_git_commit_identity(name, email).map_err(|_| GitIdentityError::InvalidIdentity)?;
+    plan_git_identity(workspace, identity, GitIdentitySource::Manual)
+}
+
+pub fn plan_git_identity_import_global(
+    workspace: &WorkspaceView,
+    provenance: &GitGlobalIdentityProvenance,
+) -> Result<GitIdentityPlan, GitIdentityError> {
+    let (name, email) = match provenance.status() {
+        GitGlobalIdentityStatus::Trusted => provenance
+            .values()
+            .ok_or(GitIdentityError::GlobalIdentityUnsafe)?,
+        GitGlobalIdentityStatus::NotConfigured => {
+            return Err(GitIdentityError::GlobalIdentityMissing);
+        }
+        GitGlobalIdentityStatus::Unsafe => return Err(GitIdentityError::GlobalIdentityUnsafe),
+    };
+    let identity = validate_git_commit_identity(name, email)
+        .map_err(|_| GitIdentityError::GlobalIdentityUnsafe)?;
+    plan_git_identity(workspace, identity, GitIdentitySource::Global)
+}
+
+fn plan_git_identity(
+    workspace: &WorkspaceView,
+    identity: GitCommitIdentity,
+    source: GitIdentitySource,
+) -> Result<GitIdentityPlan, GitIdentityError> {
+    let capability = workspace
+        .git_repository_capability()
+        .map_err(map_git_identity_capability)?;
+    let files = capability
+        .read_config_files()
+        .map_err(map_git_identity_storage)?;
+    let (expected_config, candidate_config, config_mode) = match files.lock {
+        None => {
+            let candidate = append_identity_config(&files.config, &identity)?;
+            (files.config, candidate, files.config_mode)
+        }
+        Some(lock) if files.lock_mode == Some(files.config_mode) => {
+            let pre_exchange = append_identity_config(&files.config, &identity)
+                .ok()
+                .filter(|candidate| candidate == &lock);
+            let post_exchange = append_identity_config(&lock, &identity)
+                .ok()
+                .filter(|candidate| candidate == &files.config);
+            match (pre_exchange, post_exchange) {
+                (Some(candidate), None) => (files.config, candidate, files.config_mode),
+                (None, Some(candidate)) => (lock, candidate, files.config_mode),
+                _ => return Err(GitIdentityError::RecoveryRequired),
+            }
+        }
+        Some(_) => return Err(GitIdentityError::RecoveryRequired),
+    };
+    let (workspace_id, manifest_revision, root_capability_hash) =
+        workspace.git_initialization_binding();
+    let mut random = [0_u8; 32];
+    fill_random(&mut random).map_err(|_| GitIdentityError::Io)?;
+    Ok(GitIdentityPlan {
+        token: PlanToken::from_random_bytes(random),
+        workspace_id,
+        manifest_revision,
+        root_capability_hash,
+        identity,
+        source,
+        config_revision: git_config_revision(config_mode, &expected_config),
+        candidate_hash: git_config_revision(config_mode, &candidate_config),
+        expected_config,
+        candidate_config,
+        config_mode,
+    })
+}
+
+pub fn apply_git_identity(
+    workspace: &WorkspaceView,
+    plan: &GitIdentityPlan,
+) -> Result<(), GitIdentityError> {
+    let (workspace_id, manifest_revision, root_capability_hash) =
+        workspace.git_initialization_binding();
+    if workspace_id != plan.workspace_id
+        || manifest_revision != plan.manifest_revision
+        || root_capability_hash != plan.root_capability_hash
+        || git_config_revision(plan.config_mode, &plan.expected_config) != plan.config_revision
+        || git_config_revision(plan.config_mode, &plan.candidate_config) != plan.candidate_hash
+    {
+        return Err(GitIdentityError::PlanStale);
+    }
+    if !workspace
+        .git_manifest_revision_is_current(plan.manifest_revision)
+        .map_err(|error| map_git_identity_storage(map_git_init_storage_to_remote(error)))?
+    {
+        return Err(GitIdentityError::PlanStale);
+    }
+    let capability = workspace
+        .git_repository_capability()
+        .map_err(map_git_identity_capability)?;
+    capability
+        .apply_config_candidate(
+            &plan.expected_config,
+            &plan.candidate_config,
+            plan.config_mode,
+        )
+        .map_err(map_git_identity_storage)
+}
+
+fn append_identity_config(
+    config: &[u8],
+    identity: &GitCommitIdentity,
+) -> Result<Vec<u8>, GitIdentityError> {
+    let keys = validate_git_config(config).map_err(map_remote_to_identity)?;
+    let has_name = keys.iter().any(|key| key.eq_ignore_ascii_case("user.name"));
+    let has_email = keys
+        .iter()
+        .any(|key| key.eq_ignore_ascii_case("user.email"));
+    if has_name && has_email {
+        return Err(GitIdentityError::AlreadyConfigured);
+    }
+    if has_name || has_email {
+        return Err(GitIdentityError::LocalIdentityInvalid);
+    }
+    let separator = if config.is_empty() || config.ends_with(b"\n") {
+        ""
+    } else {
+        "\n"
+    };
+    let name = quote_git_config_value(&identity.name);
+    let email = quote_git_config_value(&identity.email);
+    let section = format!("{separator}[user]\n\tname = \"{name}\"\n\temail = \"{email}\"\n");
+    let size = config
+        .len()
+        .checked_add(section.len())
+        .ok_or(GitIdentityError::TooLarge)?;
+    if size > MAX_GIT_CONFIG_BYTES {
+        return Err(GitIdentityError::TooLarge);
+    }
+    let mut candidate = Vec::new();
+    candidate
+        .try_reserve_exact(size)
+        .map_err(|_| GitIdentityError::TooLarge)?;
+    candidate.extend_from_slice(config);
+    candidate.extend_from_slice(section.as_bytes());
+    validate_git_config(&candidate).map_err(map_remote_to_identity)?;
+    Ok(candidate)
+}
+
+fn quote_git_config_value(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn map_remote_to_identity(error: GitRemoteError) -> GitIdentityError {
+    match error {
+        GitRemoteError::MalformedConfig => GitIdentityError::MalformedConfig,
+        GitRemoteError::TooLarge => GitIdentityError::TooLarge,
+        GitRemoteError::Unsupported => GitIdentityError::Unsupported,
+        GitRemoteError::GitUnavailable => GitIdentityError::GitUnavailable,
+        GitRemoteError::Io => GitIdentityError::Io,
+        GitRemoteError::InvalidName
+        | GitRemoteError::InvalidUrl
+        | GitRemoteError::DuplicateRemote
+        | GitRemoteError::NotRepository
+        | GitRemoteError::RecoveryRequired
+        | GitRemoteError::PlanStale
+        | GitRemoteError::Unsafe => GitIdentityError::MalformedConfig,
+    }
+}
+
+fn map_git_identity_capability(error: GitRepositoryCapabilityError) -> GitIdentityError {
+    match error {
+        GitRepositoryCapabilityError::NotRepository => GitIdentityError::NotRepository,
+        GitRepositoryCapabilityError::Unsafe => GitIdentityError::Unsafe,
+        GitRepositoryCapabilityError::Io => GitIdentityError::Io,
+    }
+}
+
+fn map_git_identity_storage(error: GitConfigStorageError) -> GitIdentityError {
+    match error {
+        GitConfigStorageError::Conflict => GitIdentityError::PlanStale,
+        GitConfigStorageError::Unsafe => GitIdentityError::Unsafe,
+        GitConfigStorageError::Unsupported => GitIdentityError::Unsupported,
+        GitConfigStorageError::TooLarge => GitIdentityError::TooLarge,
+        GitConfigStorageError::Io => GitIdentityError::Io,
+    }
+}
+
 fn git_config_revision(mode: u32, bytes: &[u8]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"rehow:git-config:v1\0");
@@ -7480,6 +7766,7 @@ fn parse_status(
         conflicts: 0,
         remotes: Vec::new(),
         remote_count: 0,
+        identity: GitIdentityState::Missing,
     };
     let mut records = status
         .split(|byte| *byte == 0)
@@ -7516,6 +7803,7 @@ fn parse_status(
             }
         }
     }
+    result.identity = git_identity_state_from_records(config_records);
     let branch = result.branch.clone();
     let mut upstream_remote = None;
     let mut upstream_merge = None;
@@ -7576,6 +7864,53 @@ fn parse_status(
         _ => None,
     };
     Ok((result, upstream_ref))
+}
+
+fn git_identity_state_from_records(records: &[u8]) -> GitIdentityState {
+    let mut name = None;
+    let mut email = None;
+    for record in records
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+    {
+        let Some(separator) = record.iter().position(|byte| *byte == b'\n') else {
+            return GitIdentityState::Invalid;
+        };
+        let Ok(key) = std::str::from_utf8(&record[..separator]) else {
+            return GitIdentityState::Invalid;
+        };
+        let value = &record[separator + 1..];
+        let slot = if key.eq_ignore_ascii_case("user.name") {
+            Some(&mut name)
+        } else if key.eq_ignore_ascii_case("user.email") {
+            Some(&mut email)
+        } else {
+            None
+        };
+        if let Some(slot) = slot {
+            if slot.is_some() {
+                return GitIdentityState::Invalid;
+            }
+            *slot = Some(value);
+        }
+    }
+    match (name, email) {
+        (None, None) => GitIdentityState::Missing,
+        (Some(name), Some(email)) => {
+            let Ok(name) = std::str::from_utf8(name) else {
+                return GitIdentityState::Invalid;
+            };
+            let Ok(email) = std::str::from_utf8(email) else {
+                return GitIdentityState::Invalid;
+            };
+            if validate_git_commit_identity(name, email).is_ok() {
+                GitIdentityState::Configured
+            } else {
+                GitIdentityState::Invalid
+            }
+        }
+        _ => GitIdentityState::Invalid,
+    }
 }
 
 fn parse_divergence(bytes: &[u8]) -> Result<(u32, u32), GitReadError> {
@@ -18231,6 +18566,67 @@ mod tests {
             plan_git_remote_connect(&workspace, "origin", remote_url),
             Err(GitRemoteError::DuplicateRemote)
         ));
+    }
+
+    #[test]
+    fn sets_local_commit_identity_atomically_without_exposing_values() {
+        let temp = Temp::new();
+        let workspace = initialized_workspace(&temp);
+        let config_path = temp.0.join(".git/config");
+        let before = fs::read(&config_path).unwrap();
+        let plan = plan_git_identity_set(&workspace, "Rehow \\\"Person\\\"", "person@example.test")
+            .unwrap();
+        assert_eq!(plan.source(), GitIdentitySource::Manual);
+        assert!(!format!("{plan:?}").contains("person@example.test"));
+        apply_git_identity(&workspace, &plan).unwrap();
+
+        let after = fs::read(&config_path).unwrap();
+        assert!(after.starts_with(&before));
+        assert_eq!(config_backups(&temp), vec![before]);
+        let status = read_git_status(&open_workspace(&temp)).unwrap();
+        let GitRepositoryStatus::Ready(repository) = status.repository() else {
+            panic!("repository should remain ready");
+        };
+        assert_eq!(repository.identity(), GitIdentityState::Configured);
+        assert!(matches!(
+            plan_git_identity_set(&open_workspace(&temp), "Other", "other@example.test"),
+            Err(GitIdentityError::AlreadyConfigured)
+        ));
+    }
+
+    #[test]
+    fn identity_setup_refuses_partial_invalid_and_stale_local_config() {
+        let partial = Temp::new();
+        let _workspace = initialized_workspace(&partial);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(partial.0.join(".git/config"))
+            .unwrap()
+            .write_all(b"[user]\n\tname = Partial\n")
+            .unwrap();
+        let reopened = open_workspace(&partial);
+        assert!(matches!(
+            plan_git_identity_set(&reopened, "Person", "person@example.test"),
+            Err(GitIdentityError::LocalIdentityInvalid)
+        ));
+        let status = read_git_status(&reopened).unwrap();
+        let GitRepositoryStatus::Ready(repository) = status.repository() else {
+            panic!("repository should remain readable");
+        };
+        assert_eq!(repository.identity(), GitIdentityState::Invalid);
+
+        let stale = Temp::new();
+        let workspace = initialized_workspace(&stale);
+        let plan = plan_git_identity_set(&workspace, "Person", "person@example.test").unwrap();
+        let config_path = stale.0.join(".git/config");
+        let mut changed = fs::read(&config_path).unwrap();
+        changed.extend_from_slice(b"[safe]\n\tdirectory = /unrelated\n");
+        fs::write(&config_path, &changed).unwrap();
+        assert_eq!(
+            apply_git_identity(&workspace, &plan),
+            Err(GitIdentityError::PlanStale)
+        );
+        assert_eq!(fs::read(config_path).unwrap(), changed);
     }
 
     #[test]

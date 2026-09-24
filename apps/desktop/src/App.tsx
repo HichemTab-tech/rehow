@@ -266,6 +266,8 @@ type GitStatusPayload = {
   conflicts: number;
   remotes: string[];
   remoteCount: number;
+  identity: "configured" | "missing" | "invalid" | null;
+  globalIdentity: "available" | "notConfigured" | "unsafe";
   failure: string | null;
 };
 
@@ -288,6 +290,17 @@ type GitRemotePlanPayload = {
 type GitRemoteResultPayload = {
   connected: boolean;
 };
+
+type GitIdentityPlanPayload = {
+  planToken: string;
+  source: "manual" | "global";
+};
+
+type GitIdentityResultPayload = {
+  configured: boolean;
+};
+
+type McpAuthority = "readOnly" | "write" | "broad" | "git";
 
 type GitCommitPlanPayload = {
   planToken: string;
@@ -1001,7 +1014,7 @@ export function isGitStatusPayload(value: unknown): value is GitStatusPayload {
   const status = value as Partial<Record<keyof GitStatusPayload, unknown>> &
     Record<string, unknown>;
   if (
-    Object.keys(status).length !== 14 ||
+    Object.keys(status).length !== 16 ||
     ![
       "unavailable",
       "notRepository",
@@ -1019,7 +1032,13 @@ export function isGitStatusPayload(value: unknown): value is GitStatusPayload {
   }
   if (
     typeof status.detached !== "boolean" ||
-    typeof status.divergenceKnown !== "boolean"
+    typeof status.divergenceKnown !== "boolean" ||
+    ![null, "configured", "missing", "invalid"].includes(
+      status.identity as null | string,
+    ) ||
+    !["available", "notConfigured", "unsafe"].includes(
+      String(status.globalIdentity),
+    )
   )
     return false;
   for (const key of [
@@ -1099,6 +1118,31 @@ export function isGitRemoteResultPayload(
     Record<string, unknown>;
   return (
     Object.keys(result).length === 1 && typeof result.connected === "boolean"
+  );
+}
+
+export function isGitIdentityPlanPayload(
+  value: unknown,
+): value is GitIdentityPlanPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const plan = value as Partial<GitIdentityPlanPayload> &
+    Record<string, unknown>;
+  return (
+    Object.keys(plan).length === 2 &&
+    typeof plan.planToken === "string" &&
+    /^plan:v1:[A-Za-z0-9_-]{43}$/.test(plan.planToken) &&
+    (plan.source === "manual" || plan.source === "global")
+  );
+}
+
+export function isGitIdentityResultPayload(
+  value: unknown,
+): value is GitIdentityResultPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as Partial<GitIdentityResultPayload> &
+    Record<string, unknown>;
+  return (
+    Object.keys(result).length === 1 && typeof result.configured === "boolean"
   );
 }
 
@@ -1661,6 +1705,50 @@ export function normalizedRemoteUrl(value: string) {
     : null;
 }
 
+export function gitRemoteActionLabel(remoteCount: number) {
+  return remoteCount === 0 ? "Connect Remote" : "Add Remote";
+}
+
+export function initialRemoteName(remoteCount: number) {
+  return remoteCount === 0 ? "origin" : "";
+}
+
+export function normalizedMcpAlias(value: string) {
+  const normalized = value.trim();
+  return /^[a-z][a-z0-9_-]{0,31}$/.test(normalized) ? normalized : null;
+}
+
+function mcpAuthorityArguments(alias: string, authority: McpAuthority) {
+  if (authority === "readOnly") return "";
+  if (authority === "write") return ` --allow-write ${alias}`;
+  if (authority === "broad")
+    return ` --allow-write ${alias} --allow-broad ${alias}`;
+  return ` --allow-write ${alias} --allow-git-write ${alias}`;
+}
+
+export function rehowMcpLaunchCommand(
+  aliasValue: string,
+  authority: McpAuthority,
+) {
+  const alias = normalizedMcpAlias(aliasValue) ?? "personal";
+  return `/usr/bin/rehow-mcp --workspace "${alias}=$REHOW_WORKSPACE_PATH"${mcpAuthorityArguments(alias, authority)}`;
+}
+
+export function codexMcpSetupCommand(
+  aliasValue: string,
+  authority: McpAuthority,
+) {
+  return `printf 'Workspace path: '; IFS= read -r REHOW_WORKSPACE_PATH && codex mcp add rehow -- ${rehowMcpLaunchCommand(aliasValue, authority)}`;
+}
+
+export function chatGptTunnelSetupCommand(
+  aliasValue: string,
+  authority: McpAuthority,
+) {
+  const alias = normalizedMcpAlias(aliasValue) ?? "personal";
+  return `test -n "\${CONTROL_PLANE_API_KEY:-}" && printf 'Workspace path: ' && IFS= read -r REHOW_WORKSPACE_PATH && printf 'Tunnel ID: ' && IFS= read -r REHOW_TUNNEL_ID && printf -v REHOW_MCP_COMMAND '%q ' /usr/bin/rehow-mcp --workspace "${alias}=$REHOW_WORKSPACE_PATH"${mcpAuthorityArguments(alias, authority)} && tunnel-client init --sample sample_mcp_stdio_local --profile rehow --tunnel-id "$REHOW_TUNNEL_ID" --mcp-command "$REHOW_MCP_COMMAND"`;
+}
+
 export function normalizedGitCommitMessage(value: string) {
   const normalized = value.trim();
   const scalars = Array.from(normalized);
@@ -2075,6 +2163,11 @@ export function App() {
   const [remoteName, setRemoteName] = useState("origin");
   const [remoteUrl, setRemoteUrl] = useState("");
   const [remoteError, setRemoteError] = useState("");
+  const [identityFormOpen, setIdentityFormOpen] = useState(false);
+  const [identityName, setIdentityName] = useState("");
+  const [identityEmail, setIdentityEmail] = useState("");
+  const [identityBusy, setIdentityBusy] = useState(false);
+  const [identityError, setIdentityError] = useState("");
   const [commitFormOpen, setCommitFormOpen] = useState(false);
   const [commitMessage, setCommitMessage] = useState("");
   const [commitPlan, setCommitPlan] = useState<GitCommitPlanPayload | null>(
@@ -2111,6 +2204,13 @@ export function App() {
   const [draftSyncInterval, setDraftSyncInterval] = useState<number | null>(
     null,
   );
+  const [settingsSection, setSettingsSection] = useState<"git" | "mcp">("git");
+  const [mcpClient, setMcpClient] = useState<"codex" | "chatgpt">("codex");
+  const [mcpAlias, setMcpAlias] = useState("personal");
+  const [mcpAuthority, setMcpAuthority] = useState<McpAuthority>("readOnly");
+  const [mcpCopyState, setMcpCopyState] = useState<
+    "idle" | "copied" | "failed"
+  >("idle");
   const [refreshingWorkspace, setRefreshingWorkspace] = useState(false);
   const [externalChangeWorkspaceId, setExternalChangeWorkspaceId] =
     useState("");
@@ -2202,6 +2302,8 @@ export function App() {
   const remoteButtonRef = useRef<HTMLButtonElement>(null);
   const remoteNameRef = useRef<HTMLInputElement>(null);
   const remoteErrorRef = useRef<HTMLParagraphElement>(null);
+  const identityNameRef = useRef<HTMLInputElement>(null);
+  const identityErrorRef = useRef<HTMLParagraphElement>(null);
   const commitButtonRef = useRef<HTMLButtonElement>(null);
   const commitMessageRef = useRef<HTMLInputElement>(null);
   const commitApplyRef = useRef<HTMLButtonElement>(null);
@@ -2352,7 +2454,11 @@ export function App() {
   const syncPresentation =
     syncInspection === null ? null : gitSyncPresentation(syncInspection);
   const dirtyGitCommit =
-    commitFormOpen && (commitMessage.trim() !== "" || commitPlan !== null);
+    commitFormOpen &&
+    (commitMessage.trim() !== "" ||
+      commitPlan !== null ||
+      (identityFormOpen &&
+        (identityName.trim() !== "" || identityEmail.trim() !== "")));
   const autoRefreshBlocked = automaticRefreshBlocked({
     busy:
       workspaceOperationBusy ||
@@ -2689,7 +2795,7 @@ export function App() {
           cancelGitSyncFromEffect();
           return;
         }
-        if (commitFormOpen && !commitOperationBusy) {
+        if (commitFormOpen && !commitOperationBusy && !identityBusy) {
           event.preventDefault();
           cancelGitCommitFromEffect();
           return;
@@ -2724,6 +2830,7 @@ export function App() {
     connectingRemote,
     editingGuide,
     editingGuideDetails,
+    identityBusy,
     railOpen,
     readerOpen,
     remoteFormOpen,
@@ -2852,6 +2959,8 @@ export function App() {
             conflicts: 0,
             remotes: [],
             remoteCount: 0,
+            identity: null,
+            globalIdentity: "unsafe",
             failure: "Git status unavailable",
           });
         }
@@ -3506,7 +3615,7 @@ export function App() {
       syncOperationBusy
     )
       return;
-    setRemoteName("origin");
+    setRemoteName(initialRemoteName(gitStatus.remoteCount));
     setRemoteUrl("");
     setRemoteError("");
     setRemoteFormOpen(true);
@@ -3530,6 +3639,13 @@ export function App() {
         name === null
           ? "Use a lowercase name with letters, numbers, dots, dashes, or underscores."
           : "Enter an HTTPS or SSH repository address.",
+      );
+      requestAnimationFrame(() => remoteErrorRef.current?.focus());
+      return;
+    }
+    if (gitStatus?.kind === "ready" && gitStatus.remotes.includes(name)) {
+      setRemoteError(
+        `Remote ${name} already exists. Rehow never overwrites an existing remote; use a different name.`,
       );
       requestAnimationFrame(() => remoteErrorRef.current?.focus());
       return;
@@ -3572,6 +3688,87 @@ export function App() {
     }
   }
 
+  function openGitIdentitySetup() {
+    setIdentityFormOpen(true);
+    setIdentityName("");
+    setIdentityEmail("");
+    setIdentityError("");
+    requestAnimationFrame(() => identityNameRef.current?.focus());
+  }
+
+  async function applyGitIdentityPlan(plan: GitIdentityPlanPayload) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const result = await invoke<unknown>("git_identity_apply_open_workspace", {
+      planToken: plan.planToken,
+    });
+    if (!isGitIdentityResultPayload(result))
+      throw new Error("invalid Git identity result");
+    if (!result.configured) {
+      setAnnouncement("Git author setup cancelled.");
+      return;
+    }
+    setIdentityFormOpen(false);
+    setIdentityName("");
+    setIdentityEmail("");
+    setCommitError("");
+    setWorkspace((current) => (current === null ? null : { ...current }));
+    setAnnouncement("Git author saved for this Workspace.");
+    requestAnimationFrame(() => commitMessageRef.current?.focus());
+  }
+
+  async function setManualGitIdentity(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (identityBusy) return;
+    const name = identityName.trim();
+    const email = identityEmail.trim();
+    if (name.length < 1 || Array.from(name).length > 200 || email.length < 3) {
+      setIdentityError("Enter a Git author name and valid email address.");
+      requestAnimationFrame(() => identityErrorRef.current?.focus());
+      return;
+    }
+    setIdentityBusy(true);
+    setIdentityError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const plan = await invoke<unknown>(
+        "git_identity_plan_manual_open_workspace",
+        { name, email },
+      );
+      if (!isGitIdentityPlanPayload(plan))
+        throw new Error("invalid Git identity plan");
+      await applyGitIdentityPlan(plan);
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setIdentityError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => identityErrorRef.current?.focus());
+    } finally {
+      setIdentityBusy(false);
+    }
+  }
+
+  async function importGlobalGitIdentity() {
+    if (identityBusy) return;
+    setIdentityBusy(true);
+    setIdentityError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const plan = await invoke<unknown>(
+        "git_identity_plan_global_open_workspace",
+      );
+      if (!isGitIdentityPlanPayload(plan) || plan.source !== "global")
+        throw new Error("invalid global Git identity plan");
+      await applyGitIdentityPlan(plan);
+    } catch (error) {
+      const failure = nativeCommandError(error);
+      setIdentityError(failure.message);
+      setAnnouncement(failure.message);
+      requestAnimationFrame(() => identityErrorRef.current?.focus());
+    } finally {
+      setIdentityBusy(false);
+    }
+  }
+
   function beginGitCommit() {
     if (
       workspace === null ||
@@ -3590,9 +3787,14 @@ export function App() {
       return;
     setCommitMessage("");
     setCommitPlan(null);
-    setCommitError("");
+    setCommitError(
+      gitStatus.identity === "invalid"
+        ? "This repository has a partial, duplicate, or invalid local Git identity. Repair user.name and user.email with Git, then refresh."
+        : "",
+    );
     setCommitFormOpen(true);
-    requestAnimationFrame(() => commitMessageRef.current?.focus());
+    if (gitStatus.identity === "missing") openGitIdentitySetup();
+    else requestAnimationFrame(() => commitMessageRef.current?.focus());
   }
 
   function resetGitCommitUi() {
@@ -3601,10 +3803,12 @@ export function App() {
     setCommitPlan(null);
     setCommitError("");
     setCommitStage("idle");
+    setIdentityFormOpen(false);
+    setIdentityError("");
   }
 
   async function cancelGitCommit() {
-    if (commitOperationBusy) return;
+    if (commitOperationBusy || identityBusy) return;
     if (commitPlan === null) {
       resetGitCommitUi();
       requestAnimationFrame(() => commitButtonRef.current?.focus());
@@ -3781,6 +3985,23 @@ export function App() {
     }
   }
 
+  async function copyMcpSetupCommand() {
+    const command =
+      mcpClient === "codex"
+        ? codexMcpSetupCommand(mcpAlias, mcpAuthority)
+        : chatGptTunnelSetupCommand(mcpAlias, mcpAuthority);
+    try {
+      await navigator.clipboard.writeText(command);
+      setMcpCopyState("copied");
+      setAnnouncement(
+        `${mcpClient === "codex" ? "Codex" : "ChatGPT tunnel"} setup command copied. Run it in Bash and answer its prompts.`,
+      );
+    } catch {
+      setMcpCopyState("failed");
+      setAnnouncement("Rehow could not copy the MCP setup command.");
+    }
+  }
+
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (settingsSaving || settingsLoading) return;
@@ -3947,6 +4168,8 @@ export function App() {
           conflicts: 0,
           remotes: [],
           remoteCount: 0,
+          identity: null,
+          globalIdentity: "unsafe",
           failure: "Git status unavailable",
         });
         setAnnouncement(
@@ -7160,9 +7383,10 @@ export function App() {
         >
           <form
             className="git-commit-form"
-            aria-busy={commitOperationBusy}
+            aria-busy={commitOperationBusy || identityBusy}
             onSubmit={(event) => {
-              if (commitPlan === null) void planGitCommit(event);
+              if (identityFormOpen) void setManualGitIdentity(event);
+              else if (commitPlan === null) void planGitCommit(event);
               else {
                 event.preventDefault();
                 void applyGitCommit();
@@ -7172,27 +7396,87 @@ export function App() {
             <div className="git-commit-heading">
               <div>
                 <h2 id="git-commit-heading">
-                  {commitPlan === null
-                    ? "Create a Git Commit"
-                    : "Review Managed Commit"}
+                  {identityFormOpen
+                    ? "Set Git Author"
+                    : commitPlan === null
+                      ? "Create a Git Commit"
+                      : "Review Managed Commit"}
                 </h2>
                 <p>
-                  {commitPlan === null
-                    ? "Commit Rehow-managed content without including unrelated worktree changes."
-                    : "Review the exact managed effect before native confirmation."}
+                  {identityFormOpen
+                    ? "Save an author identity only in this Workspace’s repository."
+                    : commitPlan === null
+                      ? "Commit Rehow-managed content without including unrelated worktree changes."
+                      : "Review the exact managed effect before native confirmation."}
                 </p>
               </div>
               <button
                 type="button"
                 className="panel-close"
                 aria-label="Close Git commit form"
-                disabled={commitOperationBusy}
+                disabled={commitOperationBusy || identityBusy}
                 onClick={() => void cancelGitCommit()}
               >
                 ×
               </button>
             </div>
-            {commitPlan === null ? (
+            {identityFormOpen ? (
+              <>
+                <label htmlFor="git-identity-name">Author name</label>
+                <input
+                  ref={identityNameRef}
+                  id="git-identity-name"
+                  name="git-identity-name"
+                  type="text"
+                  autoComplete="name"
+                  maxLength={800}
+                  value={identityName}
+                  aria-invalid={identityError !== ""}
+                  onChange={(event) => {
+                    setIdentityName(event.currentTarget.value);
+                    setIdentityError("");
+                  }}
+                />
+                <label htmlFor="git-identity-email">Author email</label>
+                <input
+                  id="git-identity-email"
+                  name="git-identity-email"
+                  type="email"
+                  inputMode="email"
+                  autoComplete="email"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  maxLength={254}
+                  value={identityEmail}
+                  aria-invalid={identityError !== ""}
+                  aria-describedby="git-identity-help"
+                  onChange={(event) => {
+                    setIdentityEmail(event.currentTarget.value);
+                    setIdentityError("");
+                  }}
+                />
+                <p id="git-identity-help" className="field-help">
+                  Rehow stores these values in this repository only. It never
+                  changes your global Git settings.
+                </p>
+                {gitStatus?.globalIdentity === "available" ? (
+                  <button
+                    type="button"
+                    className="button git-identity-import"
+                    disabled={identityBusy}
+                    onClick={() => void importGlobalGitIdentity()}
+                  >
+                    {identityBusy ? "Reviewing…" : "Use My Global Git Identity"}
+                  </button>
+                ) : (
+                  <p className="field-help">
+                    {gitStatus?.globalIdentity === "notConfigured"
+                      ? "No complete global Git identity was found."
+                      : "Global Git identity could not be read safely; enter it manually."}
+                  </p>
+                )}
+              </>
+            ) : commitPlan === null ? (
               <>
                 <label htmlFor="git-commit-message">Commit message</label>
                 <input
@@ -7262,7 +7546,17 @@ export function App() {
                 </p>
               </div>
             )}
-            {commitError !== "" ? (
+            {identityError !== "" ? (
+              <p
+                ref={identityErrorRef}
+                id="git-identity-error"
+                className="git-action-error"
+                role="alert"
+                tabIndex={-1}
+              >
+                {identityError}
+              </p>
+            ) : commitError !== "" ? (
               <p
                 ref={commitErrorRef}
                 id="git-commit-error"
@@ -7277,24 +7571,34 @@ export function App() {
               <button
                 type="button"
                 className="button"
-                disabled={commitOperationBusy}
+                disabled={commitOperationBusy || identityBusy}
                 onClick={() => void cancelGitCommit()}
               >
-                {commitPlan === null ? "Cancel" : "Cancel Plan"}
+                {identityFormOpen || commitPlan === null
+                  ? "Cancel"
+                  : "Cancel Plan"}
               </button>
               <button
                 ref={commitPlan === null ? undefined : commitApplyRef}
                 type="submit"
                 className="button button-primary"
-                disabled={commitOperationBusy}
+                disabled={
+                  commitOperationBusy ||
+                  identityBusy ||
+                  (!identityFormOpen && gitStatus?.identity === "invalid")
+                }
               >
-                {commitStage === "planning"
-                  ? "Planning…"
-                  : commitStage === "applying"
-                    ? "Committing…"
-                    : commitPlan === null
-                      ? "Review Commit"
-                      : "Create Commit"}
+                {identityFormOpen
+                  ? identityBusy
+                    ? "Saving…"
+                    : "Save Git Author"
+                  : commitStage === "planning"
+                    ? "Planning…"
+                    : commitStage === "applying"
+                      ? "Committing…"
+                      : commitPlan === null
+                        ? "Review Commit"
+                        : "Create Commit"}
               </button>
             </div>
           </form>
@@ -7314,8 +7618,15 @@ export function App() {
           >
             <div className="git-remote-heading">
               <div>
-                <h2 id="git-remote-heading">Connect a Git Remote</h2>
-                <p>Rehow updates config only and does not connect.</p>
+                <h2 id="git-remote-heading">
+                  {gitStatus?.kind === "ready" && gitStatus.remoteCount > 0
+                    ? "Add Another Git Remote"
+                    : "Connect a Git Remote"}
+                </h2>
+                <p>
+                  Rehow adds a new remote to Git config. It does not contact the
+                  server or replace an existing remote.
+                </p>
               </div>
               <button
                 type="button"
@@ -7371,8 +7682,23 @@ export function App() {
             />
             <p id="git-remote-help" className="field-help">
               HTTPS, ssh://, or user@host:path. Do not include passwords or
-              tokens.
+              tokens. Existing remote names are never overwritten.
             </p>
+            {gitStatus?.kind === "ready" && gitStatus.remoteCount > 0 ? (
+              <p className="field-help">
+                {gitStatus.remotes.length > 0 ? (
+                  <>
+                    Configured:{" "}
+                    <span translate="no">{gitStatus.remotes.join(", ")}</span>
+                    {gitStatus.remoteCount > gitStatus.remotes.length
+                      ? ` and ${gitStatus.remoteCount - gitStatus.remotes.length} more`
+                      : ""}
+                  </>
+                ) : (
+                  "Existing remote names cannot be displayed safely. Choose a new name."
+                )}
+              </p>
+            ) : null}
             {remoteError !== "" ? (
               <p
                 ref={remoteErrorRef}
@@ -7447,7 +7773,7 @@ export function App() {
               }
               onClick={beginRemoteConnection}
             >
-              Connect Remote
+              {gitRemoteActionLabel(gitStatus.remoteCount)}
             </button>
           ) : null}
           {workspace?.facts.writable && gitStatus?.kind === "ready" ? (
@@ -7471,7 +7797,11 @@ export function App() {
               }
               onClick={beginGitCommit}
             >
-              Commit Changes
+              {gitStatus.identity === "missing"
+                ? "Set Git Author"
+                : gitStatus.identity === "invalid"
+                  ? "Repair Git Author"
+                  : "Commit Changes"}
             </button>
           ) : null}
           {workspace?.facts.writable &&
@@ -7547,7 +7877,7 @@ export function App() {
               <p className="eyebrow">Application</p>
               <h2 id="settings-title">Settings</h2>
               <p id="settings-description">
-                Choose when Rehow inspects the open Workspace for Git updates.
+                Configure Git inspections or connect an AI client to Rehow.
               </p>
             </div>
             <button
@@ -7559,80 +7889,266 @@ export function App() {
               Close
             </button>
           </header>
-          <div className="settings-fields" aria-busy={settingsLoading}>
-            <label className="settings-check">
-              <input
-                type="checkbox"
-                name="sync-on-start"
-                autoComplete="off"
-                checked={draftSyncOnStart}
-                disabled={settingsLoading || settingsSaving}
-                onChange={(event) =>
-                  setDraftSyncOnStart(event.currentTarget.checked)
-                }
-              />
-              <span>
-                <strong>Inspect Git on startup</strong>
-                <small>
-                  Check the configured upstream after opening a Workspace.
-                </small>
-              </span>
-            </label>
-            <label className="settings-select">
-              <span>Scheduled inspection</span>
-              <select
-                name="sync-interval"
-                autoComplete="off"
-                value={draftSyncInterval ?? ""}
-                disabled={settingsLoading || settingsSaving}
-                onChange={(event) =>
-                  setDraftSyncInterval(
-                    event.currentTarget.value === ""
-                      ? null
-                      : Number(event.currentTarget.value),
-                  )
-                }
-              >
-                <option value="">Off</option>
-                <option value="15">Every 15 minutes</option>
-                <option value="30">Every 30 minutes</option>
-                <option value="60">Every hour</option>
-                <option value="240">Every 4 hours</option>
-                <option value="1440">Every day</option>
-              </select>
-            </label>
-            <p className="settings-note">
-              Inspections use private staging. Applying or pushing changes still
-              requires your explicit confirmation.
-            </p>
-            {settingsError !== "" ? (
-              <p
-                ref={settingsErrorRef}
-                className="form-error"
-                role="alert"
-                tabIndex={-1}
-              >
-                {settingsError}
-              </p>
-            ) : null}
-          </div>
-          <footer>
+          <nav className="settings-tabs" aria-label="Settings sections">
             <button
-              className="button button-secondary"
               type="button"
-              disabled={settingsSaving}
-              onClick={() => settingsDialogRef.current?.close()}
+              aria-pressed={settingsSection === "git"}
+              aria-controls="settings-git-panel"
+              id="settings-git-tab"
+              onClick={() => setSettingsSection("git")}
             >
-              Cancel
+              Git
             </button>
             <button
-              className="button button-primary"
-              type="submit"
-              disabled={settingsLoading || settingsSaving}
+              type="button"
+              aria-pressed={settingsSection === "mcp"}
+              aria-controls="settings-mcp-panel"
+              id="settings-mcp-tab"
+              onClick={() => setSettingsSection("mcp")}
             >
-              {settingsSaving ? "Saving…" : "Save Settings"}
+              AI &amp; MCP
             </button>
-          </footer>
+          </nav>
+          {settingsSection === "git" ? (
+            <>
+              <section
+                id="settings-git-panel"
+                className="settings-fields"
+                aria-labelledby="settings-git-tab"
+                aria-busy={settingsLoading}
+              >
+                <label className="settings-check">
+                  <input
+                    type="checkbox"
+                    name="sync-on-start"
+                    autoComplete="off"
+                    checked={draftSyncOnStart}
+                    disabled={settingsLoading || settingsSaving}
+                    onChange={(event) =>
+                      setDraftSyncOnStart(event.currentTarget.checked)
+                    }
+                  />
+                  <span>
+                    <strong>Inspect Git on startup</strong>
+                    <small>
+                      Check the configured upstream after opening a Workspace.
+                    </small>
+                  </span>
+                </label>
+                <label className="settings-select">
+                  <span>Scheduled inspection</span>
+                  <select
+                    name="sync-interval"
+                    autoComplete="off"
+                    value={draftSyncInterval ?? ""}
+                    disabled={settingsLoading || settingsSaving}
+                    onChange={(event) =>
+                      setDraftSyncInterval(
+                        event.currentTarget.value === ""
+                          ? null
+                          : Number(event.currentTarget.value),
+                      )
+                    }
+                  >
+                    <option value="">Off</option>
+                    <option value="15">Every 15 minutes</option>
+                    <option value="30">Every 30 minutes</option>
+                    <option value="60">Every hour</option>
+                    <option value="240">Every 4 hours</option>
+                    <option value="1440">Every day</option>
+                  </select>
+                </label>
+                <p className="settings-note">
+                  Inspections use private staging. Applying or pushing changes
+                  still requires your explicit confirmation.
+                </p>
+                {settingsError !== "" ? (
+                  <p
+                    ref={settingsErrorRef}
+                    className="form-error"
+                    role="alert"
+                    tabIndex={-1}
+                  >
+                    {settingsError}
+                  </p>
+                ) : null}
+              </section>
+              <footer>
+                <button
+                  className="button button-secondary"
+                  type="button"
+                  disabled={settingsSaving}
+                  onClick={() => settingsDialogRef.current?.close()}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="button button-primary"
+                  type="submit"
+                  disabled={settingsLoading || settingsSaving}
+                >
+                  {settingsSaving ? "Saving…" : "Save Settings"}
+                </button>
+              </footer>
+            </>
+          ) : (
+            <section
+              id="settings-mcp-panel"
+              className="settings-fields mcp-settings"
+              aria-labelledby="settings-mcp-tab"
+            >
+              <p className="settings-note">
+                Rehow’s MCP server lets an AI client search and update a
+                selected Workspace. It runs only when the client launches it.
+              </p>
+              <fieldset>
+                <legend>AI client</legend>
+                <label className="mcp-client-option">
+                  <input
+                    type="radio"
+                    name="mcp-client"
+                    value="codex"
+                    checked={mcpClient === "codex"}
+                    onChange={() => {
+                      setMcpClient("codex");
+                      setMcpCopyState("idle");
+                    }}
+                  />
+                  Codex
+                </label>
+                <label className="mcp-client-option">
+                  <input
+                    type="radio"
+                    name="mcp-client"
+                    value="chatgpt"
+                    checked={mcpClient === "chatgpt"}
+                    onChange={() => {
+                      setMcpClient("chatgpt");
+                      setMcpCopyState("idle");
+                    }}
+                  />
+                  ChatGPT Secure MCP Tunnel
+                </label>
+              </fieldset>
+              <label className="settings-select" htmlFor="mcp-workspace-alias">
+                <span>Workspace alias</span>
+                <input
+                  id="mcp-workspace-alias"
+                  name="mcp-workspace-alias"
+                  type="text"
+                  autoComplete="off"
+                  spellCheck={false}
+                  maxLength={32}
+                  value={mcpAlias}
+                  aria-invalid={normalizedMcpAlias(mcpAlias) === null}
+                  onChange={(event) => {
+                    setMcpAlias(event.currentTarget.value);
+                    setMcpCopyState("idle");
+                  }}
+                />
+              </label>
+              <label className="settings-select" htmlFor="mcp-authority">
+                <span>Permission profile</span>
+                <select
+                  id="mcp-authority"
+                  name="mcp-authority"
+                  value={mcpAuthority}
+                  onChange={(event) => {
+                    setMcpAuthority(event.currentTarget.value as McpAuthority);
+                    setMcpCopyState("idle");
+                  }}
+                >
+                  <option value="readOnly">Read only</option>
+                  <option value="write">Narrow Workspace changes</option>
+                  <option value="broad">Broad Workspace changes</option>
+                  <option value="git">Narrow Workspace and Git changes</option>
+                </select>
+              </label>
+              <p className="settings-note">
+                Narrow write access covers typed Guide, Category, lifecycle,
+                Tag, Alias, and Attachment-metadata changes. Broad and Git
+                operations still require native approval where specified.
+              </p>
+              <div className="mcp-command-block">
+                <div>
+                  <strong>Setup command</strong>
+                  <small>
+                    Run in Bash. It prompts for the Workspace path
+                    {mcpClient === "chatgpt" ? " and tunnel ID" : ""} as data.
+                  </small>
+                </div>
+                <code translate="no">
+                  {mcpClient === "codex"
+                    ? codexMcpSetupCommand(mcpAlias, mcpAuthority)
+                    : chatGptTunnelSetupCommand(mcpAlias, mcpAuthority)}
+                </code>
+                <button
+                  className="button"
+                  type="button"
+                  disabled={normalizedMcpAlias(mcpAlias) === null}
+                  onClick={() => void copyMcpSetupCommand()}
+                >
+                  {mcpCopyState === "copied" ? "Copied" : "Copy Command"}
+                </button>
+                {mcpCopyState === "failed" ? (
+                  <p className="form-error" role="alert">
+                    Copy failed. Select the command and copy it manually.
+                  </p>
+                ) : null}
+              </div>
+              {mcpClient === "chatgpt" ? (
+                <div className="settings-note">
+                  <p>
+                    ChatGPT requires Developer Mode plus an OpenAI Secure MCP
+                    Tunnel ID and runtime API key. Set{" "}
+                    <code>CONTROL_PLANE_API_KEY</code> in the terminal first;
+                    the copied command then prompts for the path and tunnel ID.
+                    Rehow does not read or store any of them.
+                  </p>
+                  <p>
+                    After initialization, check and start it with{" "}
+                    <code translate="no">
+                      tunnel-client doctor --profile rehow --explain
+                    </code>{" "}
+                    and{" "}
+                    <code translate="no">
+                      tunnel-client run --profile rehow
+                    </code>
+                    . Keep it running while ChatGPT uses Rehow.
+                  </p>
+                </div>
+              ) : null}
+              <ol className="mcp-steps">
+                <li>
+                  {mcpClient === "chatgpt"
+                    ? "Set CONTROL_PLANE_API_KEY in a Bash terminal."
+                    : "Open a Bash terminal."}
+                </li>
+                <li>
+                  Run the copied command and enter the full Workspace path
+                  {mcpClient === "chatgpt" ? " and tunnel ID" : ""} when asked.
+                </li>
+                <li>
+                  {mcpClient === "chatgpt"
+                    ? "Create a developer-mode app in ChatGPT Plugins and select the tunnel."
+                    : "Restart Codex so it discovers the server."}
+                </li>
+                <li>
+                  Verify with <code>workspaces_list</code>, then try{" "}
+                  <code>guides_search</code>.
+                </li>
+              </ol>
+              <footer>
+                <button
+                  className="button button-primary"
+                  type="button"
+                  onClick={() => settingsDialogRef.current?.close()}
+                >
+                  Done
+                </button>
+              </footer>
+            </section>
+          )}
         </form>
       </dialog>
       <dialog

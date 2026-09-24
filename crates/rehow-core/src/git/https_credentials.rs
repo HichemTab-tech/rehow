@@ -42,6 +42,40 @@ pub struct GitHttpsCredentialProvenance {
     helper: Option<CredentialHelperCapability>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitGlobalIdentityStatus {
+    NotConfigured,
+    Trusted,
+    Unsafe,
+}
+
+pub struct GitGlobalIdentityProvenance {
+    status: GitGlobalIdentityStatus,
+    name: Option<String>,
+    email: Option<String>,
+}
+
+impl GitGlobalIdentityProvenance {
+    pub fn status(&self) -> GitGlobalIdentityStatus {
+        self.status
+    }
+
+    pub(super) fn values(&self) -> Option<(&str, &str)> {
+        Some((self.name.as_deref()?, self.email.as_deref()?))
+    }
+}
+
+impl fmt::Debug for GitGlobalIdentityProvenance {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitGlobalIdentityProvenance")
+            .field("status", &self.status)
+            .field("name", &self.name.as_ref().map(|_| "<redacted>"))
+            .field("email", &self.email.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
 impl GitHttpsCredentialProvenance {
     pub fn status(&self) -> GitHttpsCredentialStatus {
         self.status
@@ -578,6 +612,115 @@ pub fn capture_git_https_credential_provenance() -> GitHttpsCredentialProvenance
     )
 }
 
+/// Captures only an unambiguous, validated author name and email from safe
+/// user-global Git configuration. Includes are disabled and neither values nor
+/// source paths are exposed through `Debug`.
+pub fn capture_git_global_identity_provenance() -> GitGlobalIdentityProvenance {
+    let effective_user = unsafe { libc::geteuid() };
+    let Some(git) = super::trusted_executable("/usr/bin/git") else {
+        return unavailable_global_identity(GitGlobalIdentityStatus::Unsafe);
+    };
+    let home = env::var_os("HOME");
+    let xdg = env::var_os("XDG_CONFIG_HOME");
+    let mut sources = Vec::new();
+    if let Some(xdg) = xdg.as_deref() {
+        let xdg = Path::new(xdg);
+        if !super::safe_provenance_path(xdg) {
+            return unavailable_global_identity(GitGlobalIdentityStatus::Unsafe);
+        }
+        sources.push(ConfigSource {
+            path: xdg.join("git/config"),
+            owner: ConfigOwner::EffectiveUser,
+        });
+    } else if let Some(home) = home.as_deref() {
+        let home = Path::new(home);
+        if !super::safe_provenance_path(home) {
+            return unavailable_global_identity(GitGlobalIdentityStatus::Unsafe);
+        }
+        sources.push(ConfigSource {
+            path: home.join(".config/git/config"),
+            owner: ConfigOwner::EffectiveUser,
+        });
+    }
+    if let Some(home) = home.as_deref() {
+        let home = Path::new(home);
+        if !super::safe_provenance_path(home) {
+            return unavailable_global_identity(GitGlobalIdentityStatus::Unsafe);
+        }
+        sources.push(ConfigSource {
+            path: home.join(".gitconfig"),
+            owner: ConfigOwner::EffectiveUser,
+        });
+    }
+    if sources.is_empty() {
+        return unavailable_global_identity(GitGlobalIdentityStatus::NotConfigured);
+    }
+
+    capture_global_identity_from_sources(&git, &sources, effective_user)
+}
+
+fn capture_global_identity_from_sources(
+    git: &Path,
+    sources: &[ConfigSource],
+    effective_user: u32,
+) -> GitGlobalIdentityProvenance {
+    let mut names = Vec::new();
+    let mut emails = Vec::new();
+    let mut aggregate_bytes = 0_u64;
+    for source in sources {
+        let bytes = match capture_config_file(source, effective_user) {
+            FileCapture::Missing => continue,
+            FileCapture::Trusted(bytes) => bytes,
+            FileCapture::Unsafe => {
+                return unavailable_global_identity(GitGlobalIdentityStatus::Unsafe);
+            }
+        };
+        aggregate_bytes = match aggregate_bytes.checked_add(bytes.len() as u64) {
+            Some(total) if total <= MAX_CREDENTIAL_CONFIG_BYTES => total,
+            _ => return unavailable_global_identity(GitGlobalIdentityStatus::Unsafe),
+        };
+        let Some(entries) = parse_config_snapshot(git, bytes) else {
+            return unavailable_global_identity(GitGlobalIdentityStatus::Unsafe);
+        };
+        for (key, value) in entries {
+            let normalized_key = key.to_ascii_lowercase();
+            if normalized_key == "include.path"
+                || (normalized_key.starts_with("includeif.") && normalized_key.ends_with(".path"))
+            {
+                return unavailable_global_identity(GitGlobalIdentityStatus::Unsafe);
+            }
+            if key.eq_ignore_ascii_case("user.name") {
+                names.push(value);
+            } else if key.eq_ignore_ascii_case("user.email") {
+                emails.push(value);
+            }
+        }
+    }
+    let ([name], [email]) = (names.as_slice(), emails.as_slice()) else {
+        return unavailable_global_identity(if names.is_empty() && emails.is_empty() {
+            GitGlobalIdentityStatus::NotConfigured
+        } else {
+            GitGlobalIdentityStatus::Unsafe
+        });
+    };
+    if super::validate_git_commit_identity(name, email).is_err() {
+        return unavailable_global_identity(GitGlobalIdentityStatus::Unsafe);
+    }
+    GitGlobalIdentityProvenance {
+        status: GitGlobalIdentityStatus::Trusted,
+        name: Some(name.clone()),
+        email: Some(email.clone()),
+    }
+}
+
+fn unavailable_global_identity(status: GitGlobalIdentityStatus) -> GitGlobalIdentityProvenance {
+    GitGlobalIdentityProvenance {
+        status,
+        name: None,
+        email: None,
+    }
+}
+
 fn unavailable(status: GitHttpsCredentialStatus) -> GitHttpsCredentialProvenance {
     GitHttpsCredentialProvenance {
         status,
@@ -1021,6 +1164,76 @@ mod tests {
             uid,
             uid,
         )
+    }
+
+    fn capture_global_identity(root: &Temp, config: &[u8]) -> GitGlobalIdentityProvenance {
+        let config_path = root.0.join("config");
+        fs::write(&config_path, config).unwrap();
+        fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600)).unwrap();
+        capture_global_identity_from_sources(
+            Path::new("/usr/bin/git"),
+            &[ConfigSource {
+                path: config_path,
+                owner: ConfigOwner::EffectiveUser,
+            }],
+            unsafe { libc::geteuid() },
+        )
+    }
+
+    #[test]
+    fn global_identity_capture_is_bounded_validated_and_redacted() {
+        let valid = Temp::new();
+        let provenance = capture_global_identity(
+            &valid,
+            b"[user]\n\tname = Rehow Person\n\temail = person@example.test\n",
+        );
+        assert_eq!(provenance.status(), GitGlobalIdentityStatus::Trusted);
+        assert_eq!(
+            provenance.values(),
+            Some(("Rehow Person", "person@example.test"))
+        );
+        let debug = format!("{provenance:?}");
+        assert!(!debug.contains("Rehow Person"));
+        assert!(!debug.contains("person@example.test"));
+
+        let include = Temp::new();
+        assert_eq!(
+            capture_global_identity(
+                &include,
+                b"[user]\nname = Person\nemail = person@example.test\n[include]\npath = /ignored\n",
+            )
+            .status(),
+            GitGlobalIdentityStatus::Unsafe
+        );
+        let conditional = Temp::new();
+        assert_eq!(
+            capture_global_identity(
+                &conditional,
+                b"[user]\nname = Person\nemail = person@example.test\n[includeIf \"gitdir:~/work/\"]\npath = /conditional\n",
+            )
+            .status(),
+            GitGlobalIdentityStatus::Unsafe
+        );
+
+        let duplicate = Temp::new();
+        assert_eq!(
+            capture_global_identity(
+                &duplicate,
+                b"[user]\nname = First\nname = Second\nemail = person@example.test\n",
+            )
+            .status(),
+            GitGlobalIdentityStatus::Unsafe
+        );
+        let partial = Temp::new();
+        assert_eq!(
+            capture_global_identity(&partial, b"[user]\nname = Person\n").status(),
+            GitGlobalIdentityStatus::Unsafe
+        );
+        let absent = Temp::new();
+        assert_eq!(
+            capture_global_identity(&absent, b"[core]\neditor = false\n").status(),
+            GitGlobalIdentityStatus::NotConfigured
+        );
     }
 
     #[test]

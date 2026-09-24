@@ -69,3 +69,5 @@ The Reference Desk offers a compact manual commit form only for a ready reposito
 - Reading global identity/config without a separately audited owner-safe capability.
 - Invoking configured commit signing or hooks.
 - Ref update without expected-OID/index/effect-set CAS and recoverable intent.
+
+ADR 0061 supplies that separate capability for explicit absent-only import into repository-local configuration. Managed commits still read only the resulting local values and never fall back to global configuration.

@@ -24,19 +24,22 @@ use rehow_core::{
     domain::GuideStatus,
     git::{
         GitCloneApplyError, GitCloneError, GitCloneMaterializeError, GitClonePlan,
-        GitCloneValidation, GitCommitPlan, GitCommitPlanError, GitHttpsCredentialResourceError,
-        GitHttpsCredentialResources, GitHttpsCredentialStatus, GitInitError, GitInitPlan,
+        GitCloneValidation, GitCommitPlan, GitCommitPlanError, GitGlobalIdentityProvenance,
+        GitGlobalIdentityStatus, GitHttpsCredentialResourceError, GitHttpsCredentialResources,
+        GitHttpsCredentialStatus, GitIdentityError, GitIdentityPlan, GitInitError, GitInitPlan,
         GitReadError, GitRemoteAuthentication, GitRemoteError, GitRemotePlan, GitRemoteTransport,
         GitRepositoryStatus, GitSshTransportError, GitSshTransportResources, GitSyncAncestry,
         GitSyncClassification, GitSyncError, apply_git_clone_repository_finalization,
-        apply_git_clone_validation_with_authentication, apply_git_commit, apply_git_initialize,
-        apply_git_push_with_authentication, apply_git_remote_connect, apply_git_sync_fast_forward,
-        apply_git_sync_inspection_with_authentication, cancel_git_commit_plan,
+        apply_git_clone_validation_with_authentication, apply_git_commit, apply_git_identity,
+        apply_git_initialize, apply_git_push_with_authentication, apply_git_remote_connect,
+        apply_git_sync_fast_forward, apply_git_sync_inspection_with_authentication,
+        cancel_git_commit_plan, capture_git_global_identity_provenance,
         capture_git_https_credential_backing_provenance, capture_git_https_credential_provenance,
         capture_git_https_credential_proxy_provenance, capture_git_ssh_agent_provenance,
         capture_git_ssh_host_keys_provenance, capture_git_ssh_proxy_provenance,
         classify_git_sync_ancestry_with_authentication, git_commit_recovery_required,
-        git_sync_recovery_required, plan_git_clone, plan_git_commit, plan_git_initialize,
+        git_sync_recovery_required, plan_git_clone, plan_git_commit,
+        plan_git_identity_import_global, plan_git_identity_set, plan_git_initialize,
         plan_git_remote_connect, plan_git_sync, read_git_status,
         resume_pending_git_commit_publication, resume_pending_git_sync_publication,
     },
@@ -68,6 +71,7 @@ const GIT_COMMIT_MESSAGE_INPUT_BYTES: usize = 800;
 const WORKSPACE_ISSUE_PAYLOAD_LIMIT: usize = 100;
 
 struct DesktopState {
+    global_git_identity: GitGlobalIdentityProvenance,
     https_credential_backing_provenance: rehow_core::git::GitHttpsCredentialBackingProvenance,
     https_credential_provenance: rehow_core::git::GitHttpsCredentialProvenance,
     https_credential_proxy_provenance: rehow_core::git::GitHttpsCredentialProxyProvenance,
@@ -79,6 +83,7 @@ struct DesktopState {
     markdown_import: Mutex<MarkdownImportLifecycle>,
     pending_git_init: Mutex<Option<(PlanToken, GitInitPlan)>>,
     pending_git_remote: Mutex<Option<(PlanToken, GitRemotePlan)>>,
+    pending_git_identity: Mutex<Option<(PlanToken, GitIdentityPlan)>>,
     git_commit: Mutex<GitCommitLifecycle>,
     git_clone: Mutex<GitCloneLifecycle>,
     git_sync: Mutex<GitSyncLifecycle>,
@@ -92,6 +97,7 @@ struct DesktopState {
 impl Default for DesktopState {
     fn default() -> Self {
         Self {
+            global_git_identity: capture_git_global_identity_provenance(),
             https_credential_backing_provenance: capture_git_https_credential_backing_provenance(),
             https_credential_provenance: capture_git_https_credential_provenance(),
             https_credential_proxy_provenance: capture_git_https_credential_proxy_provenance(),
@@ -103,6 +109,7 @@ impl Default for DesktopState {
             markdown_import: Mutex::default(),
             pending_git_init: Mutex::default(),
             pending_git_remote: Mutex::default(),
+            pending_git_identity: Mutex::default(),
             git_commit: Mutex::default(),
             git_clone: Mutex::default(),
             git_sync: Mutex::default(),
@@ -452,6 +459,8 @@ struct GitStatusPayload {
     conflicts: u32,
     remotes: Vec<String>,
     remote_count: u32,
+    identity: Option<&'static str>,
+    global_identity: &'static str,
     failure: Option<&'static str>,
 }
 
@@ -481,6 +490,19 @@ struct GitRemotePlanPayload {
 #[serde(rename_all = "camelCase")]
 struct GitRemoteResultPayload {
     connected: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitIdentityPlanPayload {
+    plan_token: PlanToken,
+    source: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitIdentityResultPayload {
+    configured: bool,
 }
 
 #[derive(Serialize)]
@@ -1710,6 +1732,11 @@ fn search_open_workspace(
 fn git_status_open_workspace(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<GitStatusPayload, String> {
+    let global_identity = match state.global_git_identity.status() {
+        GitGlobalIdentityStatus::Trusted => "available",
+        GitGlobalIdentityStatus::NotConfigured => "notConfigured",
+        GitGlobalIdentityStatus::Unsafe => "unsafe",
+    };
     let guard = state
         .workspace
         .lock()
@@ -1731,20 +1758,22 @@ fn git_status_open_workspace(
             Ok(true)
         );
         if commit_recovery || sync_recovery {
-            return Ok(empty_git_payload("recoveryRequired", None));
+            return Ok(empty_git_payload("recoveryRequired", None, global_identity));
         }
     }
     match read_git_status(&workspace.view) {
         Ok(status) => {
             let version = status.version().map(str::to_owned);
             if !status.available() {
-                return Ok(empty_git_payload("unavailable", None));
+                return Ok(empty_git_payload("unavailable", None, global_identity));
             }
             match status.repository() {
                 GitRepositoryStatus::NotRepository => {
-                    Ok(empty_git_payload("notRepository", version))
+                    Ok(empty_git_payload("notRepository", version, global_identity))
                 }
-                GitRepositoryStatus::Unsafe => Ok(empty_git_payload("unsafe", version)),
+                GitRepositoryStatus::Unsafe => {
+                    Ok(empty_git_payload("unsafe", version, global_identity))
+                }
                 GitRepositoryStatus::Ready(repository) => Ok(GitStatusPayload {
                     kind: "ready",
                     version,
@@ -1759,6 +1788,8 @@ fn git_status_open_workspace(
                     conflicts: repository.conflicts(),
                     remotes: repository.remotes().to_vec(),
                     remote_count: repository.remote_count(),
+                    identity: Some(repository.identity().as_str()),
+                    global_identity,
                     failure: None,
                 }),
             }
@@ -1772,14 +1803,18 @@ fn git_status_open_workspace(
                 GitReadError::OutputLimit => "Git output exceeded the safety limit.",
                 GitReadError::InvalidOutput => "Git returned an unsupported status format.",
             };
-            let mut payload = empty_git_payload("failed", None);
+            let mut payload = empty_git_payload("failed", None, global_identity);
             payload.failure = Some(failure);
             Ok(payload)
         }
     }
 }
 
-fn empty_git_payload(kind: &'static str, version: Option<String>) -> GitStatusPayload {
+fn empty_git_payload(
+    kind: &'static str,
+    version: Option<String>,
+    global_identity: &'static str,
+) -> GitStatusPayload {
     GitStatusPayload {
         kind,
         version,
@@ -1794,6 +1829,8 @@ fn empty_git_payload(kind: &'static str, version: Option<String>) -> GitStatusPa
         conflicts: 0,
         remotes: Vec::new(),
         remote_count: 0,
+        identity: None,
+        global_identity,
         failure: None,
     }
 }
@@ -2090,6 +2127,220 @@ fn git_remote_confirmation(plan: &GitRemotePlan) -> String {
         plan.transport().as_str(),
         plan.remote_url(),
     )
+}
+
+#[tauri::command]
+fn git_identity_plan_manual_open_workspace(
+    name: String,
+    email: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<GitIdentityPlanPayload, NativeCommandError> {
+    if name.len() > 800 || email.len() > 254 {
+        return Err(native_command_error(
+            "invalidIdentity",
+            "Enter a valid Git author name and email address.".to_owned(),
+        ));
+    }
+    let guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable.".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_ref().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open.".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let plan = plan_git_identity_set(&workspace.view, &name, &email)
+        .map_err(git_identity_command_error)?;
+    store_git_identity_plan(&state, plan)
+}
+
+#[tauri::command]
+fn git_identity_plan_global_open_workspace(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<GitIdentityPlanPayload, NativeCommandError> {
+    let guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable.".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_ref().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open.".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let plan = plan_git_identity_import_global(&workspace.view, &state.global_git_identity)
+        .map_err(git_identity_command_error)?;
+    store_git_identity_plan(&state, plan)
+}
+
+fn store_git_identity_plan(
+    state: &DesktopState,
+    plan: GitIdentityPlan,
+) -> Result<GitIdentityPlanPayload, NativeCommandError> {
+    let source = match plan.source() {
+        rehow_core::git::GitIdentitySource::Manual => "manual",
+        rehow_core::git::GitIdentitySource::Global => "global",
+    };
+    let payload = GitIdentityPlanPayload {
+        plan_token: plan.token().clone(),
+        source,
+    };
+    *state.pending_git_identity.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Git identity plan is unavailable.".to_owned(),
+        )
+    })? = Some((payload.plan_token.clone(), plan));
+    Ok(payload)
+}
+
+#[tauri::command]
+fn git_identity_apply_open_workspace(
+    window: tauri::Window,
+    plan_token: PlanToken,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<GitIdentityResultPayload, NativeCommandError> {
+    let guard = state.workspace.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Workspace session is unavailable.".to_owned(),
+        )
+    })?;
+    let workspace = guard.as_ref().ok_or_else(|| {
+        native_command_error("workspaceUnavailable", "No Workspace is open.".to_owned())
+    })?;
+    if !workspace.facts.writable() {
+        return Err(native_command_error(
+            "readOnly",
+            "This Workspace is read-only. Choose a writable Workspace.".to_owned(),
+        ));
+    }
+    let mut pending = state.pending_git_identity.lock().map_err(|_| {
+        native_command_error(
+            "sessionUnavailable",
+            "Git identity plan is unavailable.".to_owned(),
+        )
+    })?;
+    let plan = take_matching_git_plan(&mut pending, &plan_token).map_err(|error| match error {
+        PendingGitPlanError::Missing => native_command_error(
+            "planMissing",
+            "Create a fresh Git identity plan and try again.".to_owned(),
+        ),
+        PendingGitPlanError::Invalid => native_command_error(
+            "planInvalid",
+            "The Git identity plan does not match this request.".to_owned(),
+        ),
+    })?;
+    let confirmed = rfd::MessageDialog::new()
+        .set_parent(&window)
+        .set_level(rfd::MessageLevel::Info)
+        .set_title("Set Git author for this Workspace?")
+        .set_description(git_identity_confirmation(&plan))
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes;
+    if !confirmed {
+        return Ok(GitIdentityResultPayload { configured: false });
+    }
+    apply_git_identity(&workspace.view, &plan).map_err(git_identity_command_error)?;
+    Ok(GitIdentityResultPayload { configured: true })
+}
+
+fn git_identity_confirmation(plan: &GitIdentityPlan) -> String {
+    let source = match plan.source() {
+        rehow_core::git::GitIdentitySource::Manual => "the values you entered",
+        rehow_core::git::GitIdentitySource::Global => "your validated global Git identity",
+    };
+    format!(
+        "Copy {source} into this repository’s local Git config?\n\nName: {}\nEmail: {}\n\nThis does not change global Git settings, connect to a remote, or push.",
+        plan.name(),
+        plan.email()
+    )
+}
+
+fn git_identity_command_error(error: GitIdentityError) -> NativeCommandError {
+    native_command_error(git_identity_code(error), git_identity_message(error))
+}
+
+fn git_identity_code(error: GitIdentityError) -> &'static str {
+    match error {
+        GitIdentityError::InvalidIdentity => "invalidIdentity",
+        GitIdentityError::AlreadyConfigured => "identityConfigured",
+        GitIdentityError::LocalIdentityInvalid => "identityInvalid",
+        GitIdentityError::GlobalIdentityMissing => "globalIdentityMissing",
+        GitIdentityError::GlobalIdentityUnsafe => "globalIdentityUnsafe",
+        GitIdentityError::NotRepository => "notRepository",
+        GitIdentityError::MalformedConfig => "malformedConfig",
+        GitIdentityError::RecoveryRequired => "recoveryRequired",
+        GitIdentityError::PlanStale => "planStale",
+        GitIdentityError::Unsafe => "unsafeRepository",
+        GitIdentityError::TooLarge => "configTooLarge",
+        GitIdentityError::Unsupported => "unsupportedFilesystem",
+        GitIdentityError::GitUnavailable => "gitUnavailable",
+        GitIdentityError::Io => "io",
+    }
+}
+
+fn git_identity_message(error: GitIdentityError) -> String {
+    match error {
+        GitIdentityError::InvalidIdentity => {
+            "Enter a name and a valid email address without control characters.".to_owned()
+        }
+        GitIdentityError::AlreadyConfigured => {
+            "This repository already has a local Git author identity.".to_owned()
+        }
+        GitIdentityError::LocalIdentityInvalid => {
+            "This repository has a partial, duplicate, or invalid local Git identity. Rehow did not overwrite it; repair user.name and user.email with Git, then refresh."
+                .to_owned()
+        }
+        GitIdentityError::GlobalIdentityMissing => {
+            "No complete global Git author identity is configured. Enter one for this Workspace."
+                .to_owned()
+        }
+        GitIdentityError::GlobalIdentityUnsafe => {
+            "Global Git identity could not be read safely. Enter the author name and email manually."
+                .to_owned()
+        }
+        GitIdentityError::NotRepository => "Initialize Git before setting an author.".to_owned(),
+        GitIdentityError::MalformedConfig => {
+            "Git config is malformed. Rehow preserved it unchanged.".to_owned()
+        }
+        GitIdentityError::RecoveryRequired => {
+            "Git config has an unrelated lock or interrupted change. Inspect it before continuing."
+                .to_owned()
+        }
+        GitIdentityError::PlanStale => {
+            "Git config or the Workspace changed. Review it and try again.".to_owned()
+        }
+        GitIdentityError::Unsafe => {
+            "Git config is not a safe owner-controlled regular file. Rehow left it unchanged."
+                .to_owned()
+        }
+        GitIdentityError::TooLarge => {
+            "Git config exceeds Rehow’s safe processing limit.".to_owned()
+        }
+        GitIdentityError::Unsupported => {
+            "This system cannot provide the durable Git config update Rehow requires.".to_owned()
+        }
+        GitIdentityError::GitUnavailable => {
+            "The trusted system Git executable is unavailable.".to_owned()
+        }
+        GitIdentityError::Io => {
+            "Git config could not be read or updated. Check access and try again.".to_owned()
+        }
+    }
 }
 
 #[tauri::command]
@@ -6222,6 +6473,9 @@ pub fn run() {
             git_initialize_apply_open_workspace,
             git_remote_plan_open_workspace,
             git_remote_apply_open_workspace,
+            git_identity_plan_manual_open_workspace,
+            git_identity_plan_global_open_workspace,
+            git_identity_apply_open_workspace,
             git_commit_plan_open_workspace,
             git_commit_cancel_open_workspace,
             git_commit_apply_open_workspace,
@@ -6250,9 +6504,10 @@ mod tests {
         FolderFactsPayload, GitCloneApplyResultPayload, GitCloneCancelResultPayload,
         GitCloneCompleteResultPayload, GitCloneLifecycle, GitClonePlanPayload,
         GitCommitCancelResultPayload, GitCommitPlanPayload, GitCommitRecoveryResultPayload,
-        GitCommitResultPayload, GitInitPlanPayload, GitInitResultPayload, GitPushResultPayload,
-        GitRemotePlanPayload, GitRemoteResultPayload, GitSyncApplyResultPayload,
-        GitSyncCancelError, GitSyncCancelResultPayload, GitSyncInspectionPayload, GitSyncLifecycle,
+        GitCommitResultPayload, GitIdentityPlanPayload, GitIdentityResultPayload,
+        GitInitPlanPayload, GitInitResultPayload, GitPushResultPayload, GitRemotePlanPayload,
+        GitRemoteResultPayload, GitSyncApplyResultPayload, GitSyncCancelError,
+        GitSyncCancelResultPayload, GitSyncInspectionPayload, GitSyncLifecycle,
         GitSyncRecoveryResultPayload, GuideApplicabilityPayload, GuideBodyPayload,
         GuideFileOpenPayload, GuidePayload, GuideReferencePayload, MarkdownImportApplyPayload,
         MarkdownImportDestinationResult, MarkdownImportLifecycle,
@@ -6269,12 +6524,13 @@ mod tests {
         git_clone_apply_message, git_clone_code, git_clone_completion_confirmation,
         git_clone_confirmation_fields, git_clone_materialize_code, git_clone_materialize_message,
         git_clone_message, git_commit_code, git_commit_confirmation_fields, git_commit_message,
-        git_commit_message_input_allowed, git_commit_recovery_confirmation, git_init_code,
-        git_init_confirmation, git_init_message, git_push_ancestry_allowed,
-        git_push_confirmation_fields, git_remote_code, git_remote_confirmation_fields,
-        git_remote_message, git_ssh_transport_code, git_ssh_transport_message, git_sync_ancestry,
-        git_sync_blocks_workspace_switch, git_sync_code, git_sync_confirmation_fields,
-        git_sync_message, git_sync_recovery_confirmation, guide_create_code, guide_create_message,
+        git_commit_message_input_allowed, git_commit_recovery_confirmation, git_identity_code,
+        git_identity_message, git_init_code, git_init_confirmation, git_init_message,
+        git_push_ancestry_allowed, git_push_confirmation_fields, git_remote_code,
+        git_remote_confirmation_fields, git_remote_message, git_ssh_transport_code,
+        git_ssh_transport_message, git_sync_ancestry, git_sync_blocks_workspace_switch,
+        git_sync_code, git_sync_confirmation_fields, git_sync_message,
+        git_sync_recovery_confirmation, guide_create_code, guide_create_message,
         guide_file_open_code, guide_file_open_message, guide_remove_code,
         guide_remove_confirmation, guide_remove_message, guide_update_code, guide_update_message,
         markdown_import_blocks_workspace_switch, markdown_import_error, native_command_error,
@@ -6293,8 +6549,8 @@ mod tests {
         git::{
             GitCloneApplyError, GitCloneError, GitCloneMaterializeError, GitCloneValidation,
             GitCommitPlanError, GitHttpsCredentialBackingStatus, GitHttpsCredentialProxyStatus,
-            GitHttpsCredentialStatus, GitInitError, GitRemoteError, GitSshTransportError,
-            GitSyncAncestry, GitSyncError,
+            GitHttpsCredentialStatus, GitIdentityError, GitInitError, GitRemoteError,
+            GitSshTransportError, GitSyncAncestry, GitSyncError,
         },
         markdown::parse_safe_markdown,
         protocol::{OperationId, PlanToken},
@@ -6433,13 +6689,19 @@ mod tests {
 
     #[test]
     fn git_status_payload_is_closed_and_content_free() {
-        let value =
-            serde_json::to_value(empty_git_payload("unsafe", Some("2.55.0".to_owned()))).unwrap();
+        let value = serde_json::to_value(empty_git_payload(
+            "unsafe",
+            Some("2.55.0".to_owned()),
+            "available",
+        ))
+        .unwrap();
         let object = value.as_object().unwrap();
-        assert_eq!(object.len(), 14);
+        assert_eq!(object.len(), 16);
         assert_eq!(object["kind"], "unsafe");
         assert_eq!(object["divergenceKnown"], false);
         assert_eq!(object["remotes"], serde_json::json!([]));
+        assert_eq!(object["identity"], serde_json::Value::Null);
+        assert_eq!(object["globalIdentity"], "available");
         assert!(!value.to_string().contains("path"));
     }
 
@@ -6492,6 +6754,32 @@ mod tests {
         assert!(confirmation.contains("origin"));
         assert!(confirmation.contains("https://example.invalid/team/rehow.git"));
         assert!(confirmation.contains("will not connect"));
+    }
+
+    #[test]
+    fn git_identity_payloads_and_errors_are_closed_and_actionable() {
+        let token = PlanToken::from_str(&format!("plan:v1:{}", "A".repeat(43))).unwrap();
+        let plan = serde_json::to_value(GitIdentityPlanPayload {
+            plan_token: token,
+            source: "global",
+        })
+        .unwrap();
+        assert_eq!(plan.as_object().unwrap().len(), 2);
+        assert_eq!(plan["source"], "global");
+        assert!(plan.get("name").is_none());
+        assert!(plan.get("email").is_none());
+        assert!(plan.get("path").is_none());
+        let result = serde_json::to_value(GitIdentityResultPayload { configured: true }).unwrap();
+        assert_eq!(result.as_object().unwrap().len(), 1);
+        assert_eq!(result["configured"], true);
+        assert_eq!(
+            git_identity_code(GitIdentityError::GlobalIdentityUnsafe),
+            "globalIdentityUnsafe"
+        );
+        assert!(
+            git_identity_message(GitIdentityError::LocalIdentityInvalid)
+                .contains("did not overwrite")
+        );
     }
 
     #[test]
