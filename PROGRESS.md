@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-The compact final requirements audit is closed. Phase 7 now has first-release metadata, reproducible PR/push/manual CI, least-privilege existing-release publication, and native Debian, RPM, and Arch/Omarchy packages. Installed `v0.1.0` exposed a confirmed NVIDIA/Wayland WebKitGTK startup failure. ADR 0060's scoped explicit-sync correction is implemented and passes production Wayland/X11 smoke; clean graphical qualification remains open.
+The compact final requirements audit is closed. Phase 7 now has first-release metadata, reproducible PR/push/manual CI, least-privilege existing-release publication, and native Debian, RPM, and Arch/Omarchy packages. Installed `v0.1.0` exposed a confirmed NVIDIA/Wayland startup failure and a synchronous native folder-picker hang. The scoped startup correction passes production Wayland/X11 smoke; both Workspace folder pickers are now awaited and parented without retaining application state. Clean graphical qualification remains open.
 
 ## Current task
 
-Human checkpoint: obtain authorization to push signed fix `b213cf9`, bump to a patch release, create/push its new tag, and publish fixed packages. Do not replace `v0.1.0` assets with binaries from a different commit or move the published tag.
+Reinstall the locally rebuilt Arch package and manually verify open/cancel/select folder-picker liveness. Then obtain authorization to push the combined fixes, bump to a patch release, create/push its new tag, and publish fixed packages. Do not replace `v0.1.0` assets with binaries from a different commit or move the published tag.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, the current Arch/Omarchy host, and a disposable native pacman install/remove container. The published `v0.1.0` assets are internally valid but the desktop exits with GDK protocol error 71 on the release host's NVIDIA/Wayland session. The corrected binary sets only `__NV_DISABLE_EXPLICIT_SYNC=1` before WebKitGTK when Wayland is present and no user value exists; normal Wayland and X11 launches remain alive. PR/push/manual CI and split-privilege publication remain implemented under ADR 0059. Graphical Ubuntu qualification remains open.
+Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, the current Arch/Omarchy host, and a disposable native pacman install/remove container. The published `v0.1.0` assets are internally valid but have two current-host runtime defects: GDK protocol error 71 at NVIDIA/Wayland startup and a compositor unresponsive warning while the blocking Workspace chooser is open. The corrected binary applies the scoped explicit-sync setting, uses rfd's async parented portal picker for both folder flows, and acquires lifecycle/Workspace state only after selection returns. PR/push/manual CI and split-privilege publication remain implemented under ADR 0059. Graphical Ubuntu qualification remains open.
 
 ## Completed work
 
@@ -21,6 +21,7 @@ Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, 
 - Added a reviewed `makepkg` template and build script for `rehow-0.1.0-1-x86_64.pkg.tar.zst`. It repackages the exact inspected Debian `/usr` payload without stripping inside a digest-pinned, network-disabled Arch container. Cross-format byte comparison, package metadata, ABI/helper binding, and disposable pacman install/remove gates pass without changing the host.
 - Published the native Arch artifact to `v0.1.0` from the exact existing Debian release payload and replaced `Rehow_0.1.0_SHA256SUMS.txt` with verified entries for all three packages. The published Arch SHA-256 is `835723c7cd3cc8f45b8f94c8c7e653d8e21455344d2a0f26b371eac1a6e3b572`; the tag remains at `596123a`.
 - Diagnosed the installed Arch package's immediate exit: no coredump/OOM; direct launch exits 1 with exact GDK Wayland protocol error 71. Current official Tauri guidance and host tests show NVIDIA explicit-sync disabling fixes it without disabling DMABUF. ADR 0060 and the desktop entry point apply that process-scoped Wayland default before any threads while preserving explicit user values.
+- Diagnosed the Workspace chooser warning from screenshot, source, and journal evidence: both native folder flows used blocking `FileDialog::pick_folder()` in synchronous Tauri commands, and the portal could not associate the unparented chooser. Both commands now await `AsyncFileDialog`, explicitly parent it to the invoking Rehow window, copy only the returned native path into core inspection, and obtain all mutex/capability state after the await.
 - Added the public-facing README with an actual Reference Desk screenshot, implemented capabilities, pre-release status, build/package paths, Workspace and MCP boundaries, safety principles, development entry points, and MIT license link.
 - Inspected repository/Git history/status: no initial files/commits/remotes.
 - Inspected toolchain: Git 2.55.0, Node 26.2.0, current machine pnpm 11.20.0, Rust/Cargo 1.98.0; no standalone global Tauri CLI. No Node/pnpm installation or switch was performed.
@@ -341,7 +342,7 @@ No known product regression remains uncorrected in accepted phases. Hosted Ubunt
 
 - MIT, version `0.1.0`, identifier `me.hichemtab-tech.rehow`, and all three Linux package formats are selected. The existing GitHub release is published; publisher signatures still require a separate key-custody decision.
 - Final graphical acceptance still needs one disposable Ubuntu 24.04 graphical environment with Wayland and X11. The current NVIDIA/Wayland host now passes normal startup through ADR 0060's Rehow-only explicit-sync setting; it does not justify claiming every compositor/driver combination qualified.
-- The published `v0.1.0` binaries predate ADR 0060 and retain the NVIDIA/Wayland startup bug. Publication of a fixed patch release requires explicit push/tag/release authorization; the existing tag must remain immutable.
+- The published `v0.1.0` binaries predate both runtime corrections and retain the NVIDIA/Wayland startup bug plus blocking folder-picker warning. Publication of a fixed patch release requires explicit push/tag/release authorization; the existing tag must remain immutable.
 - Routine work uses zero extra agents; one specialist is used only at mandatory acceptance gates.
 - The active existing host tools are Node 26.2.0 and pnpm 11.20.0. The repository accepts pnpm 11 per user direction; no install or version switch was performed, and `pnpm check` passes.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
@@ -349,10 +350,11 @@ No known product regression remains uncorrected in accepted phases. Hosted Ubunt
 
 ## Latest verified commit
 
-`b213cf9` — signed NVIDIA/Wayland startup correction; its configured signature verifies. This PROGRESS-only follow-up records the exact checkpoint and is intentionally not claimed as part of `b213cf9`.
+`a86d4dc` — signed asynchronous parented folder-picker correction; its configured signature verifies. This PROGRESS-only follow-up records the exact checkpoint and is intentionally not claimed as part of `a86d4dc`.
 
 ## Tests last run and results
 
+- 2026-09-24: Native folder-picker correction passes Rust formatting, all 40 desktop tests, strict desktop all-target/all-feature Clippy, `pnpm check`, production Tauri `.deb`/`.rpm` build, native Arch construction, all three package/helper/license/icon/desktop/ABI checks, and disposable pacman install/remove. Both async dialogs compile with Tauri-owned parent windows; code inspection confirms no mutex, lifecycle state, or Workspace capability exists across the sole dialog await. Manual open/cancel/select liveness on the newly installed package remains the final interaction check.
 - 2026-09-24: ADR 0060 Wayland startup correction passes 3 decision-unit tests, focused desktop strict Clippy, Cargo formatting, a complete production Tauri `.deb`/`.rpm` build, native Arch construction, all three bundle/helper/license/icon/desktop/ABI checks, and disposable pacman install/remove. The rebuilt binary stays alive for eight-second normal Wayland and X11 smokes. An explicit `__NV_DISABLE_EXPLICIT_SYNC=0` is preserved and reproduces exit 1 with the prior GDK protocol error, proving both the fix and override behavior. Existing Node 26.2.0 and pnpm 11.20.0 were unchanged.
 - 2026-09-24: Native Arch packaging passes shell syntax, workflow YAML parsing, deterministic payload checksum validation, digest-pinned/network-disabled unprivileged `makepkg`, Arch `.PKGINFO`/`.BUILDINFO`/`.MTREE` checks, exact Debian-to-Arch `/usr` byte comparison, all five executable modes/link counts, helper digest binding, license/desktop/icon checks, the glibc 2.39 ABI ceiling, and a disposable networkless `pacman -U`/`pacman -R` journey. Artifact: `target/release/bundle/arch/rehow-0.1.0-1-x86_64.pkg.tar.zst`. No host package, Node version, or pnpm version was installed or switched.
 - 2026-09-24: The published `v0.1.0` Debian/RPM assets were downloaded into a temporary directory, the Arch package was rebuilt from the downloaded Debian payload, and the full three-format smoke plus disposable pacman install/remove gate passed. GitHub now reports the Arch asset at 8,519,316 bytes with SHA-256 `835723c7cd3cc8f45b8f94c8c7e653d8e21455344d2a0f26b371eac1a6e3b572`; the replacement checksum file verifies all three release assets.
@@ -562,12 +564,13 @@ No known product regression remains uncorrected in accepted phases. Hosted Ubunt
 
 ## Known test failures
 
-The published `v0.1.0` desktop has one confirmed NVIDIA/Wayland startup failure; ADR 0060 corrects it in the next build. No coredump, OOM, or Workspace data loss occurred. No other product regression is known. The updated Arch/release workflow has not yet run on GitHub. The repository uses the existing active Node 26.2.0 and pnpm 11.20.0 selected by the user; no install or version switch occurred.
+The published `v0.1.0` desktop has two confirmed current-host failures: NVIDIA/Wayland startup and a compositor responsiveness warning around the blocking Workspace chooser. Both are corrected in the next build; manual chooser liveness after host installation remains pending. No coredump, OOM, or Workspace data loss occurred. No other product regression is known. The updated Arch/release workflow has not yet run on GitHub. The repository uses the existing active Node 26.2.0 and pnpm 11.20.0 selected by the user; no install or version switch occurred.
 
 ## Important files changed
 
 - Hosted automation and native Arch packaging: `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `packaging/arch/PKGBUILD.template`, `scripts/build-arch-package.sh`, `scripts/test-linux-bundles.sh`, ADR 0059, and aligned README/release/installation/development documentation.
 - Wayland startup correction: `apps/desktop/src-tauri/src/main.rs`, ADR 0060, `docs/installation.md`, and the Phase 7/final-release evidence.
+- Native dialog correction: `apps/desktop/src-tauri/src/lib.rs` plus aligned architecture, testing, installation, and recovery documentation.
 - Public project entry point: `README.md` links verified product imagery and the authoritative installation, content-model, MCP, security, development, product, architecture, progress, and license documents.
 - Release metadata: `LICENSE`, Cargo/npm/Tauri metadata, installer paths, bundle smoke defaults, and readiness documentation consistently use MIT, `0.1.0`, and `me.hichemtab-tech.rehow`; `.deb`, `.rpm`, and native Arch packages are the Linux x86_64 targets.
 - Guarded Guide file/shadcn foundation: ADR 0058, the core held-file capability, pathless native portal command, Open File UI, `apps/desktop/components.json`, reviewed `Button`/`cn` source, lockfile, and aligned architecture/design/development/testing/threat docs are checkpointed at `2f3668a`.
@@ -698,7 +701,7 @@ The published `v0.1.0` desktop has one confirmed NVIDIA/Wayland startup failure;
 
 ## Next recommended action
 
-Request explicit authorization to push signed fix `b213cf9`, bump to a patch release, create/push the new tag, and publish fixed assets. Until then, the locally rebuilt `target/release/bundle/arch/rehow-0.1.0-1-x86_64.pkg.tar.zst` can be deliberately reinstalled for host verification, but the published `v0.1.0` asset is not fixed.
+Reinstall the locally rebuilt `target/release/bundle/arch/rehow-0.1.0-1-x86_64.pkg.tar.zst` and manually verify chooser open/cancel/select liveness. Then request explicit authorization to push the combined runtime fixes, bump to a patch release, create/push the new tag, and publish fixed assets. The published `v0.1.0` asset is not fixed.
 
 ## Recommended agent role and reasoning effort
 
@@ -709,7 +712,7 @@ Primary Orchestrator with zero routine agents. Use one specialist only if a rele
 1. Read `AGENTS.md` and this file.
 2. Read `docs/evidence/final-release-readiness.md`, `docs/installation.md`, `docs/release.md`, ADR 0059, and ADR 0060.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `b213cf9` and its recorded Wayland/X11 evidence, then resume at the explicit push/patch-release permission boundary; do not move `v0.1.0` or touch unrelated untracked `x` if it reappears.
+4. Verify signed checkpoints `b213cf9` and `a86d4dc` plus their package evidence, then resume with local chooser verification before the explicit push/patch-release permission boundary; do not move `v0.1.0` or touch unrelated untracked `x` if it reappears.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
 7. The original authorized Arch asset is published but retains the startup bug. Do not push code, create another release/tag, replace existing assets, install a host package, or change the active Node/pnpm toolchain without separate authorization.
