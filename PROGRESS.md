@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-The compact final requirements audit is closed. Phase 7 now has first-release metadata, reproducible PR/push/manual CI, and least-privilege existing-release publication for qualified Linux packages; clean graphical qualification remains open.
+The compact final requirements audit is closed. Phase 7 now has first-release metadata, reproducible PR/push/manual CI, and least-privilege existing-release publication for qualified Linux packages. The first hosted run exposed and now has a narrow Bubblewrap capability correction; clean graphical qualification remains open.
 
 ## Current task
 
-Checkpoint the Linux CI/release automation, then obtain its first hosted GitHub Actions run and qualify the installed `0.1.0` packages in a disposable graphical Ubuntu 24.04 Wayland/X11 environment.
+Push the hosted Bubblewrap capability correction, verify the next GitHub Actions run, then qualify the installed `0.1.0` packages in a disposable graphical Ubuntu 24.04 Wayland/X11 environment.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Version `0.1.0`, stable identifier `me.hichemtab-tech.rehow`, MIT licensing, and both `.deb`/`.rpm` targets are selected. PR/push/manual CI and published-release asset automation are implemented under ADR 0059. Remaining release work needs its first hosted workflow evidence and disposable graphical Ubuntu qualification.
+Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Version `0.1.0`, stable identifier `me.hichemtab-tech.rehow`, MIT licensing, and both `.deb`/`.rpm` targets are selected. PR/push/manual CI and published-release asset automation are implemented under ADR 0059. Hosted run `35974338222` passed setup, Clippy, project checks, and 52 UI tests, then exposed a GitHub-runner-only Bubblewrap network-namespace restriction. Signed correction `a8ced9b` skips only that exact explicitly authorized capability failure; its hosted rerun and disposable graphical Ubuntu qualification remain open.
 
 ## Completed work
 
@@ -171,7 +171,7 @@ Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, 
 
 ## Work in progress
 
-- No code work is in progress. Remaining work is the first hosted CI run and graphical Ubuntu qualification. Untracked `x` remains unrelated and untouched.
+- No code work is in progress. The hosted CI correction is committed locally and awaits push/rerun evidence; graphical Ubuntu qualification remains open.
 
 ## Remaining work
 
@@ -179,11 +179,11 @@ Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, 
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
 - Phase 6: complete, including the final managed Attachment discovery/metadata-add mutation.
-- Phase 7: `.deb`/`.rpm` packaging, version/identifier/MIT metadata, clean-container install/remove qualification, the glibc 2.39 floor, PR CI, and existing-release asset automation are implemented; first hosted-workflow evidence, graphical desktop runtime matrix, Arch-compatible packaging, signing/publication authorization, and final audits remain.
+- Phase 7: `.deb`/`.rpm` packaging, version/identifier/MIT metadata, clean-container install/remove qualification, the glibc 2.39 floor, PR CI, and existing-release asset automation are implemented. The first hosted run diagnosed Bubblewrap loopback setup denial and its exact-error capability correction is local; a green rerun, graphical desktop runtime matrix, Arch-compatible packaging, signing/publication authorization, and final audits remain.
 
 ## Known bugs
 
-No known regression in accepted phases. On the current development host, default Wayland launch exits with a GDK protocol error; the targeted `WEBKIT_DISABLE_DMABUF_RENDERER=1` invocation and X11 both stay alive, so driver/WebKitGTK qualification remains open and no global fallback is configured. Interrupted Category/Guide creation can leave conservative scanner issues; the accepted issue panel names the inert relative location and safe manual recovery step, while ambiguous residue is never deleted or adopted automatically. Automatic watching can degrade on unsupported/network filesystems or exhausted kernel limits; visible degraded state, refocus reconciliation, and manual refresh remain the recovery path.
+No known product regression in accepted phases. Hosted run `35974338222` cannot perform the real networkless credential-proxy smoke because GitHub's runner denies Bubblewrap's loopback `RTM_NEWADDR`; signed correction `a8ced9b` makes that exact hosted limitation a visible skip while retaining strict local/capable-runner coverage. On the current development host, default Wayland launch exits with a GDK protocol error; the targeted `WEBKIT_DISABLE_DMABUF_RENDERER=1` invocation and X11 both stay alive, so driver/WebKitGTK qualification remains open and no global fallback is configured. Interrupted Category/Guide creation can leave conservative scanner issues; the accepted issue panel names the inert relative location and safe manual recovery step, while ambiguous residue is never deleted or adopted automatically. Automatic watching can degrade on unsupported/network filesystems or exhausted kernel limits; visible degraded state, refocus reconciliation, and manual refresh remain the recovery path.
 
 ## Design and accessibility findings
 
@@ -345,10 +345,11 @@ No known regression in accepted phases. On the current development host, default
 
 ## Latest verified commit
 
-`50f827d` — signed Linux CI/release automation checkpoint; its configured signature verifies.
+`a8ced9b` — signed hosted Bubblewrap capability correction; its configured signature verifies.
 
 ## Tests last run and results
 
+- 2026-09-24: Hosted-CI correction passes shell syntax, the real networkless credential-proxy Bubblewrap smoke with the hosted skip opt-in present (it does not skip on this capable host), workflow YAML parsing, `pnpm check`, contract drift, whitespace checks, and signed-commit verification. Existing Node 26.2.0 and pnpm 11.20.0 were unchanged. Hosted rerun evidence remains pending.
 - 2026-09-24: Linux CI/release automation passes checksum-verified actionlint 1.7.9, Ruby YAML parsing, all eight immutable action-reference checks, stable tag/version validation, exact real-package three-file inventory/checksum validation, Cargo format, strict all-target/all-feature Clippy, `pnpm check`, 52 Vitest tests, 494/496 core tests with 2 intentional ignores plus all protocol/API/unknown-YAML suites, 37 desktop tests, 92 MCP tests, 3 approval-helper tests, 1 stdio test, contract/integration checks, production Tauri `.deb`/`.rpm` builds, bundle/digest/license/desktop/icon/ABI smoke, Bootstrap validation (17 required files, 59 ADRs, 8 pinned agents), and whitespace checks. Existing Node 26.2.0 and pnpm 11.20.0 were unchanged.
 - 2026-09-24: README link targets, `pnpm check`, contract drift, and whitespace checks pass on the unchanged installed toolchain.
 - 2026-09-24: MIT licensing passes `pnpm check`, locked all-Workspace/all-target/all-feature Cargo check, production Tauri `.deb`/`.rpm` build, and the complete bundle smoke. Both packages contain a byte-identical `/usr/lib/Rehow/LICENSE`; package metadata declares MIT. Existing Node 26.2.0 and pnpm 11.20.0 were used without installation or switching.
@@ -684,7 +685,7 @@ No product test failure. The repository uses the existing active Node 26.2.0 and
 
 ## Next recommended action
 
-After the workflow commit is deliberately pushed, inspect the first GitHub `CI` run and correct any hosted-runner-only failure. Then run the documented installed-package journey in a disposable graphical Ubuntu 24.04 Wayland/X11 environment. Do not publish a release solely to test the release job; manual dispatch requires an existing published tag.
+Push signed correction `a8ced9b`, inspect the resulting GitHub `CI` run for the expected narrow credential-proxy skip and a green final result, then run the documented installed-package journey in a disposable graphical Ubuntu 24.04 Wayland/X11 environment. Do not publish a release solely to test the release job; manual dispatch requires an existing published tag.
 
 ## Recommended agent role and reasoning effort
 
@@ -695,7 +696,7 @@ Primary Orchestrator with zero routine agents. Use one specialist only if a rele
 1. Read `AGENTS.md` and this file.
 2. Read `docs/evidence/final-release-readiness.md`, `docs/installation.md`, `docs/release.md`, and ADR 0059.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify the latest signed checkpoint, inspect the latest GitHub `CI` run if the commit was pushed, and run `pnpm check` plus `scripts/test-linux-bundles.sh`; do not touch unrelated untracked `x`.
+4. Verify signed checkpoint `a8ced9b`, inspect the resulting GitHub `CI` run after it is pushed, and confirm only the exact Bubblewrap namespace smoke is skipped while the job finishes green; do not touch unrelated untracked `x` if it reappears.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
 7. Resume only the named human release gates. Do not publish, push, create external resources, install packages, or change the active Node/pnpm toolchain without user authorization.
