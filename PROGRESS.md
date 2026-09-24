@@ -169,7 +169,7 @@ Phase 6 is complete. Phase 7A packaging is qualified on Ubuntu 24.04, Debian 13,
 
 ## Work in progress
 
-- Release metadata is being checkpointed. Remaining steps are the project-license choice and graphical Ubuntu qualification. Untracked `x` remains unrelated and untouched.
+- No code work is in progress. Remaining steps are the project-license choice and graphical Ubuntu qualification. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
@@ -342,7 +342,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Latest verified commit
 
-`3e91dbc` — signed release-readiness refresh; its configured signature verifies. The release-metadata update described here follows it and is verified in the working tree before checkpointing.
+`4289018` — signed first-release metadata checkpoint; its configured signature verifies.
 
 ## Tests last run and results
 

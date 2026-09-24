@@ -30,4 +30,4 @@ Date: 2026-09-24
 
 ## Efficient restart
 
-Do not reopen completed feature phases. Resume with the human metadata decisions and access to one disposable graphical Ubuntu 24.04 environment. If that environment is unavailable, keep development metadata and report release qualification as blocked rather than applying a global graphics workaround without evidence.
+Do not reopen completed feature phases. Resume with the project-license choice and access to one disposable graphical Ubuntu 24.04 environment. If that environment is unavailable, report release qualification as blocked rather than applying a global graphics workaround without evidence.
