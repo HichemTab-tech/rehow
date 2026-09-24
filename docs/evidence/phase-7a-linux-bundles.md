@@ -69,7 +69,7 @@ Phase 7 therefore sets Ubuntu 24.04 / glibc 2.39 as the oldest supported binary 
 
 ## Packaged application-menu launch
 
-The `.deb` was extracted to an ignored temporary tree and exposed through temporary `PATH`/`XDG_DATA_DIRS`. On the current Wayland session, `gtk-launch Rehow` resolved the packaged `Rehow.desktop`, started the packaged `/usr/bin/rehow` payload, and kept it alive through the three-second smoke window with empty stdout/stderr when the host-specific `WEBKIT_DISABLE_DMABUF_RENDERER=1` workaround was scoped to that invocation. The exact process was terminated and the temporary tree deleted.
+The `.deb` was extracted to an ignored temporary tree and exposed through temporary `PATH`/`XDG_DATA_DIRS`. On the current Wayland session, `gtk-launch Rehow` resolved the packaged `Rehow.desktop`, started the packaged `/usr/bin/rehow` payload, and kept it alive through the three-second smoke window with empty stdout/stderr when the host-specific `WEBKIT_DISABLE_DMABUF_RENDERER=1` workaround was scoped to that invocation. The exact process was terminated and the temporary tree deleted. Follow-up ADR 0060 moves the cheaper confirmed `__NV_DISABLE_EXPLICIT_SYNC=1` correction into Linux Wayland startup; the rebuilt binary passes without any launcher-supplied variable.
 
 This verifies the packaged desktop ID, `Exec`, runtime lookup, and icon-data layout through the application-menu launch mechanism on the current host. A second clean graphical compositor remains part of the final runtime matrix.
 

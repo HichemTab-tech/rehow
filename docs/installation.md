@@ -98,9 +98,9 @@ Authenticated HTTPS supports a trusted self-contained system helper or the exact
 - Core UI does not require WebGL. If WebKitGTK graphics issues occur, show targeted diagnostics rather than setting global environment workarounds unconditionally.
 - Document troubleshooting in order: current system packages/drivers; then narrowly scoped `__NV_DISABLE_EXPLICIT_SYNC`; then `WEBKIT_DISABLE_DMABUF_RENDERER`; last resort `WEBKIT_DISABLE_COMPOSITING_MODE`, only where the official Tauri guidance applies.
 
-On the 2026-09-22 development host, a normal Wayland launch exited with a GDK protocol error while `WEBKIT_DISABLE_DMABUF_RENDERER=1 rehow` stayed alive cleanly for the five-second smoke window. An X11 launch also stayed alive but logged GBM allocation warnings. This is environment evidence, not a global launcher default: keep the workaround scoped to an affected invocation while driver/WebKitGTK qualification remains open.
+The published `v0.1.0` package exits on the release host's NVIDIA-backed Wayland session with GDK protocol error 71. ADR 0060 corrects the next build by setting `__NV_DISABLE_EXPLICIT_SYNC=1` inside Rehow before WebKitGTK starts, only when `WAYLAND_DISPLAY` is nonempty and the user has not supplied a value. The corrected production binary remains alive on Wayland and X11; X11 still emits nonfatal GBM allocation warnings on this host. `WEBKIT_DISABLE_DMABUF_RENDERER=1 rehow` remains an invocation-scoped fallback if another affected system is not fixed by explicit-sync disabling.
 
-The packaged `.desktop` entry was also launched successfully through `gtk-launch Rehow` on that Wayland session with the same scoped workaround. This verifies menu resolution without installing the package on the host; it does not replace clean graphical testing on another compositor.
+The packaged `.desktop` entry was also launched successfully through `gtk-launch Rehow` on that Wayland session with the earlier scoped workaround. The corrected binary no longer requires a launcher-supplied variable on this host. This verifies menu resolution without replacing clean graphical testing on another compositor.
 
 ## Upgrades and schema compatibility
 

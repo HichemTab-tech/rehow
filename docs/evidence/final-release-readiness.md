@@ -19,7 +19,7 @@ Date: 2026-09-24
 ## Remaining technical acceptance
 
 1. Obtain a successful hosted run of `.github/workflows/ci.yml` for the exact release candidate and resolve any GitHub-runner-only dependency or context failure.
-2. Run the installed package on a clean graphical Ubuntu 24.04 baseline through both supported Wayland and X11 sessions without a terminal-provided environment, then record WebKitGTK/graphics results. The current host needs the invocation-scoped `WEBKIT_DISABLE_DMABUF_RENDERER=1` workaround for Wayland and therefore cannot close this matrix alone.
+2. Run the installed package on a clean graphical Ubuntu 24.04 baseline through both supported Wayland and X11 sessions without a terminal-provided environment, then record WebKitGTK/graphics results. ADR 0060 fixes the current NVIDIA/Wayland host's exact GDK protocol error with a process-scoped explicit-sync setting, but one host cannot close the wider matrix alone.
 3. On that disposable graphical system, complete one install-to-recovery journey: create/open/import, edit/search/copy, Git unavailable and available states, MCP handshake, restart, external conflict, documented recovery, and uninstall with Workspace bytes preserved.
 4. Complete the final keyboard-only and screen-reader smoke on the installed native build. Automated semantic/focus/live-region checks and prior screenshot reviews do not replace this manual gate.
 5. After those results, perform the final combined security, accessibility, visual, installation, and documentation audit. Do not rerun accepted subsystem reviews unless the release correction changes them.
