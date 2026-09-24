@@ -5,21 +5,22 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-The compact final requirements audit is closed. Phase 7 now has first-release metadata, reproducible PR/push/manual CI, least-privilege existing-release publication, and native Debian, RPM, and Arch/Omarchy packages. Hosted Release run `35990325063` passed from signed tag commit `596123a`; the existing release now contains all three packages and a verified three-entry checksum inventory. Clean graphical qualification remains open.
+The compact final requirements audit is closed. Phase 7 now has first-release metadata, reproducible PR/push/manual CI, least-privilege existing-release publication, and native Debian, RPM, and Arch/Omarchy packages. Installed `v0.1.0` exposed a confirmed NVIDIA/Wayland WebKitGTK startup failure. ADR 0060's scoped explicit-sync correction is implemented and passes production Wayland/X11 smoke; clean graphical qualification remains open.
 
 ## Current task
 
-Push signed native Arch packaging checkpoint `c2d88cd` when authorized, then install the published `rehow-0.1.0-1-x86_64.pkg.tar.zst` on Omarchy. Do not move the published tag.
+Human checkpoint: obtain authorization to push signed fix `b213cf9`, bump to a patch release, create/push its new tag, and publish fixed packages. Do not replace `v0.1.0` assets with binaries from a different commit or move the published tag.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, the current Arch/Omarchy host, and a disposable native pacman install/remove container. Version `0.1.0`, stable identifier `me.hichemtab-tech.rehow`, MIT licensing, and `.deb`/`.rpm`/`.pkg.tar.zst` targets are selected. PR/push/manual CI and split-privilege published-release automation are implemented under ADR 0059. Hosted Release run `35990325063` passed from signed tag commit `596123a`; the Arch artifact was subsequently built from that release's exact Debian payload and published without moving the tag. Graphical Ubuntu qualification remains open.
+Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, the current Arch/Omarchy host, and a disposable native pacman install/remove container. The published `v0.1.0` assets are internally valid but the desktop exits with GDK protocol error 71 on the release host's NVIDIA/Wayland session. The corrected binary sets only `__NV_DISABLE_EXPLICIT_SYNC=1` before WebKitGTK when Wayland is present and no user value exists; normal Wayland and X11 launches remain alive. PR/push/manual CI and split-privilege publication remain implemented under ADR 0059. Graphical Ubuntu qualification remains open.
 
 ## Completed work
 
 - Added immutable-action-pinned GitHub CI for pull requests, `master`, and manual dispatch plus a split-privilege published-release workflow. Ubuntu 24.04 runs the full checks/tests and builds/smokes `.deb`/`.rpm`/Arch packages; an isolated write-authorized job validates exactly those packages plus SHA-256 checksums before uploading to an existing matching release. ADR 0059 and `docs/release.md` record the Linux-only policy, native Omarchy path, retry path, and signing exclusions.
 - Added a reviewed `makepkg` template and build script for `rehow-0.1.0-1-x86_64.pkg.tar.zst`. It repackages the exact inspected Debian `/usr` payload without stripping inside a digest-pinned, network-disabled Arch container. Cross-format byte comparison, package metadata, ABI/helper binding, and disposable pacman install/remove gates pass without changing the host.
 - Published the native Arch artifact to `v0.1.0` from the exact existing Debian release payload and replaced `Rehow_0.1.0_SHA256SUMS.txt` with verified entries for all three packages. The published Arch SHA-256 is `835723c7cd3cc8f45b8f94c8c7e653d8e21455344d2a0f26b371eac1a6e3b572`; the tag remains at `596123a`.
+- Diagnosed the installed Arch package's immediate exit: no coredump/OOM; direct launch exits 1 with exact GDK Wayland protocol error 71. Current official Tauri guidance and host tests show NVIDIA explicit-sync disabling fixes it without disabling DMABUF. ADR 0060 and the desktop entry point apply that process-scoped Wayland default before any threads while preserving explicit user values.
 - Added the public-facing README with an actual Reference Desk screenshot, implemented capabilities, pre-release status, build/package paths, Workspace and MCP boundaries, safety principles, development entry points, and MIT license link.
 - Inspected repository/Git history/status: no initial files/commits/remotes.
 - Inspected toolchain: Git 2.55.0, Node 26.2.0, current machine pnpm 11.20.0, Rust/Cargo 1.98.0; no standalone global Tauri CLI. No Node/pnpm installation or switch was performed.
@@ -339,7 +340,8 @@ No known product regression remains uncorrected in accepted phases. Hosted Ubunt
 ## Blockers and human checkpoints
 
 - MIT, version `0.1.0`, identifier `me.hichemtab-tech.rehow`, and all three Linux package formats are selected. The existing GitHub release is published; publisher signatures still require a separate key-custody decision.
-- Final graphical acceptance needs access to one disposable Ubuntu 24.04 graphical environment with Wayland and X11. The current host's normal Wayland launch fails in WebKit/GDK unless the invocation-scoped DMABUF workaround is used; evidence does not justify a global launcher workaround.
+- Final graphical acceptance still needs one disposable Ubuntu 24.04 graphical environment with Wayland and X11. The current NVIDIA/Wayland host now passes normal startup through ADR 0060's Rehow-only explicit-sync setting; it does not justify claiming every compositor/driver combination qualified.
+- The published `v0.1.0` binaries predate ADR 0060 and retain the NVIDIA/Wayland startup bug. Publication of a fixed patch release requires explicit push/tag/release authorization; the existing tag must remain immutable.
 - Routine work uses zero extra agents; one specialist is used only at mandatory acceptance gates.
 - The active existing host tools are Node 26.2.0 and pnpm 11.20.0. The repository accepts pnpm 11 per user direction; no install or version switch was performed, and `pnpm check` passes.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
@@ -347,10 +349,11 @@ No known product regression remains uncorrected in accepted phases. Hosted Ubunt
 
 ## Latest verified commit
 
-`c2d88cd` — signed native Arch package/workflow checkpoint; its configured signature verifies. This documentation-only follow-up records the subsequently published asset and is intentionally not claimed as part of `c2d88cd`.
+`b213cf9` — signed NVIDIA/Wayland startup correction; its configured signature verifies. This PROGRESS-only follow-up records the exact checkpoint and is intentionally not claimed as part of `b213cf9`.
 
 ## Tests last run and results
 
+- 2026-09-24: ADR 0060 Wayland startup correction passes 3 decision-unit tests, focused desktop strict Clippy, Cargo formatting, a complete production Tauri `.deb`/`.rpm` build, native Arch construction, all three bundle/helper/license/icon/desktop/ABI checks, and disposable pacman install/remove. The rebuilt binary stays alive for eight-second normal Wayland and X11 smokes. An explicit `__NV_DISABLE_EXPLICIT_SYNC=0` is preserved and reproduces exit 1 with the prior GDK protocol error, proving both the fix and override behavior. Existing Node 26.2.0 and pnpm 11.20.0 were unchanged.
 - 2026-09-24: Native Arch packaging passes shell syntax, workflow YAML parsing, deterministic payload checksum validation, digest-pinned/network-disabled unprivileged `makepkg`, Arch `.PKGINFO`/`.BUILDINFO`/`.MTREE` checks, exact Debian-to-Arch `/usr` byte comparison, all five executable modes/link counts, helper digest binding, license/desktop/icon checks, the glibc 2.39 ABI ceiling, and a disposable networkless `pacman -U`/`pacman -R` journey. Artifact: `target/release/bundle/arch/rehow-0.1.0-1-x86_64.pkg.tar.zst`. No host package, Node version, or pnpm version was installed or switched.
 - 2026-09-24: The published `v0.1.0` Debian/RPM assets were downloaded into a temporary directory, the Arch package was rebuilt from the downloaded Debian payload, and the full three-format smoke plus disposable pacman install/remove gate passed. GitHub now reports the Arch asset at 8,519,316 bytes with SHA-256 `835723c7cd3cc8f45b8f94c8c7e653d8e21455344d2a0f26b371eac1a6e3b572`; the replacement checksum file verifies all three release assets.
 - 2026-09-24: Hermetic SSH daemon-fixture correction passes the exact authenticated SSH clone/sync loopback test, strict core all-target/all-feature Clippy, Cargo formatting, `pnpm check`, contract drift, Bootstrap validation (17 required files, 59 ADRs, 8 pinned agents), whitespace checks, and signed-commit verification. A disposable Ubuntu 24.04 container confirms an unprivileged daemon with generated host key and the standard runtime directory can listen. The fixture reads `/dev/null` configuration, binds only `127.0.0.1`, and caps early-exit stderr at 8 KiB. Existing Node 26.2.0 and pnpm 11.20.0 were unchanged; hosted confirmation remains pending.
@@ -559,11 +562,12 @@ No known product regression remains uncorrected in accepted phases. Hosted Ubunt
 
 ## Known test failures
 
-No product regression is known. Hosted Release run `35990325063` completed successfully after the SSH fixture corrections. The new Arch path passes local construction, extraction, metadata, payload identity, disposable pacman install/remove, and exact published-asset checksum checks; its updated workflow has not yet run on GitHub. The repository uses the existing active Node 26.2.0 and pnpm 11.20.0 selected by the user; no install or version switch occurred.
+The published `v0.1.0` desktop has one confirmed NVIDIA/Wayland startup failure; ADR 0060 corrects it in the next build. No coredump, OOM, or Workspace data loss occurred. No other product regression is known. The updated Arch/release workflow has not yet run on GitHub. The repository uses the existing active Node 26.2.0 and pnpm 11.20.0 selected by the user; no install or version switch occurred.
 
 ## Important files changed
 
 - Hosted automation and native Arch packaging: `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `packaging/arch/PKGBUILD.template`, `scripts/build-arch-package.sh`, `scripts/test-linux-bundles.sh`, ADR 0059, and aligned README/release/installation/development documentation.
+- Wayland startup correction: `apps/desktop/src-tauri/src/main.rs`, ADR 0060, `docs/installation.md`, and the Phase 7/final-release evidence.
 - Public project entry point: `README.md` links verified product imagery and the authoritative installation, content-model, MCP, security, development, product, architecture, progress, and license documents.
 - Release metadata: `LICENSE`, Cargo/npm/Tauri metadata, installer paths, bundle smoke defaults, and readiness documentation consistently use MIT, `0.1.0`, and `me.hichemtab-tech.rehow`; `.deb`, `.rpm`, and native Arch packages are the Linux x86_64 targets.
 - Guarded Guide file/shadcn foundation: ADR 0058, the core held-file capability, pathless native portal command, Open File UI, `apps/desktop/components.json`, reviewed `Button`/`cn` source, lockfile, and aligned architecture/design/development/testing/threat docs are checkpointed at `2f3668a`.
@@ -694,7 +698,7 @@ No product regression is known. Hosted Release run `35990325063` completed succe
 
 ## Next recommended action
 
-Push signed checkpoint `c2d88cd` when authorized so future releases build all three formats automatically. The user can now download `rehow-0.1.0-1-x86_64.pkg.tar.zst` from `v0.1.0` and install it with `sudo pacman -U`; host installation remains an explicit user action.
+Request explicit authorization to push signed fix `b213cf9`, bump to a patch release, create/push the new tag, and publish fixed assets. Until then, the locally rebuilt `target/release/bundle/arch/rehow-0.1.0-1-x86_64.pkg.tar.zst` can be deliberately reinstalled for host verification, but the published `v0.1.0` asset is not fixed.
 
 ## Recommended agent role and reasoning effort
 
@@ -703,9 +707,9 @@ Primary Orchestrator with zero routine agents. Use one specialist only if a rele
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read `docs/evidence/final-release-readiness.md`, `docs/installation.md`, `docs/release.md`, and ADR 0059.
+2. Read `docs/evidence/final-release-readiness.md`, `docs/installation.md`, `docs/release.md`, ADR 0059, and ADR 0060.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `c2d88cd`, hosted Release run `35990325063`, and the four-asset `v0.1.0` inventory, then resume with the explicit push or host-install action recorded above; do not move `v0.1.0` or touch unrelated untracked `x` if it reappears.
+4. Verify signed checkpoint `b213cf9` and its recorded Wayland/X11 evidence, then resume at the explicit push/patch-release permission boundary; do not move `v0.1.0` or touch unrelated untracked `x` if it reappears.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
-7. The authorized Arch release asset is published. Do not push code, create another release/tag, install a host package, or change the active Node/pnpm toolchain without separate authorization.
+7. The original authorized Arch asset is published but retains the startup bug. Do not push code, create another release/tag, replace existing assets, install a host package, or change the active Node/pnpm toolchain without separate authorization.
