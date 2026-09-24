@@ -171,7 +171,7 @@ Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, 
 
 ## Work in progress
 
-- CI/release automation is being checkpointed. Remaining work is its first hosted run and graphical Ubuntu qualification. Untracked `x` remains unrelated and untouched.
+- No code work is in progress. Remaining work is the first hosted CI run and graphical Ubuntu qualification. Untracked `x` remains unrelated and untouched.
 
 ## Remaining work
 
@@ -345,7 +345,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Latest verified commit
 
-`23920cf` — signed public README checkpoint; its configured signature verifies.
+`50f827d` — signed Linux CI/release automation checkpoint; its configured signature verifies.
 
 ## Tests last run and results
 
