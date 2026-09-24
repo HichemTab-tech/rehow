@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-The compact final requirements audit is closed. Phase 7 now has first-release metadata, reproducible PR/push/manual CI, least-privilege existing-release publication, and native Debian, RPM, and Arch/Omarchy packages. Installed `v0.1.0` exposed a confirmed NVIDIA/Wayland startup failure and a synchronous native folder-picker hang. The scoped startup correction passes production Wayland/X11 smoke; both Workspace folder pickers are now awaited and parented without retaining application state. Clean graphical qualification remains open.
+Phase 7 correction work now includes the Wayland and folder-picker fixes plus safe Git-author onboarding, state-aware remote actions, and discoverable Codex/ChatGPT MCP setup. The implementation, full automated repository gate, independent security correction review, and signed checkpoint pass. Clean installed-package graphical qualification remains open.
 
 ## Current task
 
-Reinstall the locally rebuilt Arch package and manually verify open/cancel/select folder-picker liveness. Then obtain authorization to push the combined fixes, bump to a patch release, create/push its new tag, and publish fixed packages. Do not replace `v0.1.0` assets with binaries from a different commit or move the published tag.
+Build and install the next local Arch package for one combined manual smoke: launch, open/cancel/select Workspace picker, import or enter Git author, existing-remote labeling, and Settings → AI & MCP at wide/narrow sizes. Pushing, tagging, or publishing still requires explicit authorization.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, the current Arch/Omarchy host, and a disposable native pacman install/remove container. The published `v0.1.0` assets are internally valid but have two current-host runtime defects: GDK protocol error 71 at NVIDIA/Wayland startup and a compositor unresponsive warning while the blocking Workspace chooser is open. The corrected binary applies the scoped explicit-sync setting, uses rfd's async parented portal picker for both folder flows, and acquires lifecycle/Workspace state only after selection returns. PR/push/manual CI and split-privilege publication remain implemented under ADR 0059. Graphical Ubuntu qualification remains open.
+Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, the current Arch/Omarchy host, and a disposable native pacman install/remove container. The published `v0.1.0` assets remain superseded by local corrections. Checkpoint `743124d` additionally offers absent-only repository-local Git author setup with optional safe global import, never overwrites existing remotes, and generates least-authority Codex or ChatGPT Secure MCP Tunnel setup without exposing a Workspace path or credentials to renderer IPC. Full checks/tests/build and the final Security Reviewer pass on installed Node 26.2.0 and pnpm 11.3.0; no tool was installed or switched.
 
 ## Completed work
 
@@ -175,7 +175,7 @@ Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, 
 
 ## Work in progress
 
-- No code work is in progress. The hermetic SSH-fixture correction is committed locally and awaits push/rerun evidence; graphical Ubuntu qualification remains open.
+- No code work is in progress. Git/MCP onboarding is checkpointed at signed `743124d`; only this verified progress-ledger update follows it. Local installed-package visual/manual smoke and publication authorization remain.
 
 ## Remaining work
 
@@ -184,13 +184,15 @@ Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, 
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
 - Phase 6: complete, including the final managed Attachment discovery/metadata-add mutation.
 - Phase 7: `.deb`/`.rpm` packaging, version/identifier/MIT metadata, clean-container install/remove qualification, the glibc 2.39 floor, PR CI, and existing-release asset automation are implemented. Six hosted failures diagnosed Ubuntu's AppArmor, loader, and SSH-fixture differences; all corrections are local and the remaining daemon fixture no longer inherits host configuration. A green rerun, graphical desktop runtime matrix, Arch-compatible packaging, signing/publication authorization, and final audits remain.
+- Build/install a corrected patch package and manually verify the new Git-author and MCP Settings states plus the existing chooser fix. Remote URL replacement and automatic client/tunnel configuration remain deliberately deferred.
 
 ## Known bugs
 
-No known product regression remains uncorrected in accepted phases. Hosted Ubuntu requires the AppArmor user-namespace setup, distro-preserving `/usr/lib64`, `/usr/sbin/sshd`, and `/run/sshd`; the loopback daemon now additionally reads no host config and binds only IPv4 loopback. Signed checkpoints through `e40222f` keep every sandbox and SSH test mandatory and make any further daemon failure explicit; hosted confirmation remains pending. On the current development host, default Wayland launch exits with a GDK protocol error; the targeted `WEBKIT_DISABLE_DMABUF_RENDERER=1` invocation and X11 both stay alive, so driver/WebKitGTK qualification remains open and no global fallback is configured. Interrupted Category/Guide creation can leave conservative scanner issues; the accepted issue panel names the inert relative location and safe manual recovery step, while ambiguous residue is never deleted or adopted automatically. Automatic watching can degrade on unsupported/network filesystems or exhausted kernel limits; visible degraded state, refocus reconciliation, and manual refresh remain the recovery path.
+The published `v0.1.0` package still contains the already-corrected NVIDIA/Wayland startup and blocking folder-picker defects; users need a later patch release to receive the fixes. No new automated regression is known. A repository with partial, duplicate, or invalid local `user.name`/`user.email` is intentionally not overwritten by Rehow and must be repaired with normal Git tooling. Hosted confirmation and clean graphical qualification remain pending.
 
 ## Design and accessibility findings
 
+- 2026-09-24: The Git-author form, state-aware remote form, and AI & MCP Settings section pass the freshly fetched Web Interface Guidelines static gate: semantic labeled controls, explicit permission choices, visible focus, bounded inputs, actionable inline errors, copy failure feedback, safe long-command wrapping, responsive dialog scrolling, reduced-motion neutrality, and no marketing/card/gradient treatment. The new Settings geometry still needs the combined installed-package wide/narrow visual smoke before release.
 - 2026-09-24: The loaded-Guide Open File action and source-owned shadcn Button primitive pass the current static guidelines. Open File is a named semantic control with busy/disabled state, polite feedback, error focus, read-only Workspace availability, and no renderer path. The shadcn primitive retains existing Reference Desk sizing/contrast/focus styles instead of introducing raw defaults.
 - 2026-09-24: External Guide conflict handling passed the freshly fetched Web Interface Guidelines static review. Compare/Keep Draft/Reload are semantic named buttons, destructive reload confirms all unsaved-edit loss, hostile content remains inert in labeled read-only controls, focus is visible, and the comparison collapses to one column at narrow widths. No screenshot cycle was repeated for this bounded reader-top state.
 - 2026-09-23: Complete Guide context passed the freshly fetched Web Interface Guidelines and visual inspection at 1200×900 light and 480×900 dark. Warnings remain prominent; semantic headings/buttons, visible focus, guarded Reference activity, escaped long content, responsive grids, working Active/Archive navigation, and scrollable narrow continuation pass without gradients, nested cards, clipping, or hidden content. Evidence is in `docs/evidence/phase-3-guide-context-reader.md`.
@@ -231,6 +233,7 @@ No known product regression remains uncorrected in accepted phases. Hosted Ubunt
 
 ## Security findings
 
+- ADR 0061 keeps global Git identity behind launch-captured owner/no-follow/stability checks, rejects include/includeIf directives, and redacts values outside native confirmation. Local setup is absent-only, revision-bound, atomically exchanged, recovery-preserving, and never changes global configuration. ADR 0062 defaults MCP setup to read-only, validates aliases, prompts for paths/tunnel IDs as quoted Bash data, `%q`-escapes the tunnel command, and grants no client-config, process-service, tunnel, token, or credential authority. The Security Reviewer found one high, three medium, and one low issue; all were corrected, and the exact correction review verdict is PASS.
 - ADR 0059 keeps repository code and release credentials in different jobs. The build job has read-only contents permission; every action uses an immutable commit; the publish job checks out/executes no repository code, accepts exactly four named regular artifacts, validates checksum grammar and hashes, confirms an existing non-draft release, and uploads explicit names only. It cannot create a tag/release. Arch construction runs unprivileged in a digest-pinned networkless container, preserves the inspected payload byte-for-byte, and cannot alter the digest-bound helper. Hosted Debian/RPM publication and local Arch gates pass.
 - ADR 0058 accepts only Workspace session, Guide ID, and exact revision. Core retains a bounded one-link regular-file descriptor, verifies bytes/metadata/current inode identity, and passes only a read-only duplicate to XDG Portal `OpenFile` with fixed `ask=true`/`writable=false`. IPC and errors are pathless; external-change and symlink-substitution tests pass.
 - External comparison accepts only the selected stable Guide ID. Rust resolves its core-owned relative path from the retained Workspace capability, rejects unsafe/changed/malformed storage, verifies the stable ID, and returns no path. The snapshot never mutates the retained view; Reload is separate and explicitly confirmed. Focused core/native/UI tests and strict Clippy pass.
@@ -344,16 +347,18 @@ No known product regression remains uncorrected in accepted phases. Hosted Ubunt
 - Final graphical acceptance still needs one disposable Ubuntu 24.04 graphical environment with Wayland and X11. The current NVIDIA/Wayland host now passes normal startup through ADR 0060's Rehow-only explicit-sync setting; it does not justify claiming every compositor/driver combination qualified.
 - The published `v0.1.0` binaries predate both runtime corrections and retain the NVIDIA/Wayland startup bug plus blocking folder-picker warning. Publication of a fixed patch release requires explicit push/tag/release authorization; the existing tag must remain immutable.
 - Routine work uses zero extra agents; one specialist is used only at mandatory acceptance gates.
-- The active existing host tools are Node 26.2.0 and pnpm 11.20.0. The repository accepts pnpm 11 per user direction; no install or version switch was performed, and `pnpm check` passes.
+- The active existing host tools are Node 26.2.0 and pnpm 11.3.0. The repository accepts pnpm 11 per user direction; checks use the installed version with pnpm's project-version warning overridden. No install or version switch was performed.
 - Writing `.codex/` previously required and received a scoped environment permission; no global Codex configuration was changed.
 - An unrelated untracked Rust executable named `x` appeared during the review window. All three participating agents denied creating it; it has not been executed, modified, staged, or removed and is excluded from Rehow checkpoints. It does not overlap the accepted documentation.
 
 ## Latest verified commit
 
-`a86d4dc` — signed asynchronous parented folder-picker correction; its configured signature verifies. This PROGRESS-only follow-up records the exact checkpoint and is intentionally not claimed as part of `a86d4dc`.
+`743124d` — signed Git/MCP onboarding correction; its configured signature verifies. This PROGRESS-only follow-up records the exact checkpoint and is intentionally not claimed as part of it.
 
 ## Tests last run and results
 
+- 2026-09-24: Security-review corrections pass the focused global-identity test, 55 Vitest tests, `pnpm check`, strict all-Workspace/all-target/all-feature Clippy, Cargo/Biome formatting, Bootstrap validation (17 required files, 62 ADRs, 8 pinned agents), contract drift, whitespace checks, and the production Vite/Cargo build. The earlier same-change full gate remains green. Signed checkpoint `743124d` verifies; final correction-review verdict: PASS.
+- 2026-09-24: Git/MCP onboarding passes `pnpm check`, 55 Vitest tests, strict all-Workspace/all-target/all-feature Clippy, Cargo formatting, full locked tests (497 core passed/2 intentional ignores, 18 error-contract, 13 protocol, public API/trybuild, 11 unknown-YAML, 38 desktop library, 3 desktop entry, 92 MCP, 3 approval-helper, 1 stdio), credential-proxy smoke, contract drift, and production Vite/Cargo build. Focused tests cover safe global identity provenance/redaction, atomic absent-only local setup, partial/stale refusal, closed/pathless native/UI payloads, state-aware remotes, and least-authority MCP templates. Existing Node 26.2.0 and pnpm 11.3.0 were used without installation or switching.
 - 2026-09-24: Native folder-picker correction passes Rust formatting, all 40 desktop tests, strict desktop all-target/all-feature Clippy, `pnpm check`, production Tauri `.deb`/`.rpm` build, native Arch construction, all three package/helper/license/icon/desktop/ABI checks, and disposable pacman install/remove. Both async dialogs compile with Tauri-owned parent windows; code inspection confirms no mutex, lifecycle state, or Workspace capability exists across the sole dialog await. Manual open/cancel/select liveness on the newly installed package remains the final interaction check.
 - 2026-09-24: ADR 0060 Wayland startup correction passes 3 decision-unit tests, focused desktop strict Clippy, Cargo formatting, a complete production Tauri `.deb`/`.rpm` build, native Arch construction, all three bundle/helper/license/icon/desktop/ABI checks, and disposable pacman install/remove. The rebuilt binary stays alive for eight-second normal Wayland and X11 smokes. An explicit `__NV_DISABLE_EXPLICIT_SYNC=0` is preserved and reproduces exit 1 with the prior GDK protocol error, proving both the fix and override behavior. Existing Node 26.2.0 and pnpm 11.20.0 were unchanged.
 - 2026-09-24: Native Arch packaging passes shell syntax, workflow YAML parsing, deterministic payload checksum validation, digest-pinned/network-disabled unprivileged `makepkg`, Arch `.PKGINFO`/`.BUILDINFO`/`.MTREE` checks, exact Debian-to-Arch `/usr` byte comparison, all five executable modes/link counts, helper digest binding, license/desktop/icon checks, the glibc 2.39 ABI ceiling, and a disposable networkless `pacman -U`/`pacman -R` journey. Artifact: `target/release/bundle/arch/rehow-0.1.0-1-x86_64.pkg.tar.zst`. No host package, Node version, or pnpm version was installed or switched.
@@ -564,10 +569,11 @@ No known product regression remains uncorrected in accepted phases. Hosted Ubunt
 
 ## Known test failures
 
-The published `v0.1.0` desktop has two confirmed current-host failures: NVIDIA/Wayland startup and a compositor responsiveness warning around the blocking Workspace chooser. Both are corrected in the next build; manual chooser liveness after host installation remains pending. No coredump, OOM, or Workspace data loss occurred. No other product regression is known. The updated Arch/release workflow has not yet run on GitHub. The repository uses the existing active Node 26.2.0 and pnpm 11.20.0 selected by the user; no install or version switch occurred.
+The published `v0.1.0` desktop has two confirmed current-host failures: NVIDIA/Wayland startup and a compositor responsiveness warning around the blocking Workspace chooser. Both are corrected in the next build; manual chooser liveness after host installation remains pending. No coredump, OOM, or Workspace data loss occurred. No other product regression is known. The updated Arch/release workflow has not yet run on GitHub. The repository used the existing active Node 26.2.0 and pnpm 11.3.0 with no install or version switch.
 
 ## Important files changed
 
+- Git/MCP onboarding at signed `743124d`: `crates/rehow-core/src/git{.rs,/https_credentials.rs}`, `apps/desktop/src-tauri/src/lib.rs`, `apps/desktop/src/{App.tsx,app.test.ts,index.css}`, ADRs 0061/0062, `docs/task-packets/git-and-mcp-onboarding-polish.md`, and aligned architecture/MCP/installation/testing/threat documentation.
 - Hosted automation and native Arch packaging: `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `packaging/arch/PKGBUILD.template`, `scripts/build-arch-package.sh`, `scripts/test-linux-bundles.sh`, ADR 0059, and aligned README/release/installation/development documentation.
 - Wayland startup correction: `apps/desktop/src-tauri/src/main.rs`, ADR 0060, `docs/installation.md`, and the Phase 7/final-release evidence.
 - Native dialog correction: `apps/desktop/src-tauri/src/lib.rs` plus aligned architecture, testing, installation, and recovery documentation.
@@ -701,18 +707,18 @@ The published `v0.1.0` desktop has two confirmed current-host failures: NVIDIA/W
 
 ## Next recommended action
 
-Reinstall the locally rebuilt `target/release/bundle/arch/rehow-0.1.0-1-x86_64.pkg.tar.zst` and manually verify chooser open/cancel/select liveness. Then request explicit authorization to push the combined runtime fixes, bump to a patch release, create/push the new tag, and publish fixed assets. The published `v0.1.0` asset is not fixed.
+Build/install the corrected Arch package and manually verify chooser liveness, Git-author onboarding, remote labeling, and the AI & MCP Settings panel. After that, request explicit authorization before pushing, tagging a patch release, or publishing assets. Do not modify the published `v0.1.0` tag/assets.
 
 ## Recommended agent role and reasoning effort
 
-Primary Orchestrator with zero routine agents. Use one specialist only if a release correction changes a security- or UI-sensitive boundary.
+Primary Orchestrator with zero routine agents. The mandatory Security Reviewer/xhigh correction pass is closed; do not start another agent for the manual/package continuation.
 
 ## Explicit restart instructions
 
 1. Read `AGENTS.md` and this file.
-2. Read `docs/evidence/final-release-readiness.md`, `docs/installation.md`, `docs/release.md`, ADR 0059, and ADR 0060.
+2. Read ADRs 0061/0062, `docs/mcp-setup.md`, `docs/threat-model.md`, and `docs/task-packets/git-and-mcp-onboarding-polish.md`, then the release-readiness documents if packaging resumes.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoints `b213cf9` and `a86d4dc` plus their package evidence, then resume with local chooser verification before the explicit push/patch-release permission boundary; do not move `v0.1.0` or touch unrelated untracked `x` if it reappears.
+4. Verify signed checkpoint `743124d`, then build the local package and perform the combined manual smoke before the explicit push/patch-release permission boundary.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
-6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
+6. Treat the 45-tool Phase 6 server as accepted; this change adds only client setup guidance and does not alter MCP handlers.
 7. The original authorized Arch asset is published but retains the startup bug. Do not push code, create another release/tag, replace existing assets, install a host package, or change the active Node/pnpm toolchain without separate authorization.
