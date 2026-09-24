@@ -5,19 +5,20 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-The compact final requirements audit is closed. Phase 7 now has first-release metadata, reproducible PR/push/manual CI, and least-privilege existing-release publication for qualified Linux packages. Six hosted runs identified Ubuntu's AppArmor/user-namespace, loader-topology, and OpenSSH fixture differences; the SSH daemon fixture is now hermetic and diagnostic. Clean graphical qualification remains open.
+The compact final requirements audit is closed. Phase 7 now has first-release metadata, reproducible PR/push/manual CI, least-privilege existing-release publication, and native Debian, RPM, and Arch/Omarchy packages. Hosted Release run `35990325063` passed from signed tag commit `596123a` and published the original Debian/RPM assets. Native Arch packaging is implemented and locally qualified; clean graphical qualification remains open.
 
 ## Current task
 
-Push the hermetic SSH daemon-fixture correction, verify the next GitHub Actions run executes the complete suite, then qualify the installed `0.1.0` packages in a disposable graphical Ubuntu 24.04 Wayland/X11 environment.
+Commit the native Arch packaging checkpoint, add its package and updated checksum inventory to the existing `v0.1.0` release from that tag's published Debian payload, then install the downloaded Arch asset on Omarchy. Do not move the published tag.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Version `0.1.0`, stable identifier `me.hichemtab-tech.rehow`, MIT licensing, and both `.deb`/`.rpm` targets are selected. PR/push/manual CI and published-release asset automation are implemented under ADR 0059. Hosted runs through `35980439869` resolved Ubuntu's AppArmor, loader topology, fixed daemon path, and runtime directory. Run `35983865531` still passed 493 core tests but showed the daemon exiting before listen with stderr hidden. A disposable Ubuntu 24.04 reproduction passes the fixture inputs; signed correction `e40222f` removes host `sshd_config` and IPv6 authority, binds only IPv4 loopback, and caps/reports early-exit stderr. Its hosted rerun and graphical Ubuntu qualification remain open.
+Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, the current Arch/Omarchy host, and a disposable native pacman install/remove container. Version `0.1.0`, stable identifier `me.hichemtab-tech.rehow`, MIT licensing, and `.deb`/`.rpm`/`.pkg.tar.zst` targets are selected. PR/push/manual CI and split-privilege published-release automation are implemented under ADR 0059. Hosted Release run `35990325063` passed from signed tag commit `596123a`; graphical Ubuntu qualification remains open.
 
 ## Completed work
 
-- Added immutable-action-pinned GitHub CI for pull requests, `master`, and manual dispatch plus a split-privilege published-release workflow. Ubuntu 24.04 runs the full checks/tests and builds/smokes `.deb`/`.rpm`; an isolated write-authorized job validates exactly those packages plus SHA-256 checksums before uploading to an existing matching release. ADR 0059 and `docs/release.md` record the Linux-only policy, Omarchy/Arch packaging gap, retry path, and signing exclusions.
+- Added immutable-action-pinned GitHub CI for pull requests, `master`, and manual dispatch plus a split-privilege published-release workflow. Ubuntu 24.04 runs the full checks/tests and builds/smokes `.deb`/`.rpm`/Arch packages; an isolated write-authorized job validates exactly those packages plus SHA-256 checksums before uploading to an existing matching release. ADR 0059 and `docs/release.md` record the Linux-only policy, native Omarchy path, retry path, and signing exclusions.
+- Added a reviewed `makepkg` template and build script for `rehow-0.1.0-1-x86_64.pkg.tar.zst`. It repackages the exact inspected Debian `/usr` payload without stripping inside a digest-pinned, network-disabled Arch container. Cross-format byte comparison, package metadata, ABI/helper binding, and disposable pacman install/remove gates pass without changing the host.
 - Added the public-facing README with an actual Reference Desk screenshot, implemented capabilities, pre-release status, build/package paths, Workspace and MCP boundaries, safety principles, development entry points, and MIT license link.
 - Inspected repository/Git history/status: no initial files/commits/remotes.
 - Inspected toolchain: Git 2.55.0, Node 26.2.0, current machine pnpm 11.20.0, Rust/Cargo 1.98.0; no standalone global Tauri CLI. No Node/pnpm installation or switch was performed.
@@ -227,7 +228,7 @@ No known product regression remains uncorrected in accepted phases. Hosted Ubunt
 
 ## Security findings
 
-- ADR 0059 keeps repository code and release credentials in different jobs. The build job has read-only contents permission; every action uses an immutable commit; the publish job checks out/executes no repository code, accepts exactly three named regular artifacts, validates checksum grammar and hashes, confirms an existing non-draft release, and uploads explicit names only. It cannot create a tag/release. Local workflow syntax, action pins, tag/version binding, inventory, and checksum tests pass; the first hosted run remains required.
+- ADR 0059 keeps repository code and release credentials in different jobs. The build job has read-only contents permission; every action uses an immutable commit; the publish job checks out/executes no repository code, accepts exactly four named regular artifacts, validates checksum grammar and hashes, confirms an existing non-draft release, and uploads explicit names only. It cannot create a tag/release. Arch construction runs unprivileged in a digest-pinned networkless container, preserves the inspected payload byte-for-byte, and cannot alter the digest-bound helper. Hosted Debian/RPM publication and local Arch gates pass.
 - ADR 0058 accepts only Workspace session, Guide ID, and exact revision. Core retains a bounded one-link regular-file descriptor, verifies bytes/metadata/current inode identity, and passes only a read-only duplicate to XDG Portal `OpenFile` with fixed `ask=true`/`writable=false`. IPC and errors are pathless; external-change and symlink-substitution tests pass.
 - External comparison accepts only the selected stable Guide ID. Rust resolves its core-owned relative path from the retained Workspace capability, rejects unsafe/changed/malformed storage, verifies the stable ID, and returns no path. The snapshot never mutates the retained view; Reload is separate and explicitly confirmed. Focused core/native/UI tests and strict Clippy pass.
 - Selected-Guide context stays out of the Workspace list payload and renders only escaped text/fixed controls. Reference opening now accepts an exact URL only when the freshly reread revision retains it in the safe body AST or canonical validated Reference metadata; session/revision binding, portal `ask=true`, single-flight behavior, and URL-redacted native results/errors remain unchanged. Core and inert-rendering adversarial tests pass; security self-review found no unresolved blocker/high issue.
@@ -336,7 +337,7 @@ No known product regression remains uncorrected in accepted phases. Hosted Ubunt
 
 ## Blockers and human checkpoints
 
-- MIT, version `0.1.0`, identifier `me.hichemtab-tech.rehow`, and both Linux package formats are selected. Artifact signing/publication still requires explicit authorization and credentials.
+- MIT, version `0.1.0`, identifier `me.hichemtab-tech.rehow`, and all three Linux package formats are selected. The existing GitHub release is published; publisher signatures still require a separate key-custody decision.
 - Final graphical acceptance needs access to one disposable Ubuntu 24.04 graphical environment with Wayland and X11. The current host's normal Wayland launch fails in WebKit/GDK unless the invocation-scoped DMABUF workaround is used; evidence does not justify a global launcher workaround.
 - Routine work uses zero extra agents; one specialist is used only at mandatory acceptance gates.
 - The active existing host tools are Node 26.2.0 and pnpm 11.20.0. The repository accepts pnpm 11 per user direction; no install or version switch was performed, and `pnpm check` passes.
@@ -345,10 +346,11 @@ No known product regression remains uncorrected in accepted phases. Hosted Ubunt
 
 ## Latest verified commit
 
-`e40222f` — signed hermetic hosted SSH daemon-fixture correction; its configured signature verifies.
+`596123a` — signed hosted SSH fixture recovery-state checkpoint; its configured signature verifies and GitHub Release run `35990325063` passed from this tag commit.
 
 ## Tests last run and results
 
+- 2026-09-24: Native Arch packaging passes shell syntax, workflow YAML parsing, deterministic payload checksum validation, digest-pinned/network-disabled unprivileged `makepkg`, Arch `.PKGINFO`/`.BUILDINFO`/`.MTREE` checks, exact Debian-to-Arch `/usr` byte comparison, all five executable modes/link counts, helper digest binding, license/desktop/icon checks, the glibc 2.39 ABI ceiling, and a disposable networkless `pacman -U`/`pacman -R` journey. Artifact: `target/release/bundle/arch/rehow-0.1.0-1-x86_64.pkg.tar.zst`. No host package, Node version, or pnpm version was installed or switched.
 - 2026-09-24: Hermetic SSH daemon-fixture correction passes the exact authenticated SSH clone/sync loopback test, strict core all-target/all-feature Clippy, Cargo formatting, `pnpm check`, contract drift, Bootstrap validation (17 required files, 59 ADRs, 8 pinned agents), whitespace checks, and signed-commit verification. A disposable Ubuntu 24.04 container confirms an unprivileged daemon with generated host key and the standard runtime directory can listen. The fixture reads `/dev/null` configuration, binds only `127.0.0.1`, and caps early-exit stderr at 8 KiB. Existing Node 26.2.0 and pnpm 11.20.0 were unchanged; hosted confirmation remains pending.
 - 2026-09-24: Ubuntu `sshd` runtime correction passes the exact authenticated SSH clone/sync loopback test, Cargo formatting, both workflow YAML parses, `pnpm check`, contract drift, Bootstrap validation (17 required files, 59 ADRs, 8 pinned agents), whitespace checks, and signed-commit verification. The Arch host correctly lacks `/run/sshd`; only disposable Ubuntu build jobs create the standard root-owned `0755` directory. Existing Node 26.2.0 and pnpm 11.20.0 were unchanged. Hosted confirmation remains pending.
 - 2026-09-24: Portable OpenSSH fixture correction passes the exact authenticated SSH clone/sync loopback test, strict core all-target/all-feature Clippy, Cargo formatting, both workflow YAML parses, `pnpm check`, contract drift, Bootstrap validation (17 required files, 59 ADRs, 8 pinned agents), whitespace checks, and signed-commit verification. CI/release now install `openssh-client` and `openssh-server`; the fixture selects only fixed Ubuntu `/usr/sbin/sshd` or Arch `/usr/bin/sshd`. Existing Node 26.2.0 and pnpm 11.20.0 were unchanged. Hosted confirmation remains pending.
@@ -555,13 +557,13 @@ No known product regression remains uncorrected in accepted phases. Hosted Ubunt
 
 ## Known test failures
 
-No product regression is known after correction. Hosted run `35983865531` passed the sandbox boundary and 493 core tests, then its single SSH loopback daemon exited before listen without diagnostics despite the standard runtime directory. Signed correction `e40222f` removes host daemon-config/IPv6 dependencies and reports bounded stderr if startup still fails; a hosted rerun is pending. The repository uses the existing active Node 26.2.0 and pnpm 11.20.0 selected by the user; no install or version switch occurred. The old `.app`-suffix warning is resolved by the production identifier.
+No product regression is known. Hosted Release run `35990325063` completed successfully after the SSH fixture corrections. The new Arch path passes local construction, extraction, metadata, payload identity, and disposable pacman install/remove checks; its updated workflow has not yet run on GitHub. The repository uses the existing active Node 26.2.0 and pnpm 11.20.0 selected by the user; no install or version switch occurred.
 
 ## Important files changed
 
-- Hosted automation: `.github/workflows/ci.yml`, `.github/workflows/release.yml`, ADR 0059, and `docs/release.md`; aligned README, installation, development, testing, threat-model, implementation-plan, and agent-map text defines exact gates and platform/security limits.
+- Hosted automation and native Arch packaging: `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `packaging/arch/PKGBUILD.template`, `scripts/build-arch-package.sh`, `scripts/test-linux-bundles.sh`, ADR 0059, and aligned README/release/installation/development documentation.
 - Public project entry point: `README.md` links verified product imagery and the authoritative installation, content-model, MCP, security, development, product, architecture, progress, and license documents.
-- Release metadata: `LICENSE`, Cargo/npm/Tauri metadata, installer paths, bundle smoke defaults, and readiness documentation consistently use MIT, `0.1.0`, and `me.hichemtab-tech.rehow`; `.deb` and `.rpm` remain the first-release targets.
+- Release metadata: `LICENSE`, Cargo/npm/Tauri metadata, installer paths, bundle smoke defaults, and readiness documentation consistently use MIT, `0.1.0`, and `me.hichemtab-tech.rehow`; `.deb`, `.rpm`, and native Arch packages are the Linux x86_64 targets.
 - Guarded Guide file/shadcn foundation: ADR 0058, the core held-file capability, pathless native portal command, Open File UI, `apps/desktop/components.json`, reviewed `Button`/`cn` source, lockfile, and aligned architecture/design/development/testing/threat docs are checkpointed at `2f3668a`.
 - External Guide conflicts: `crates/rehow-core/src/application.rs`, `apps/desktop/src-tauri/src/lib.rs`, `apps/desktop/src/{App.tsx,index.css,app.test.ts}`, and aligned architecture/design/testing docs are checkpointed at `f048360`.
 - Memory-safe search: ADR 0057, `docs/evidence/phase-4f-memory-safe-search.md`, the Guide metadata/body split, revision-bound lazy body reader, bounded anonymous record codec/backings, desktop/MCP mappings, adversarial tests, and aligned architecture/content/testing/threat/release docs are checkpointed at `5d8ab31`.
@@ -690,7 +692,7 @@ No product regression is known after correction. Hosted run `35983865531` passed
 
 ## Next recommended action
 
-Push signed correction `e40222f`, inspect the resulting GitHub `CI` run for a successful Bubblewrap preflight and all 496 core tests (including the two intentional ignores), then run the documented installed-package journey in a disposable graphical Ubuntu 24.04 Wayland/X11 environment. Do not publish a release solely to test the release job; manual dispatch requires an existing published tag.
+Create the signed Arch-packaging checkpoint, build the Arch artifact from the exact published `v0.1.0` Debian asset, update that release's checksum inventory without moving its tag, and install the downloaded `.pkg.tar.zst` on Omarchy. Afterward push the checkpoint when authorized so future releases build all three formats automatically.
 
 ## Recommended agent role and reasoning effort
 
@@ -701,7 +703,7 @@ Primary Orchestrator with zero routine agents. Use one specialist only if a rele
 1. Read `AGENTS.md` and this file.
 2. Read `docs/evidence/final-release-readiness.md`, `docs/installation.md`, `docs/release.md`, and ADR 0059.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `e40222f`, inspect the resulting GitHub `CI` run after it is pushed, and confirm the Bubblewrap preflight plus complete no-skip test suite finish green; do not touch unrelated untracked `x` if it reappears.
+4. Verify signed checkpoint `596123a` and hosted Release run `35990325063`, then resume the native Arch package publication/install action recorded above; do not move `v0.1.0` or touch unrelated untracked `x` if it reappears.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
-7. Resume only the named human release gates. Do not publish, push, create external resources, install packages, or change the active Node/pnpm toolchain without user authorization.
+7. The user authorized adding the Arch release asset in this session. Do not push code, create another release/tag, install a host package, or change the active Node/pnpm toolchain without separate authorization.

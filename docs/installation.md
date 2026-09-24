@@ -1,6 +1,6 @@
 # Installation and Desktop Integration
 
-Status: local `.deb`/`.rpm` release candidates implemented and smoke-tested; clean graphical release qualification remains open
+Status: local `.deb`/`.rpm`/Arch release candidates implemented and smoke-tested; clean graphical release qualification remains open
 Last updated: 2026-09-24
 
 ## Supported baseline
@@ -9,28 +9,31 @@ Rehow is Linux-first and targets a normal resizable, decorated desktop window on
 
 Initial package priority:
 
-1. Native `.deb` and `.rpm` packages with an enforced glibc 2.39 ABI ceiling and install tests on the documented baseline/families.
+1. Native `.deb`, `.rpm`, and Arch packages with an enforced glibc 2.39 ABI ceiling and install tests on the documented families.
 2. AppImage only after independent Wayland/XWayland and upgrade/uninstall testing.
-3. An Arch user package recipe may follow, but Rehow will not modify Omarchy-managed files.
 
-Omarchy uses Arch Linux. It does not require different Rehow application code, but it does require an Arch-compatible package such as a reviewed PKGBUILD/AUR entry or a separately qualified AppImage. The current `.deb` and `.rpm` must not be force-installed or converted for Omarchy. Release automation and the platform policy are documented in `docs/release.md`.
+Omarchy uses Arch Linux and installs the native `.pkg.tar.zst`; it does not require an Omarchy-specific build. Rehow does not modify Omarchy-managed files. The `.deb` and `.rpm` must not be force-installed or converted for Omarchy. Release automation and the platform policy are documented in `docs/release.md`.
 
 Relevant Tauri references: [Linux prerequisites](https://v2.tauri.app/start/prerequisites/), [AppImage distribution](https://v2.tauri.app/distribute/appimage/), and [Linux graphics diagnostics](https://v2.tauri.app/develop/debug/linux-graphics/).
 
-The development `.deb` and `.rpm` have completed dependency-resolving install and package-owned uninstall checks in ephemeral Debian 13 and Fedora 44 containers. This is compatibility evidence, not the minimum supported baseline; graphical menu launch and older baselines remain release gates.
+The development `.deb` and `.rpm` have completed dependency-resolving install and package-owned uninstall checks in ephemeral Debian 13 and Fedora 44 containers. The Arch artifact passes native `makepkg` construction, exact payload comparison, metadata checks, and a disposable `pacman` install/remove journey. This is compatibility evidence, not the minimum supported baseline; graphical menu launch and older baselines remain release gates.
 
 ## Local release-candidate packages
 
-Build both native Linux packages with the repository's active Node, pnpm, and Rust toolchain:
+Build the Tauri packages, then the native Arch package, with the repository's active Node, pnpm, and Rust toolchain:
 
 ```sh
 pnpm tauri:build
+scripts/build-arch-package.sh
 ```
+
+The Arch packaging step requires Docker. It runs `makepkg` as an unprivileged user in a digest-pinned Arch container with networking disabled; it does not install packages on the host.
 
 This produces locally built release-candidate artifacts under:
 
 - `target/release/bundle/deb/Rehow_0.1.0_amd64.deb`
 - `target/release/bundle/rpm/Rehow-0.1.0-1.x86_64.rpm`
+- `target/release/bundle/arch/rehow-0.1.0-1-x86_64.pkg.tar.zst`
 
 The bundle hook builds the desktop binary, fixed Git helpers, standalone MCP server, and graphical MCP approval helper. It embeds the exact approval-helper BLAKE3 digest into `rehow-mcp`; the package smoke test verifies that binding and the one-link executable layout:
 
@@ -61,6 +64,12 @@ or:
 sudo dnf install ./target/release/bundle/rpm/Rehow-0.1.0-1.x86_64.rpm
 ```
 
+On Arch Linux or Omarchy:
+
+```sh
+sudo pacman -U ./target/release/bundle/arch/rehow-0.1.0-1-x86_64.pkg.tar.zst
+```
+
 No install is performed by the build or smoke-test scripts.
 
 User Workspaces are never placed inside the application installation directory. Default preferences/cache/state follow XDG locations. Uninstall removes application-owned binaries/launchers/cache only; it preserves every user-selected Workspace and asks before removing local recovery state.
@@ -71,7 +80,7 @@ Prefer user-level installation when the package format supports it without weake
 
 Package metadata must declare the exact WebKitGTK 4.1, GTK, SSL, and other runtime libraries produced by the Tauri bundler/build baseline. Linux Git operations require root-owned `/usr/bin/git` and `/usr/bin/bwrap`; authenticated SSH clone, sync, and push additionally require root-owned `/usr/bin/ssh` plus a safe launch-inherited agent and trusted `known_hosts`. Missing tools or trust keep Rehow content usable and produce closed Git-unavailable guidance. Development-only packages are in `docs/development.md`. Do not tell users to install a permanently running Node server for the desktop application.
 
-The implemented `.deb` and `.rpm` place fixed `rehow-git-ssh` and `rehow-git-credential` binaries beside the application executable as one-link executables. Rehow does not install, enable, or alter a user's credential helper; it may use only an already configured helper that passes the documented provenance gate.
+All three native packages place fixed `rehow-git-ssh` and `rehow-git-credential` binaries beside the application executable as one-link executables. Rehow does not install, enable, or alter a user's credential helper; it may use only an already configured helper that passes the documented provenance gate.
 
 Authenticated HTTPS supports a trusted self-contained system helper or the exact `gh auth git-credential` configuration. The `gh` path requires its ordinary private `hosts.yml`; keyring/libsecret mediation is not yet supported. Rehow never asks for or stores a token.
 

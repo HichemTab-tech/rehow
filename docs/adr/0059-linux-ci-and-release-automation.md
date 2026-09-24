@@ -6,7 +6,7 @@ Date: 2026-09-24
 
 ## Context
 
-Rehow needs repeatable pull-request verification and release builds without overstating platform support or exposing a publication credential to repository code. The current application intentionally depends on Linux descriptor, process, sandbox, portal, and packaging primitives. Omarchy uses Arch Linux, while the currently qualified packages are Debian and RPM formats.
+Rehow needs repeatable pull-request verification and release builds without overstating platform support or exposing a publication credential to repository code. The current application intentionally depends on Linux descriptor, process, sandbox, portal, and packaging primitives. Omarchy uses Arch Linux and therefore needs a native pacman package in addition to Debian and RPM formats.
 
 ## Decision
 
@@ -15,16 +15,17 @@ Rehow needs repeatable pull-request verification and release builds without over
 - Every external GitHub Action is pinned to an immutable full commit. CI has only `contents: read` permission and no publication credential.
 - Release automation runs when an existing GitHub Release is published and may be retried manually only for an existing published tag. It never creates or pushes a tag, creates a release, or selects a different commit.
 - The release tag must be a `v`-prefixed semantic version that exactly matches `tauri.conf.json`. The checked-out tag must identify the built commit.
-- The build job has read-only repository permission. It produces exactly the `.deb`, `.rpm`, and SHA-256 checksum file and transfers them through a short-lived workflow artifact.
-- A separate publish job has `contents: write`, checks out and executes no repository code, validates the exact three-file inventory, names, checksum grammar, and hashes, confirms the GitHub Release is published, and uploads only those explicit filenames.
-- Version `0.1.x` publishes Linux x86_64 `.deb` and `.rpm` assets. Omarchy needs the same application code but a future reviewed AUR/PKGBUILD or independently qualified AppImage. Windows and macOS remain unsupported until their filesystem/process/security adapters and native packaging are deliberately implemented and tested.
+- After Tauri builds `.deb` and `.rpm`, a reviewed `makepkg` template packages the exact extracted Debian `/usr` payload in a network-disabled Arch `base-devel` container pinned by immutable image digest. Stripping is disabled so the digest-bound MCP helper and every payload byte remain unchanged. CI compares Debian and Arch payloads recursively and validates pacman metadata.
+- The build job has read-only repository permission. It produces exactly the `.deb`, `.rpm`, `.pkg.tar.zst`, and SHA-256 checksum file and transfers them through a short-lived workflow artifact.
+- A separate publish job has `contents: write`, checks out and executes no repository code, validates the exact four-file inventory, names, checksum grammar, and hashes, confirms the GitHub Release is published, and uploads only those explicit filenames.
+- Version `0.1.x` publishes Linux x86_64 `.deb`, `.rpm`, and Arch assets. Omarchy uses the Arch package and needs no separate application build. Windows and macOS remain unsupported until their filesystem/process/security adapters and native packaging are deliberately implemented and tested.
 - Checksums are not publisher signatures. Package signing, attestations, updater metadata, AUR publication, and other credentials remain separate human-approved decisions.
 
 ## Consequences
 
-Pull requests exercise the real native packaging and sandbox paths rather than only browser or compile checks. The user-namespace controls change only the disposable CI runner for its current boot; they do not change Rehow's production sandbox or a user's machine. Publishing a GitHub Release deliberately becomes the trigger for asset construction, so a new release page may exist briefly before assets arrive and a failed build leaves the release without new binaries. A manual retry is safe and replaces only the same three Rehow assets.
+Pull requests exercise the real native packaging and sandbox paths rather than only browser or compile checks. The user-namespace controls change only the disposable CI runner for its current boot; they do not change Rehow's production sandbox or a user's machine. Publishing a GitHub Release deliberately becomes the trigger for asset construction, so a new release page may exist briefly before assets arrive and a failed build leaves the release without new binaries. A manual retry is safe and replaces only the same four Rehow assets.
 
-The workflow is truthful about platform support. Omarchy users cannot install the current `.deb` or `.rpm` natively, and adding Windows/macOS to a matrix is not accepted as platform support.
+The workflow is truthful about platform support. Omarchy users install the native Arch artifact; adding Windows/macOS to a matrix is not accepted as platform support.
 
 ## Evidence
 

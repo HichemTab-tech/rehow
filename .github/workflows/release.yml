@@ -129,6 +129,7 @@ jobs:
       - name: Build and inspect release packages
         run: |
           pnpm tauri:build
+          scripts/build-arch-package.sh
           scripts/test-linux-bundles.sh
 
       - name: Collect release artifacts
@@ -137,12 +138,17 @@ jobs:
           version="${RELEASE_TAG#v}"
           deb="target/release/bundle/deb/Rehow_${version}_amd64.deb"
           rpm="target/release/bundle/rpm/Rehow-${version}-1.x86_64.rpm"
+          arch="target/release/bundle/arch/rehow-${version}-1-x86_64.pkg.tar.zst"
           test -f "$deb"
           test -f "$rpm"
+          test -f "$arch"
           mkdir release-artifacts
-          cp -- "$deb" "$rpm" release-artifacts/
+          cp -- "$deb" "$rpm" "$arch" release-artifacts/
           cd release-artifacts
-          sha256sum "$(basename "$deb")" "$(basename "$rpm")" > "Rehow_${version}_SHA256SUMS.txt"
+          sha256sum \
+            "$(basename "$arch")" \
+            "$(basename "$deb")" \
+            "$(basename "$rpm")" > "Rehow_${version}_SHA256SUMS.txt"
 
       - name: Store isolated release artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -181,14 +187,16 @@ jobs:
           version="${RELEASE_TAG#v}"
           test -f "release-artifacts/Rehow_${version}_amd64.deb"
           test -f "release-artifacts/Rehow-${version}-1.x86_64.rpm"
+          test -f "release-artifacts/rehow-${version}-1-x86_64.pkg.tar.zst"
           test -f "release-artifacts/Rehow_${version}_SHA256SUMS.txt"
-          test "$(find release-artifacts -mindepth 1 -maxdepth 1 | wc -l)" = "3"
-          test "$(wc -l < "release-artifacts/Rehow_${version}_SHA256SUMS.txt")" = "2"
+          test "$(find release-artifacts -mindepth 1 -maxdepth 1 | wc -l)" = "4"
+          test "$(wc -l < "release-artifacts/Rehow_${version}_SHA256SUMS.txt")" = "3"
           sums="release-artifacts/Rehow_${version}_SHA256SUMS.txt"
           awk 'NF != 2 || length($1) != 64 || $1 !~ /^[0-9a-f]+$/ { exit 1 }' "$sums"
-          expected_names="$(printf '%s\n%s\n' \
+          expected_names="$(printf '%s\n%s\n%s\n' \
             "Rehow-${version}-1.x86_64.rpm" \
-            "Rehow_${version}_amd64.deb" | sort)"
+            "Rehow_${version}_amd64.deb" \
+            "rehow-${version}-1-x86_64.pkg.tar.zst" | sort)"
           actual_names="$(awk '{ print $2 }' "$sums" | sort)"
           test "$actual_names" = "$expected_names"
           (cd release-artifacts && sha256sum --check "Rehow_${version}_SHA256SUMS.txt")
@@ -211,5 +219,6 @@ jobs:
           gh release upload "$RELEASE_TAG" \
             "release-artifacts/Rehow_${version}_amd64.deb" \
             "release-artifacts/Rehow-${version}-1.x86_64.rpm" \
+            "release-artifacts/rehow-${version}-1-x86_64.pkg.tar.zst" \
             "release-artifacts/Rehow_${version}_SHA256SUMS.txt" \
             --clobber

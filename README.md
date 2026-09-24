@@ -22,7 +22,7 @@ Commands shown in Guides are inert documentation. Rehow never executes them.
 
 ## Current status
 
-Rehow `0.1.0` is a functional pre-release. The desktop application, Markdown Workspace, search, Git workflows, Attachments, and MCP server are implemented and tested. `.deb` and `.rpm` packages build successfully; final clean Ubuntu graphical qualification and publication remain pending.
+Rehow `0.1.0` is a functional pre-release. The desktop application, Markdown Workspace, search, Git workflows, Attachments, and MCP server are implemented and tested. Native `.deb`, `.rpm`, and Arch `.pkg.tar.zst` packages build successfully; final clean Ubuntu graphical qualification remains pending.
 
 Linux package baseline: x86_64, glibc 2.39 or newer, and WebKitGTK 4.1. Ubuntu 24.04, Debian 13, and Fedora 44 are the currently qualified package families. See [installation and desktop integration](docs/installation.md) for details and known graphics notes.
 
@@ -35,10 +35,11 @@ pnpm install --frozen-lockfile
 pnpm tauri:dev
 ```
 
-Build the native `.deb` and `.rpm` packages:
+Build and inspect all native Linux packages:
 
 ```sh
 pnpm tauri:build
+scripts/build-arch-package.sh
 scripts/test-linux-bundles.sh
 ```
 
@@ -46,6 +47,7 @@ Generated packages are written to:
 
 - `target/release/bundle/deb/Rehow_0.1.0_amd64.deb`
 - `target/release/bundle/rpm/Rehow-0.1.0-1.x86_64.rpm`
+- `target/release/bundle/arch/rehow-0.1.0-1-x86_64.pkg.tar.zst`
 
 Rehow is a Tauri desktop application. It does not require a permanently running local web server.
 
@@ -95,7 +97,7 @@ cargo test --workspace --all-features
 
 Start with [development setup](docs/development.md), then consult the [product specification](docs/product-spec.md), [architecture](docs/architecture.md), and [current progress](PROGRESS.md).
 
-Pull requests run the complete Linux check/package gate. Published GitHub Releases trigger verified `.deb`/`.rpm` builds; see the [release process and platform policy](docs/release.md).
+Pull requests run the complete Linux check/package gate. Published GitHub Releases trigger verified `.deb`/`.rpm`/Arch builds; see the [release process and platform policy](docs/release.md).
 
 ## License
 

@@ -4,18 +4,22 @@ set -euo pipefail
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$repository_root"
 
-deb_bundle="${1:-target/release/bundle/deb/Rehow_0.1.0_amd64.deb}"
-rpm_bundle="${2:-target/release/bundle/rpm/Rehow-0.1.0-1.x86_64.rpm}"
+version="$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")"
+deb_bundle="${1:-target/release/bundle/deb/Rehow_${version}_amd64.deb}"
+rpm_bundle="${2:-target/release/bundle/rpm/Rehow-${version}-1.x86_64.rpm}"
+arch_bundle="${3:-target/release/bundle/arch/rehow-${version}-1-x86_64.pkg.tar.zst}"
 test -f "$deb_bundle"
 test -f "$rpm_bundle"
+test -f "$arch_bundle"
 
 smoke_root="$(mktemp -d)"
 trap 'rm -rf -- "$smoke_root"' EXIT
-mkdir "$smoke_root/deb" "$smoke_root/rpm"
+mkdir "$smoke_root/deb" "$smoke_root/rpm" "$smoke_root/arch"
 ar p "$deb_bundle" data.tar.gz | tar -xzf - -C "$smoke_root/deb"
 bsdtar -xf "$rpm_bundle" -C "$smoke_root/rpm"
+bsdtar -xf "$arch_bundle" -C "$smoke_root/arch"
 
-for package_root in "$smoke_root/deb" "$smoke_root/rpm"; do
+for package_root in "$smoke_root/deb" "$smoke_root/rpm" "$smoke_root/arch"; do
   for binary in rehow rehow-git-ssh rehow-git-credential rehow-mcp rehow-mcp-approve; do
     binary_path="$package_root/usr/bin/$binary"
     test -x "$binary_path"
@@ -55,3 +59,29 @@ for package_root in "$smoke_root/deb" "$smoke_root/rpm"; do
     exit 1
   fi
 done
+
+test -f "$smoke_root/arch/.BUILDINFO"
+test -f "$smoke_root/arch/.MTREE"
+grep -Fxq 'pkgname = rehow' "$smoke_root/arch/.PKGINFO"
+grep -Fxq "pkgver = ${version}-1" "$smoke_root/arch/.PKGINFO"
+grep -Fxq 'arch = x86_64' "$smoke_root/arch/.PKGINFO"
+grep -Fxq 'depend = gtk3' "$smoke_root/arch/.PKGINFO"
+grep -Fxq 'depend = webkit2gtk-4.1' "$smoke_root/arch/.PKGINFO"
+diff --recursive --brief "$smoke_root/deb/usr" "$smoke_root/arch/usr"
+
+arch_image="archlinux@sha256:8745817f349ed24373341ddb92776209eeec3f0364ea48f7f645ac5800d30a50"
+arch_bundle_absolute="$(realpath "$arch_bundle")"
+docker run --rm --network none \
+  --volume "$arch_bundle_absolute:/tmp/rehow.pkg.tar.zst:ro" \
+  "$arch_image" \
+  bash -ceu '
+    pacman -U --noconfirm \
+      --assume-installed gtk3 \
+      --assume-installed webkit2gtk-4.1 \
+      /tmp/rehow.pkg.tar.zst
+    pacman -Q rehow
+    test -x /usr/bin/rehow
+    test -f /usr/share/applications/Rehow.desktop
+    pacman -R --noconfirm rehow
+    test ! -e /usr/bin/rehow
+  '

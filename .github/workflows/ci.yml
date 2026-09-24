@@ -112,6 +112,7 @@ jobs:
       - name: Build and inspect native packages
         run: |
           pnpm tauri:build
+          scripts/build-arch-package.sh
           scripts/test-linux-bundles.sh
 
       - name: Validate durable project state

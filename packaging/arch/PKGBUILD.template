@@ -1,0 +1,21 @@
+pkgname=rehow
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Local-first desktop knowledge tool for repeatable technical Guides'
+arch=('x86_64')
+url='https://github.com/HichemTab-tech/rehow'
+license=('MIT')
+depends=('gtk3' 'webkit2gtk-4.1')
+optdepends=(
+  'bubblewrap: isolated Git operations'
+  'git: optional Workspace version control'
+  'openssh: authenticated SSH Git operations'
+  'github-cli: supported authenticated HTTPS Git credential helper'
+)
+options=('!debug' '!strip')
+source=('rehow-payload.tar')
+sha256sums=('@PAYLOAD_SHA256@')
+
+package() {
+  bsdtar -xf "$srcdir/rehow-payload.tar" -C "$pkgdir"
+}
