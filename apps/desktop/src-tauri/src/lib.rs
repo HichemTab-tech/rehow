@@ -5791,15 +5791,20 @@ fn guide_create_message(error: GuideCreateError) -> String {
 }
 
 #[tauri::command]
-fn choose_markdown_import_destination(
-    state: tauri::State<'_, DesktopState>,
+async fn choose_markdown_import_destination(
+    window: tauri::Window,
+    app: tauri::AppHandle,
 ) -> Result<MarkdownImportDestinationResult, NativeCommandError> {
-    let Some(path) = rfd::FileDialog::new()
+    let Some(selection) = rfd::AsyncFileDialog::new()
+        .set_parent(&window)
         .set_title("Choose an Empty Rehow Workspace Destination")
         .pick_folder()
+        .await
     else {
         return Ok(MarkdownImportDestinationResult::Cancelled);
     };
+    let path = selection.path().to_path_buf();
+    let state = app.state::<DesktopState>();
     let (facts, inspection) = inspect_workspace(&path)
         .map_err(|error| native_command_error("inspectionFailed", error.to_string()))?
         .into_parts();
@@ -6060,16 +6065,20 @@ fn cancel_selected_workspace_initialization(
 }
 
 #[tauri::command]
-fn choose_workspace(
+async fn choose_workspace(
+    window: tauri::Window,
     app: tauri::AppHandle,
-    state: tauri::State<'_, DesktopState>,
 ) -> Result<OpenWorkspaceResult, String> {
-    let Some(path) = rfd::FileDialog::new()
+    let Some(selection) = rfd::AsyncFileDialog::new()
+        .set_parent(&window)
         .set_title("Open a Rehow Workspace")
         .pick_folder()
+        .await
     else {
         return Ok(OpenWorkspaceResult::Cancelled);
     };
+    let path = selection.path().to_path_buf();
+    let state = app.state::<DesktopState>();
 
     {
         let mut lifecycle = state

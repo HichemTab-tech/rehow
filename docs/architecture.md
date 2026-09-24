@@ -26,7 +26,7 @@ External editor / Git ────────────┘                   
                                            SSH agent / credential helper
 ```
 
-The user chooses a Workspace root through a native-owned dialog. The adapter retains the selected parent/root descriptor and returns an opaque, unguessable inspection capability; the renderer never receives authority merely by sending a path. Opening yields an opaque session handle. MCP launches with named root capabilities and tools use launch-scoped handles, not portable Workspace IDs as authority.
+The user chooses a Workspace root through a native-owned dialog. Folder dialogs are asynchronous and explicitly parented to the invoking Rehow window; no application mutex, Workspace capability, or lifecycle state is retained across the dialog await. The adapter retains the selected parent/root descriptor and returns an opaque, unguessable inspection capability; the renderer never receives authority merely by sending a path. Opening yields an opaque session handle. MCP launches with named root capabilities and tools use launch-scoped handles, not portable Workspace IDs as authority.
 
 ## Repository and package boundaries
 
