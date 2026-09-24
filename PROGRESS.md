@@ -5,15 +5,15 @@ State authority: actual Git/worktree first; this file summarizes verified facts.
 
 ## Current phase
 
-The compact final requirements audit is closed. Phase 7 now has first-release metadata, reproducible PR/push/manual CI, and least-privilege existing-release publication for qualified Linux packages. Five hosted runs identified Ubuntu's AppArmor/user-namespace, loader-topology, OpenSSH path, and daemon-runtime differences; the complete portable no-skip correction is local. Clean graphical qualification remains open.
+The compact final requirements audit is closed. Phase 7 now has first-release metadata, reproducible PR/push/manual CI, and least-privilege existing-release publication for qualified Linux packages. Six hosted runs identified Ubuntu's AppArmor/user-namespace, loader-topology, and OpenSSH fixture differences; the SSH daemon fixture is now hermetic and diagnostic. Clean graphical qualification remains open.
 
 ## Current task
 
-Push the Ubuntu `sshd` runtime-directory correction, verify the next GitHub Actions run executes the complete suite, then qualify the installed `0.1.0` packages in a disposable graphical Ubuntu 24.04 Wayland/X11 environment.
+Push the hermetic SSH daemon-fixture correction, verify the next GitHub Actions run executes the complete suite, then qualify the installed `0.1.0` packages in a disposable graphical Ubuntu 24.04 Wayland/X11 environment.
 
 ## Overall status
 
-Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Version `0.1.0`, stable identifier `me.hichemtab-tech.rehow`, MIT licensing, and both `.deb`/`.rpm` targets are selected. PR/push/manual CI and published-release asset automation are implemented under ADR 0059. Hosted runs through `35978891262` resolved Ubuntu's AppArmor, loader topology, and `sshd` path. Run `35980439869` again passed 493 core tests, then showed Ubuntu's installed daemon exiting before listen because GitHub suppresses service startup and `/run/sshd` was absent. Signed correction `e53131a` creates that standard root-owned `0755` runtime directory in both disposable build jobs. Its hosted rerun and graphical Ubuntu qualification remain open.
+Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, Fedora 44, and the current host. Version `0.1.0`, stable identifier `me.hichemtab-tech.rehow`, MIT licensing, and both `.deb`/`.rpm` targets are selected. PR/push/manual CI and published-release asset automation are implemented under ADR 0059. Hosted runs through `35980439869` resolved Ubuntu's AppArmor, loader topology, fixed daemon path, and runtime directory. Run `35983865531` still passed 493 core tests but showed the daemon exiting before listen with stderr hidden. A disposable Ubuntu 24.04 reproduction passes the fixture inputs; signed correction `e40222f` removes host `sshd_config` and IPv6 authority, binds only IPv4 loopback, and caps/reports early-exit stderr. Its hosted rerun and graphical Ubuntu qualification remain open.
 
 ## Completed work
 
@@ -171,7 +171,7 @@ Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, 
 
 ## Work in progress
 
-- No code work is in progress. The Ubuntu `sshd` runtime correction is committed locally and awaits push/rerun evidence; graphical Ubuntu qualification remains open.
+- No code work is in progress. The hermetic SSH-fixture correction is committed locally and awaits push/rerun evidence; graphical Ubuntu qualification remains open.
 
 ## Remaining work
 
@@ -179,11 +179,11 @@ Phase 6 is complete. Phase 7 packaging is qualified on Ubuntu 24.04, Debian 13, 
 - Phase 4: complete at `e17b7d1`.
 - Phase 5: complete at `6fcb0ae`, including packed-current-branch publication.
 - Phase 6: complete, including the final managed Attachment discovery/metadata-add mutation.
-- Phase 7: `.deb`/`.rpm` packaging, version/identifier/MIT metadata, clean-container install/remove qualification, the glibc 2.39 floor, PR CI, and existing-release asset automation are implemented. Five hosted failures diagnosed Ubuntu's AppArmor gate, `/lib64` topology, `/usr/sbin/sshd`, and absent daemon runtime directory; all corrections are local. A green rerun, graphical desktop runtime matrix, Arch-compatible packaging, signing/publication authorization, and final audits remain.
+- Phase 7: `.deb`/`.rpm` packaging, version/identifier/MIT metadata, clean-container install/remove qualification, the glibc 2.39 floor, PR CI, and existing-release asset automation are implemented. Six hosted failures diagnosed Ubuntu's AppArmor, loader, and SSH-fixture differences; all corrections are local and the remaining daemon fixture no longer inherits host configuration. A green rerun, graphical desktop runtime matrix, Arch-compatible packaging, signing/publication authorization, and final audits remain.
 
 ## Known bugs
 
-No known product regression remains uncorrected in accepted phases. Hosted Ubuntu requires the AppArmor user-namespace setup, distro-preserving `/usr/lib64`, `/usr/sbin/sshd`, and the standard `/run/sshd` privilege-separation directory for the loopback fixture. Signed checkpoints through `e53131a` address those differences while keeping every sandbox and SSH test mandatory; hosted confirmation remains pending. On the current development host, default Wayland launch exits with a GDK protocol error; the targeted `WEBKIT_DISABLE_DMABUF_RENDERER=1` invocation and X11 both stay alive, so driver/WebKitGTK qualification remains open and no global fallback is configured. Interrupted Category/Guide creation can leave conservative scanner issues; the accepted issue panel names the inert relative location and safe manual recovery step, while ambiguous residue is never deleted or adopted automatically. Automatic watching can degrade on unsupported/network filesystems or exhausted kernel limits; visible degraded state, refocus reconciliation, and manual refresh remain the recovery path.
+No known product regression remains uncorrected in accepted phases. Hosted Ubuntu requires the AppArmor user-namespace setup, distro-preserving `/usr/lib64`, `/usr/sbin/sshd`, and `/run/sshd`; the loopback daemon now additionally reads no host config and binds only IPv4 loopback. Signed checkpoints through `e40222f` keep every sandbox and SSH test mandatory and make any further daemon failure explicit; hosted confirmation remains pending. On the current development host, default Wayland launch exits with a GDK protocol error; the targeted `WEBKIT_DISABLE_DMABUF_RENDERER=1` invocation and X11 both stay alive, so driver/WebKitGTK qualification remains open and no global fallback is configured. Interrupted Category/Guide creation can leave conservative scanner issues; the accepted issue panel names the inert relative location and safe manual recovery step, while ambiguous residue is never deleted or adopted automatically. Automatic watching can degrade on unsupported/network filesystems or exhausted kernel limits; visible degraded state, refocus reconciliation, and manual refresh remain the recovery path.
 
 ## Design and accessibility findings
 
@@ -345,10 +345,11 @@ No known product regression remains uncorrected in accepted phases. Hosted Ubunt
 
 ## Latest verified commit
 
-`e53131a` — signed Ubuntu `sshd` runtime-directory correction; its configured signature verifies.
+`e40222f` — signed hermetic hosted SSH daemon-fixture correction; its configured signature verifies.
 
 ## Tests last run and results
 
+- 2026-09-24: Hermetic SSH daemon-fixture correction passes the exact authenticated SSH clone/sync loopback test, strict core all-target/all-feature Clippy, Cargo formatting, `pnpm check`, contract drift, Bootstrap validation (17 required files, 59 ADRs, 8 pinned agents), whitespace checks, and signed-commit verification. A disposable Ubuntu 24.04 container confirms an unprivileged daemon with generated host key and the standard runtime directory can listen. The fixture reads `/dev/null` configuration, binds only `127.0.0.1`, and caps early-exit stderr at 8 KiB. Existing Node 26.2.0 and pnpm 11.20.0 were unchanged; hosted confirmation remains pending.
 - 2026-09-24: Ubuntu `sshd` runtime correction passes the exact authenticated SSH clone/sync loopback test, Cargo formatting, both workflow YAML parses, `pnpm check`, contract drift, Bootstrap validation (17 required files, 59 ADRs, 8 pinned agents), whitespace checks, and signed-commit verification. The Arch host correctly lacks `/run/sshd`; only disposable Ubuntu build jobs create the standard root-owned `0755` directory. Existing Node 26.2.0 and pnpm 11.20.0 were unchanged. Hosted confirmation remains pending.
 - 2026-09-24: Portable OpenSSH fixture correction passes the exact authenticated SSH clone/sync loopback test, strict core all-target/all-feature Clippy, Cargo formatting, both workflow YAML parses, `pnpm check`, contract drift, Bootstrap validation (17 required files, 59 ADRs, 8 pinned agents), whitespace checks, and signed-commit verification. CI/release now install `openssh-client` and `openssh-server`; the fixture selects only fixed Ubuntu `/usr/sbin/sshd` or Arch `/usr/bin/sshd`. Existing Node 26.2.0 and pnpm 11.20.0 were unchanged. Hosted confirmation remains pending.
 - 2026-09-24: Portable Bubblewrap loader correction passes all 127 focused core Git tests with one intentional public-network ignore, the real packaged credential-proxy sandbox smoke, strict core all-target/all-feature Clippy, Cargo formatting, both workflow YAML parses, `pnpm check`, contract drift, Bootstrap validation (17 required files, 59 ADRs, 8 pinned agents), whitespace checks, and signed-commit verification. All 15 Rust sandbox builders, three packaged smoke invocations, and both workflow preflights now map `/lib64` through `/usr/lib64`; existing Node 26.2.0 and pnpm 11.20.0 were unchanged. Hosted confirmation remains pending.
@@ -554,7 +555,7 @@ No known product regression remains uncorrected in accepted phases. Hosted Ubunt
 
 ## Known test failures
 
-No product regression is known after correction. Hosted run `35980439869` passed the sandbox boundary and 493 core tests, then its single SSH loopback daemon exited before listen because GitHub's Ubuntu image lacked `/run/sshd`. Signed correction `e53131a` creates the standard ephemeral runtime directory; a hosted rerun is pending. The repository uses the existing active Node 26.2.0 and pnpm 11.20.0 selected by the user; no install or version switch occurred. The old `.app`-suffix warning is resolved by the production identifier.
+No product regression is known after correction. Hosted run `35983865531` passed the sandbox boundary and 493 core tests, then its single SSH loopback daemon exited before listen without diagnostics despite the standard runtime directory. Signed correction `e40222f` removes host daemon-config/IPv6 dependencies and reports bounded stderr if startup still fails; a hosted rerun is pending. The repository uses the existing active Node 26.2.0 and pnpm 11.20.0 selected by the user; no install or version switch occurred. The old `.app`-suffix warning is resolved by the production identifier.
 
 ## Important files changed
 
@@ -689,7 +690,7 @@ No product regression is known after correction. Hosted run `35980439869` passed
 
 ## Next recommended action
 
-Push signed correction `e53131a`, inspect the resulting GitHub `CI` run for a successful Bubblewrap preflight and all 496 core tests (including the two intentional ignores), then run the documented installed-package journey in a disposable graphical Ubuntu 24.04 Wayland/X11 environment. Do not publish a release solely to test the release job; manual dispatch requires an existing published tag.
+Push signed correction `e40222f`, inspect the resulting GitHub `CI` run for a successful Bubblewrap preflight and all 496 core tests (including the two intentional ignores), then run the documented installed-package journey in a disposable graphical Ubuntu 24.04 Wayland/X11 environment. Do not publish a release solely to test the release job; manual dispatch requires an existing published tag.
 
 ## Recommended agent role and reasoning effort
 
@@ -700,7 +701,7 @@ Primary Orchestrator with zero routine agents. Use one specialist only if a rele
 1. Read `AGENTS.md` and this file.
 2. Read `docs/evidence/final-release-readiness.md`, `docs/installation.md`, `docs/release.md`, and ADR 0059.
 3. Run `git status --short --branch`, `git log --oneline -8`, and `python3 scripts/check_bootstrap.py`.
-4. Verify signed checkpoint `e53131a`, inspect the resulting GitHub `CI` run after it is pushed, and confirm the Bubblewrap preflight plus complete no-skip test suite finish green; do not touch unrelated untracked `x` if it reappears.
+4. Verify signed checkpoint `e40222f`, inspect the resulting GitHub `CI` run after it is pushed, and confirm the Bubblewrap preflight plus complete no-skip test suite finish green; do not touch unrelated untracked `x` if it reappears.
 5. Preserve and exclude unrelated untracked executable `x`; never execute, inspect, modify, stage, or delete it.
 6. Treat Phase 6 as accepted and do not reopen its full gate without a related code change.
 7. Resume only the named human release gates. Do not publish, push, create external resources, install packages, or change the active Node/pnpm toolchain without user authorization.
