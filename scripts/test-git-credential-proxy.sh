@@ -23,7 +23,7 @@ output="$({
   --ro-bind /usr /usr \
   --symlink usr/bin /bin \
   --symlink usr/lib /lib \
-  --symlink usr/lib /lib64 \
+  --symlink usr/lib64 /lib64 \
   --proc /proc \
   --dev /dev \
   --tmpfs /tmp \
@@ -47,7 +47,7 @@ output="$({
   --ro-bind /usr /usr \
   --symlink usr/bin /bin \
   --symlink usr/lib /lib \
-  --symlink usr/lib /lib64 \
+  --symlink usr/lib64 /lib64 \
   --proc /proc \
   --dev /dev \
   --tmpfs /tmp \
@@ -72,7 +72,7 @@ output="$({
   --ro-bind /usr /usr \
   --symlink usr/bin /bin \
   --symlink usr/lib /lib \
-  --symlink usr/lib /lib64 \
+  --symlink usr/lib64 /lib64 \
   --proc /proc \
   --dev /dev \
   --tmpfs /tmp \

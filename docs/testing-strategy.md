@@ -204,7 +204,7 @@ Screenshot artifacts are stored outside canonical source or in an explicitly doc
 - Focused unit/integration tests for changed behavior.
 - Formatting, lint, and type/check for touched language.
 - Review actual diff and generated files.
-- Linux CI must prove a real networkless Bubblewrap launch before running the complete test suite. On disposable Ubuntu 24.04 hosted runners, the workflow enables unprivileged user namespaces and clears the AppArmor user-namespace gate for that boot; no Bubblewrap-dependent test is skipped.
+- Linux CI must prove a real networkless Bubblewrap launch before running the complete test suite. On disposable Ubuntu 24.04 hosted runners, the workflow enables unprivileged user namespaces, clears the AppArmor user-namespace gate for that boot, and exercises the production `/usr/lib64` loader topology; no Bubblewrap-dependent test is skipped.
 
 ### Meaningful phase
 
