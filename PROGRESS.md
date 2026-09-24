@@ -343,7 +343,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Latest verified commit
 
-`29829d4` — signed MIT-license checkpoint; its configured signature verifies.
+`23920cf` — signed public README checkpoint; its configured signature verifies.
 
 ## Tests last run and results
 
