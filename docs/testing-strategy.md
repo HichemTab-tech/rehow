@@ -204,6 +204,7 @@ Screenshot artifacts are stored outside canonical source or in an explicitly doc
 - Focused unit/integration tests for changed behavior.
 - Formatting, lint, and type/check for touched language.
 - Review actual diff and generated files.
+- A capable Linux environment must run the real networkless Bubblewrap credential-proxy smoke. GitHub-hosted CI may skip it only through the explicit workflow opt-in when the preflight reports the exact denied loopback `RTM_NEWADDR` operation; all other preflight and smoke failures are fatal.
 
 ### Meaningful phase
 

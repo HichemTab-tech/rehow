@@ -77,6 +77,11 @@ jobs:
           pnpm check
 
       - name: Run unit and integration tests
+        env:
+          # GitHub-hosted runners can deny Bubblewrap's loopback setup in a
+          # fresh network namespace. The smoke script skips only that exact
+          # capability failure; all other sandbox failures remain fatal.
+          REHOW_ALLOW_BWRAP_NETWORK_NAMESPACE_SKIP: "1"
         run: |
           pnpm test
           pnpm test:integration

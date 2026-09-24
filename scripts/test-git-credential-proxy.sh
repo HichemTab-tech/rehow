@@ -3,6 +3,41 @@ set -euo pipefail
 
 proxy="$(pwd)/target/debug/rehow-git-credential"
 test -x "$proxy"
+
+bwrap_probe_output=""
+bwrap_probe_status=0
+set +e
+bwrap_probe_output="$(/usr/bin/bwrap \
+  --die-with-parent \
+  --new-session \
+  --unshare-all \
+  --ro-bind /usr /usr \
+  --symlink usr/bin /bin \
+  --symlink usr/lib /lib \
+  --symlink usr/lib /lib64 \
+  --proc /proc \
+  --dev /dev \
+  --tmpfs /tmp \
+  -- /usr/bin/true 2>&1)"
+bwrap_probe_status=$?
+set -e
+
+if [ "$bwrap_probe_status" -ne 0 ]; then
+  case "$bwrap_probe_output" in
+    *"bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted"*)
+      if [ "${REHOW_ALLOW_BWRAP_NETWORK_NAMESPACE_SKIP:-0}" = "1" ]; then
+        printf '%s\n' \
+          'SKIP: Bubblewrap network namespaces are unavailable; credential-proxy sandbox smoke was not run.' \
+          >&2
+        exit 0
+      fi
+      ;;
+  esac
+
+  printf '%s\n' "$bwrap_probe_output" >&2
+  exit "$bwrap_probe_status"
+fi
+
 fixture_dir="$(mktemp -d)"
 trap 'rm -rf -- "$fixture_dir"' EXIT
 fixture_helper="$fixture_dir/git-credential-fixture"
