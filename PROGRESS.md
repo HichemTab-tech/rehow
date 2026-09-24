@@ -342,7 +342,7 @@ No known regression in accepted phases. On the current development host, default
 
 ## Latest verified commit
 
-`6e7e1c1` — signed release-metadata progress checkpoint; its configured signature verifies. The MIT-license delta described here follows it and is verified before checkpointing.
+`29829d4` — signed MIT-license checkpoint; its configured signature verifies.
 
 ## Tests last run and results
 
