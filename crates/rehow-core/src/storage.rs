@@ -2557,6 +2557,7 @@ pub struct LoadedGuide {
     revision: Revision,
     guide: GuideMetadata,
     effective_status: GuideStatus,
+    origin: crate::domain::GuideOrigin,
 }
 
 impl WorkspaceView {
@@ -2806,6 +2807,12 @@ impl LoadedGuide {
     pub fn effective_status(&self) -> GuideStatus {
         self.effective_status
     }
+
+    /// Whether the Guide is managed or derived from a hand-written file that
+    /// is adopted on its first explicit save.
+    pub fn origin(&self) -> crate::domain::GuideOrigin {
+        self.origin
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3002,6 +3009,37 @@ pub(crate) fn read_managed_regular(
         return Err(WorkspaceInspectError::ChangedDuringRead);
     }
     Ok(bytes)
+}
+
+/// Like [`read_managed_regular`], also returning the file modification time
+/// in Unix seconds from the same descriptor that produced the bytes.
+pub(crate) fn read_managed_regular_with_modified(
+    workspace: &WorkspaceView,
+    relative_path: &str,
+    limit: usize,
+    expected_revision: Option<Revision>,
+) -> Result<(Vec<u8>, i64), WorkspaceInspectError> {
+    let target = workspace
+        ._root
+        .open_managed_target(relative_path)
+        .map_err(map_clone_destination_error)?;
+    let (bytes, modified) = target
+        .regular_with_modified(limit)
+        .map_err(map_clone_destination_error)?
+        .ok_or(WorkspaceInspectError::ChangedDuringRead)?;
+    if expected_revision
+        .is_some_and(|expected| document_revision(relative_path, &bytes) != expected)
+    {
+        return Err(WorkspaceInspectError::ChangedDuringRead);
+    }
+    Ok((bytes, modified))
+}
+
+/// The derivation timestamp for a file modification time: whole seconds,
+/// falling back to the current time when the mtime is unrepresentable.
+pub(crate) fn guide_modified_timestamp(modified_seconds: i64) -> crate::protocol::Timestamp {
+    crate::protocol::timestamp_from_unix_seconds(modified_seconds)
+        .unwrap_or_else(|| crate::protocol::current_timestamp().whole_seconds())
 }
 
 pub(crate) struct ManagedRevealParent {
@@ -4029,56 +4067,74 @@ fn inspect_open_root_with_index(
             }
             guide_candidates += 1;
             let guide_path = format!("categories/{category_name}/{guide_name}");
-            let bytes = match category_dir.read_regular(&guide_name, GUIDE_LIMIT) {
-                Ok(bytes) => bytes,
-                Err(linux::EntryReadError::Unsafe) => {
-                    push_issue(&mut issues, guide_path, WorkspaceIssueKind::UnsafeEntry)?;
-                    continue;
-                }
-                Err(linux::EntryReadError::TooLarge) => {
-                    push_diagnosed_issue(
-                        &mut issues,
-                        guide_path,
-                        WorkspaceIssueKind::FileTooLarge,
-                        Some(crate::domain::GuideDiagnostic::new(
-                            crate::domain::GuideDiagnosticCode::FileTooLarge,
-                            None,
-                            None,
-                        )),
-                    )?;
-                    continue;
-                }
-                Err(linux::EntryReadError::Changed) => {
-                    return Err(WorkspaceInspectError::ChangedDuringRead);
-                }
-                Err(linux::EntryReadError::Io(error))
-                    if error.kind() == std::io::ErrorKind::NotFound =>
-                {
-                    continue;
-                }
-                Err(linux::EntryReadError::Io(error)) => return Err(map_io(error)),
-            };
+            let (bytes, modified) =
+                match category_dir.read_regular_with_modified(&guide_name, GUIDE_LIMIT) {
+                    Ok(value) => value,
+                    Err(linux::EntryReadError::Unsafe) => {
+                        push_issue(&mut issues, guide_path, WorkspaceIssueKind::UnsafeEntry)?;
+                        continue;
+                    }
+                    Err(linux::EntryReadError::TooLarge) => {
+                        push_diagnosed_issue(
+                            &mut issues,
+                            guide_path,
+                            WorkspaceIssueKind::FileTooLarge,
+                            Some(crate::domain::GuideDiagnostic::new(
+                                crate::domain::GuideDiagnosticCode::FileTooLarge,
+                                None,
+                                None,
+                            )),
+                        )?;
+                        continue;
+                    }
+                    Err(linux::EntryReadError::Changed) => {
+                        return Err(WorkspaceInspectError::ChangedDuringRead);
+                    }
+                    Err(linux::EntryReadError::Io(error))
+                        if error.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        continue;
+                    }
+                    Err(linux::EntryReadError::Io(error)) => return Err(map_io(error)),
+                };
             add_managed_bytes(&mut managed_bytes, bytes.len())?;
             let revision = document_revision(&guide_path, &bytes);
-            let bound_guide = match crate::parsing::parse_guide_source(bytes.into_boxed_slice())
-                .map_err(|error| crate::domain::GuideDiagnostic::from_guide_parse_failure(&error))
-                .and_then(|parsed| {
-                    crate::domain::content::guide::bind_guide(parsed).map_err(|error| {
-                        crate::domain::GuideDiagnostic::from_guide_bind_failure(&error)
-                    })
-                }) {
-                Ok(bound) => bound,
-                Err(diagnostic) => {
-                    push_diagnosed_issue(
-                        &mut issues,
-                        guide_path,
-                        WorkspaceIssueKind::MalformedGuide,
-                        Some(diagnostic),
-                    )?;
-                    continue;
-                }
+            let context = crate::domain::content::derived::DeriveContext {
+                workspace_id: manifest.workspace_id(),
+                relative_path: &guide_path,
+                category_id: *category.id(),
+                modified_at: guide_modified_timestamp(modified),
             };
-            if bound_guide.record().category_id() != category.id() {
+            let (record, origin, effective_status) =
+                match crate::domain::content::derived::derive_guide(
+                    bytes.into_boxed_slice(),
+                    &context,
+                ) {
+                    crate::domain::content::derived::DerivedGuide::Rejected(diagnostic) => {
+                        push_diagnosed_issue(
+                            &mut issues,
+                            guide_path,
+                            WorkspaceIssueKind::MalformedGuide,
+                            Some(diagnostic),
+                        )?;
+                        continue;
+                    }
+                    crate::domain::content::derived::DerivedGuide::Unadopted(unadopted) => {
+                        let origin = crate::domain::GuideOrigin::Unadopted(unadopted.reasons());
+                        // Derived metadata is never trusted as tested.
+                        (unadopted.into_guide(), origin, GuideStatus::Draft)
+                    }
+                    crate::domain::content::derived::DerivedGuide::Managed(bound_guide) => {
+                        let effective_status =
+                            managed_effective_status(&bound_guide, &guide_path, &mut issues)?;
+                        (
+                            (*bound_guide).into_record(),
+                            crate::domain::GuideOrigin::Managed,
+                            effective_status,
+                        )
+                    }
+                };
+            if record.category_id() != category.id() {
                 push_issue(
                     &mut issues,
                     guide_path,
@@ -4089,7 +4145,7 @@ fn inspect_open_root_with_index(
             guide_ids
                 .try_reserve(1)
                 .map_err(|_| WorkspaceInspectError::ResourceLimit)?;
-            if !guide_ids.insert(*bound_guide.record().id()) {
+            if !guide_ids.insert(*record.id()) {
                 push_issue(
                     &mut issues,
                     guide_path.clone(),
@@ -4097,44 +4153,8 @@ fn inspect_open_root_with_index(
                 )?;
                 continue;
             }
-            let effective_status = if bound_guide.record().declared_status() == GuideStatus::Tested
-            {
-                let calculated = crate::domain::content::verification::verification_hash(
-                    &bound_guide,
-                )
-                .map_err(|error| match error {
-                    crate::domain::content::verification::VerificationFailure::ResourceLimit => {
-                        WorkspaceInspectError::ResourceLimit
-                    }
-                    crate::domain::content::verification::VerificationFailure::Invariant => {
-                        WorkspaceInspectError::Io
-                    }
-                })?;
-                if bound_guide
-                    .record()
-                    .verification()
-                    .and_then(|verification| verification.verified_content_hash())
-                    == Some(&calculated)
-                {
-                    GuideStatus::Tested
-                } else {
-                    push_issue(
-                        &mut issues,
-                        guide_path.clone(),
-                        WorkspaceIssueKind::VerificationMismatch,
-                    )?;
-                    GuideStatus::Stale
-                }
-            } else {
-                bound_guide.record().declared_status()
-            };
             search_builder
-                .add(
-                    bound_guide.record(),
-                    revision,
-                    effective_status,
-                    category.name(),
-                )
+                .add(&record, revision, effective_status, category.name())
                 .map_err(|error| match error {
                     crate::search::SearchIndexBuildError::ResourceLimit => {
                         WorkspaceInspectError::ResourceLimit
@@ -4144,8 +4164,9 @@ fn inspect_open_root_with_index(
             guides.push(LoadedGuide {
                 relative_path: guide_path,
                 revision,
-                guide: bound_guide.into_record().into_metadata(),
+                guide: record.into_metadata(),
                 effective_status,
+                origin,
             });
         }
         guides.sort_by(|left, right| {
@@ -4820,6 +4841,44 @@ fn add_managed_bytes(total: &mut u64, amount: usize) -> Result<(), WorkspaceInsp
     Ok(())
 }
 
+/// A managed Guide declaring `tested` is effective only while its stored
+/// verification hash matches; otherwise it is reported and treated as stale.
+fn managed_effective_status(
+    bound_guide: &crate::domain::content::guide::BoundGuide,
+    guide_path: &str,
+    issues: &mut Vec<WorkspaceIssue>,
+) -> Result<GuideStatus, WorkspaceInspectError> {
+    if bound_guide.record().declared_status() != GuideStatus::Tested {
+        return Ok(bound_guide.record().declared_status());
+    }
+    let calculated =
+        crate::domain::content::verification::verification_hash(bound_guide).map_err(|error| {
+            match error {
+                crate::domain::content::verification::VerificationFailure::ResourceLimit => {
+                    WorkspaceInspectError::ResourceLimit
+                }
+                crate::domain::content::verification::VerificationFailure::Invariant => {
+                    WorkspaceInspectError::Io
+                }
+            }
+        })?;
+    if bound_guide
+        .record()
+        .verification()
+        .and_then(|verification| verification.verified_content_hash())
+        == Some(&calculated)
+    {
+        Ok(GuideStatus::Tested)
+    } else {
+        push_issue(
+            issues,
+            guide_path.to_owned(),
+            WorkspaceIssueKind::VerificationMismatch,
+        )?;
+        Ok(GuideStatus::Stale)
+    }
+}
+
 fn push_issue(
     issues: &mut Vec<WorkspaceIssue>,
     relative_path: String,
@@ -5340,6 +5399,15 @@ mod linux {
         ) -> Result<Vec<u8>, EntryReadError> {
             self.read_regular_state(name, limit)
                 .map(|state| state.bytes)
+        }
+
+        pub(super) fn read_regular_with_modified(
+            &self,
+            name: &str,
+            limit: usize,
+        ) -> Result<(Vec<u8>, i64), EntryReadError> {
+            self.read_regular_state_with_source(name, limit)
+                .map(|(state, source)| (state.bytes, source.modified_seconds()))
         }
 
         pub(super) fn read_import_regular(
@@ -7876,6 +7944,22 @@ mod linux {
 
         pub(super) fn state(&self, limit: usize) -> Result<ManagedState, MutationIoError> {
             self.named_state(&self.name, limit)
+        }
+
+        pub(super) fn regular_with_modified(
+            &self,
+            limit: usize,
+        ) -> Result<Option<(Vec<u8>, i64)>, MutationIoError> {
+            match self.directory.read_regular_with_modified(&self.name, limit) {
+                Ok(value) => Ok(Some(value)),
+                Err(EntryReadError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                    Ok(None)
+                }
+                Err(EntryReadError::Unsafe) => Err(MutationIoError::Unsafe),
+                Err(EntryReadError::TooLarge) => Err(MutationIoError::TooLarge),
+                Err(EntryReadError::Changed) => Err(MutationIoError::Conflict),
+                Err(EntryReadError::Io(_)) => Err(MutationIoError::Io),
+            }
         }
 
         pub(super) fn temp_state(
