@@ -430,13 +430,31 @@ impl SearchIndex {
         limit: usize,
         allowed_guide_ids: Option<&BTreeSet<GuideId>>,
     ) -> Result<Vec<SearchHit>, SearchError> {
+        self.search_with_stats(
+            query,
+            status_scope,
+            limit,
+            allowed_guide_ids,
+            &mut SearchStats::default(),
+        )
+    }
+
+    fn search_with_stats(
+        &self,
+        query: &str,
+        status_scope: SearchStatusScope,
+        limit: usize,
+        allowed_guide_ids: Option<&BTreeSet<GuideId>>,
+        stats: &mut SearchStats,
+    ) -> Result<Vec<SearchHit>, SearchError> {
         let parsed = SearchQuery::parse(query)?;
         let limit = limit.min(MAX_SEARCH_RESULTS);
         if limit == 0 || parsed.terms.is_empty() {
             return Ok(Vec::new());
         }
-        let mut hits: Vec<(SearchHit, usize)> = Vec::new();
+        let mut hits: Vec<(SearchHit, usize, Vec<String>)> = Vec::new();
         let mut buffer = Vec::new();
+        let mut scratch = FuzzyScratch::default();
 
         for (document_index, document) in self.documents.iter().enumerate() {
             if allowed_guide_ids.is_some_and(|allowed| !allowed.contains(&document.guide_id)) {
@@ -446,45 +464,34 @@ impl SearchIndex {
                 continue;
             }
             let fields = document.record.read(&mut buffer)?;
-            if !parsed
-                .terms
-                .iter()
-                .all(|term| fields.contains(term, &document.category))
-            {
+            let Some(evaluation) =
+                fields.evaluate(&parsed, &document.category, &mut scratch, stats)
+            else {
                 continue;
-            }
-            let (mut base_score, mut matched_fields) =
-                fields.score(&parsed.normalized, &document.category);
-            for term in &parsed.terms {
-                let (term_score, term_fields) = fields.score(term, &document.category);
-                base_score = base_score.max(term_score);
-                matched_fields.extend(term_fields);
-            }
-            if base_score == 0 {
-                continue;
-            }
-            matched_fields.sort_unstable();
-            matched_fields.dedup();
+            };
             let status_tie = match document.status {
                 GuideStatus::Tested => 3,
                 GuideStatus::Draft => 2,
                 GuideStatus::Stale => 1,
                 GuideStatus::Archived => 0,
             };
+            let score =
+                u16::try_from(evaluation.score.saturating_add(status_tie)).unwrap_or(u16::MAX);
             hits.push((
                 SearchHit {
                     guide_id: document.guide_id,
-                    score: base_score + status_tie,
-                    matched_fields,
+                    score,
+                    matched_fields: evaluation.matched_fields,
                     excerpt: String::new(),
                     excerpt_field: SearchMatchField::Body,
                     highlights: Vec::new(),
                 },
                 document_index,
+                evaluation.fuzzy_tokens,
             ));
         }
 
-        hits.sort_by(|(left, left_index), (right, right_index)| {
+        hits.sort_by(|(left, left_index, _), (right, right_index, _)| {
             Reverse(left.score)
                 .cmp(&Reverse(right.score))
                 .then_with(|| {
@@ -499,11 +506,17 @@ impl SearchIndex {
         completed
             .try_reserve_exact(hits.len())
             .map_err(|_| SearchError::IndexUnavailable)?;
-        for (mut hit, document_index) in hits {
+        for (mut hit, document_index, fuzzy_tokens) in hits {
             let document = &self.documents[document_index];
             let fields = document.record.read(&mut buffer)?;
-            let (field, excerpt, highlights) =
-                fields.excerpt(&parsed, &document.category, &hit.matched_fields);
+            let mut needles = parsed.terms.clone();
+            needles.extend(fuzzy_tokens);
+            let (field, excerpt, highlights) = fields.excerpt(
+                &parsed.normalized,
+                &needles,
+                &document.category,
+                &hit.matched_fields,
+            );
             hit.excerpt_field = field;
             hit.excerpt = excerpt;
             hit.highlights = highlights;
@@ -557,9 +570,43 @@ pub fn search_workspace_filtered(
         .search(query, status_scope, limit, Some(allowed_guide_ids))
 }
 
+/// Work counters for one query. They make the fuzzy-matching bound observable to tests.
+#[derive(Debug, Default)]
+struct SearchStats {
+    fuzzy_tokens_visited: u64,
+    fuzzy_comparisons: u64,
+}
+
 struct SearchQuery {
     normalized: String,
     terms: Vec<String>,
+    /// Typo-tolerance parameters for each term; `None` when the term must match exactly
+    /// (quoted, too short, too long, or containing non-alphanumeric characters).
+    fuzzy: Vec<Option<FuzzyTerm>>,
+}
+
+struct FuzzyTerm {
+    characters: Vec<char>,
+    max_distance: usize,
+}
+
+impl FuzzyTerm {
+    fn for_term(term: &str, quoted: bool) -> Option<Self> {
+        // Numbers, versions, identifiers with punctuation, and quoted phrases stay exact: a
+        // one-edit neighbor of "04999" or "v1.2" is a different thing, not a typo.
+        if quoted || !term.chars().all(char::is_alphabetic) {
+            return None;
+        }
+        let characters = term.chars().collect::<Vec<_>>();
+        if !(MIN_FUZZY_TERM_CHARS..=MAX_FUZZY_TERM_CHARS).contains(&characters.len()) {
+            return None;
+        }
+        let max_distance = if characters.len() < 8 { 1 } else { 2 };
+        Some(Self {
+            characters,
+            max_distance,
+        })
+    }
 }
 
 impl SearchQuery {
@@ -569,17 +616,20 @@ impl SearchQuery {
         }
         let normalized = normalize(query.trim());
         let mut terms = Vec::new();
+        let mut quoted_terms = Vec::new();
         let mut current = String::new();
         let mut quoted = false;
         for character in normalized.chars() {
             if character == '"' {
                 if !current.is_empty() {
                     terms.push(std::mem::take(&mut current));
+                    quoted_terms.push(quoted);
                 }
                 quoted = !quoted;
             } else if character.is_whitespace() && !quoted {
                 if !current.is_empty() {
                     terms.push(std::mem::take(&mut current));
+                    quoted_terms.push(false);
                 }
             } else {
                 current.push(character);
@@ -590,12 +640,22 @@ impl SearchQuery {
         }
         if !current.is_empty() {
             terms.push(current);
+            quoted_terms.push(quoted);
         }
         if terms.len() > MAX_SEARCH_TERMS {
             return Err(SearchError::TooManyTerms);
         }
+        let fuzzy = terms
+            .iter()
+            .zip(&quoted_terms)
+            .map(|(term, quoted)| FuzzyTerm::for_term(term, *quoted))
+            .collect();
         let normalized = terms.join(" ");
-        Ok(Self { normalized, terms })
+        Ok(Self {
+            normalized,
+            terms,
+            fuzzy,
+        })
     }
 }
 
@@ -758,139 +818,435 @@ impl SearchFields {
             .any(|values| values.iter().any(|value| value.contains(term)))
     }
 
-    fn score(&self, query: &str, category: &str) -> (u16, Vec<SearchMatchField>) {
-        let mut matches = Vec::new();
-        let mut score = 0;
-        record(
-            &mut score,
-            &mut matches,
-            self.title == query,
-            100,
-            SearchMatchField::Title,
-        );
-        record(
-            &mut score,
-            &mut matches,
-            self.aliases.iter().any(|value| value == query),
-            95,
-            SearchMatchField::Alias,
-        );
-        record(
-            &mut score,
-            &mut matches,
-            self.commands.iter().any(|value| value == query),
-            75,
-            SearchMatchField::Command,
-        );
-        record(
-            &mut score,
-            &mut matches,
-            self.paths.iter().any(|value| value == query),
-            75,
-            SearchMatchField::Path,
-        );
-        record(
-            &mut score,
-            &mut matches,
-            self.errors.iter().any(|value| value == query),
-            75,
-            SearchMatchField::Error,
-        );
-        record(
-            &mut score,
-            &mut matches,
-            self.title.starts_with(query),
-            70,
-            SearchMatchField::Title,
-        );
-        record(
-            &mut score,
-            &mut matches,
-            self.title.split_whitespace().any(|token| token == query),
-            55,
-            SearchMatchField::Title,
-        );
-        record(
-            &mut score,
-            &mut matches,
-            self.tags.iter().any(|value| value == query),
-            45,
-            SearchMatchField::Tag,
-        );
-        record(
-            &mut score,
-            &mut matches,
-            category.contains(query),
-            40,
-            SearchMatchField::Category,
-        );
-        record(
-            &mut score,
-            &mut matches,
-            self.summary.contains(query),
-            35,
-            SearchMatchField::Summary,
-        );
-        record(
-            &mut score,
-            &mut matches,
-            self.headings.iter().any(|value| value.contains(query)),
-            25,
-            SearchMatchField::Heading,
-        );
-        record(
-            &mut score,
-            &mut matches,
-            self.body.contains(query),
-            10,
-            SearchMatchField::Body,
-        );
-        (score, matches)
+    /// The normalized values stored for one field, in a fixed order.
+    fn values<'a>(
+        &'a self,
+        field: SearchMatchField,
+        category: &'a str,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        let (single, many): (Option<&'a str>, &'a [String]) = match field {
+            SearchMatchField::Title => (Some(&self.title), &[]),
+            SearchMatchField::Alias => (None, &self.aliases),
+            SearchMatchField::Command => (None, &self.commands),
+            SearchMatchField::Path => (None, &self.paths),
+            SearchMatchField::Error => (None, &self.errors),
+            SearchMatchField::Tag => (None, &self.tags),
+            SearchMatchField::Category => (Some(category), &[]),
+            SearchMatchField::Summary => (Some(&self.summary), &[]),
+            SearchMatchField::Heading => (None, &self.headings),
+            SearchMatchField::Body => (Some(&self.body), &[]),
+        };
+        single.into_iter().chain(many.iter().map(String::as_str))
+    }
+
+    /// Scores one Guide against a parsed query. Every term must match, exactly or, when a
+    /// term has no exact occurrence anywhere in the Guide, through bounded typo tolerance.
+    /// The total is the sum of each term's best field score plus small multi-field and
+    /// phrase bonuses, so Guides that match more strongly across terms rank higher.
+    fn evaluate(
+        &self,
+        query: &SearchQuery,
+        category: &str,
+        scratch: &mut FuzzyScratch,
+        stats: &mut SearchStats,
+    ) -> Option<SearchEvaluation> {
+        // Cheap exact containment first: reject before any fuzzy work when a term that cannot
+        // be fuzzy-matched is absent.
+        let mut missing = 0u32;
+        for (index, term) in query.terms.iter().enumerate() {
+            if !self.contains(term, category) {
+                query.fuzzy[index].as_ref()?;
+                missing |= 1 << index;
+            }
+        }
+        let mut total = 0u32;
+        let mut mask = 0u16;
+        let mut title_terms = 0usize;
+        let mut fuzzy_tokens = Vec::new();
+        // Fuzzy terms run first so a failed typo match rejects the Guide before exact scoring.
+        for (index, fuzzy) in query.fuzzy.iter().enumerate() {
+            if missing & (1 << index) == 0 {
+                continue;
+            }
+            let matched = self.fuzzy_term_score(fuzzy.as_ref()?, category, scratch, stats)?;
+            total = total.saturating_add(matched.score);
+            mask |= matched.mask;
+            if matched.mask & field_bit(SearchMatchField::Title) != 0 {
+                title_terms += 1;
+            }
+            fuzzy_tokens.extend(matched.tokens);
+        }
+        for (index, term) in query.terms.iter().enumerate() {
+            if missing & (1 << index) != 0 {
+                continue;
+            }
+            let (score, term_mask) = self.exact_term_score(term, category);
+            if score == 0 {
+                return None;
+            }
+            total = total.saturating_add(score);
+            mask |= term_mask;
+            if term_mask & field_bit(SearchMatchField::Title) != 0 {
+                title_terms += 1;
+            }
+        }
+        if query.terms.len() > 1 {
+            total = total.saturating_add(self.phrase_bonus(&query.normalized));
+            if title_terms == query.terms.len() {
+                total = total.saturating_add(ALL_TERMS_IN_TITLE_BONUS);
+            }
+        }
+        let extra_fields = mask.count_ones().saturating_sub(1).min(MAX_BONUS_FIELDS);
+        total = total.saturating_add(extra_fields * MULTI_FIELD_BONUS);
+        let matched_fields = ALL_FIELDS
+            .into_iter()
+            .filter(|field| mask & field_bit(*field) != 0)
+            .collect();
+        Some(SearchEvaluation {
+            score: total,
+            matched_fields,
+            fuzzy_tokens,
+        })
+    }
+
+    /// Best exact score for one term across fields, plus the mask of every field it matched.
+    fn exact_term_score(&self, term: &str, category: &str) -> (u32, u16) {
+        let mut best = 0;
+        let mut mask = 0;
+        for weight in EXACT_FIELD_WEIGHTS {
+            let mut field_best = 0;
+            for value in self.values(weight.field, category) {
+                let score = if value == term {
+                    weight.whole_value
+                } else if let Some(percent) = occurrence_percent(value, term) {
+                    weight.token * percent / 100
+                } else {
+                    continue;
+                };
+                field_best = field_best.max(score);
+                if field_best >= weight.whole_value {
+                    break;
+                }
+            }
+            if field_best > 0 {
+                mask |= field_bit(weight.field);
+                best = best.max(field_best);
+            }
+        }
+        (best, mask)
+    }
+
+    /// Bounded typo-tolerant match of one term against word tokens of high-value fields.
+    /// At most `MAX_FUZZY_TOKENS_PER_TERM` tokens and `MAX_FUZZY_BYTES_PER_TERM` bytes are
+    /// examined per Guide and term, so the cost per Guide is constant regardless of field
+    /// sizes.
+    fn fuzzy_term_score(
+        &self,
+        term: &FuzzyTerm,
+        category: &str,
+        scratch: &mut FuzzyScratch,
+        stats: &mut SearchStats,
+    ) -> Option<FuzzyMatch> {
+        let term_length = term.characters.len();
+        let max_distance = term.max_distance;
+        let mut remaining_tokens = MAX_FUZZY_TOKENS_PER_TERM;
+        let mut remaining_bytes = MAX_FUZZY_BYTES_PER_TERM;
+        let mut best = 0;
+        let mut mask = 0;
+        let mut tokens: Vec<String> = Vec::new();
+        'fields: for weight in FUZZY_FIELD_WEIGHTS {
+            // Fields are ordered by weight; a lower field can no longer beat the best match.
+            if best >= weight.token * FUZZY_ONE_EDIT_PERCENT / 100 {
+                break;
+            }
+            for value in self.values(weight.field, category) {
+                if remaining_bytes == 0 {
+                    break 'fields;
+                }
+                let scanned = truncate_at_char_boundary(value, remaining_bytes);
+                remaining_bytes -= scanned.len();
+                for token in scanned
+                    .split(|character: char| !character.is_alphanumeric())
+                    .filter(|token| !token.is_empty())
+                {
+                    if remaining_tokens == 0 {
+                        break 'fields;
+                    }
+                    remaining_tokens -= 1;
+                    stats.fuzzy_tokens_visited += 1;
+                    // Byte length bounds the character count from both sides (1..=4 bytes).
+                    if token.len() + max_distance < term_length
+                        || token.len() > (term_length + max_distance) * 4
+                    {
+                        continue;
+                    }
+                    scratch.token.clear();
+                    scratch.token.extend(token.chars());
+                    if scratch.token.len().abs_diff(term_length) > max_distance {
+                        continue;
+                    }
+                    stats.fuzzy_comparisons += 1;
+                    let Some(distance) = bounded_osa_distance(
+                        &term.characters,
+                        &scratch.token,
+                        max_distance,
+                        &mut scratch.rows,
+                    ) else {
+                        continue;
+                    };
+                    let percent = if distance <= 1 {
+                        FUZZY_ONE_EDIT_PERCENT
+                    } else {
+                        FUZZY_TWO_EDIT_PERCENT
+                    };
+                    best = best.max(weight.token * percent / 100);
+                    mask |= field_bit(weight.field);
+                    if tokens.len() < MAX_FUZZY_TOKENS_HIGHLIGHTED
+                        && !tokens.iter().any(|existing| existing == token)
+                    {
+                        tokens.push(token.to_owned());
+                    }
+                }
+            }
+        }
+        (best > 0).then_some(FuzzyMatch {
+            score: best,
+            mask,
+            tokens,
+        })
+    }
+
+    fn phrase_bonus(&self, phrase: &str) -> u32 {
+        if self.title == phrase {
+            EXACT_TITLE_PHRASE_BONUS
+        } else if self.aliases.iter().any(|alias| alias == phrase) {
+            EXACT_ALIAS_PHRASE_BONUS
+        } else if self.title.contains(phrase) {
+            TITLE_PHRASE_BONUS
+        } else if self.aliases.iter().any(|alias| alias.contains(phrase)) {
+            ALIAS_PHRASE_BONUS
+        } else {
+            0
+        }
     }
 
     fn excerpt(
         &self,
-        query: &SearchQuery,
+        phrase: &str,
+        needles: &[String],
         category: &str,
         matched_fields: &[SearchMatchField],
     ) -> (SearchMatchField, String, Vec<SearchHighlight>) {
         let (field, value) = matched_fields
             .iter()
             .find_map(|field| {
-                self.excerpt_candidate(*field, query, category)
+                self.values(*field, category)
+                    .find(|value| matches_needles(value, phrase, needles))
                     .map(|value| (*field, value))
             })
-            .unwrap_or((SearchMatchField::Body, &self.body));
-        let excerpt = excerpt_window(value, &query.terms);
-        let highlights = highlight_ranges(&excerpt, &query.terms);
+            .unwrap_or((SearchMatchField::Body, self.body.as_str()));
+        let excerpt = excerpt_window(value, needles);
+        let highlights = highlight_ranges(&excerpt, needles);
         (field, excerpt, highlights)
     }
+}
 
-    fn excerpt_candidate<'a>(
-        &'a self,
-        field: SearchMatchField,
-        query: &SearchQuery,
-        category: &'a str,
-    ) -> Option<&'a str> {
-        let values: &[String] = match field {
-            SearchMatchField::Title => std::slice::from_ref(&self.title),
-            SearchMatchField::Alias => &self.aliases,
-            SearchMatchField::Command => &self.commands,
-            SearchMatchField::Path => &self.paths,
-            SearchMatchField::Error => &self.errors,
-            SearchMatchField::Tag => &self.tags,
-            SearchMatchField::Category => {
-                return matches_query(category, query).then_some(category);
-            }
-            SearchMatchField::Summary => std::slice::from_ref(&self.summary),
-            SearchMatchField::Heading => &self.headings,
-            SearchMatchField::Body => std::slice::from_ref(&self.body),
-        };
-        values
-            .iter()
-            .find(|value| matches_query(value, query))
-            .map(String::as_str)
+#[derive(Clone, Copy)]
+struct FieldWeight {
+    field: SearchMatchField,
+    /// Score for the term as a whole word inside the field; word-prefix, mid-word, and fuzzy
+    /// matches earn a percentage of it.
+    token: u32,
+    /// Score when the entire field value equals the term.
+    whole_value: u32,
+}
+
+const fn weight(field: SearchMatchField, token: u32, whole_value: u32) -> FieldWeight {
+    FieldWeight {
+        field,
+        token,
+        whole_value,
     }
+}
+
+const EXACT_FIELD_WEIGHTS: [FieldWeight; 10] = [
+    weight(SearchMatchField::Title, 70, 100),
+    weight(SearchMatchField::Alias, 65, 95),
+    weight(SearchMatchField::Command, 50, 75),
+    weight(SearchMatchField::Path, 50, 75),
+    weight(SearchMatchField::Error, 50, 75),
+    weight(SearchMatchField::Tag, 50, 60),
+    weight(SearchMatchField::Category, 45, 55),
+    weight(SearchMatchField::Summary, 35, 35),
+    weight(SearchMatchField::Heading, 30, 35),
+    weight(SearchMatchField::Body, 12, 12),
+];
+
+/// High-value fields eligible for typo tolerance, ordered by descending token weight.
+const FUZZY_FIELD_WEIGHTS: [FieldWeight; 6] = [
+    weight(SearchMatchField::Title, 70, 0),
+    weight(SearchMatchField::Alias, 65, 0),
+    weight(SearchMatchField::Command, 50, 0),
+    weight(SearchMatchField::Tag, 50, 0),
+    weight(SearchMatchField::Category, 45, 0),
+    weight(SearchMatchField::Heading, 30, 0),
+];
+
+const ALL_FIELDS: [SearchMatchField; 10] = [
+    SearchMatchField::Title,
+    SearchMatchField::Alias,
+    SearchMatchField::Command,
+    SearchMatchField::Path,
+    SearchMatchField::Error,
+    SearchMatchField::Tag,
+    SearchMatchField::Category,
+    SearchMatchField::Summary,
+    SearchMatchField::Heading,
+    SearchMatchField::Body,
+];
+
+const WHOLE_WORD_PERCENT: u32 = 100;
+const WORD_PREFIX_PERCENT: u32 = 85;
+const MID_WORD_PERCENT: u32 = 50;
+const FUZZY_ONE_EDIT_PERCENT: u32 = 60;
+const FUZZY_TWO_EDIT_PERCENT: u32 = 45;
+const EXACT_TITLE_PHRASE_BONUS: u32 = 100;
+const EXACT_ALIAS_PHRASE_BONUS: u32 = 90;
+const TITLE_PHRASE_BONUS: u32 = 25;
+const ALIAS_PHRASE_BONUS: u32 = 20;
+const ALL_TERMS_IN_TITLE_BONUS: u32 = 15;
+const MULTI_FIELD_BONUS: u32 = 2;
+const MAX_BONUS_FIELDS: u32 = 4;
+const MAX_RANKED_OCCURRENCES: usize = 64;
+const MIN_FUZZY_TERM_CHARS: usize = 4;
+const MAX_FUZZY_TERM_CHARS: usize = 32;
+const MAX_FUZZY_TOKENS_PER_TERM: usize = 256;
+const MAX_FUZZY_BYTES_PER_TERM: usize = 16 * 1024;
+const MAX_FUZZY_TOKENS_HIGHLIGHTED: usize = 4;
+
+struct SearchEvaluation {
+    score: u32,
+    matched_fields: Vec<SearchMatchField>,
+    fuzzy_tokens: Vec<String>,
+}
+
+struct FuzzyMatch {
+    score: u32,
+    mask: u16,
+    tokens: Vec<String>,
+}
+
+#[derive(Default)]
+struct FuzzyScratch {
+    token: Vec<char>,
+    rows: OsaRows,
+}
+
+#[derive(Default)]
+struct OsaRows {
+    two_back: Vec<usize>,
+    previous: Vec<usize>,
+    current: Vec<usize>,
+}
+
+fn field_bit(field: SearchMatchField) -> u16 {
+    1 << (field as u16)
+}
+
+/// Percentage of a field's token weight earned by the best occurrence of `term` in `value`:
+/// a whole word, a word prefix, or a mid-word substring. Only a bounded number of
+/// occurrences is ranked.
+fn occurrence_percent(value: &str, term: &str) -> Option<u32> {
+    let term_starts_word = term.chars().next().is_some_and(char::is_alphanumeric);
+    let term_ends_word = term.chars().next_back().is_some_and(char::is_alphanumeric);
+    let mut best: Option<u32> = None;
+    for (start, _) in value.match_indices(term).take(MAX_RANKED_OCCURRENCES) {
+        let end = start + term.len();
+        let at_word_start = !term_starts_word
+            || !value[..start]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_alphanumeric);
+        let at_word_end = !term_ends_word
+            || !value[end..]
+                .chars()
+                .next()
+                .is_some_and(char::is_alphanumeric);
+        let percent = match (at_word_start, at_word_end) {
+            (true, true) => WHOLE_WORD_PERCENT,
+            (true, false) => WORD_PREFIX_PERCENT,
+            _ => MID_WORD_PERCENT,
+        };
+        best = Some(best.map_or(percent, |current| current.max(percent)));
+        if percent == WHOLE_WORD_PERCENT {
+            break;
+        }
+    }
+    best
+}
+
+fn truncate_at_char_boundary(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
+/// Damerau-Levenshtein distance (optimal string alignment) with an upper bound. Returns
+/// `None` as soon as every alignment in a row exceeds `max_distance`; row minima never
+/// decrease, so the early exit is exact.
+fn bounded_osa_distance(
+    left: &[char],
+    right: &[char],
+    max_distance: usize,
+    rows: &mut OsaRows,
+) -> Option<usize> {
+    if left.len().abs_diff(right.len()) > max_distance {
+        return None;
+    }
+    let width = right.len() + 1;
+    let OsaRows {
+        two_back,
+        previous,
+        current,
+    } = rows;
+    for row in [&mut *two_back, &mut *previous, &mut *current] {
+        row.clear();
+        row.resize(width, 0);
+    }
+    for (column, cell) in previous.iter_mut().enumerate() {
+        *cell = column;
+    }
+    for row in 1..=left.len() {
+        current[0] = row;
+        let mut row_minimum = row;
+        for column in 1..width {
+            let substitution = usize::from(left[row - 1] != right[column - 1]);
+            let mut distance = (previous[column] + 1)
+                .min(current[column - 1] + 1)
+                .min(previous[column - 1] + substitution);
+            if row > 1
+                && column > 1
+                && left[row - 1] == right[column - 2]
+                && left[row - 2] == right[column - 1]
+            {
+                distance = distance.min(two_back[column - 2] + 1);
+            }
+            current[column] = distance;
+            row_minimum = row_minimum.min(distance);
+        }
+        if row_minimum > max_distance {
+            return None;
+        }
+        std::mem::swap(two_back, previous);
+        std::mem::swap(previous, current);
+    }
+    let distance = previous[right.len()];
+    (distance <= max_distance).then_some(distance)
 }
 
 fn encode_u32(output: &mut Vec<u8>, value: usize) -> Result<(), SearchIndexBuildError> {
@@ -970,8 +1326,8 @@ impl<'a> SearchRecordDecoder<'a> {
     }
 }
 
-fn matches_query(value: &str, query: &SearchQuery) -> bool {
-    value.contains(&query.normalized) || query.terms.iter().any(|term| value.contains(term))
+fn matches_needles(value: &str, phrase: &str, needles: &[String]) -> bool {
+    value.contains(phrase) || needles.iter().any(|needle| value.contains(needle))
 }
 
 fn excerpt_window(value: &str, terms: &[String]) -> String {
@@ -1063,19 +1419,6 @@ fn highlight_ranges(value: &str, terms: &[String]) -> Vec<SearchHighlight> {
         }
     }
     merged
-}
-
-fn record(
-    score: &mut u16,
-    matches: &mut Vec<SearchMatchField>,
-    matched: bool,
-    boost: u16,
-    field: SearchMatchField,
-) {
-    if matched {
-        *score = (*score).max(boost);
-        matches.push(field);
-    }
 }
 
 fn extract_markdown_fields(
@@ -1450,9 +1793,14 @@ mod tests {
     fn exact_title_outranks_body_repetition() {
         let (_temp, workspace) = workspace();
         let hits = search_workspace(&workspace, "install package", false, 10).unwrap();
-        assert_eq!(hits[0].score(), 102);
-        assert_eq!(hits[0].matched_fields()[0], SearchMatchField::Title);
         assert_eq!(hits.len(), 2);
+        assert_eq!(
+            hits[0].guide_id().to_string(),
+            "0199a1d7-7b0d-7d8e-a38d-f936c5735e21"
+        );
+        assert_eq!(hits[0].matched_fields()[0], SearchMatchField::Title);
+        // The exact-title phrase bonus keeps the exact title well above repeated body text.
+        assert!(hits[0].score() >= hits[1].score() + EXACT_TITLE_PHRASE_BONUS as u16);
         assert_eq!(
             search_workspace(&workspace, "package arch", false, 10)
                 .unwrap()
@@ -1774,6 +2122,262 @@ mod tests {
                 .map(SearchHit::guide_id),
             Some(guide_id)
         );
+    }
+
+    fn ranking_workspace() -> (TestDirectory, Box<WorkspaceView>) {
+        let temp = TestDirectory::new();
+        write_workspace(temp.path());
+        for (id, title, tags, body) in [
+            (
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e41",
+                "Docker prune images",
+                "[docker, cleanup]",
+                "## Prune\n\n```sh\ndocker system prune\n```\n",
+            ),
+            (
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e42",
+                "WireGuard VPN setup",
+                "[vpn]",
+                "Configure the tunnel.\n",
+            ),
+            (
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e43",
+                "Network cabling",
+                "[]",
+                "Run a wire to the switch.\n",
+            ),
+            (
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e44",
+                "Docker volume cleanup",
+                "[]",
+                "Remove dangling volumes.\n",
+            ),
+            (
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e45",
+                "Docker networking",
+                "[]",
+                "Each volume mounts here.\n",
+            ),
+        ] {
+            guide(
+                temp.path(),
+                "desktop",
+                id,
+                title,
+                "Ranking fixture",
+                "[]",
+                tags,
+                "draft",
+                body,
+            );
+        }
+        let inspection = inspect_workspace(temp.path()).unwrap().into_parts().1;
+        let WorkspaceInspection::Compatible(view) = inspection else {
+            panic!("expected compatible Workspace")
+        };
+        (temp, view)
+    }
+
+    fn hit_ids(hits: &[SearchHit]) -> Vec<String> {
+        hits.iter().map(|hit| hit.guide_id().to_string()).collect()
+    }
+
+    fn highlighted(hit: &SearchHit) -> Vec<String> {
+        let characters = hit.excerpt().chars().collect::<Vec<_>>();
+        hit.highlights()
+            .iter()
+            .map(|range| {
+                characters[usize::from(range.start())..usize::from(range.end())]
+                    .iter()
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn bounded_osa_distance_counts_transpositions_and_exits_early() {
+        let mut rows = OsaRows::default();
+        let distance = |left: &str, right: &str, max: usize, rows: &mut OsaRows| {
+            let left = left.chars().collect::<Vec<_>>();
+            let right = right.chars().collect::<Vec<_>>();
+            bounded_osa_distance(&left, &right, max, rows)
+        };
+        assert_eq!(distance("dokcer", "docker", 1, &mut rows), Some(1));
+        assert_eq!(distance("wiregaurd", "wireguard", 2, &mut rows), Some(1));
+        assert_eq!(distance("dockr", "docker", 1, &mut rows), Some(1));
+        assert_eq!(distance("dcoker", "docker", 1, &mut rows), Some(1));
+        assert_eq!(distance("dockerr", "docker", 1, &mut rows), Some(1));
+        assert_eq!(distance("dokcre", "docker", 2, &mut rows), Some(2));
+        assert_eq!(distance("abcdef", "uvwxyz", 2, &mut rows), None);
+        assert_eq!(distance("docker", "doc", 2, &mut rows), None);
+        assert_eq!(distance("café", "cafe", 1, &mut rows), Some(1));
+    }
+
+    #[test]
+    fn typo_queries_match_high_value_fields_and_highlight_the_matched_token() {
+        let (_temp, workspace) = ranking_workspace();
+
+        let hits = search_workspace(&workspace, "dokcer prune", false, 10).unwrap();
+        assert_eq!(
+            hit_ids(&hits),
+            vec!["0199a1d7-7b0d-7d8e-a38d-f936c5735e41".to_owned()]
+        );
+        assert!(hits[0].matched_fields().contains(&SearchMatchField::Title));
+        assert_eq!(hits[0].excerpt_field(), SearchMatchField::Title);
+        assert_eq!(hits[0].excerpt(), "docker prune images");
+        assert_eq!(highlighted(&hits[0]), vec!["docker", "prune"]);
+
+        let hits = search_workspace(&workspace, "wiregaurd", false, 10).unwrap();
+        assert_eq!(
+            hit_ids(&hits),
+            vec!["0199a1d7-7b0d-7d8e-a38d-f936c5735e42".to_owned()]
+        );
+        assert_eq!(highlighted(&hits[0]), vec!["wireguard"]);
+
+        // A typo scores below the same Guide's exact match.
+        let typo = search_workspace(&workspace, "dokcer prune", false, 10).unwrap();
+        let exact = search_workspace(&workspace, "docker prune", false, 10).unwrap();
+        assert_eq!(exact[0].guide_id(), typo[0].guide_id());
+        assert!(exact[0].score() > typo[0].score());
+    }
+
+    fn hits_for(workspace: &WorkspaceView, query: &str) -> Vec<GuideId> {
+        search_workspace(workspace, query, false, 10)
+            .unwrap()
+            .iter()
+            .map(SearchHit::guide_id)
+            .collect()
+    }
+
+    #[test]
+    fn quoted_and_short_terms_never_match_fuzzily() {
+        let (_temp, workspace) = ranking_workspace();
+        for query in [
+            "\"dokcer\"",
+            "\"dokcer prune\"",
+            "\"wiregaurd\"",
+            "vpm",
+            "dok",
+            "prune \"dokcer\"",
+        ] {
+            assert!(hits_for(&workspace, query).is_empty(), "{query}");
+        }
+        // Unquoted terms of four or more characters are typo tolerant.
+        assert_eq!(hits_for(&workspace, "dokcer").len(), 3);
+        // Terms with punctuation or digits are exact-only.
+        assert!(hits_for(&workspace, "dokcer-prune").is_empty());
+        assert!(SearchQuery::parse("guide 04998").unwrap().fuzzy[1].is_none());
+        assert!(SearchQuery::parse("dokcer2").unwrap().fuzzy[0].is_none());
+        let parsed = SearchQuery::parse("wiregaurd dokcer").unwrap();
+        assert_eq!(
+            parsed
+                .fuzzy
+                .iter()
+                .map(|term| term.as_ref().map(|term| term.max_distance))
+                .collect::<Vec<_>>(),
+            vec![Some(2), Some(1)]
+        );
+    }
+
+    #[test]
+    fn word_prefix_in_title_outranks_whole_word_in_body() {
+        let (_temp, workspace) = ranking_workspace();
+        let hits = search_workspace(&workspace, "wire", false, 10).unwrap();
+        assert_eq!(
+            hit_ids(&hits),
+            vec![
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e42".to_owned(),
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e43".to_owned(),
+            ]
+        );
+        assert!(hits[0].score() > hits[1].score());
+        assert_eq!(hits[0].excerpt_field(), SearchMatchField::Title);
+        assert_eq!(hits[1].excerpt_field(), SearchMatchField::Body);
+
+        assert_eq!(occurrence_percent("wireguard vpn", "wire"), Some(85));
+        assert_eq!(occurrence_percent("rewire it", "wire"), Some(50));
+        assert_eq!(occurrence_percent("rewire a wire", "wire"), Some(100));
+        assert_eq!(occurrence_percent("/etc/wire.conf", "/etc/wire"), Some(100));
+        assert_eq!(occurrence_percent("cable", "wire"), None);
+    }
+
+    #[test]
+    fn multi_term_scores_accumulate_across_terms() {
+        let (_temp, workspace) = ranking_workspace();
+        let hits = search_workspace(&workspace, "docker volume", false, 10).unwrap();
+        assert_eq!(
+            hit_ids(&hits),
+            vec![
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e44".to_owned(),
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e45".to_owned(),
+            ]
+        );
+        assert!(hits[0].score() > hits[1].score());
+        // Without accumulation both would tie on their best single-field score.
+        let single = search_workspace(&workspace, "docker", false, 10).unwrap();
+        assert_eq!(single.len(), 3);
+        assert!(hits[1].score() > single.iter().map(SearchHit::score).max().unwrap());
+
+        // The Guide matching "docker" in title, tag, and command ranks first; equal scores
+        // remain ordered by title, then Guide ID.
+        assert_eq!(
+            hit_ids(&single),
+            vec![
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e41".to_owned(),
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e45".to_owned(),
+                "0199a1d7-7b0d-7d8e-a38d-f936c5735e44".to_owned(),
+            ]
+        );
+        assert_eq!(single[1].score(), single[2].score());
+    }
+
+    #[test]
+    fn fuzzy_matching_work_is_bounded_per_guide() {
+        const GUIDES: usize = 5_000;
+        let crowded_heading = "worker ".repeat(600);
+        let documents = (0..GUIDES)
+            .map(|index| SearchFields {
+                title: if index % 50 == 0 {
+                    format!("docker host {index:05}")
+                } else {
+                    format!("service host {index:05}")
+                },
+                aliases: Vec::new(),
+                commands: vec!["worker ".repeat(2_000)],
+                paths: Vec::new(),
+                errors: Vec::new(),
+                tags: vec!["synthetic".to_owned()],
+                summary: "synthetic guide".to_owned(),
+                headings: vec![crowded_heading.clone()],
+                body: "x".repeat(4_096),
+            })
+            .collect::<Vec<_>>();
+        let query = SearchQuery::parse("dokcer").unwrap();
+        let mut scratch = FuzzyScratch::default();
+        let mut stats = SearchStats::default();
+        let started = std::time::Instant::now();
+        let matched = documents
+            .iter()
+            .filter(|fields| {
+                fields
+                    .evaluate(&query, "benchmark", &mut scratch, &mut stats)
+                    .is_some()
+            })
+            .count();
+        let elapsed = started.elapsed();
+        println!(
+            "fuzzy_guides={GUIDES} tokens={} comparisons={} elapsed_ms={:.1}",
+            stats.fuzzy_tokens_visited,
+            stats.fuzzy_comparisons,
+            elapsed.as_secs_f64() * 1_000.0
+        );
+        assert_eq!(matched, GUIDES / 50);
+        let bound = u64::try_from(GUIDES * MAX_FUZZY_TOKENS_PER_TERM).unwrap();
+        assert!(stats.fuzzy_tokens_visited <= bound);
+        assert!(stats.fuzzy_comparisons <= stats.fuzzy_tokens_visited);
+        // Non-matching Guides exhaust the per-term token budget instead of scanning every token.
+        assert!(stats.fuzzy_tokens_visited >= bound / 2);
+        assert!(elapsed < std::time::Duration::from_secs(60));
     }
 
     #[test]
