@@ -10,13 +10,15 @@ Rehow is a Linux-first, local desktop knowledge application for preserving and f
 
 ## What Rehow does
 
-- Searches titles, aliases, Tags, Categories, commands, paths, error messages, and full Guide content.
-- Keeps prerequisites, warnings, steps, verification, rollback, troubleshooting, references, and Attachments together.
-- Creates, edits, moves, archives, restores, and safely deletes Guides with revision and conflict protection.
-- Detects external file changes without silently overwriting unsaved work.
-- Supports optional Git initialization, commits, cloning, and guarded synchronization without storing credentials.
-- Includes a separately usable local MCP server for safe AI-assisted Guide workflows.
-- Works without Git, MCP, a network connection, or an AI service.
+- **Search-first.** Type a title, command, path, or error message and get ranked results instantly, even with typos (`dokcer` finds Docker). `Ctrl+K` opens a command palette for Guides and actions.
+- **Write comfortably.** A Markdown editor with live preview, a formatting toolbar, section templates (Steps, Verify, Rollback, Troubleshooting), Tags with suggestions, and `Ctrl+S`. Unsaved drafts survive a crash.
+- **Read at a glance.** Warnings, prerequisites, affected files, references, and related Guides sit above the steps; every command block has a one-click Copy.
+- **Stay trustworthy.** Guides are Draft, Tested, or Needs retest. Editing a tested Guide marks it for retesting; only you can mark it tested again.
+- **Organize simply.** Click a Category, Tag, or status in the sidebar to filter. Archive instead of delete when unsure.
+- **Bring your own Markdown.** Drop plain `.md` files into a Category folder and they appear immediately. Rehow adds its metadata block only when you edit and save one.
+- **Sync with Git (optional).** Commit, pull, and push from a Source control panel, using your existing SSH keys or credential helper.
+- **Work with AI (optional).** A local MCP server lets Claude Code, Claude Desktop, Codex, and other clients search and draft Guides. AI edits always stay Drafts until you test them.
+- Works offline, without Git, MCP, or any AI service.
 
 Commands shown in Guides are inert documentation. Rehow never executes them.
 
@@ -55,7 +57,7 @@ Rehow is a Tauri desktop application. It does not require a permanently running 
 
 A Workspace is an ordinary folder containing a versioned manifest, Category descriptors, Markdown Guides, and managed Attachments. Markdown and YAML are the source of truth; search indexes and caches are disposable.
 
-Rehow does not silently adopt, reorganize, migrate, or overwrite an existing folder. Writes are confined to the opened Workspace, atomic, recoverable, and revision-checked. The format and compatibility rules are documented in [the content model](docs/content-model.md).
+Hand-written Markdown files inside a Category folder are listed as-is; Rehow derives their title and summary in memory and adds frontmatter only on your first explicit save, keeping the filename and body unchanged ([ADR 0063](docs/adr/0063-hand-written-markdown-guides.md)). Rehow does not silently adopt, reorganize, migrate, or overwrite an existing folder. Writes are confined to the opened Workspace, atomic, recoverable, and revision-checked. The format and compatibility rules are documented in [the content model](docs/content-model.md).
 
 ## MCP server
 
