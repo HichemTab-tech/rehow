@@ -5618,7 +5618,16 @@ struct McpSetupPayload {
 /// Output-only facts for copy-paste MCP client setup. The renderer never
 /// supplies a path; it only displays the one the native side already opened.
 #[tauri::command]
-fn mcp_setup_open_workspace(
+async fn mcp_setup_open_workspace(
+    app: tauri::AppHandle,
+) -> Result<McpSetupPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        mcp_setup_open_workspace_blocking(app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn mcp_setup_open_workspace_blocking(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<McpSetupPayload, NativeCommandError> {
     let selected_path = state
