@@ -221,6 +221,47 @@ impl core::ops::Deref for Guide {
     }
 }
 
+impl GuideMetadata {
+    /// Metadata derived for a hand-written Guide without usable
+    /// frontmatter. This is the only constructor that permits an empty
+    /// summary; it is never emitted to disk as-is.
+    pub(crate) fn derived(
+        id: GuideId,
+        title: String,
+        summary: String,
+        category_id: CategoryId,
+        modified_at: Timestamp,
+    ) -> Self {
+        Self {
+            schema_version: 1,
+            id,
+            title,
+            summary,
+            category_id,
+            tags: Vec::new(),
+            aliases: Vec::new(),
+            declared_status: GuideStatus::Draft,
+            created_at: modified_at,
+            updated_at: modified_at,
+            verification: None,
+            archive: None,
+            applies_to: None,
+            prerequisites: None,
+            warnings: None,
+            files_affected: None,
+            related_guide_ids: None,
+            references: None,
+            attachments: None,
+        }
+    }
+}
+
+/// Assemble a Guide from derived metadata and a body. A free function so the
+/// public type exposes no crate-private associated constructor.
+pub(crate) fn guide_from_parts(metadata: GuideMetadata, body: Box<[u8]>) -> Guide {
+    Guide { metadata, body }
+}
+
 impl Guide {
     pub fn body(&self) -> &[u8] {
         &self.body
@@ -367,12 +408,57 @@ const ROOT_FIELDS: &[(&str, GuideField)] = &[
     ("attachments", GuideField::Attachments),
 ];
 
+/// Values substituted for absent required root fields when deriving
+/// metadata for a hand-written Guide whose frontmatter is incomplete. Present
+/// fields are still validated strictly; only absence is forgiven.
+pub(crate) struct GuideDefaults {
+    pub(crate) id: GuideId,
+    pub(crate) title: String,
+    pub(crate) summary: String,
+    pub(crate) category_id: CategoryId,
+    pub(crate) modified_at: Timestamp,
+}
+
+/// The required root keys of a current Guide.
+pub(crate) const REQUIRED_ROOT_FIELDS: &[(&str, GuideField)] = &[
+    ("schema_version", GuideField::SchemaVersion),
+    ("id", GuideField::Id),
+    ("title", GuideField::Title),
+    ("summary", GuideField::Summary),
+    ("category_id", GuideField::CategoryId),
+    ("tags", GuideField::Tags),
+    ("aliases", GuideField::Aliases),
+    ("status", GuideField::Status),
+    ("created_at", GuideField::CreatedAt),
+    ("updated_at", GuideField::UpdatedAt),
+];
+
+pub(crate) fn missing_required_fields(parsed: &ParsedGuideSource) -> bool {
+    REQUIRED_ROOT_FIELDS
+        .iter()
+        .any(|(key, _)| root_entry(parsed.yaml().semantic(), key).is_none())
+}
+
 pub(crate) fn bind_guide(parsed: ParsedGuideSource) -> Result<BoundGuide, GuideBindFailure> {
+    bind_guide_with(parsed, None)
+}
+
+pub(crate) fn bind_guide_with_defaults(
+    parsed: ParsedGuideSource,
+    defaults: &GuideDefaults,
+) -> Result<BoundGuide, GuideBindFailure> {
+    bind_guide_with(parsed, Some(defaults))
+}
+
+fn bind_guide_with(
+    parsed: ParsedGuideSource,
+    defaults: Option<&GuideDefaults>,
+) -> Result<BoundGuide, GuideBindFailure> {
     let positions = known_positions(&parsed);
     let parsed_id = root_entry(parsed.yaml().semantic(), "id")
         .and_then(|entry| string_value(entry.value()))
         .and_then(|value| GuideId::from_str(value).ok());
-    bind_guide_inner(parsed).map_err(|mut error| {
+    bind_guide_inner(parsed, defaults).map_err(|mut error| {
         error.parsed_guide_id = parsed_id;
         error.position = positions
             .iter()
@@ -381,31 +467,71 @@ pub(crate) fn bind_guide(parsed: ParsedGuideSource) -> Result<BoundGuide, GuideB
     })
 }
 
-fn bind_guide_inner(parsed: ParsedGuideSource) -> Result<BoundGuide, GuideBindFailure> {
+fn bind_guide_inner(
+    parsed: ParsedGuideSource,
+    defaults: Option<&GuideDefaults>,
+) -> Result<BoundGuide, GuideBindFailure> {
     let document = parsed.yaml().semantic();
-    let schema_value = required(document, "schema_version", GuideField::SchemaVersion)?;
-    let schema_integer =
-        integer_value(schema_value).ok_or_else(|| type_error(GuideField::SchemaVersion))?;
-    if parse_u32_integer(schema_integer) != Some(1) {
-        return Err(invalid(GuideField::SchemaVersion));
+    // With defaults, an absent required key takes its derived value; a
+    // present key is always validated exactly as for a managed Guide.
+    let absent = |key: &str| defaults.filter(|_| root_entry(document, key).is_none());
+    if absent("schema_version").is_none() {
+        let schema_value = required(document, "schema_version", GuideField::SchemaVersion)?;
+        let schema_integer =
+            integer_value(schema_value).ok_or_else(|| type_error(GuideField::SchemaVersion))?;
+        if parse_u32_integer(schema_integer) != Some(1) {
+            return Err(invalid(GuideField::SchemaVersion));
+        }
     }
-    let id = parse_id::<GuideId>(document, "id", GuideField::Id)?;
-    let title = text(document, "title", GuideField::Title, 200)?;
-    let summary = text(document, "summary", GuideField::Summary, 500)?;
-    let category_id = parse_id::<CategoryId>(document, "category_id", GuideField::CategoryId)?;
-    let tags = required_strings(document, "tags", GuideField::Tags, 64, 64, None)?;
-    unique_folded(&tags, GuideField::Tags)?;
-    let aliases = required_strings(document, "aliases", GuideField::Aliases, 64, 200, None)?;
-    unique_folded(&aliases, GuideField::Aliases)?;
-    let declared_status = match required_string(document, "status", GuideField::Status)? {
-        "draft" => GuideStatus::Draft,
-        "tested" => GuideStatus::Tested,
-        "stale" => GuideStatus::Stale,
-        "archived" => GuideStatus::Archived,
-        _ => return Err(invalid(GuideField::Status)),
+    let id = match absent("id") {
+        Some(defaults) => defaults.id,
+        None => parse_id::<GuideId>(document, "id", GuideField::Id)?,
     };
-    let created_at = timestamp(document, "created_at", GuideField::CreatedAt)?;
-    let updated_at = timestamp(document, "updated_at", GuideField::UpdatedAt)?;
+    let title = match absent("title") {
+        Some(defaults) => copy_string(&defaults.title, GuideField::Title)?,
+        None => text(document, "title", GuideField::Title, 200)?,
+    };
+    let summary = match absent("summary") {
+        Some(defaults) => copy_string(&defaults.summary, GuideField::Summary)?,
+        None => text(document, "summary", GuideField::Summary, 500)?,
+    };
+    let category_id = match absent("category_id") {
+        Some(defaults) => defaults.category_id,
+        None => parse_id::<CategoryId>(document, "category_id", GuideField::CategoryId)?,
+    };
+    let tags = match absent("tags") {
+        Some(_) => Vec::new(),
+        None => required_strings(document, "tags", GuideField::Tags, 64, 64, None)?,
+    };
+    unique_folded(&tags, GuideField::Tags)?;
+    let aliases = match absent("aliases") {
+        Some(_) => Vec::new(),
+        None => required_strings(document, "aliases", GuideField::Aliases, 64, 200, None)?,
+    };
+    unique_folded(&aliases, GuideField::Aliases)?;
+    let declared_status = match absent("status") {
+        Some(_) => GuideStatus::Draft,
+        None => match required_string(document, "status", GuideField::Status)? {
+            "draft" => GuideStatus::Draft,
+            "tested" => GuideStatus::Tested,
+            "stale" => GuideStatus::Stale,
+            "archived" => GuideStatus::Archived,
+            _ => return Err(invalid(GuideField::Status)),
+        },
+    };
+    let created_at = match absent("created_at") {
+        Some(defaults) => {
+            let updated = optional_timestamp(document, "updated_at", GuideField::UpdatedAt)?;
+            updated.map_or(defaults.modified_at, |value| {
+                core::cmp::min(value, defaults.modified_at)
+            })
+        }
+        None => timestamp(document, "created_at", GuideField::CreatedAt)?,
+    };
+    let updated_at = match absent("updated_at") {
+        Some(defaults) => core::cmp::max(created_at, defaults.modified_at),
+        None => timestamp(document, "updated_at", GuideField::UpdatedAt)?,
+    };
     if updated_at < created_at {
         return Err(invalid(GuideField::UpdatedAt));
     }

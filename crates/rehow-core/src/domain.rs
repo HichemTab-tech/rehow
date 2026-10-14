@@ -3,9 +3,9 @@ mod yaml_value;
 
 pub use content::{
     Applicability, ArchiveMetadata, Attachment, Category, CategoryStatus, Guide, GuideDiagnostic,
-    GuideDiagnosticCode, GuideDiagnosticField, GuideDiagnosticPosition, GuideMetadata,
-    GuideReference, GuideStatus, RestorableGuideStatus, VerificationMetadata, WorkspaceManifest,
-    WorkspaceSettings,
+    GuideDiagnosticCode, GuideDiagnosticField, GuideDiagnosticPosition, GuideMetadata, GuideOrigin,
+    GuideReference, GuideStatus, RestorableGuideStatus, UnadoptedReasons, VerificationMetadata,
+    WorkspaceManifest, WorkspaceSettings,
 };
 
 pub use yaml_value::{
