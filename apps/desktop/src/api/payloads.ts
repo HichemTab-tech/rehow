@@ -171,6 +171,8 @@ export type GitStatusPayload = {
   identity: "configured" | "missing" | "invalid" | null;
   globalIdentity: "available" | "notConfigured" | "unsafe";
   failure: string | null;
+  /** Without a sandbox (no bubblewrap), only status works; commit/sync are off. */
+  sandbox: "bubblewrap" | "unsandboxed" | null;
 };
 
 export type GitInitPlanPayload = {
@@ -538,7 +540,10 @@ export function isGitStatusPayload(value: unknown): value is GitStatusPayload {
   const status = value as Partial<Record<keyof GitStatusPayload, unknown>> &
     Record<string, unknown>;
   if (
-    Object.keys(status).length !== 16 ||
+    Object.keys(status).length !== 17 ||
+    ![null, "bubblewrap", "unsandboxed"].includes(
+      status.sandbox as null | string,
+    ) ||
     ![
       "unavailable",
       "notRepository",

@@ -195,7 +195,12 @@ function Ready() {
           text="Rehow never resolves conflicts automatically. Resolve them in a terminal or your editor, then come back."
         />
       ) : null}
-      {status.identity === "missing" ? (
+      {status.sandbox === "unsandboxed" ? (
+        <Empty
+          title="Install bubblewrap to commit and sync"
+          text="Rehow runs Git inside a sandbox so a repository can't run code on your machine. Bubblewrap isn't available here, so Rehow can show status but won't commit, pull or push. Install the “bubblewrap” package, or use Git from a terminal."
+        />
+      ) : status.identity === "missing" ? (
         <AuthorSetup canImport={status.globalIdentity === "available"} />
       ) : status.identity === "invalid" ? (
         <Empty
@@ -205,7 +210,7 @@ function Ready() {
       ) : (
         <CommitSection changes={changes} />
       )}
-      {status.remoteCount === 0 ? (
+      {status.sandbox === "unsandboxed" ? null : status.remoteCount === 0 ? (
         <RemoteSetup />
       ) : (
         <SyncSection hasUpstream={status.upstream !== null} />

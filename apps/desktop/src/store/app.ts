@@ -466,6 +466,7 @@ export async function refreshGitStatus() {
         identity: null,
         globalIdentity: "unsafe",
         failure: "Git status is unavailable.",
+        sandbox: null,
       },
     });
   }
