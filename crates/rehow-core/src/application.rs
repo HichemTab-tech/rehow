@@ -4511,18 +4511,22 @@ mod tests {
     }
 
     fn fixture(label: &str, guide: &str) -> (TestDirectory, TestDirectory, Box<WorkspaceView>) {
+        fixture_named(label, "install--36c5735e10.md", guide)
+    }
+
+    fn fixture_named(
+        label: &str,
+        filename: &str,
+        guide: &str,
+    ) -> (TestDirectory, TestDirectory, Box<WorkspaceView>) {
         let workspace = TestDirectory::new(label);
         let state = TestDirectory::new("state");
         fs::write(workspace.path().join("rehow.yaml"), MANIFEST).unwrap();
         let category = workspace.path().join("categories/linux-system--b6ba3a5551");
         fs::create_dir_all(&category).unwrap();
         fs::write(category.join("category.yaml"), CATEGORY).unwrap();
-        fs::write(category.join("install--36c5735e10.md"), guide).unwrap();
-        fs::set_permissions(
-            category.join("install--36c5735e10.md"),
-            fs::Permissions::from_mode(0o600),
-        )
-        .unwrap();
+        fs::write(category.join(filename), guide).unwrap();
+        fs::set_permissions(category.join(filename), fs::Permissions::from_mode(0o600)).unwrap();
         let inspection = inspect_workspace(workspace.path()).unwrap().into_parts().1;
         let WorkspaceInspection::Compatible(view) = inspection else {
             panic!("expected compatible Workspace");
@@ -6757,6 +6761,44 @@ mod tests {
         assert_eq!(
             view.categories()[0].guides()[0].guide().title(),
             "Install a Tarball"
+        );
+    }
+
+    #[test]
+    fn managed_update_works_for_a_hand_named_guide_file() {
+        let (workspace, state, mut view) = fixture_named("hand-named", "My Notes.md", GUIDE);
+        assert!(view.issues().is_empty());
+        assert_eq!(
+            view.categories()[0].guides()[0].relative_path(),
+            "categories/linux-system--b6ba3a5551/My Notes.md"
+        );
+        let current = revision(&view);
+        let outcome = update_guide_with_context(
+            &mut view,
+            state.path(),
+            None,
+            GuideId::from_str(GUIDE_ID).unwrap(),
+            current,
+            operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e22"),
+            at(),
+            GuideEdit::SetTitle("Renamed by hand".to_owned()),
+        )
+        .unwrap();
+        assert!(outcome.changed());
+        assert_eq!(
+            view.categories()[0].guides()[0].guide().title(),
+            "Renamed by hand"
+        );
+        let bytes = fs::read(
+            workspace
+                .path()
+                .join("categories/linux-system--b6ba3a5551/My Notes.md"),
+        )
+        .unwrap();
+        assert!(
+            String::from_utf8(bytes)
+                .unwrap()
+                .contains("title: \"Renamed by hand\"")
         );
     }
 
