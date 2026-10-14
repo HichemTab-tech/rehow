@@ -5,53 +5,18 @@ mod semantic;
 mod source;
 
 pub(crate) use reconcile::{
-    CollectionPresentationStyle, CommentId, CommentOwner, CommentPlacement, CommentRecord, EntryId,
-    NodeId, NodePresentation, NodeRole, ParsedGuideSource, ParsedYamlArtifact, ParsedYamlDocument,
-    ReconciledEntry, ReconciledEntryKind, ReconciledNode, ReconciledNodeKind, RoundTripIssue,
-    RoundTripReason, RoundTripReport, RoundTripStatus, ScalarPresentationStyle, SourceTag,
+    CollectionPresentationStyle, CommentOwner, NodePresentation, ParsedGuideSource,
+    ParsedYamlArtifact, ParsedYamlDocument, ReconciledEntryKind, RoundTripStatus,
+};
+#[cfg(test)]
+pub(crate) use reconcile::{
+    CommentPlacement, NodeId, NodeRole, ReconciledNodeKind, RoundTripIssue, RoundTripReason,
 };
 pub(crate) use source::{
-    FileByteOffset, FileByteRange, GuideEnvelope, ParseFailure, ParseFailureKind, ParseLimitFacts,
-    ParseLimitScope, SourceLineEnding, SourcePosition, WholeYamlEnvelope, YamlByteOffset,
-    YamlByteRange,
+    FileByteOffset, GuideEnvelope, ParseFailure, ParseFailureKind, SourceLineEnding, SourcePosition,
 };
-
-type SiblingSurface = (
-    (
-        FileByteRange,
-        GuideEnvelope,
-        ParseLimitFacts,
-        ParseLimitScope,
-        SourceLineEnding,
-        SourcePosition,
-        WholeYamlEnvelope,
-        YamlByteOffset,
-        YamlByteRange,
-    ),
-    (
-        CollectionPresentationStyle,
-        CommentId,
-        CommentOwner,
-        CommentPlacement,
-        CommentRecord,
-        EntryId,
-        NodeId,
-        NodePresentation,
-        NodeRole,
-    ),
-    (
-        ReconciledEntry,
-        ReconciledEntryKind,
-        ReconciledNode,
-        ReconciledNodeKind,
-        RoundTripIssue,
-        RoundTripReason,
-        RoundTripReport,
-        RoundTripStatus,
-        ScalarPresentationStyle,
-        SourceTag,
-    ),
-);
+#[cfg(test)]
+pub(crate) use source::{ParseLimitScope, YamlByteRange};
 
 pub(crate) fn parse_yaml_document(source: Box<[u8]>) -> Result<ParsedYamlDocument, ParseFailure> {
     let envelope = source::scan_whole(&source)?;

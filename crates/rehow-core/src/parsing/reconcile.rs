@@ -144,15 +144,64 @@ value_debug!(CommentOwner, "CommentOwner");
 value_debug!(RoundTripReason, "RoundTripReason");
 
 pub(crate) struct ReconciledNode {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reconciled artifact detail is read only by parser round-trip tests"
+        )
+    )]
     id: NodeId,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reconciled artifact detail is read only by parser round-trip tests"
+        )
+    )]
     parent: Option<NodeId>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reconciled artifact detail is read only by parser round-trip tests"
+        )
+    )]
     role: NodeRole,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reconciled artifact detail is read only by parser round-trip tests"
+        )
+    )]
     kind: ReconciledNodeKind,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reconciled artifact detail is read only by parser round-trip tests"
+        )
+    )]
     children: Box<[NodeId]>,
     entries: Box<[EntryId]>,
     decoded_scalar: Option<Box<str>>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reconciled artifact detail is read only by parser round-trip tests"
+        )
+    )]
     scalar_style: Option<ScalarPresentationStyle>,
     collection_style: Option<CollectionPresentationStyle>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reconciled artifact detail is read only by parser round-trip tests"
+        )
+    )]
     source_tag: SourceTag,
     presentation: NodePresentation,
 }
@@ -167,25 +216,81 @@ pub(crate) struct ReconciledEntry {
 }
 pub(crate) struct CommentRecord {
     id: CommentId,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reconciled artifact detail is read only by parser round-trip tests"
+        )
+    )]
     yaml_range: YamlByteRange,
     file_range: FileByteRange,
     placement: CommentPlacement,
     owner: CommentOwner,
 }
 pub(crate) struct RoundTripIssue {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reconciled artifact detail is read only by parser round-trip tests"
+        )
+    )]
     reason: RoundTripReason,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reconciled artifact detail is read only by parser round-trip tests"
+        )
+    )]
     node: Option<NodeId>,
     entry: Option<EntryId>,
     comment: Option<CommentId>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reconciled artifact detail is read only by parser round-trip tests"
+        )
+    )]
     yaml_offset: Option<YamlByteOffset>,
 }
 pub(crate) struct RoundTripReport {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reconciled artifact detail is read only by parser round-trip tests"
+        )
+    )]
     issues: Box<[RoundTripIssue]>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reconciled artifact detail is read only by parser round-trip tests"
+        )
+    )]
     total_issues: u32,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reconciled artifact detail is read only by parser round-trip tests"
+        )
+    )]
     truncated: bool,
 }
 pub(crate) enum RoundTripStatus {
     Proven,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reconciled artifact detail is read only by parser round-trip tests"
+        )
+    )]
     ReadOnly(RoundTripReport),
 }
 pub(crate) struct ParsedYamlArtifact {
@@ -197,6 +302,13 @@ pub(crate) struct ParsedYamlArtifact {
 }
 pub(crate) struct ParsedYamlDocument {
     source: Box<[u8]>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reconciled artifact detail is read only by parser round-trip tests"
+        )
+    )]
     envelope: WholeYamlEnvelope,
     yaml: ParsedYamlArtifact,
 }
@@ -207,18 +319,23 @@ pub(crate) struct ParsedGuideSource {
 }
 
 impl ReconciledNode {
+    #[cfg(test)]
     pub(crate) fn id(&self) -> NodeId {
         self.id
     }
+    #[cfg(test)]
     pub(crate) fn parent(&self) -> Option<NodeId> {
         self.parent
     }
+    #[cfg(test)]
     pub(crate) fn role(&self) -> NodeRole {
         self.role
     }
+    #[cfg(test)]
     pub(crate) fn kind(&self) -> ReconciledNodeKind {
         self.kind
     }
+    #[cfg(test)]
     pub(crate) fn children(&self) -> &[NodeId] {
         &self.children
     }
@@ -228,12 +345,14 @@ impl ReconciledNode {
     pub(crate) fn decoded_scalar(&self) -> Option<&str> {
         self.decoded_scalar.as_deref()
     }
+    #[cfg(test)]
     pub(crate) fn scalar_style(&self) -> Option<ScalarPresentationStyle> {
         self.scalar_style
     }
     pub(crate) fn collection_style(&self) -> Option<CollectionPresentationStyle> {
         self.collection_style
     }
+    #[cfg(test)]
     pub(crate) fn source_tag(&self) -> SourceTag {
         self.source_tag
     }
@@ -251,6 +370,7 @@ impl ReconciledEntry {
     pub(crate) fn index(&self) -> u32 {
         self.index
     }
+    #[cfg(test)]
     pub(crate) fn yaml_range(&self) -> YamlByteRange {
         self.yaml_range
     }
@@ -265,15 +385,18 @@ impl ReconciledEntry {
     }
 }
 impl CommentRecord {
+    #[cfg(test)]
     pub(crate) fn id(&self) -> CommentId {
         self.id
     }
+    #[cfg(test)]
     pub(crate) fn yaml_range(&self) -> YamlByteRange {
         self.yaml_range
     }
     pub(crate) fn file_range(&self) -> FileByteRange {
         self.file_range
     }
+    #[cfg(test)]
     pub(crate) fn placement(&self) -> CommentPlacement {
         self.placement
     }
@@ -285,6 +408,7 @@ impl RoundTripStatus {
     pub(crate) fn is_proven(&self) -> bool {
         matches!(self, Self::Proven)
     }
+    #[cfg(test)]
     pub(crate) fn report(&self) -> Option<&RoundTripReport> {
         if let Self::ReadOnly(v) = self {
             Some(v)
@@ -294,32 +418,41 @@ impl RoundTripStatus {
     }
 }
 impl RoundTripReport {
+    #[cfg(test)]
     pub(crate) fn issues(&self) -> &[RoundTripIssue] {
         &self.issues
     }
+    #[cfg(test)]
     pub(crate) fn total_issues(&self) -> u32 {
         self.total_issues
     }
+    #[cfg(test)]
     pub(crate) fn is_truncated(&self) -> bool {
         self.truncated
     }
+    #[cfg(test)]
     pub(crate) fn primary_issue(&self) -> Option<&RoundTripIssue> {
         self.issues.first()
     }
 }
 impl RoundTripIssue {
+    #[cfg(test)]
     pub(crate) fn reason(&self) -> RoundTripReason {
         self.reason
     }
+    #[cfg(test)]
     pub(crate) fn node(&self) -> Option<NodeId> {
         self.node
     }
+    #[cfg(test)]
     pub(crate) fn entry(&self) -> Option<EntryId> {
         self.entry
     }
+    #[cfg(test)]
     pub(crate) fn comment(&self) -> Option<CommentId> {
         self.comment
     }
+    #[cfg(test)]
     pub(crate) fn yaml_offset(&self) -> Option<YamlByteOffset> {
         self.yaml_offset
     }
@@ -331,6 +464,7 @@ impl ParsedYamlArtifact {
     pub(crate) fn root_id(&self) -> NodeId {
         NodeId(0)
     }
+    #[cfg(test)]
     pub(crate) fn nodes(&self) -> &[ReconciledNode] {
         &self.nodes
     }
@@ -346,6 +480,7 @@ impl ParsedYamlArtifact {
     pub(crate) fn comments(&self) -> &[CommentRecord] {
         &self.comments
     }
+    #[cfg(test)]
     pub(crate) fn comment(&self, id: CommentId) -> Option<&CommentRecord> {
         usize::try_from(id.0)
             .ok()
@@ -370,9 +505,11 @@ impl ParsedYamlDocument {
     pub(crate) fn source_bytes(&self) -> &[u8] {
         &self.source
     }
+    #[cfg(test)]
     pub(crate) fn yaml_bytes(&self) -> &[u8] {
         slice(&self.source, self.envelope.yaml_file_range())
     }
+    #[cfg(test)]
     pub(crate) fn envelope(&self) -> &WholeYamlEnvelope {
         &self.envelope
     }
@@ -410,6 +547,7 @@ impl ParsedGuideSource {
     pub(crate) fn source_bytes(&self) -> &[u8] {
         &self.source
     }
+    #[cfg(test)]
     pub(crate) fn yaml_bytes(&self) -> &[u8] {
         slice(&self.source, self.envelope.yaml_file_range())
     }
@@ -538,7 +676,7 @@ struct ReconciliationDraft {
 }
 
 pub(super) struct FoldPermit {
-    sealed: (),
+    _sealed: (),
 }
 
 pub(super) fn reconcile(
@@ -1004,7 +1142,7 @@ fn prepare(
 ) -> Result<(ReconciliationDraft, FoldPermit), ParseFailure> {
     let draft = prepare_borrowed(semantic, &presentation, yaml, file_base)?;
     drop(presentation);
-    Ok((draft, FoldPermit { sealed: () }))
+    Ok((draft, FoldPermit { _sealed: () }))
 }
 
 fn prepare_borrowed(

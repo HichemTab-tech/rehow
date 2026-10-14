@@ -348,17 +348,6 @@ pub(super) fn resolve(
     }
 }
 
-pub(super) fn explicit_form_valid(text: &str, tag: SourceTag) -> bool {
-    match tag {
-        SourceTag::Null => is_null(text),
-        SourceTag::Boolean => boolean(text).is_some(),
-        SourceTag::Integer => integer_form(text).is_some(),
-        SourceTag::Float => float_form(text).is_some(),
-        SourceTag::String => true,
-        SourceTag::Sequence | SourceTag::Mapping | SourceTag::Implicit => false,
-    }
-}
-
 pub(super) fn resolves_to_string(
     text: &str,
     style: ScalarPresentationStyle,

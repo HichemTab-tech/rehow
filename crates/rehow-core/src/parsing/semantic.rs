@@ -1322,6 +1322,13 @@ fn test_meter(meter: ActiveMeter) -> UnknownYamlTestMeter {
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "production folds never activate a fault meter; only fold fault-injection tests construct these"
+    )
+)]
 enum ActiveMeter {
     Nodes,
     NumericDigits,
@@ -1973,8 +1980,6 @@ pub(super) struct ReducerTestResult {
     pub(super) disabled: bool,
     pub(super) retained_node_capacity: usize,
     pub(super) retained_nodes: usize,
-    pub(super) semantic_decoded: usize,
-    pub(super) source_byte_visits: u64,
 }
 
 #[cfg(test)]
@@ -2004,8 +2009,6 @@ pub(super) fn reduce_events_for_test(
     let disabled = reducer.text_meter.disabled;
     let retained_node_capacity = reducer.nodes.capacity();
     let retained_nodes = reducer.nodes.len();
-    let semantic_decoded = reducer.semantic_decoded;
-    let source_byte_visits = reducer.source_byte_visits;
     let result = reducer
         .finish_drain()
         .and_then(|(nodes, build)| fold_for_test(&nodes, build));
@@ -2016,8 +2019,6 @@ pub(super) fn reduce_events_for_test(
         disabled,
         retained_node_capacity,
         retained_nodes,
-        semantic_decoded,
-        source_byte_visits,
     }
 }
 

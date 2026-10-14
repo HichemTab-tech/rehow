@@ -1,8 +1,3 @@
-#![allow(
-    dead_code,
-    reason = "the pure Phase 1E-B1 journal boundary is connected to durable I/O in Phase 1E-B2"
-)]
-
 use crate::protocol::{GuideId, OperationId, Revision, Snapshot, Timestamp, WorkspaceId};
 use std::{
     collections::HashSet,
@@ -95,6 +90,7 @@ impl GitCommitStaging {
         self.inner.git_descriptor()
     }
 
+    #[cfg(test)]
     pub(crate) fn stage_path(&self) -> &str {
         self.inner.stage_path()
     }
@@ -382,6 +378,7 @@ impl GitCloneStaging {
         self.inner.git_descriptor()
     }
 
+    #[cfg(test)]
     pub(crate) fn stage_path(&self) -> &str {
         self.inner.stage_path()
     }
@@ -1092,6 +1089,7 @@ where
     })
 }
 
+#[cfg(test)]
 pub(super) fn activate_git_sync_materialization(
     root: &super::linux::DirectoryCapability,
     state_home: &Path,
@@ -1173,40 +1171,6 @@ pub(super) fn activate_git_sync_materialization_plan(
     Ok(GitSyncMaterializationStorageOutcome {
         changed: !journal.targets.is_empty(),
     })
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn execute_git_sync_materialization<V, F>(
-    root: &super::linux::DirectoryCapability,
-    state_home: &Path,
-    runtime_directory: Option<&Path>,
-    workspace_id: WorkspaceId,
-    operation_id: OperationId,
-    created_at: Timestamp,
-    plan_hash: [u8; 32],
-    current: &[GitSyncMaterializationCurrent],
-    incoming: &[GitSyncMaterializationSource],
-    validate_current: V,
-    read_file: F,
-) -> Result<GitSyncMaterializationStorageOutcome, GitSyncMaterializationStorageError>
-where
-    V: FnOnce() -> Result<(), GitSyncMaterializationStorageError>,
-    F: FnMut(usize, &str, u64) -> Result<Vec<u8>, GitSyncMaterializationStorageError>,
-{
-    let prepared = prepare_git_sync_materialization(
-        root,
-        state_home,
-        runtime_directory,
-        workspace_id,
-        operation_id,
-        created_at,
-        plan_hash,
-        current,
-        incoming,
-        validate_current,
-        read_file,
-    )?;
-    activate_git_sync_materialization(root, state_home, runtime_directory, workspace_id, prepared)
 }
 
 fn sync_materialization_paths_valid(
@@ -1730,14 +1694,6 @@ pub(crate) struct AttachmentRemovalPreview {
 }
 
 impl AttachmentRemovalPreview {
-    pub(crate) fn relative_path(&self) -> &str {
-        &self.relative_path
-    }
-
-    pub(crate) fn guide_revision(&self) -> Revision {
-        self.guide_revision
-    }
-
     pub(crate) fn size(&self) -> u64 {
         self.size
     }

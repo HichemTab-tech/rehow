@@ -561,7 +561,7 @@ fn production_parser_source_rejects_the_complete_forbidden_surface() {
 }
 
 #[test]
-fn retained_records_have_no_dependency_handles_and_dead_code_reason_is_exact() {
+fn retained_records_have_no_dependency_handles_and_no_dead_code_allows() {
     let presentation = include_str!("../presentation.rs");
     let presentation_record =
         &presentation[presentation.find("pub(super) struct Presentation").unwrap()
@@ -601,10 +601,9 @@ fn retained_records_have_no_dependency_handles_and_dead_code_reason_is_exact() {
         }
     }
     let crate_root = include_str!("../../lib.rs");
-    assert!(crate_root.contains(
-        "#[allow(\n    dead_code,\n    reason = \"Phase 1C parser is consumed beginning in Phase 1D\"\n)]\npub(crate) mod parsing;"
-    ));
-    assert_eq!(crate_root.matches("allow(\n    dead_code").count(), 1);
+    assert!(crate_root.contains("\npub(crate) mod parsing;"));
+    assert!(!crate_root.contains("allow(dead_code"));
+    assert!(!crate_root.contains("allow(\n    dead_code"));
     for source in sources_without_crate_root() {
         assert!(!source.contains("allow(dead_code"));
         assert!(!source.contains("allow(\n    dead_code"));

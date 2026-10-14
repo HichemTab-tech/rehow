@@ -48,7 +48,6 @@ pub(super) struct WriterLock {
 
 pub(super) struct StreamedObject {
     pub(super) object_hash: ContentHash,
-    pub(super) sha256: [u8; 32],
     pub(super) size: u64,
     pub(super) created: bool,
 }
@@ -64,6 +63,13 @@ pub(super) struct CloneStaging {
     _stage: OwnedFd,
     _git: OwnedFd,
     validation: Directory,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the staging path is asserted only by clone staging tests"
+        )
+    )]
     stage_path: String,
     git_path: String,
     validation_path: String,
@@ -82,6 +88,13 @@ pub(super) struct CommitStaging {
     _git: OwnedFd,
     validation: Directory,
     candidate: Directory,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the staging path is asserted only by commit staging tests"
+        )
+    )]
     stage_path: String,
     git_path: String,
     validation_path: String,
@@ -221,6 +234,7 @@ impl CommitStaging {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn stage_path(&self) -> &str {
         &self.stage_path
     }
@@ -568,6 +582,7 @@ impl CloneStaging {
         self._git.as_raw_fd()
     }
 
+    #[cfg(test)]
     pub(super) fn stage_path(&self) -> &str {
         &self.stage_path
     }
@@ -1120,7 +1135,6 @@ impl RecoveryStore {
                 self.open_object(lock, &object_hash)?;
                 return Ok(StreamedObject {
                     object_hash,
-                    sha256,
                     size,
                     created: false,
                 });
@@ -1131,7 +1145,6 @@ impl RecoveryStore {
         self.open_object(lock, &object_hash)?;
         Ok(StreamedObject {
             object_hash,
-            sha256,
             size,
             created: true,
         })

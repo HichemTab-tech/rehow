@@ -42,9 +42,23 @@ pub(super) struct Presentation {
     pub(super) no_op_matches: bool,
     pub(super) unsupported: bool,
     descriptors: Box<[TailDescriptor]>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "comment line geometry is asserted only by presentation tests"
+        )
+    )]
     pub(super) comment_line_starts: Box<[u32]>,
     pub(super) comment_line_blank: Box<[u8]>,
     pub(super) comment_region_len: u32,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "comment line geometry is asserted only by presentation tests"
+        )
+    )]
     pub(super) yaml_region_offset: u32,
     pub(super) syntax_elements: u32,
     pub(super) work_total: u64,
@@ -63,6 +77,7 @@ pub(super) struct CommentCandidate {
 }
 
 impl Presentation {
+    #[cfg(test)]
     pub(super) fn guard_code(&self, index: usize) -> Option<u8> {
         self.descriptors.get(index).map(|value| value.guard)
     }
@@ -109,7 +124,6 @@ pub(super) struct PresentationEntry {
     pub(super) range: YamlByteRange,
     pub(super) sequence: bool,
     pub(super) style: CollectionPresentationStyle,
-    pub(super) start_line: u32,
     pub(super) end_line: u32,
 }
 
@@ -618,7 +632,6 @@ fn enter_node(
                         style: parent_frame
                             .collection_style
                             .unwrap_or(CollectionPresentationStyle::Block),
-                        start_line,
                         end_line: start_line,
                     },
                     ParseFailureKind::SemanticBuilderInvariant,

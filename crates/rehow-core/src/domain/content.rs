@@ -1,8 +1,3 @@
-#![allow(
-    dead_code,
-    reason = "Phase 1D-A binding is connected to storage/application in Phase 1E"
-)]
-
 pub(crate) mod derived;
 pub(crate) mod diagnostic;
 pub(crate) mod emission;
@@ -163,11 +158,18 @@ pub(crate) enum KnownFieldPath {
 }
 
 pub(crate) struct BindFailure {
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read only by binding diagnostic tests")
+    )]
     document_kind: DocumentKind,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read only by binding diagnostic tests")
+    )]
     kind: BindFailureKind,
     field: KnownFieldPath,
     position: Option<SourcePosition>,
-    parsed_category_id: Option<CategoryId>,
 }
 
 impl BindFailure {
@@ -177,24 +179,24 @@ impl BindFailure {
             kind,
             field,
             position: None,
-            parsed_category_id: None,
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn document_kind(&self) -> DocumentKind {
         self.document_kind
     }
+    #[cfg(test)]
     pub(crate) fn kind(&self) -> BindFailureKind {
         self.kind
     }
+    #[cfg(test)]
     pub(crate) fn field(&self) -> KnownFieldPath {
         self.field
     }
+    #[cfg(test)]
     pub(crate) fn position(&self) -> Option<SourcePosition> {
         self.position
-    }
-    pub(crate) fn parsed_category_id(&self) -> Option<&CategoryId> {
-        self.parsed_category_id.as_ref()
     }
 }
 
@@ -208,11 +210,19 @@ pub(crate) enum ManifestBindingOutcome {
     Current(BoundWorkspaceManifest),
     NewerUnsupported {
         version: u32,
+        #[cfg_attr(
+            not(test),
+            expect(
+                dead_code,
+                reason = "the parsed newer-schema document is inspected only by manifest binding tests"
+            )
+        )]
         parsed: ParsedYamlDocument,
     },
 }
 
 impl ManifestBindingOutcome {
+    #[cfg(test)]
     pub(crate) fn newer_version(&self) -> Option<u32> {
         match self {
             Self::Current(_) => None,
@@ -220,6 +230,7 @@ impl ManifestBindingOutcome {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn source_bytes(&self) -> &[u8] {
         match self {
             Self::Current(bound) => bound.source_bytes(),
@@ -891,7 +902,6 @@ mod tests {
         assert!(error.kind() == BindFailureKind::MissingRequiredField);
         assert!(error.field() == KnownFieldPath::Id);
         assert!(error.position().is_none());
-        assert!(error.parsed_category_id().is_none());
     }
 
     #[test]

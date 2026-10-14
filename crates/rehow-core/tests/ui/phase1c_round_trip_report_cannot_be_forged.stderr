@@ -1,10 +1,14 @@
+error[E0422]: cannot find struct, variant or union type `RoundTripReport` in `rehow_core::parsing`
+ --> tests/ui/phase1c_round_trip_report_cannot_be_forged.rs:2:34
+  |
+2 |     let _ = rehow_core::parsing::RoundTripReport {
+  |                                  ^^^^^^^^^^^^^^^ not found in `rehow_core::parsing`
+
 error[E0603]: module `parsing` is private
  --> tests/ui/phase1c_round_trip_report_cannot_be_forged.rs:2:25
   |
 2 |     let _ = rehow_core::parsing::RoundTripReport {
-  |                         ^^^^^^^  --------------- struct `RoundTripReport` is not publicly re-exported
-  |                         |
-  |                         private module
+  |                         ^^^^^^^ private module
   |
 note: the module `parsing` is defined here
  --> src/lib.rs
