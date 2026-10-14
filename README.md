@@ -24,7 +24,7 @@ Commands shown in Guides are inert documentation. Rehow never executes them.
 
 ## Current status
 
-Rehow `0.1.0` is a functional pre-release. The desktop application, Markdown Workspace, search, Git workflows, Attachments, and MCP server are implemented and tested. Native `.deb`, `.rpm`, and Arch `.pkg.tar.zst` packages build successfully; final clean Ubuntu graphical qualification remains pending.
+Rehow `0.2.0` is a functional pre-release. The desktop application, Markdown Workspace, search, Git workflows, Attachments, and MCP server are implemented and tested. Native `.deb`, `.rpm`, and Arch `.pkg.tar.zst` packages build successfully; final clean Ubuntu graphical qualification remains pending.
 
 Linux package baseline: x86_64, glibc 2.39 or newer, and WebKitGTK 4.1. Ubuntu 24.04, Debian 13, and Fedora 44 are the currently qualified package families. See [installation and desktop integration](docs/installation.md) for details and known graphics notes.
 

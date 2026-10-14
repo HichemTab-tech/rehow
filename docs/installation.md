@@ -41,7 +41,7 @@ The bundle hook builds the desktop binary, fixed Git helpers, standalone MCP ser
 scripts/test-linux-bundles.sh
 ```
 
-Version `0.1.0` and application identifier `me.hichemtab-tech.rehow` are the first-release defaults. Rehow is licensed under MIT. Signing and publication still require explicit authorization.
+The current version is `0.2.0` with application identifier `me.hichemtab-tech.rehow`. Rehow is licensed under MIT. Signing and publication still require explicit authorization.
 
 ## Desktop application installation
 

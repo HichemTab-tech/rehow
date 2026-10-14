@@ -29,12 +29,12 @@ The workflow has read-only repository permission, does not receive release permi
 
 ## Publishing a GitHub Release
 
-The repository does not create tags or releases automatically. To publish version `0.1.0`:
+The repository does not create tags or releases automatically. To publish version `0.2.0`:
 
-1. Ensure the version in `apps/desktop/src-tauri/tauri.conf.json`, Cargo metadata, package metadata, documentation, and expected package paths is `0.1.0`.
+1. Ensure the version in `apps/desktop/src-tauri/tauri.conf.json`, Cargo metadata, package metadata, documentation, and expected package paths is `0.2.0`.
 2. Ensure CI passes for the exact signed commit intended for release.
-3. Create the Git tag `v0.1.0` at that commit and push it deliberately.
-4. Create a GitHub Release for the existing `v0.1.0` tag, write the release notes, and publish it.
+3. Create the Git tag `v0.2.0` at that commit and push it deliberately.
+4. Create a GitHub Release for the existing `v0.2.0` tag, write the release notes, and publish it.
 5. The `Release` workflow verifies that the tag is a semantic version and exactly matches the Tauri version, rebuilds and retests the source, and uploads the `.deb`, `.rpm`, `.pkg.tar.zst`, and `SHA256SUMS` file to that already-published release.
 
 The `published` event intentionally covers both stable releases and pre-releases. Assets appear after the build finishes, not at the instant the release page is published.
