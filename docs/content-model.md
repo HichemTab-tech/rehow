@@ -260,7 +260,7 @@ Timestamp ownership is per document: the core supplies `created_at` and updates 
 
 ### Body sections
 
-Phase 1D treats the entire body as opaque bytes and does not enforce headings or readiness. ADR 0015 requires one nonempty exact level-two `Steps` section before native tested approval; `Verification`, `Rollback`, and `Troubleshooting` are strongly recommended. Duplicate exact reserved level-two headings refuse approval as ambiguous. Other headings/sections remain preserved.
+Phase 1D treats the entire body as opaque bytes and does not enforce headings or readiness. Native tested approval only requires the body to contain some non-whitespace text or code (amended ADR 0015). Sections such as `Steps`, `Verification`, `Rollback`, and `Troubleshooting` are recommended by the editor's templates but never required; all headings and sections are preserved as written.
 
 Commands are fenced code blocks, optionally with a language such as `bash`, `sh`, `fish`, `ini`, or `text`. They are indexed and copyable but never executable. Error messages are indexed from headings/paragraphs under Troubleshooting plus quoted/inline/fenced content recognized by deterministic extraction.
 

@@ -5377,7 +5377,7 @@ fn guide_update_message(error: GuideUpdateError) -> String {
                 .to_owned()
         }
         GuideUpdateError::NotReady => {
-            "Add one nonempty “## Steps” section before marking this Guide tested.".to_owned()
+            "Add some content, and save the Guide at least once, before marking it tested.".to_owned()
         }
         GuideUpdateError::UnsafeRoundTrip => {
             "Rehow cannot preserve this Guide’s formatting safely. Edit the underlying file instead."
@@ -7949,7 +7949,7 @@ mod tests {
         assert_eq!(guide_update_code(GuideUpdateError::NotReady), "notReady");
         assert_eq!(
             guide_update_message(GuideUpdateError::NotReady),
-            "Add one nonempty “## Steps” section before marking this Guide tested."
+            "Add some content, and save the Guide at least once, before marking it tested."
         );
         assert_eq!(
             guide_remove_code(GuideRemoveError::HasAttachments),

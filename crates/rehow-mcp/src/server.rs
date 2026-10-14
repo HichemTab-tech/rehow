@@ -14186,9 +14186,10 @@ mod tests {
         let path = workspace_root
             .path()
             .join("categories/general/0199a1d7-7b0d-7d8e-a38d-f936c5735e12.md");
-        let changed = fs::read_to_string(&path)
-            .unwrap()
-            .replace("## Steps", "## Notes");
+        // Empty the body: an external change that also leaves nothing to confirm.
+        let original = fs::read_to_string(&path).unwrap();
+        let frontmatter_end = original.find("\n---\n").unwrap() + "\n---\n".len();
+        let changed = format!("{}\n", &original[..frontmatter_end]);
         fs::write(&path, &changed).unwrap();
         let stale = server
             .guide_mark_tested(

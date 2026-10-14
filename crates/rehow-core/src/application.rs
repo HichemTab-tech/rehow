@@ -1641,9 +1641,7 @@ pub fn confirm_and_approve_guide_tested<W: HasWindowHandle + HasDisplayHandle + 
         .map_err(map_guide_body_update_error)?;
     let body = core::str::from_utf8(&body_bytes).map_err(|_| GuideUpdateError::InvalidGuide)?;
     validate_tested_readiness(body).map_err(|error| match error {
-        GuideReadinessError::MissingSteps
-        | GuideReadinessError::EmptySteps
-        | GuideReadinessError::DuplicateReservedHeading => GuideUpdateError::NotReady,
+        GuideReadinessError::Empty => GuideUpdateError::NotReady,
         GuideReadinessError::ParseLimit => GuideUpdateError::ResourceLimit,
     })?;
     let confirmed = rfd::MessageDialog::new()
@@ -1702,11 +1700,7 @@ pub fn validate_guide_tested_approval(
         .map_err(map_guide_body_update_error)?;
     let body = core::str::from_utf8(&body_bytes).map_err(|_| GuideUpdateError::InvalidGuide)?;
     validate_tested_readiness(body).map_err(|error| match error {
-        GuideReadinessError::MissingSteps
-        | GuideReadinessError::EmptySteps
-        | GuideReadinessError::DuplicateReservedHeading => {
-            GuideTestedApprovalError::Update(GuideUpdateError::NotReady)
-        }
+        GuideReadinessError::Empty => GuideTestedApprovalError::Update(GuideUpdateError::NotReady),
         GuideReadinessError::ParseLimit => {
             GuideTestedApprovalError::Update(GuideUpdateError::ResourceLimit)
         }
@@ -1838,9 +1832,7 @@ where
             let body =
                 core::str::from_utf8(bound.record().body()).map_err(|_| PlanError::InvalidGuide)?;
             validate_tested_readiness(body).map_err(|error| match error {
-                GuideReadinessError::MissingSteps
-                | GuideReadinessError::EmptySteps
-                | GuideReadinessError::DuplicateReservedHeading => PlanError::NotReady,
+                GuideReadinessError::Empty => PlanError::NotReady,
                 GuideReadinessError::ParseLimit => PlanError::ResourceLimit,
             })?;
             let hash = verification_hash(&bound).map_err(|error| match error {
@@ -7487,8 +7479,8 @@ mod tests {
     }
 
     #[test]
-    fn tested_approval_refuses_guides_without_ready_steps() {
-        let not_ready = GUIDE.replace("## Steps", "## Notes");
+    fn tested_approval_refuses_guides_without_content() {
+        let not_ready = GUIDE.replace("## Steps\n\nExtract the archive.\n", "\n");
         let (workspace, state, mut view) = fixture("tested-approval-not-ready", &not_ready);
         let guide_id = GuideId::from_str(GUIDE_ID).unwrap();
         let expected = revision(&view);
