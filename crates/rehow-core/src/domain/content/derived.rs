@@ -7,7 +7,7 @@
 //! context it is given.
 
 use crate::{
-    parsing::{ParseFailureKind, parse_guide_source},
+    parsing::{ParseFailureKind, SourceLineEnding, parse_guide_source, scan_guide_envelope},
     protocol::{CategoryId, GuideId, Timestamp, WorkspaceId, derived_guide_id},
 };
 
@@ -99,6 +99,13 @@ pub(crate) struct UnadoptedGuide {
 enum UnadoptedSource {
     /// No usable frontmatter: the body is the whole file after any BOM.
     WholeFile { bom: bool, guide: Box<Guide> },
+    /// A frontmatter block holding only blank lines and comments. Fields are
+    /// inserted before `insert_at` (the closing delimiter).
+    EmptyFrontmatter {
+        insert_at: usize,
+        line_ending: SourceLineEnding,
+        guide: Box<Guide>,
+    },
     /// A valid mapping with absent required fields, bound with defaults.
     Partial(Box<BoundGuide>),
 }
@@ -110,14 +117,16 @@ impl UnadoptedGuide {
 
     pub(crate) fn guide(&self) -> &Guide {
         match &self.source {
-            UnadoptedSource::WholeFile { guide, .. } => guide,
+            UnadoptedSource::WholeFile { guide, .. }
+            | UnadoptedSource::EmptyFrontmatter { guide, .. } => guide,
             UnadoptedSource::Partial(bound) => bound.record(),
         }
     }
 
     pub(crate) fn into_guide(self) -> Guide {
         match self.source {
-            UnadoptedSource::WholeFile { guide, .. } => *guide,
+            UnadoptedSource::WholeFile { guide, .. }
+            | UnadoptedSource::EmptyFrontmatter { guide, .. } => *guide,
             UnadoptedSource::Partial(bound) => (*bound).into_record(),
         }
     }
@@ -126,7 +135,7 @@ impl UnadoptedGuide {
     pub(crate) fn whole_file_bom(&self) -> Option<bool> {
         match &self.source {
             UnadoptedSource::WholeFile { bom, .. } => Some(*bom),
-            UnadoptedSource::Partial(_) => None,
+            UnadoptedSource::Partial(_) | UnadoptedSource::EmptyFrontmatter { .. } => None,
         }
     }
 
@@ -134,7 +143,20 @@ impl UnadoptedGuide {
     pub(crate) fn partial(&self) -> Option<&BoundGuide> {
         match &self.source {
             UnadoptedSource::Partial(bound) => Some(bound),
-            UnadoptedSource::WholeFile { .. } => None,
+            UnadoptedSource::WholeFile { .. } | UnadoptedSource::EmptyFrontmatter { .. } => None,
+        }
+    }
+
+    /// For a comment-only frontmatter block, where to insert fields and the
+    /// frontmatter line ending.
+    pub(crate) fn empty_frontmatter(&self) -> Option<(usize, SourceLineEnding)> {
+        match &self.source {
+            UnadoptedSource::EmptyFrontmatter {
+                insert_at,
+                line_ending,
+                ..
+            } => Some((*insert_at, *line_ending)),
+            UnadoptedSource::WholeFile { .. } | UnadoptedSource::Partial(_) => None,
         }
     }
 }
@@ -170,6 +192,41 @@ pub(crate) fn derive_guide(source: Box<[u8]>, context: &DeriveContext<'_>) -> De
             UnadoptedReasons::UNTERMINATED_FRONTMATTER,
             context,
         );
+    }
+
+    // The YAML parser has no document for a block holding only blank lines
+    // and comments; such a block is an empty mapping with every field absent.
+    if let Ok(envelope) = scan_guide_envelope(&source) {
+        let yaml_range = envelope.yaml_file_range();
+        let yaml = &text[yaml_range.start().get() as usize..yaml_range.end().get() as usize];
+        if yaml
+            .lines()
+            .all(|line| line.trim().is_empty() || line.trim_start().starts_with('#'))
+        {
+            let body_range = envelope.body_file_range();
+            let body = &source[body_range.start().get() as usize..body_range.end().get() as usize];
+            let body_text = core::str::from_utf8(body).unwrap_or_default();
+            let mut copy = Vec::new();
+            if copy.try_reserve_exact(body.len()).is_err() {
+                return resource_limit();
+            }
+            copy.extend_from_slice(body);
+            let metadata = GuideMetadata::derived(
+                derived_id(context),
+                derive_title(body_text, context.relative_path),
+                derive_summary(body_text),
+                context.category_id,
+                context.modified_at,
+            );
+            return DerivedGuide::Unadopted(UnadoptedGuide {
+                reasons: UnadoptedReasons(UnadoptedReasons::MISSING_FIELDS),
+                source: UnadoptedSource::EmptyFrontmatter {
+                    insert_at: envelope.closing_delimiter().start().get() as usize,
+                    line_ending: envelope.yaml_line_ending(),
+                    guide: Box::new(guide_from_parts(metadata, copy.into_boxed_slice())),
+                },
+            });
+        }
     }
 
     let mut copy = Vec::new();
@@ -615,6 +672,16 @@ mod tests {
             with_id.guide().id(),
             &GuideId::from_str("0199a1d7-7b0d-7d8e-a38d-f936c5735e10").unwrap()
         );
+    }
+
+    #[test]
+    fn comment_only_frontmatter_is_an_empty_mapping() {
+        for source in ["---\n---\nBody\n", "---\n# note\n\n---\n\nBody\n"] {
+            let guide = unadopted(source);
+            assert!(guide.reasons().missing_fields());
+            assert!(guide.empty_frontmatter().is_some());
+            assert_eq!(guide.guide().body(), b"Body\n");
+        }
     }
 
     #[test]
