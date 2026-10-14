@@ -2100,6 +2100,7 @@ pub enum WorkspaceIssueKind {
 pub struct WorkspaceIssue {
     relative_path: String,
     kind: WorkspaceIssueKind,
+    diagnostic: Option<crate::domain::GuideDiagnostic>,
 }
 
 impl WorkspaceIssue {
@@ -2109,6 +2110,25 @@ impl WorkspaceIssue {
 
     pub fn kind(&self) -> WorkspaceIssueKind {
         self.kind
+    }
+
+    /// The content-free reason a Guide file could not be read, when known.
+    pub fn guide_diagnostic(&self) -> Option<crate::domain::GuideDiagnostic> {
+        self.diagnostic
+    }
+
+    pub fn diagnostic(&self) -> Option<crate::domain::GuideDiagnosticCode> {
+        self.diagnostic.map(crate::domain::GuideDiagnostic::code)
+    }
+
+    pub fn field(&self) -> Option<crate::domain::GuideDiagnosticField> {
+        self.diagnostic
+            .and_then(crate::domain::GuideDiagnostic::field)
+    }
+
+    pub fn position(&self) -> Option<crate::domain::GuideDiagnosticPosition> {
+        self.diagnostic
+            .and_then(crate::domain::GuideDiagnostic::position)
     }
 }
 
@@ -4073,7 +4093,16 @@ fn inspect_open_root_with_index(
                     continue;
                 }
                 Err(linux::EntryReadError::TooLarge) => {
-                    push_issue(&mut issues, guide_path, WorkspaceIssueKind::FileTooLarge)?;
+                    push_diagnosed_issue(
+                        &mut issues,
+                        guide_path,
+                        WorkspaceIssueKind::FileTooLarge,
+                        Some(crate::domain::GuideDiagnostic::new(
+                            crate::domain::GuideDiagnosticCode::FileTooLarge,
+                            None,
+                            None,
+                        )),
+                    )?;
                     continue;
                 }
                 Err(linux::EntryReadError::Changed) => {
@@ -4089,12 +4118,20 @@ fn inspect_open_root_with_index(
             add_managed_bytes(&mut managed_bytes, bytes.len())?;
             let revision = document_revision(&guide_path, &bytes);
             let bound_guide = match crate::parsing::parse_guide_source(bytes.into_boxed_slice())
-                .ok()
-                .and_then(|parsed| crate::domain::content::guide::bind_guide(parsed).ok())
-            {
-                Some(bound) => bound,
-                None => {
-                    push_issue(&mut issues, guide_path, WorkspaceIssueKind::MalformedGuide)?;
+                .map_err(|error| crate::domain::GuideDiagnostic::from_guide_parse_failure(&error))
+                .and_then(|parsed| {
+                    crate::domain::content::guide::bind_guide(parsed).map_err(|error| {
+                        crate::domain::GuideDiagnostic::from_guide_bind_failure(&error)
+                    })
+                }) {
+                Ok(bound) => bound,
+                Err(diagnostic) => {
+                    push_diagnosed_issue(
+                        &mut issues,
+                        guide_path,
+                        WorkspaceIssueKind::MalformedGuide,
+                        Some(diagnostic),
+                    )?;
                     continue;
                 }
             };
@@ -4834,6 +4871,15 @@ fn push_issue(
     relative_path: String,
     kind: WorkspaceIssueKind,
 ) -> Result<(), WorkspaceInspectError> {
+    push_diagnosed_issue(issues, relative_path, kind, None)
+}
+
+fn push_diagnosed_issue(
+    issues: &mut Vec<WorkspaceIssue>,
+    relative_path: String,
+    kind: WorkspaceIssueKind,
+    diagnostic: Option<crate::domain::GuideDiagnostic>,
+) -> Result<(), WorkspaceInspectError> {
     if issues.len() >= ISSUE_LIMIT {
         return Err(WorkspaceInspectError::ResourceLimit);
     }
@@ -4843,6 +4889,7 @@ fn push_issue(
     issues.push(WorkspaceIssue {
         relative_path,
         kind,
+        diagnostic,
     });
     Ok(())
 }
@@ -8697,6 +8744,55 @@ mod tests {
             panic!("expected compatible Workspace");
         };
         assert!(view.issues().is_empty());
+    }
+
+    #[test]
+    fn malformed_guide_issues_carry_content_free_diagnostics() {
+        let root = TestDirectory::new();
+        write_compatible(root.path());
+        let category = root.path().join("categories/linux-system--b6ba3a5551");
+        fs::write(
+            category.join("bad-status--36c5735e11.md"),
+            GUIDE
+                .replace("status: draft", "status: secret-value")
+                .replace("36c5735e10", "36c5735e11"),
+        )
+        .unwrap();
+        fs::write(
+            category.join("bad-yaml--36c5735e12.md"),
+            "---\ntitle: [secret-value\n---\n\nBody\n",
+        )
+        .unwrap();
+
+        let WorkspaceInspection::Compatible(view) = classification(root.path()) else {
+            panic!("expected compatible Workspace");
+        };
+        let status = view
+            .issues()
+            .iter()
+            .find(|issue| issue.relative_path().ends_with("bad-status--36c5735e11.md"))
+            .unwrap();
+        assert_eq!(status.kind(), WorkspaceIssueKind::MalformedGuide);
+        assert_eq!(
+            status.diagnostic(),
+            Some(crate::domain::GuideDiagnosticCode::InvalidFieldValue)
+        );
+        assert_eq!(
+            status.field(),
+            Some(crate::domain::GuideDiagnosticField::Status)
+        );
+        assert_eq!(status.position().map(|value| value.line()), Some(11));
+        let yaml = view
+            .issues()
+            .iter()
+            .find(|issue| issue.relative_path().ends_with("bad-yaml--36c5735e12.md"))
+            .unwrap();
+        assert_eq!(
+            yaml.diagnostic(),
+            Some(crate::domain::GuideDiagnosticCode::YamlSyntax)
+        );
+        assert_eq!(yaml.field(), None);
+        assert!(!format!("{:?}", view.issues()).contains("secret-value"));
     }
 
     #[test]

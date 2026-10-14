@@ -2,7 +2,8 @@ pub(crate) mod content;
 mod yaml_value;
 
 pub use content::{
-    Applicability, ArchiveMetadata, Attachment, Category, CategoryStatus, Guide, GuideMetadata,
+    Applicability, ArchiveMetadata, Attachment, Category, CategoryStatus, Guide, GuideDiagnostic,
+    GuideDiagnosticCode, GuideDiagnosticField, GuideDiagnosticPosition, GuideMetadata,
     GuideReference, GuideStatus, RestorableGuideStatus, VerificationMetadata, WorkspaceManifest,
     WorkspaceSettings,
 };
