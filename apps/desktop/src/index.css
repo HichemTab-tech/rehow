@@ -171,6 +171,8 @@
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
     overflow: hidden;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
   }
   ::selection {
     background: color-mix(in srgb, var(--accent) 28%, transparent);

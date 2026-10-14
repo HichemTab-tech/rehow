@@ -130,7 +130,14 @@ function renderLeaf(
     case "text":
       return { node: event.value, text: event.value };
     case "inlineCode":
-      return { node: <code key={key}>{event.value}</code>, text: event.value };
+      return {
+        node: (
+          <code key={key} translate="no">
+            {event.value}
+          </code>
+        ),
+        text: event.value,
+      };
     case "htmlLiteral":
       return {
         node: (
@@ -340,7 +347,7 @@ export function CodeBlock({
         // biome-ignore lint/a11y/noNoninteractiveTabindex: wide commands scroll; keyboard users must reach them.
         tabIndex={0}
       >
-        <code data-language={language ?? undefined}>
+        <code data-language={language ?? undefined} translate="no">
           {lines.map((line, index) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: lines are positional.
             <span key={index} className="block">

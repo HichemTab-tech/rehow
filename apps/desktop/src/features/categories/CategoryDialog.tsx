@@ -86,7 +86,7 @@ export function CategoryDialog() {
                 autoFocus
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                placeholder="e.g. Docker & Containers"
+                placeholder="Docker & Containers…"
                 maxLength={200}
               />
             </Field>

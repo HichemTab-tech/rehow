@@ -92,7 +92,7 @@ export function NewGuideDialog() {
                 autoFocus
                 value={title}
                 onChange={(event) => setTitle(event.target.value)}
-                placeholder="e.g. Set up WireGuard on a new laptop"
+                placeholder="Set up WireGuard on a new laptop…"
                 maxLength={200}
               />
             </Field>
@@ -128,7 +128,7 @@ export function NewGuideDialog() {
                   id="new-guide-new-category"
                   value={newCategoryName}
                   onChange={(event) => setNewCategoryName(event.target.value)}
-                  placeholder="e.g. Networking"
+                  placeholder="Networking…"
                   maxLength={200}
                 />
               </Field>
