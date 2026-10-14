@@ -31,7 +31,6 @@ fn all_41_failure_kinds_have_one_reachability_class() {
         P::MixedYamlLineEndings,
         P::MissingGuideOpeningDelimiter,
         P::MissingGuideClosingDelimiter,
-        P::MissingGuideSeparator,
         P::PresentationSyntax,
         P::PresentationShape,
         P::DirectiveDenied,
@@ -61,7 +60,12 @@ fn all_41_failure_kinds_have_one_reachability_class() {
         P::SemanticSyntax,
         P::ParserTagDisagreement,
     ];
+    // A closing delimiter may now be followed directly by the body or EOF, so
+    // a missing blank separator is accepted; the kind remains only as a
+    // defensive scanner invariant (mismatched delimiter endings are reported
+    // first as mixed line endings).
     let fault = [
+        P::MissingGuideSeparator,
         P::SemanticStreamOrder,
         P::MultipleDocuments,
         P::SemanticEncodingLimit,
@@ -242,10 +246,6 @@ fn all_32_natural_failure_classes_have_production_parse_witnesses() {
         (
             include_bytes!("fixtures/malformed/guide-missing-closing.md"),
             P::MissingGuideClosingDelimiter,
-        ),
-        (
-            include_bytes!("fixtures/malformed/guide-missing-separator.md"),
-            P::MissingGuideSeparator,
         ),
     ];
     for (source, expected) in guide_cases {

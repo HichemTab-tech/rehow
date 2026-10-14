@@ -9,7 +9,8 @@ use focaccia::CaseFold;
 use crate::{
     parsing::{
         CollectionPresentationStyle, CommentOwner, NodePresentation, ParsedYamlArtifact,
-        ReconciledEntryKind, RoundTripStatus, parse_guide_source, parse_yaml_document,
+        ReconciledEntryKind, RoundTripStatus, SourceLineEnding, parse_guide_source,
+        parse_yaml_document,
     },
     protocol::{AttachmentId, CategoryId, Timestamp, VerificationHash},
 };
@@ -642,8 +643,30 @@ pub(crate) fn plan_guide_mutation(
         )?;
         effects.push(effect);
     }
-    if let Some(replacement) = body_replacement {
-        let range = bound.parsed().envelope().body_file_range();
+    if let Some(mut replacement) = body_replacement {
+        let envelope = bound.parsed().envelope();
+        let range = envelope.body_file_range();
+        // A hand-written Guide may end at its closing `---` with no line
+        // terminator. A non-empty body then needs exactly one terminator so
+        // the delimiter stays a line of its own; no blank line is inserted.
+        let closing = envelope.closing_delimiter();
+        if !replacement.is_empty()
+            && range.is_empty()
+            && closing.end() == range.start()
+            && !bound.source_bytes()[..closing.end().get() as usize].ends_with(b"\n")
+        {
+            let newline: &[u8] = match envelope.yaml_line_ending() {
+                SourceLineEnding::CrLf => b"\r\n",
+                SourceLineEnding::Lf | SourceLineEnding::None => b"\n",
+            };
+            let mut prefixed = Vec::new();
+            prefixed
+                .try_reserve_exact(newline.len() + replacement.len())
+                .map_err(|_| failure(MutationFailureKind::ResourceLimit, MutationField::Body))?;
+            prefixed.extend_from_slice(newline);
+            prefixed.extend_from_slice(&replacement);
+            replacement = prefixed.into_boxed_slice();
+        }
         push_edit(
             bound.source_bytes(),
             range.start().get() as usize,
@@ -2730,6 +2753,53 @@ mod tests {
             ),
             Ok(MutationOutcome::NoOp)
         ));
+    }
+
+    #[test]
+    fn separator_less_layouts_survive_edits_without_inserted_blank_lines() {
+        let stamp = MutationStamp::from_trusted_time(timestamp("2026-09-05T11:00:00Z"));
+        let front = guide_base("draft", "");
+        for (layout, body) in [("---\n", "# Body\n"), ("---\n", ""), ("---", "")] {
+            let source = format!("---\n{front}{layout}{body}");
+            let bound = bind_guide(
+                parse_guide_source(source.clone().into_bytes().into_boxed_slice()).unwrap(),
+            )
+            .unwrap_or_else(|_| panic!("bind"));
+            assert_eq!(bound.record().body(), body.as_bytes());
+            let hash = super::super::verification::verification_hash(&bound).unwrap();
+            let blank = format!("---\n{front}---\n\n{body}");
+            let blank_bound =
+                bind_guide(parse_guide_source(blank.into_bytes().into_boxed_slice()).unwrap())
+                    .unwrap_or_else(|_| panic!("bind"));
+            assert_eq!(
+                super::super::verification::verification_hash(&blank_bound).unwrap(),
+                hash
+            );
+
+            let MutationOutcome::Candidate(titled) =
+                plan_guide_mutation(&bound, GuideMutation::SetTitle("New title".into()), &stamp)
+                    .unwrap_or_else(|_| panic!("title"))
+            else {
+                panic!("candidate")
+            };
+            let titled_source = core::str::from_utf8(titled.bound().source_bytes()).unwrap();
+            assert!(titled_source.ends_with(&format!("{layout}{body}")));
+            assert!(!titled_source.contains("---\n\n"));
+            assert_eq!(titled.bound().record().body(), body.as_bytes());
+
+            let MutationOutcome::Candidate(rebodied) = plan_guide_mutation(
+                &bound,
+                GuideMutation::ReplaceBody(b"New body\n".to_vec()),
+                &stamp,
+            )
+            .unwrap_or_else(|_| panic!("body")) else {
+                panic!("candidate")
+            };
+            assert_eq!(rebodied.bound().record().body(), b"New body\n");
+            let rebodied_source = core::str::from_utf8(rebodied.bound().source_bytes()).unwrap();
+            assert!(rebodied_source.ends_with("future: {nested: [1]}\n---\nNew body\n"));
+            assert!(!rebodied_source.contains("---\n\n"));
+        }
     }
 
     #[test]

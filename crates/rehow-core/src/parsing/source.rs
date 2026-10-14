@@ -503,13 +503,23 @@ pub(super) fn scan_guide(source: &[u8]) -> Result<GuideEnvelope, ParseFailure> {
         }
     }
 
+    // The separator is the optional blank line after the closing delimiter.
+    // Hand-written Guides may start their body directly after `---` or end at
+    // the closing delimiter; both are represented by an empty separator range
+    // so later edits preserve the original layout byte for byte.
     let valid_separator_end = match (opening, close) {
         (Some((newline, _, _)), Some((_, content_end, close_line_end, true)))
             if source.get(content_end..close_line_end) == Some(newline) =>
         {
-            close_line_end
-                .checked_add(newline.len())
-                .filter(|end| source.get(close_line_end..*end) == Some(newline))
+            Some(
+                close_line_end
+                    .checked_add(newline.len())
+                    .filter(|end| source.get(close_line_end..*end) == Some(newline))
+                    .unwrap_or(close_line_end),
+            )
+        }
+        (Some(_), Some((_, content_end, _, false))) if content_end == source.len() => {
+            Some(content_end)
         }
         _ => None,
     };
