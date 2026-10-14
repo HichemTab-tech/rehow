@@ -1,10 +1,5 @@
 //! Crate-private application orchestration over domain plans and confined storage.
 
-#![allow(
-    dead_code,
-    reason = "the private application proof is exposed to adapters only after its later gate"
-)]
-
 use crate::{
     domain::GuideOrigin,
     domain::content::{
@@ -2143,6 +2138,7 @@ fn display_byte_size(size: u64) -> String {
     }
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn import_attachment_with_source(
     workspace: &mut WorkspaceView,

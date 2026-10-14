@@ -1,16 +1,8 @@
 //! Confined Git discovery/status and separately gated repository operations.
 
 mod credential_proxy;
-#[allow(
-    dead_code,
-    reason = "sealed HTTPS credentials connect to product Git commands in the next gate"
-)]
 mod https_credentials;
 mod ssh_proxy;
-#[allow(
-    dead_code,
-    reason = "sealed SSH resources connect to product Git commands in the next gate"
-)]
 mod ssh_sandbox;
 mod toolchain;
 
@@ -30,6 +22,8 @@ pub use ssh_sandbox::{
 };
 pub use toolchain::{GitEnvironment, GitExecutableSource, GitSandbox, inspect_git_environment};
 
+#[cfg(test)]
+use crate::storage::activate_git_sync_materialization;
 use crate::storage::recovery::{
     GitCommitIntent, GitCommitIntentBranchRepresentation, GitCommitIntentError,
     GitCommitIntentStage, GitCommitStaging, GitCommitStagingError, GitCommitStagingSnapshot,
@@ -46,11 +40,10 @@ use crate::{
         GitConfigStorageError, GitInitializeStorageError, GitMaterializationPathKind,
         GitRepositoryCapabilityError, GitSyncMaterializationCurrent, GitSyncMaterializationSource,
         GitSyncMaterializationStorageError, GitSyncPreparedMaterialization, MANAGED_BYTES_LIMIT,
-        WorkspaceInspection, WorkspaceView, activate_git_sync_materialization,
-        activate_git_sync_materialization_plan, classify_git_materialization_path,
-        create_git_clone_staging, execute_git_clone_materialization, finalize_git_clone_repository,
-        inspect_workspace, open_initialized_workspace, prepare_git_sync_materialization,
-        seal_git_clone_repository,
+        WorkspaceInspection, WorkspaceView, activate_git_sync_materialization_plan,
+        classify_git_materialization_path, create_git_clone_staging,
+        execute_git_clone_materialization, finalize_git_clone_repository, inspect_workspace,
+        open_initialized_workspace, prepare_git_sync_materialization, seal_git_clone_repository,
     },
 };
 use std::{
@@ -109,9 +102,7 @@ const COMMIT_PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 const COMMIT_PLAN_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const MAX_SSH_AGENT_PATH_BYTES: usize = 4_096;
 const MAX_KNOWN_HOSTS_BYTES: u64 = 1024 * 1024;
-#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
 const MAX_CLONE_TREE_LISTING_BYTES: usize = 32 * 1024 * 1024;
-#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
 const MAX_CLONE_TREE_ENTRIES: usize =
     1 + CATEGORY_LIMIT + GUIDE_COUNT_LIMIT + ATTACHMENT_COUNT_LIMIT + 1;
 
@@ -722,7 +713,6 @@ pub enum GitCommitPlanError {
 }
 
 #[derive(Eq, PartialEq)]
-#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
 struct GitCommitIdentity {
     name: String,
     email: String,
@@ -738,7 +728,6 @@ impl fmt::Debug for GitCommitIdentity {
     }
 }
 
-#[allow(dead_code, reason = "consumed by Phase 5C1 candidate construction")]
 struct GitCommitRepositoryPreflight {
     workspace_id: String,
     capability: crate::storage::GitRepositoryCapability,
@@ -753,13 +742,11 @@ struct GitCommitRepositoryPreflight {
     managed: GitCommitManagedInventory,
 }
 
-#[allow(dead_code, reason = "consumed by Phase 5C1 candidate construction")]
 struct GitCommitPreparedStaging {
     staging: GitCommitStaging,
     prior_managed: GitCommitManagedInventory,
 }
 
-#[allow(dead_code, reason = "consumed by the complete Phase 5C1 opaque plan")]
 struct GitCommitCandidate {
     prepared: GitCommitPreparedStaging,
     tree_object_id: String,
@@ -767,6 +754,13 @@ struct GitCommitCandidate {
     created: u32,
     updated: u32,
     deleted: u32,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the verified commit timestamp is asserted only by commit candidate tests"
+        )
+    )]
     git_timestamp: String,
 }
 
@@ -776,29 +770,31 @@ struct GitCommitPackedCandidate {
     staging_snapshot: GitCommitStagingSnapshot,
 }
 
-#[allow(
-    dead_code,
-    reason = "Phase 5C2B publication consumes the private index source and snapshot"
-)]
 struct GitCommitIndexCandidate {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the index pack source is asserted only by commit publication tests"
+        )
+    )]
     source: GitClonePackSource,
     bytes: Vec<u8>,
     staging_snapshot: GitCommitStagingSnapshot,
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
 struct GitSyncCandidate {
     index_bytes: Vec<u8>,
     pack_sources: Vec<GitClonePackSource>,
 }
 
 pub struct GitSyncPublicationOutcome {
-    #[allow(
-        dead_code,
-        reason = "retained for internal recovery correlation and tests"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the recovery operation id is correlated only by sync publication tests"
+        )
     )]
     operation_id: OperationId,
     changed: bool,
@@ -831,11 +827,14 @@ impl GitSyncPublicationOutcome {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "Phase 5C3 returns this pathless result to the native commit workflow"
-)]
 pub struct GitCommitPublicationOutcome {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the recovery operation id is correlated only by commit publication tests"
+        )
+    )]
     operation_id: OperationId,
     workspace_changed: bool,
 }
@@ -893,10 +892,6 @@ impl fmt::Debug for GitCommitCandidate {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "consumed by Phase 5C2 apply and native confirmation"
-)]
 pub struct GitCommitPlan {
     token: PlanToken,
     branch: String,
@@ -1446,7 +1441,6 @@ fn map_clone_inspection(error: crate::storage::WorkspaceInspectError) -> GitClon
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
 pub(crate) enum GitCloneStageError {
     DestinationChanged,
     Conflict,
@@ -1456,7 +1450,6 @@ pub(crate) enum GitCloneStageError {
     Io,
 }
 
-#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
 pub(crate) fn prepare_git_clone_staging(
     destination: &EmptyWorkspaceTarget,
     plan: &GitClonePlan,
@@ -1523,7 +1516,6 @@ fn hex_lower(bytes: &[u8]) -> String {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
 pub(crate) enum GitCloneDiscoveryError {
     UnsupportedTransport,
     GitUnavailable,
@@ -1540,7 +1532,6 @@ pub(crate) enum GitCloneDiscoveryError {
 }
 
 #[derive(Clone, Eq, PartialEq)]
-#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
 pub(crate) struct GitRemoteHead {
     branch_ref: String,
     object_id: String,
@@ -1559,23 +1550,19 @@ impl fmt::Debug for GitRemoteHead {
 }
 
 impl GitRemoteHead {
-    #[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
     pub(crate) fn branch_ref(&self) -> &str {
         &self.branch_ref
     }
 
-    #[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
     pub(crate) fn object_id(&self) -> &str {
         &self.object_id
     }
 
-    #[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
     pub(crate) fn object_format(&self) -> GitObjectFormat {
         self.object_format
     }
 }
 
-#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
 pub(crate) fn discover_git_clone_remote_head(
     plan: &GitClonePlan,
     cancelled: &AtomicBool,
@@ -1733,7 +1720,6 @@ fn fetch_git_sync_remote(
         })
 }
 
-#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
 pub(crate) fn fetch_git_clone_remote(
     plan: &GitClonePlan,
     remote_head: &GitRemoteHead,
@@ -1780,7 +1766,6 @@ pub(crate) fn fetch_git_clone_remote(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
 pub(crate) enum GitCloneInspectError {
     Cancelled,
     Timeout,
@@ -1793,7 +1778,6 @@ pub(crate) enum GitCloneInspectError {
     Io,
 }
 
-#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
 pub(crate) fn inspect_fetched_git_clone_tree(
     staging: &GitCloneStaging,
     remote_head: &GitRemoteHead,
@@ -1860,7 +1844,6 @@ pub(crate) fn inspect_fetched_git_clone_tree(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code, reason = "connected by the Phase 5B3B clone apply gate")]
 pub(crate) enum GitCloneContentError {
     Cancelled,
     Timeout,
@@ -1878,7 +1861,6 @@ pub(crate) enum GitCloneContentError {
     Io,
 }
 
-#[allow(dead_code, reason = "connected by the Phase 5B3B clone apply gate")]
 pub(crate) struct ValidatedGitClone {
     tree: GitCloneTree,
     workspace: Box<WorkspaceView>,
@@ -1887,23 +1869,11 @@ pub(crate) struct ValidatedGitClone {
 /// Opaque native-held clone state that has passed every pre-materialization
 /// validation gate. It deliberately exposes no URL, path, ref, OID, or content.
 pub struct GitCloneValidation {
-    #[allow(dead_code, reason = "consumed by the Phase 5B3C materialization gate")]
     plan: GitClonePlan,
-    #[allow(dead_code, reason = "consumed by the Phase 5B3C materialization gate")]
     staging: GitCloneStaging,
-    #[allow(dead_code, reason = "consumed by the Phase 5B3C materialization gate")]
     remote_head: GitRemoteHead,
-    #[allow(dead_code, reason = "consumed by the Phase 5B3C materialization gate")]
     validated: ValidatedGitClone,
-    #[allow(
-        dead_code,
-        reason = "consumed by the Phase 5B3C2 native finalization gate"
-    )]
     operation_id: OperationId,
-    #[allow(
-        dead_code,
-        reason = "consumed by the Phase 5B3C2 native finalization gate"
-    )]
     created_at: Timestamp,
 }
 
@@ -2030,18 +2000,13 @@ pub struct GitSyncClassification {
     ancestry: GitSyncAncestry,
 }
 
-#[allow(
-    dead_code,
-    reason = "opaque authority is consumed by the following Git metadata publication gate"
-)]
+#[cfg(test)]
 pub(crate) struct GitSyncWorkspaceMaterialization {
-    classification: GitSyncClassification,
     operation_id: OperationId,
-    created_at: Timestamp,
-    plan_hash: [u8; 32],
     changed: bool,
 }
 
+#[cfg(test)]
 impl fmt::Debug for GitSyncWorkspaceMaterialization {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -2052,10 +2017,7 @@ impl fmt::Debug for GitSyncWorkspaceMaterialization {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "consumed with the authority by the following Git metadata publication gate"
-)]
+#[cfg(test)]
 impl GitSyncWorkspaceMaterialization {
     pub(crate) fn changed(&self) -> bool {
         self.changed
@@ -2109,13 +2071,9 @@ impl GitSyncClassification {
 /// Validated, native-held incoming state for the later materialization/ref-CAS
 /// gate. Debug and public accessors deliberately expose no content or Git IDs.
 pub struct GitSyncInspection {
-    #[allow(dead_code, reason = "consumed by the Phase 5D2 integration gate")]
     plan: GitSyncPlan,
-    #[allow(dead_code, reason = "consumed by the Phase 5D2 integration gate")]
     staging: GitCloneStaging,
-    #[allow(dead_code, reason = "consumed by the Phase 5D2 integration gate")]
     remote_head: GitRemoteHead,
-    #[allow(dead_code, reason = "consumed by the Phase 5D2 integration gate")]
     validated: ValidatedGitClone,
     state: GitSyncInspectionState,
     local_changes: bool,
@@ -2534,13 +2492,10 @@ pub fn classify_git_sync_ancestry_with_authentication(
     })
 }
 
+#[cfg(test)]
 /// Applies only the portable Workspace portion of a proven remote
 /// fast-forward through the recovery journal. Git objects, index, and refs are
 /// deliberately left for the following durable publication gate.
-#[allow(
-    dead_code,
-    reason = "internal Phase 5D2B1 primitive awaiting the atomic metadata publication gate"
-)]
 pub(crate) fn apply_git_sync_workspace_materialization(
     workspace: &WorkspaceView,
     state_home: &Path,
@@ -2569,10 +2524,7 @@ pub(crate) fn apply_git_sync_workspace_materialization(
     Ok((
         fresh,
         GitSyncWorkspaceMaterialization {
-            classification,
             operation_id,
-            created_at,
-            plan_hash: prepared.plan_hash,
             changed: outcome.changed,
         },
     ))
@@ -2760,10 +2712,6 @@ fn execute_exact_git_push(
     push_result
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
 fn install_git_sync_publication_intent(
     workspace: &WorkspaceView,
     state_home: &Path,
@@ -2929,10 +2877,6 @@ fn install_git_sync_publication_intent(
         .map_err(map_git_commit_intent_to_sync)
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
 fn resume_git_sync_publication(
     workspace: &WorkspaceView,
     state_home: &Path,
@@ -3289,10 +3233,6 @@ pub fn resume_planned_git_sync_publication(
     ))
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
 fn verify_git_sync_candidate_objects(
     capability: &crate::storage::GitRepositoryCapability,
     object_format: GitObjectFormat,
@@ -3348,10 +3288,6 @@ fn verify_git_sync_candidate_objects(
     .map_err(map_commit_plan_to_sync)
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
 fn git_sync_workspace_matches_index(
     workspace: &WorkspaceView,
     object_format: GitObjectFormat,
@@ -3450,6 +3386,7 @@ fn prepare_git_sync_workspace_materialization(
     .map_err(map_sync_materialization_to_sync)
 }
 
+#[cfg(test)]
 fn verify_git_sync_workspace_materialization(
     workspace: &WorkspaceView,
     inspection: &GitSyncInspection,
@@ -3469,10 +3406,6 @@ fn verify_git_sync_workspace_materialization(
     Ok(fresh)
 }
 
-#[allow(
-    dead_code,
-    reason = "used by the staged sync materialization primitive"
-)]
 fn git_sync_materialization_plan_hash(
     inspection: &GitSyncInspection,
     operation_id: OperationId,
@@ -3486,10 +3419,7 @@ fn git_sync_materialization_plan_hash(
     *hasher.finalize().as_bytes()
 }
 
-#[allow(
-    dead_code,
-    reason = "used by the staged sync materialization primitive"
-)]
+#[cfg(test)]
 fn git_sync_workspace_matches_tree(
     workspace: &WorkspaceView,
     tree: &GitCloneTree,
@@ -3903,10 +3833,6 @@ fn inspect_git_sync_repository(
 
 /// Publishes only the already validated portable Workspace content through the
 /// recovery journal. Git objects/config/refs remain a later finalization gate.
-#[allow(
-    dead_code,
-    reason = "connected by the Phase 5B3C2 native finalization gate"
-)]
 pub(crate) fn apply_git_clone_content_materialization(
     destination: &EmptyWorkspaceTarget,
     validation: &GitCloneValidation,
@@ -4378,12 +4304,10 @@ impl fmt::Debug for ValidatedGitClone {
 }
 
 impl ValidatedGitClone {
-    #[allow(dead_code, reason = "connected by the Phase 5B3B clone apply gate")]
     pub(crate) fn tree(&self) -> &GitCloneTree {
         &self.tree
     }
 
-    #[allow(dead_code, reason = "connected by the Phase 5B3B clone apply gate")]
     pub(crate) fn workspace(&self) -> &WorkspaceView {
         &self.workspace
     }
@@ -4392,7 +4316,6 @@ impl ValidatedGitClone {
 /// Streams the already bounded tree into a private mirror and validates it
 /// through the canonical Workspace loader. The selected destination remains
 /// unopened by the child and unchanged by this operation.
-#[allow(dead_code, reason = "connected by the Phase 5B3B clone apply gate")]
 pub(crate) fn validate_fetched_git_clone(
     staging: &GitCloneStaging,
     tree: GitCloneTree,
@@ -4770,7 +4693,7 @@ fn stderr_contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
-#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
+#[cfg(test)]
 fn clone_discovery_command(executable: &Path, sandbox: &Path, remote_url: &str) -> Command {
     clone_discovery_command_with_transport(
         executable,
@@ -5133,7 +5056,7 @@ fn git_push_command(
     Ok((command, config))
 }
 
-#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
+#[cfg(test)]
 fn clone_fetch_command(
     executable: &Path,
     sandbox: &Path,
@@ -5527,10 +5450,6 @@ fn prepare_clone_index(
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
 fn prepare_git_sync_candidate(
     inspection: &GitSyncInspection,
 ) -> Result<GitSyncCandidate, GitSyncError> {
@@ -5650,7 +5569,6 @@ fn configure_clone_child(command: &mut Command, descriptor: i32, file_limit: Opt
     }
 }
 
-#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
 fn parse_git_remote_head(bytes: &[u8]) -> Result<GitRemoteHead, GitCloneDiscoveryError> {
     if bytes.is_empty() || bytes.len() > CLONE_DISCOVERY_OUTPUT_LIMIT || !bytes.ends_with(b"\n") {
         return Err(GitCloneDiscoveryError::InvalidAdvertisement);
@@ -5716,7 +5634,6 @@ fn parse_git_sync_remote_ref(
     })
 }
 
-#[allow(dead_code, reason = "connected by the Phase 5B3B fetch apply gate")]
 fn terminate_child(child: &mut std::process::Child) {
     kill_process_group(child.id());
     let _ = child.kill();
@@ -5744,14 +5661,12 @@ pub(crate) enum GitCloneTreeError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
 pub(crate) enum GitObjectFormat {
     Sha1,
     Sha256,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
 pub(crate) struct GitCloneTreeEntry {
     relative_path: String,
     object_id: String,
@@ -5760,29 +5675,25 @@ pub(crate) struct GitCloneTreeEntry {
 }
 
 impl GitCloneTreeEntry {
-    #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
     pub(crate) fn relative_path(&self) -> &str {
         &self.relative_path
     }
 
-    #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
     pub(crate) fn object_id(&self) -> &str {
         &self.object_id
     }
 
-    #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
     pub(crate) fn size(&self) -> u64 {
         self.size
     }
 
-    #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
+    #[cfg(test)]
     pub(crate) fn kind(&self) -> GitMaterializationPathKind {
         self.kind
     }
 }
 
 #[derive(Clone, Eq, PartialEq)]
-#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
 pub(crate) struct GitCloneTree {
     commit_id: String,
     object_format: GitObjectFormat,
@@ -5803,28 +5714,23 @@ impl fmt::Debug for GitCloneTree {
 }
 
 impl GitCloneTree {
-    #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
     pub(crate) fn commit_id(&self) -> &str {
         &self.commit_id
     }
 
-    #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
     pub(crate) fn object_format(&self) -> GitObjectFormat {
         self.object_format
     }
 
-    #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
     pub(crate) fn entries(&self) -> &[GitCloneTreeEntry] {
         &self.entries
     }
 
-    #[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
     pub(crate) fn plan_hash(&self) -> [u8; 32] {
         self.plan_hash
     }
 }
 
-#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
 pub(crate) fn validate_git_clone_tree(
     commit_id: &str,
     listing: &[u8],
@@ -5960,7 +5866,6 @@ pub(crate) fn validate_git_clone_tree(
     })
 }
 
-#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
 fn validate_object_id(value: &str) -> Option<GitObjectFormat> {
     let format = match value.len() {
         40 => GitObjectFormat::Sha1,
@@ -6193,7 +6098,6 @@ fn sorted_paths_have_descendant(sorted: &[&[u8]], ancestor: &[u8]) -> bool {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
 enum GitBranchRepresentation {
     Unborn,
     Loose,
@@ -6201,7 +6105,6 @@ enum GitBranchRepresentation {
 }
 
 #[derive(Eq, PartialEq)]
-#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
 struct GitCommitBranch {
     reference: String,
     display: String,
@@ -6221,7 +6124,6 @@ impl fmt::Debug for GitCommitBranch {
     }
 }
 
-#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
 fn parse_git_commit_branch(
     head: &[u8],
     loose_target: Option<&[u8]>,
@@ -6324,7 +6226,6 @@ fn parse_packed_branch_target(
     Ok(target_object_id)
 }
 
-#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
 #[derive(Eq, PartialEq)]
 struct GitIndexSnapshot {
     version: u32,
@@ -6344,7 +6245,6 @@ impl fmt::Debug for GitIndexSnapshot {
     }
 }
 
-#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
 #[derive(Eq, PartialEq)]
 struct GitIndexEntry {
     mode: u32,
@@ -6363,7 +6263,6 @@ impl fmt::Debug for GitIndexEntry {
     }
 }
 
-#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
 fn parse_git_index(
     bytes: &[u8],
     object_format: GitObjectFormat,
@@ -6551,7 +6450,6 @@ fn valid_opaque_git_path(path: &[u8]) -> bool {
             .all(|component| !component.is_empty() && component != b"." && component != b"..")
 }
 
-#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
 fn parse_canonical_u64(value: &str) -> Option<u64> {
     if value.is_empty()
         || !value.bytes().all(|byte| byte.is_ascii_digit())
@@ -6562,7 +6460,6 @@ fn parse_canonical_u64(value: &str) -> Option<u64> {
     value.parse().ok()
 }
 
-#[allow(dead_code, reason = "connected by the next Phase 5B3 fetch gate")]
 fn hash_clone_field(hasher: &mut blake3::Hasher, value: &[u8]) {
     hasher.update(&(value.len() as u64).to_le_bytes());
     hasher.update(value);
@@ -8280,7 +8177,6 @@ fn parse_git_sync_target(
     })
 }
 
-#[allow(dead_code, reason = "consumed by Phase 5C1 candidate construction")]
 fn inspect_git_commit_repository(
     workspace: &WorkspaceView,
 ) -> Result<GitCommitRepositoryPreflight, GitCommitPlanError> {
@@ -8438,7 +8334,6 @@ fn inspect_git_commit_repository(
     })
 }
 
-#[allow(dead_code, reason = "consumed by Phase 5C1 candidate construction")]
 fn prepare_git_commit_staging(
     preflight: &GitCommitRepositoryPreflight,
     state_home: &Path,
@@ -8523,7 +8418,6 @@ fn prepare_git_commit_staging(
     })
 }
 
-#[allow(dead_code, reason = "consumed by the complete Phase 5C1 opaque plan")]
 fn construct_git_commit_candidate(
     workspace: &WorkspaceView,
     preflight: &GitCommitRepositoryPreflight,
@@ -8683,10 +8577,6 @@ fn ensure_no_incomplete_git_commit_intent(
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "Phase 5C3 maps this pathless recovery fact into native Git status"
-)]
 pub fn pending_git_commit_recovery(
     workspace: &WorkspaceView,
     state_home: &Path,
@@ -8866,10 +8756,6 @@ fn prepare_git_commit_pack(
     })
 }
 
-#[allow(
-    dead_code,
-    reason = "Phase 5C2B publication consumes this private candidate index"
-)]
 fn prepare_git_commit_candidate_index(
     plan: &mut GitCommitPlan,
 ) -> Result<GitCommitIndexCandidate, GitCommitPlanError> {
@@ -8969,10 +8855,6 @@ fn read_git_commit_staging_index(
     Ok(bytes)
 }
 
-#[allow(
-    dead_code,
-    reason = "Phase 5C2B consumes this after the recoverable index/ref transaction is added"
-)]
 fn install_git_commit_candidate_pack(
     workspace: &WorkspaceView,
     state_home: &Path,
@@ -9015,63 +8897,7 @@ fn install_git_commit_candidate_pack(
     Ok(packed)
 }
 
-#[allow(
-    dead_code,
-    reason = "Phase 5C2B wraps this exact metadata transaction in a durable intent"
-)]
-fn publish_git_commit_metadata_without_intent(
-    workspace: &WorkspaceView,
-    state_home: &Path,
-    runtime_directory: Option<&Path>,
-    plan: &mut GitCommitPlan,
-) -> Result<(), GitCommitPlanError> {
-    install_git_commit_candidate_pack(workspace, state_home, runtime_directory, plan)?;
-    let candidate_index = prepare_git_commit_candidate_index(plan)?;
-    let mut candidate_ref = Vec::new();
-    candidate_ref
-        .try_reserve_exact(plan.candidate.commit_object_id.len().saturating_add(1))
-        .map_err(|_| GitCommitPlanError::ResourceLimit)?;
-    candidate_ref.extend_from_slice(plan.candidate.commit_object_id.as_bytes());
-    candidate_ref.push(b'\n');
-    workspace
-        .with_git_commit_writer_lock(state_home, runtime_directory, || {
-            let current = inspect_git_commit_repository(workspace)?;
-            if !same_git_commit_preflight(&plan.preflight, &current)
-                || !plan
-                    .candidate
-                    .prepared
-                    .staging
-                    .verify_snapshot(candidate_index.staging_snapshot, MAX_COMMIT_STAGING_BYTES)
-                    .map_err(map_git_commit_staging_error)?
-            {
-                return Err(GitCommitPlanError::PlanStale);
-            }
-            let branch_relative = plan
-                .preflight
-                .branch
-                .reference
-                .strip_prefix("refs/heads/")
-                .ok_or(GitCommitPlanError::UnsafeRepository)?;
-            current
-                .capability
-                .publish_commit_metadata(
-                    &plan.preflight.repository,
-                    &plan.preflight.branch_storage,
-                    branch_relative,
-                    &candidate_index.bytes,
-                    &candidate_ref,
-                    |_| Ok(()),
-                )
-                .map_err(map_git_commit_metadata_storage_error)
-        })
-        .map_err(map_git_commit_staging_error)??;
-    Ok(())
-}
-
-#[allow(
-    dead_code,
-    reason = "Phase 5C3 exposes this only through native-confirmed plan consumption"
-)]
+#[cfg(test)]
 fn publish_git_commit_with_intent(
     workspace: &WorkspaceView,
     state_home: &Path,
@@ -9376,10 +9202,6 @@ fn pending_git_commit_intent_owns_plan_staging(
     Ok(false)
 }
 
-#[allow(
-    dead_code,
-    reason = "Phase 5C3 and Git status call this for discovered incomplete intents"
-)]
 fn resume_git_commit_publication(
     workspace: &WorkspaceView,
     state_home: &Path,
@@ -9832,10 +9654,6 @@ fn persist_recovered_git_commit_stage(
     })
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
 fn persist_recovered_git_sync_stage(
     session: &crate::storage::recovery::GitCommitRecoverySession,
     intent: &mut GitSyncIntent,
@@ -9856,10 +9674,6 @@ fn persist_recovered_git_sync_stage(
     })
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
 fn advance_git_sync_intent(
     session: &crate::storage::recovery::GitCommitRecoverySession,
     intent: &mut GitSyncIntent,
@@ -9873,10 +9687,6 @@ fn advance_git_sync_intent(
     Ok(())
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
 fn mark_git_sync_intent_conflict<T>(
     session: &crate::storage::recovery::GitCommitRecoverySession,
     intent: &mut GitSyncIntent,
@@ -9990,10 +9800,6 @@ fn hash_git_commit_intent_optional_hash(hasher: &mut blake3::Hasher, value: Opti
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
 fn git_sync_intent_plan_hash(intent: &GitSyncIntent) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"rehow:git-sync-publication-intent:v1\0");
@@ -10028,10 +9834,6 @@ fn git_sync_intent_plan_hash(intent: &GitSyncIntent) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
 fn verify_git_sync_intent_plan_hash(intent: &GitSyncIntent) -> Result<(), GitSyncError> {
     if git_sync_intent_plan_hash(intent) == intent.plan_hash {
         Ok(())
@@ -10040,10 +9842,6 @@ fn verify_git_sync_intent_plan_hash(intent: &GitSyncIntent) -> Result<(), GitSyn
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
 fn map_git_commit_intent_to_sync(error: GitCommitIntentError) -> GitSyncError {
     match error {
         GitCommitIntentError::Conflict => GitSyncError::RecoveryRequired,
@@ -10054,10 +9852,6 @@ fn map_git_commit_intent_to_sync(error: GitCommitIntentError) -> GitSyncError {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
 fn map_git_commit_pack_install_to_sync(error: GitCommitPackInstallError) -> GitSyncError {
     match error {
         GitCommitPackInstallError::Conflict => GitSyncError::PlanStale,
@@ -10068,10 +9862,6 @@ fn map_git_commit_pack_install_to_sync(error: GitCommitPackInstallError) -> GitS
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
 fn map_git_commit_metadata_to_sync(error: GitCommitMetadataStorageError) -> GitSyncError {
     match error {
         GitCommitMetadataStorageError::Conflict => GitSyncError::PlanStale,
@@ -12687,10 +12477,6 @@ fn map_clone_staging_to_sync(error: GitCloneStagingError) -> GitSyncError {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "completed core sync gate awaits the native adapter"
-)]
 fn map_clone_materialize_to_sync(error: GitCloneMaterializeError) -> GitSyncError {
     match error {
         GitCloneMaterializeError::DestinationChanged
@@ -12705,10 +12491,6 @@ fn map_clone_materialize_to_sync(error: GitCloneMaterializeError) -> GitSyncErro
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "used by the staged sync materialization primitive"
-)]
 fn map_sync_staging_to_materialization(
     error: GitCloneStagingError,
 ) -> GitSyncMaterializationStorageError {
@@ -12721,10 +12503,6 @@ fn map_sync_staging_to_materialization(
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "used by the staged sync materialization primitive"
-)]
 fn map_sync_materialization_to_sync(error: GitSyncMaterializationStorageError) -> GitSyncError {
     match error {
         GitSyncMaterializationStorageError::SourceChanged
@@ -12838,7 +12616,6 @@ fn set_single_config_value(
     Ok(())
 }
 
-#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
 fn normalize_git_commit_message(value: &str) -> Result<String, GitCommitPlanError> {
     let value = value.trim();
     let scalar_count = value.chars().count();
@@ -12856,7 +12633,6 @@ fn normalize_git_commit_message(value: &str) -> Result<String, GitCommitPlanErro
     Ok(normalized)
 }
 
-#[allow(dead_code, reason = "consumed by the Phase 5C1 repository preflight")]
 fn validate_git_commit_identity(
     name: &str,
     email: &str,

@@ -8,10 +8,6 @@ use std::{
     time::Duration,
 };
 
-#[allow(
-    dead_code,
-    reason = "mounted by the next authenticated HTTPS operation gate"
-)]
 pub(super) const SANDBOX_CREDENTIAL_PROXY: &str = "/home/rehow/bin/rehow-git-credential";
 pub(super) const SANDBOX_CREDENTIAL_HELPER: &str = "/home/rehow/bin/credential-helper";
 pub(super) const CREDENTIAL_HELPER_CONFIG: &str =

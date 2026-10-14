@@ -182,7 +182,6 @@ impl GuideDiagnostic {
                 }
                 GuideBindFailureKind::InvalidFieldType => GuideDiagnosticCode::InvalidFieldType,
                 GuideBindFailureKind::InvalidFieldValue => GuideDiagnosticCode::InvalidFieldValue,
-                GuideBindFailureKind::DuplicateField => GuideDiagnosticCode::DuplicateFieldValue,
                 GuideBindFailureKind::ResourceLimit => GuideDiagnosticCode::ResourceLimit,
                 GuideBindFailureKind::BindingInvariant => GuideDiagnosticCode::Internal,
             },

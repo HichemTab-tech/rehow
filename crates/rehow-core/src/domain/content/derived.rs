@@ -72,6 +72,7 @@ impl UnadoptedReasons {
         self.0 & Self::MISSING_FIELDS != 0
     }
 
+    #[cfg(test)]
     /// Whether the whole file (minus a leading BOM) is the body.
     pub(crate) fn whole_file_body(self) -> bool {
         !self.missing_fields()

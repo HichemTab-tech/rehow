@@ -1,8 +1,3 @@
-#![allow(
-    dead_code,
-    reason = "Phase 1D-C mutation candidates are connected to storage/application in Phase 1E"
-)]
-
 use core::cmp::max;
 use focaccia::CaseFold;
 
@@ -16,14 +11,15 @@ use crate::{
 };
 
 use super::{
-    BoundCategory, BoundWorkspaceManifest, CategoryStatus, GuideStatus, ManifestBindingOutcome,
-    RestorableGuideStatus, bind_category, bind_workspace_manifest,
+    BoundCategory, CategoryStatus, GuideStatus, RestorableGuideStatus, bind_category,
     emission::{
         EmitFailure, EmitFailureKind, emit_plain_display, emit_yaml_display, emit_yaml_string,
         map_parse_failure,
     },
     guide::{BoundGuide, bind_guide},
 };
+#[cfg(test)]
+use super::{BoundWorkspaceManifest, ManifestBindingOutcome, bind_workspace_manifest};
 
 const MAX_EDITS: usize = 8;
 
@@ -37,6 +33,7 @@ impl MutationStamp {
     }
 }
 
+#[cfg(test)]
 pub(crate) enum WorkspaceMutation {
     SetName(String),
 }
@@ -149,6 +146,13 @@ pub(crate) enum MutationOutcome<T> {
 
 pub(crate) struct MutationCandidate<T> {
     bound: T,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the effect set is validated during planning but inspected only by mutation tests"
+        )
+    )]
     effects: Box<[MutationEffect]>,
 }
 
@@ -157,15 +161,13 @@ impl<T> MutationCandidate<T> {
         &self.bound
     }
 
+    #[cfg(test)]
     pub(crate) fn effects(&self) -> &[MutationEffect] {
         &self.effects
     }
-
-    pub(crate) fn into_bound(self) -> T {
-        self.bound
-    }
 }
 
+#[cfg(test)]
 pub(crate) fn plan_workspace_mutation(
     bound: &BoundWorkspaceManifest,
     mutation: WorkspaceMutation,

@@ -69,6 +69,7 @@ impl FileByteRange {
     pub(crate) fn end(self) -> FileByteOffset {
         self.end
     }
+    #[cfg(test)]
     pub(crate) fn len(self) -> u32 {
         self.end.0 - self.start.0
     }
@@ -82,9 +83,6 @@ impl YamlByteRange {
     }
     pub(crate) fn end(self) -> YamlByteOffset {
         self.end
-    }
-    pub(crate) fn len(self) -> u32 {
-        self.end.0 - self.start.0
     }
     pub(crate) fn is_empty(self) -> bool {
         self.start == self.end
@@ -118,25 +116,26 @@ pub(crate) struct GuideEnvelope {
     final_newline: bool,
 }
 impl WholeYamlEnvelope {
+    #[cfg(test)]
     pub(crate) fn bom_present(&self) -> bool {
         self.bom_present
     }
     pub(crate) fn yaml_file_range(&self) -> FileByteRange {
         self.yaml_file_range
     }
+    #[cfg(test)]
     pub(crate) fn line_ending(&self) -> SourceLineEnding {
         self.line_ending
     }
+    #[cfg(test)]
     pub(crate) fn final_newline(&self) -> bool {
         self.final_newline
     }
 }
 impl GuideEnvelope {
+    #[cfg(test)]
     pub(crate) fn bom_present(&self) -> bool {
         self.bom_present
-    }
-    pub(crate) fn opening_delimiter(&self) -> FileByteRange {
-        self.opening_delimiter
     }
     pub(crate) fn yaml_file_range(&self) -> FileByteRange {
         self.yaml_file_range
@@ -153,6 +152,7 @@ impl GuideEnvelope {
     pub(crate) fn yaml_line_ending(&self) -> SourceLineEnding {
         self.yaml_line_ending
     }
+    #[cfg(test)]
     pub(crate) fn final_newline(&self) -> bool {
         self.final_newline
     }
@@ -278,12 +278,15 @@ impl ParseFailure {
     }
 }
 impl ParseLimitFacts {
+    #[cfg(test)]
     pub(crate) fn scope(&self) -> ParseLimitScope {
         self.scope
     }
+    #[cfg(test)]
     pub(crate) fn limit(&self) -> u64 {
         self.limit
     }
+    #[cfg(test)]
     pub(crate) fn observed_at_least(&self) -> u64 {
         self.observed_at_least
     }
@@ -318,11 +321,6 @@ pub(super) fn yaml_range(start: usize, end: usize) -> Result<YamlByteRange, Pars
                 .map_err(|_| ParseFailure::plain(ParseFailureKind::MeterArithmeticOverflow))?,
         ),
     })
-}
-pub(super) fn yaml_offset(value: usize) -> Result<YamlByteOffset, ParseFailure> {
-    Ok(YamlByteOffset(u32::try_from(value).map_err(|_| {
-        ParseFailure::plain(ParseFailureKind::MeterArithmeticOverflow)
-    })?))
 }
 pub(super) fn file_offset(value: u32) -> FileByteOffset {
     FileByteOffset(value)

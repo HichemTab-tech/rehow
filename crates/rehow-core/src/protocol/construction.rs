@@ -1,10 +1,9 @@
-#![allow(dead_code)]
 use super::*;
 
 pub(super) struct ErrorConstructionError {
     _private: (),
 }
-macro_rules! catalog {($name:ident{$($variant:ident=>$wire:literal),+$(,)?})=>{pub(super) enum $name{$($variant),+}impl $name{fn wire(self)->&'static str{match self{$(Self::$variant=>$wire),+}}}}}
+macro_rules! catalog {($name:ident{$($variant:ident=>$wire:literal),+$(,)?})=>{#[allow(dead_code, reason = "closed wire-code vocabulary; each code keeps its fixed spelling before a constructor emits it")] pub(super) enum $name{$($variant),+}impl $name{fn wire(self)->&'static str{match self{$(Self::$variant=>$wire),+}}}}}
 catalog!(Field{SchemaVersion=>"/schema_version",WorkspaceId=>"/workspace_id",Name=>"/name",CreatedAt=>"/created_at",UpdatedAt=>"/updated_at",Settings=>"/settings",DefaultCategoryId=>"/settings/default_category_id",Id=>"/id",Title=>"/title",Summary=>"/summary",Order=>"/order",Status=>"/status",CategoryId=>"/category_id",Tags=>"/tags",Aliases=>"/aliases",LastVerifiedAt=>"/last_verified_at",VerifiedContentHash=>"/verified_content_hash",ArchivedFromStatus=>"/archived_from_status",ArchivedAt=>"/archived_at",AppliesTo=>"/applies_to",Prerequisites=>"/prerequisites",Warnings=>"/warnings",FilesAffected=>"/files_affected",RelatedGuideIds=>"/related_guide_ids",References=>"/references",Attachments=>"/attachments",Version=>"/version",Code=>"/code",Message=>"/message",Retryable=>"/retryable",RequestId=>"/requestId",Details=>"/details",Recovery=>"/recovery",ExpectedRevision=>"/expectedRevision",ExpectedSnapshot=>"/expectedSnapshot",PlanToken=>"/planToken",Operation=>"/operation",Limit=>"/limit",Cursor=>"/cursor"});
 catalog!(Reason{InvalidFormat=>"invalid_format",Required=>"required",OutOfRange=>"out_of_range",UnsupportedValue=>"unsupported_value",CapabilityMissing=>"capability_missing",CapabilityExpired=>"capability_expired",WorkspaceRootMissing=>"workspace_root_missing",WorkspaceRootChanged=>"workspace_root_changed",WorkspaceNotWritable=>"workspace_not_writable",PathAbsolute=>"path_absolute",PathParentComponent=>"path_parent_component",PathInvalidComponent=>"path_invalid_component",PathOutsideWorkspace=>"path_outside_workspace",RoundTripUnproven=>"round_trip_unproven",PresentationMismatch=>"presentation_mismatch",CommentOwnershipAmbiguous=>"comment_ownership_ambiguous",PlanExpired=>"plan_expired",PlanReplayed=>"plan_replayed",PlanStateChanged=>"plan_state_changed",PlanScopeMismatch=>"plan_scope_mismatch",RepositoryOwnerUntrusted=>"repository_owner_untrusted",RepositoryLayoutUnsupported=>"repository_layout_unsupported",JournalInvalid=>"journal_invalid",JournalStateAmbiguous=>"journal_state_ambiguous",ExternalChangeDetected=>"external_change_detected"});
 catalog!(Diagnostic{MissingRequiredField=>"missing_required_field",InvalidFieldType=>"invalid_field_type",InvalidFieldValue=>"invalid_field_value",DuplicateField=>"duplicate_field",YamlSyntax=>"yaml_syntax",YamlDepthLimit=>"yaml_depth_limit",YamlMappingEntryLimit=>"yaml_mapping_entry_limit",YamlSequenceEntryLimit=>"yaml_sequence_entry_limit",YamlNodeLimit=>"yaml_node_limit",YamlScalarLimit=>"yaml_scalar_limit",YamlNumericWorkLimit=>"yaml_numeric_work_limit",YamlSemanticWorkLimit=>"yaml_semantic_work_limit",YamlDuplicateKey=>"yaml_duplicate_key",YamlUnsupportedConstruct=>"yaml_unsupported_construct",YamlParserDisagreement=>"yaml_parser_disagreement",InvalidFrontmatterEnvelope=>"invalid_frontmatter_envelope",InvalidUtf8=>"invalid_utf8"});
@@ -226,12 +225,16 @@ fn make(request_id: RequestId, kind: ErrorKind) -> Result<ErrorDto, ErrorConstru
 }
 macro_rules! factory {($name:ident($request:ident $(,$arg:ident:$ty:ty)*)=>$variant:ident:$details:ident{$($field:ident:$value:expr),*$(,)?})=>{pub(super) fn $name($request:RequestId,$($arg:$ty),*)->Result<ErrorDto,ErrorConstructionError>{make($request,ErrorKind::$variant($details{$($field:$value),*}))}}}
 factory!(invalid_argument(r,f:Field,x:Reason)=>InvalidArgument:InvalidArgumentData{field:field(f),reason:reason(x)});
+#[cfg(test)]
 factory!(workspace_not_found(r,x:RecentWorkspaceId)=>WorkspaceNotFound:WorkspaceNotFoundData{recent_workspace_id:x});
 factory!(workspace_unavailable(r,x:Reason)=>WorkspaceUnavailable:WorkspaceUnavailableData{reason:reason(x)});
 factory!(workspace_read_only(r,x:Reason,c:Option<RequiredCapability>)=>WorkspaceReadOnly:WorkspaceReadOnlyData{reason:reason(x),required_capability:c});
 factory!(workspace_limit_exceeded(r,l:U64Decimal,o:U64Decimal,s:WorkspaceLimitScope)=>WorkspaceLimitExceeded:WorkspaceLimitExceededData{limit:l,observed_at_least:o,scope:s});
+#[cfg(test)]
 factory!(schema_unsupported(r,f:u32,n:u32,m:u32)=>SchemaUnsupported:SchemaUnsupportedData{found_version:f,minimum_version:n,maximum_version:m});
+#[cfg(test)]
 factory!(invalid_manifest(r,p:SafeRelativePath,d:Diagnostic,f:Option<Field>,l:Option<SourceLocation>)=>InvalidManifest:InvalidManifestData{relative_path:p,diagnostic_code:diagnostic(d),field:f.map(field),line:l.as_ref().map(|x|x.line),column:l.as_ref().map(|x|x.column)});
+#[cfg(test)]
 factory!(invalid_category(r,p:SafeRelativePath,d:Diagnostic,f:Option<Field>,l:Option<SourceLocation>,c:Option<CategoryId>)=>InvalidCategory:InvalidCategoryData{relative_path:p,diagnostic_code:diagnostic(d),field:f.map(field),line:l.as_ref().map(|x|x.line),column:l.as_ref().map(|x|x.column),category_id:c});
 factory!(invalid_guide(r,p:SafeRelativePath,d:Diagnostic,f:Option<Field>,l:Option<SourceLocation>,g:Option<GuideId>)=>InvalidGuide:InvalidGuideData{relative_path:p,diagnostic_code:diagnostic(d),field:f.map(field),line:l.as_ref().map(|x|x.line),column:l.as_ref().map(|x|x.column),guide_id:g});
 /// INVALID_GUIDE for a hand-written Guide that Rehow has listed but not adopted
@@ -250,28 +253,41 @@ pub(super) fn unadopted_guide(
         .map_err(|_| ErrorConstructionError { _private: () })?;
     Ok(dto)
 }
+#[cfg(test)]
 factory!(unsafe_round_trip(r,p:SafeRelativePath,x:Reason,f:Option<Field>)=>UnsafeRoundTrip:UnsafeRoundTripData{relative_path:p,reason:reason(x),field:f.map(field)});
+#[cfg(test)]
 factory!(duplicate_id(r,e:PortableEntityId,p:BoundedList<SafeRelativePath>)=>DuplicateId:DuplicateIdData{entity:e,relative_paths:p});
 factory!(category_not_found(r,c:CategoryId)=>CategoryNotFound:CategoryNotFoundData{category_id:c});
 factory!(guide_not_found(r,g:GuideId)=>GuideNotFound:GuideNotFoundData{guide_id:g});
 factory!(attachment_not_found(r,a:AttachmentId,g:GuideId)=>AttachmentNotFound:AttachmentNotFoundData{attachment_id:a,guide_id:g});
 factory!(revision_conflict(r,e:PortableEntityId,x:Revision,a:Revision)=>RevisionConflict:RevisionConflictData{entity:e,expected_revision:x,actual_revision:a});
 factory!(snapshot_conflict(r,e:Snapshot,a:Snapshot,c:BoundedList<PortableEntityId>)=>SnapshotConflict:SnapshotConflictData{expected_snapshot:e,actual_snapshot:a,changed_entity_ids:c});
+#[cfg(test)]
 factory!(path_escape(r,x:Reason,p:Option<SafeRelativePath>)=>PathEscape:PathEscapeData{reason:reason(x),relative_path:p});
+#[cfg(test)]
 factory!(symlink_denied(r,p:SafeRelativePath)=>SymlinkDenied:SymlinkDeniedData{relative_path:p});
+#[cfg(test)]
 factory!(hardlink_denied(r,p:SafeRelativePath,c:U64Decimal)=>HardlinkDenied:HardlinkDeniedData{relative_path:p,link_count:c});
+#[cfg(test)]
 factory!(permission_denied(r,o:Operation,p:Option<SafeRelativePath>)=>PermissionDenied:PermissionDeniedData{operation:operation(o),relative_path:p});
+#[cfg(test)]
 factory!(file_too_large(r,p:SafeRelativePath,l:U64Decimal,o:U64Decimal)=>FileTooLarge:FileTooLargeData{relative_path:p,limit_bytes:l,observed_at_least_bytes:o});
 factory!(io_busy(r,o:Operation,t:u32)=>IoBusy:IoBusyData{operation:operation(o),timeout_ms:t});
+#[cfg(test)]
 factory!(index_not_ready(r,g:U64Decimal,c:u32,t:Option<u32>)=>IndexNotReady:IndexNotReadyData{index_generation:g,progress_completed:c,progress_total:t});
 factory!(plan_stale(r,o:Operation,c:BoundedList<PortableEntityId>)=>PlanStale:PlanStaleData{operation:operation(o),changed_entity_ids:c});
+#[cfg(test)]
 factory!(confirmation_required(r,o:Operation,p:PlanToken,e:Timestamp)=>ConfirmationRequired:ConfirmationRequiredData{operation:operation(o),plan_token:p,expires_at:e});
 factory!(confirmation_invalid(r,o:Operation,x:Reason)=>ConfirmationInvalid:ConfirmationInvalidData{operation:operation(o),reason:reason(x)});
+#[cfg(test)]
 factory!(test_approval_required(r,g:GuideId,v:Revision,a:ApprovalRequestId)=>TestApprovalRequired:TestApprovalRequiredData{guide_id:g,guide_revision:v,approval_request_id:a});
 factory!(git_unavailable(r,s:BoundedList<GitSearchSourceKind>)=>GitUnavailable:GitUnavailableData{search_source_kinds:s});
 factory!(git_unsafe_repository(r,x:Reason)=>GitUnsafeRepository:GitUnsafeRepositoryData{reason:reason(x)});
+#[cfg(test)]
 factory!(git_auth_required(r,n:SafeGitDisplay,h:SafeHost,c:GitCredentialKind)=>GitAuthRequired:GitAuthRequiredData{remote_name:n,host:h,credential_kind:c});
+#[cfg(test)]
 factory!(git_diverged(r,a:U64Decimal,b:U64Decimal,n:SafeGitDisplay)=>GitDiverged:GitDivergedData{ahead:a,behind:b,branch:n});
+#[cfg(test)]
 factory!(git_conflict(r,c:GitConflictKind,p:BoundedList<SafeRelativePath>)=>GitConflict:GitConflictData{conflict_kind:c,relative_paths:p});
 pub(super) fn git_failed(
     r: RequestId,
@@ -308,8 +324,10 @@ pub(super) fn git_remote_state_uncertain(r: RequestId) -> Result<ErrorDto, Error
         }),
     )
 }
+#[cfg(test)]
 factory!(migration_required(r,f:u32,t:u32)=>MigrationRequired:MigrationRequiredData{found_version:f,target_version:t});
 factory!(recovery_required(r,o:OperationId,x:Reason,p:BoundedList<SafeRelativePath>)=>RecoveryRequired:RecoveryRequiredData{operation_id:o,reason:reason(x),affected_relative_paths:p});
+#[cfg(test)]
 factory!(internal(r,i:IncidentId)=>Internal:InternalData{incident_id:i});
 
 #[cfg(test)]

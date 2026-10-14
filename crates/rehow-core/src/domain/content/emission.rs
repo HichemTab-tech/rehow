@@ -1,8 +1,3 @@
-#![allow(
-    dead_code,
-    reason = "Phase 1D-C emitters are connected to storage/application in Phase 1E"
-)]
-
 use core::fmt::{self, Write as _};
 
 use crate::{

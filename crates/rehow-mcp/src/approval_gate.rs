@@ -252,6 +252,7 @@ fn file_identity(metadata: &Metadata) -> (u64, u64, u64, u32, u32, u32, i64, i64
 pub(crate) enum ApprovalOperation {
     CategoryReorder = 1,
     CategoryRemove = 2,
+    #[cfg(test)]
     GuideDelete = 3,
     GuideTested = 4,
     AttachmentMetadataRemove = 5,
@@ -263,9 +264,9 @@ impl ApprovalOperation {
     const fn required_kind(self) -> ApprovalKind {
         match self {
             Self::CategoryReorder => ApprovalKind::Broad,
-            Self::CategoryRemove | Self::GuideDelete | Self::AttachmentMetadataRemove => {
-                ApprovalKind::Destructive
-            }
+            Self::CategoryRemove | Self::AttachmentMetadataRemove => ApprovalKind::Destructive,
+            #[cfg(test)]
+            Self::GuideDelete => ApprovalKind::Destructive,
             Self::GuideTested => ApprovalKind::Tested,
             Self::GitCommit | Self::GitSync => ApprovalKind::GitWrite,
         }

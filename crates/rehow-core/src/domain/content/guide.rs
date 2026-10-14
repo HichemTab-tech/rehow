@@ -1,8 +1,3 @@
-#![allow(
-    dead_code,
-    reason = "Phase 1D-B Guide binding is connected to storage/application in Phase 1E"
-)]
-
 use core::{
     net::{Ipv4Addr, Ipv6Addr},
     str::FromStr,
@@ -277,7 +272,6 @@ pub(crate) enum GuideBindFailureKind {
     MissingRequiredField,
     InvalidFieldType,
     InvalidFieldValue,
-    DuplicateField,
     ResourceLimit,
     BindingInvariant,
 }
@@ -329,6 +323,7 @@ impl GuideBindFailure {
     pub(crate) fn position(&self) -> Option<SourcePosition> {
         self.position
     }
+    #[cfg(test)]
     pub(crate) fn parsed_guide_id(&self) -> Option<&GuideId> {
         self.parsed_guide_id.as_ref()
     }
