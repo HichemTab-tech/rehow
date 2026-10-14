@@ -234,6 +234,22 @@ factory!(schema_unsupported(r,f:u32,n:u32,m:u32)=>SchemaUnsupported:SchemaUnsupp
 factory!(invalid_manifest(r,p:SafeRelativePath,d:Diagnostic,f:Option<Field>,l:Option<SourceLocation>)=>InvalidManifest:InvalidManifestData{relative_path:p,diagnostic_code:diagnostic(d),field:f.map(field),line:l.as_ref().map(|x|x.line),column:l.as_ref().map(|x|x.column)});
 factory!(invalid_category(r,p:SafeRelativePath,d:Diagnostic,f:Option<Field>,l:Option<SourceLocation>,c:Option<CategoryId>)=>InvalidCategory:InvalidCategoryData{relative_path:p,diagnostic_code:diagnostic(d),field:f.map(field),line:l.as_ref().map(|x|x.line),column:l.as_ref().map(|x|x.column),category_id:c});
 factory!(invalid_guide(r,p:SafeRelativePath,d:Diagnostic,f:Option<Field>,l:Option<SourceLocation>,g:Option<GuideId>)=>InvalidGuide:InvalidGuideData{relative_path:p,diagnostic_code:diagnostic(d),field:f.map(field),line:l.as_ref().map(|x|x.line),column:l.as_ref().map(|x|x.column),guide_id:g});
+/// INVALID_GUIDE for a hand-written Guide that Rehow has listed but not adopted
+/// (ADR 0063). The detail shape is the closed INVALID_GUIDE shape; only the
+/// fixed human copy is more specific.
+pub(super) fn unadopted_guide(
+    r: RequestId,
+    p: SafeRelativePath,
+    g: GuideId,
+) -> Result<ErrorDto, ErrorConstructionError> {
+    let mut dto = invalid_guide(r, p, Diagnostic::MissingRequiredField, None, None, Some(g))?;
+    dto.message =
+        PublicText("This Guide is a plain Markdown file Rehow hasn't adopted yet.".into());
+    dto.recovery = PublicText("Open and save it once in the Rehow app first.".into());
+    dto.validate()
+        .map_err(|_| ErrorConstructionError { _private: () })?;
+    Ok(dto)
+}
 factory!(unsafe_round_trip(r,p:SafeRelativePath,x:Reason,f:Option<Field>)=>UnsafeRoundTrip:UnsafeRoundTripData{relative_path:p,reason:reason(x),field:f.map(field)});
 factory!(duplicate_id(r,e:PortableEntityId,p:BoundedList<SafeRelativePath>)=>DuplicateId:DuplicateIdData{entity:e,relative_paths:p});
 factory!(category_not_found(r,c:CategoryId)=>CategoryNotFound:CategoryNotFoundData{category_id:c});
@@ -323,6 +339,30 @@ mod tests {
             Ok(x) => x,
             Err(_) => panic!("valid fixture rejected"),
         }
+    }
+    #[test]
+    fn unadopted_guide_refusal_is_invalid_guide_with_specific_copy() {
+        let guide = GuideId::from_str("0199a1d7-7b0d-7d8e-a38d-f936c5735e10").unwrap();
+        let dto = unadopted_guide_error(id(), "categories/general/deploy notes.md", guide);
+        let value = serde_json::to_value(&dto).unwrap();
+        assert_eq!(value["code"], "INVALID_GUIDE");
+        assert_eq!(value["retryable"], false);
+        assert_eq!(value["details"]["diagnosticCode"], "missing_required_field");
+        assert_eq!(
+            value["details"]["relativePath"],
+            "categories/general/deploy notes.md"
+        );
+        assert_eq!(value["details"]["guideId"], guide.to_string());
+        assert_eq!(
+            value["message"],
+            "This Guide is a plain Markdown file Rehow hasn't adopted yet."
+        );
+        let hostile = unadopted_guide_error(id(), "categories/general/a\u{202e}b\u{7}.md", guide);
+        let hostile = serde_json::to_value(&hostile).unwrap();
+        let path = hostile["details"]["relativePath"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(!path.contains('\u{202e}') && !path.contains('\u{7}'));
     }
     #[test]
     fn every_factory_produces_correlated_fixed_copy() {
