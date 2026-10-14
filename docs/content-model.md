@@ -88,7 +88,36 @@ Reordering may renumber all Category sort keys in one journaled action; it requi
 
 ## Guide Markdown
 
-Guide files are UTF-8 Markdown with YAML frontmatter delimited by exactly `---` lines followed by one blank line and CommonMark/GFM body content.
+Guide files are UTF-8 Markdown with YAML frontmatter delimited by exactly `---` lines, then CommonMark/GFM body content. Rehow writes one blank line after the closing `---`. Since ADR 0063, that blank line is optional on read: the body may start on the next line, or the file may end at the delimiter, and edits keep whatever layout the file has.
+
+A Guide filename is any safe filename ending in `.md` (single NFC component of at most 255 bytes; no `/`, `\`, NUL, controls, bidi controls, BOM, or noncharacters; no leading `.`; no trailing `~`). Rehow-created files keep the `<slug>--<id-suffix>.md` form, but hand-written names such as `My Notes.md` are first-class. Other entries are reported with a percent-escaped inert display path.
+
+### Hand-written (unadopted) Guides
+
+A Guide file that lacks complete frontmatter is listed as **unadopted** instead of malformed when it has:
+
+- no opening `---` line;
+- an opening `---` with no closing `---` line, or a block that is not a YAML mapping (the whole file minus a BOM is the body);
+- a block holding only blank lines and comments; or
+- a valid mapping that lacks required fields. Every present field is validated exactly as for a managed Guide.
+
+Missing metadata is derived and never written during listing:
+
+- `title`: the first level-one ATX heading outside fenced code, else the humanized filename. It is capped at 200 scalars, with invisible and spoofing scalars removed.
+- `summary`: the first paragraph, collapsed to one line and capped at 500 scalars. It may be empty.
+- `status`: `draft`. The effective status is always `draft`.
+- `tags`/`aliases`: empty.
+- Timestamps: the file mtime.
+- `id`: the file's valid `id` when present. Otherwise it is BLAKE3(`rehow-derived-guide-v1\0` ‖ workspace id ‖ relative path), truncated to a UUIDv7 shape with a zero 48-bit timestamp. Renaming the file changes this id.
+
+An invalid reserved field (for example `status: tested` without verification fields), invalid YAML, or invalid UTF-8 is still a malformed Guide. Its issue carries a content-free diagnostic: a code, an optional known field, and an optional line/column.
+
+The first explicit save **adopts** the file in one journaled, revision-checked write, without renaming it:
+
+- With no usable frontmatter, Rehow keeps a leading BOM and adds canonical frontmatter plus one blank line before the unchanged body bytes. CRLF and trailing blank lines are preserved.
+- With partial or comment-only frontmatter, every existing byte is kept, and only the missing required keys are inserted before the closing `---`, using the frontmatter line ending. Flow-style or indented root mappings are refused.
+
+The derived id is never written. The file's own `id` or a fresh UUIDv7 is used and returned to the caller. `created_at` is `min(mtime, now)`, `updated_at` is `now`, and an empty summary becomes the title. An unadopted Guide cannot be approved as `tested`.
 
 ````markdown
 ---
@@ -256,7 +285,7 @@ ADR 0015 freezes the ordered known-field set, complete outer framing, native-onl
 
 ## Revisions and mutation
 
-A document/Attachment revision is `rev:v1:<hex>`. The digest is BLAKE3 of ASCII `rehow-document-revision-v1`, one NUL byte, then `frame(normalized_relative_path_utf8)` and `frame(exact_file_bytes)`. `frame(x)` is an unsigned 64-bit big-endian byte length followed by `x`. Managed relative paths use `/`, ASCII schema directory/file slugs, no `.`/`..`, and NFC UTF-8 Attachment filenames. Fixed vectors make this language-independent. Including the path means an external rename invalidates an open draft.
+A document/Attachment revision is `rev:v1:<hex>`. The digest is BLAKE3 of ASCII `rehow-document-revision-v1`, one NUL byte, then `frame(normalized_relative_path_utf8)` and `frame(exact_file_bytes)`. `frame(x)` is an unsigned 64-bit big-endian byte length followed by `x`. Managed relative paths use `/`, ASCII schema directory slugs, no `.`/`..`, and NFC UTF-8 Guide and Attachment filenames (one shared filename-safety predicate; ADR 0063). Fixed vectors make this language-independent. Including the path means an external rename invalidates an open draft.
 
 Fixed vector: relative path `rehow.yaml` and exact bytes `abc` produce `rev:v1:ec918848dad4d31267309c57c165f16c9d725f0d6eebfae93ec1d60212eea0c2`.
 
@@ -285,7 +314,7 @@ Phase 3 freezes product-facing import, rendering MIME, decoded-pixel, and lower 
 These are hard v1 defaults; whole-input caps are enforced before parser allocation, and event-level caps are checked immediately after each bounded-input parser event. Changing them requires Architect/Security review:
 
 - manifest or Category descriptor: 256 KiB each, including an optional byte-zero BOM;
-- Guide file: 2 MiB total; frontmatter: 256 KiB from byte zero through the mandatory separator line inclusive, including an optional BOM and delimiter lines;
+- Guide file: 2 MiB total; frontmatter: 256 KiB from byte zero through the (optional) separator line inclusive, including an optional BOM and delimiter lines;
 - YAML nesting depth: 16 simultaneous collection frames with the root mapping at depth 1; mapping entries: 256 completed key/value pairs per map; sequence entries: 2,048 completed child values; total YAML nodes: 20,000 scalar/sequence-start/mapping-start events including parser-generated empty/null scalars; generic scalar: 64 KiB each for decoded UTF-8 bytes and raw source-span bytes (tighter field limits still apply);
 - YAML numeric normalization per document: 16 Mi checked closed-form work units computed exactly as ADR 0011's `R + 4*S + 4*C`, and 80 KiB total stored canonical numeric digits; one-over returns `yaml_numeric_work_limit` without a partial scalar/tree;
 - YAML semantic-key work per document: 8 MiB total cached canonical-key bytes and 32 MiB total bytes examined by fallible metered key sorting/indexing/comparison; one-over returns `yaml_semantic_work_limit` without a partial mapping;
@@ -303,6 +332,10 @@ ADR 0011 defines exact bounded event counting, YAML 1.2 scalar resolution, delim
 ### Copy import (v1 required)
 
 Scan a user-selected ordinary collection without following symlinks, show included/excluded/malformed/oversize files, choose/create a destination Workspace and Category mapping, then copy each Markdown file into a new draft Guide. Original files are untouched. Imported source frontmatter/body is preserved where safe; a provenance note contains a relative display path, not a trusted executable link.
+
+### Per-file adoption of hand-written Guides
+
+See “Hand-written (unadopted) Guides” above and ADR 0063. This applies only to Markdown files inside an existing Workspace Category and only on an explicit save.
 
 ### In-place adoption (decision deferred)
 
