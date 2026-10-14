@@ -3990,7 +3990,7 @@ fn inspect_open_root_with_index(
         if !valid_category_directory(&category_name) {
             push_issue(
                 &mut issues,
-                "categories/<unsupported>".to_owned(),
+                inert_relative_display(&format!("categories/{category_name}")),
                 WorkspaceIssueKind::UnsupportedEntry,
             )?;
             continue;
@@ -4076,7 +4076,7 @@ fn inspect_open_root_with_index(
             if !valid_guide_filename(&guide_name) {
                 push_issue(
                     &mut issues,
-                    format!("categories/{category_name}/<unsupported>"),
+                    inert_relative_display(&format!("categories/{category_name}/{guide_name}")),
                     WorkspaceIssueKind::UnsupportedEntry,
                 )?;
                 continue;
@@ -4442,7 +4442,11 @@ fn increment_attachment_count(count: &mut usize) -> Result<(), WorkspaceInspectE
     Ok(())
 }
 
-fn valid_attachment_filename(value: &str) -> bool {
+/// The single filename-safety predicate shared by Attachments, Guide files,
+/// recovery journals, and trash paths: one non-empty NFC component of at
+/// most 255 bytes with no separators, NUL, controls, bidi controls, BOM, or
+/// noncharacters.
+pub(crate) fn valid_attachment_filename(value: &str) -> bool {
     use unicode_normalization::UnicodeNormalization;
     !value.is_empty()
         && value.len() <= 255
@@ -4789,10 +4793,17 @@ fn valid_category_directory(value: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
-fn valid_guide_filename(value: &str) -> bool {
-    value
-        .strip_suffix(".md")
-        .is_some_and(valid_category_directory)
+/// A Guide file is any safe filename ending in `.md` that is not hidden
+/// (which also excludes `.rehow-tmp-*` staging files) and is not an editor
+/// backup. Scan, candidate counting, and recovery journals all use this one
+/// predicate.
+pub(crate) fn valid_guide_filename(value: &str) -> bool {
+    valid_attachment_filename(value)
+        && value
+            .strip_suffix(".md")
+            .is_some_and(|stem| !stem.is_empty())
+        && !value.starts_with('.')
+        && !value.ends_with('~')
 }
 
 fn current_category_entry_count(
@@ -8744,6 +8755,115 @@ mod tests {
             panic!("expected compatible Workspace");
         };
         assert!(view.issues().is_empty());
+    }
+
+    #[test]
+    fn guide_filename_predicate_accepts_hand_written_names_only() {
+        for name in [
+            "My Notes.md",
+            "my_notes.md",
+            "README.md",
+            "Caf\u{e9}.md",
+            "\u{65e5}\u{672c}.md",
+            "install--36c5735e10.md",
+            "a.b.md",
+        ] {
+            assert!(valid_guide_filename(name), "{name}");
+            assert!(
+                recovery::valid_active_path(&format!("categories/linux/{name}")),
+                "{name}"
+            );
+        }
+        for name in [
+            ".hidden.md",
+            ".rehow-tmp-0123.md",
+            ".md",
+            "notes.md~",
+            "notes.txt",
+            "notes.MD",
+            "a\u{202e}b.md",
+            "a\u{2066}b.md",
+            "Cafe\u{301}.md",
+            "a\\b.md",
+            "a\u{1}.md",
+            "a\u{feff}.md",
+        ] {
+            assert!(!valid_guide_filename(name), "{name:?}");
+            assert!(
+                !recovery::valid_active_path(&format!("categories/linux/{name}")),
+                "{name:?}"
+            );
+        }
+        assert!(!valid_guide_filename("category.yaml"));
+        let long = format!("{}.md", "a".repeat(253));
+        assert!(!valid_guide_filename(&long));
+    }
+
+    #[test]
+    fn scan_loads_hand_named_guides_and_escapes_unsupported_names() {
+        use std::os::unix::{fs::symlink, net::UnixListener};
+
+        let root = TestDirectory::new();
+        write_compatible(root.path());
+        let category = root.path().join("categories/linux-system--b6ba3a5551");
+        fs::rename(
+            category.join("install--36c5735e10.md"),
+            category.join("My Notes.md"),
+        )
+        .unwrap();
+        fs::write(category.join("notes \u{202e}txt.md"), "x").unwrap();
+        fs::write(category.join(".rehow-tmp-abc"), "x").unwrap();
+        fs::write(category.join("other.md~"), "x").unwrap();
+        symlink(category.join("My Notes.md"), category.join("Link.md")).unwrap();
+        fs::write(
+            category.join("Source.md"),
+            GUIDE.replace("36c5735e10", "36c5735e11"),
+        )
+        .unwrap();
+        fs::hard_link(category.join("Source.md"), category.join("Hard.md")).unwrap();
+        let status = std::process::Command::new("mkfifo")
+            .arg(category.join("Pipe.md"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let _socket = UnixListener::bind(category.join("Socket.md")).unwrap();
+
+        let WorkspaceInspection::Compatible(view) = classification(root.path()) else {
+            panic!("expected compatible Workspace");
+        };
+        let guides = view.categories()[0].guides();
+        assert_eq!(guides.len(), 1);
+        assert_eq!(
+            guides[0].relative_path(),
+            "categories/linux-system--b6ba3a5551/My Notes.md"
+        );
+        let issue = |suffix: &str| {
+            view.issues()
+                .iter()
+                .find(|issue| issue.relative_path().ends_with(suffix))
+                .map(WorkspaceIssue::kind)
+        };
+        for name in ["Link.md", "Hard.md", "Source.md", "Pipe.md", "Socket.md"] {
+            assert_eq!(issue(name), Some(WorkspaceIssueKind::UnsafeEntry), "{name}");
+        }
+        assert_eq!(
+            issue("notes %E2%80%AEtxt.md"),
+            Some(WorkspaceIssueKind::UnsupportedEntry)
+        );
+        assert_eq!(
+            issue("/.rehow-tmp-abc"),
+            Some(WorkspaceIssueKind::UnsupportedEntry)
+        );
+        assert_eq!(
+            issue("/other.md~"),
+            Some(WorkspaceIssueKind::UnsupportedEntry)
+        );
+        assert!(
+            view.issues()
+                .iter()
+                .all(|issue| !issue.relative_path().contains("<unsupported>")
+                    && issue.relative_path().is_ascii())
+        );
     }
 
     #[test]

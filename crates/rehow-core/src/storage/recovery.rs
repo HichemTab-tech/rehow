@@ -12,7 +12,6 @@ use std::{
     path::Path,
     str::FromStr,
 };
-use unicode_normalization::UnicodeNormalization;
 
 mod store;
 mod workspace;
@@ -5331,16 +5330,7 @@ pub(super) fn valid_active_path(path: &str) -> bool {
 }
 
 fn valid_attachment_filename(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_COMPONENT_BYTES
-        && value != "."
-        && value != ".."
-        && !value.contains(['/', '\\', '\0'])
-        && value.nfc().eq(value.chars())
-        && !value.chars().any(|character| {
-            matches!(character as u32, 0x00..=0x1f|0x7f..=0x9f|0x061c|0x200e|0x200f|0x2028..=0x202e|0x2066..=0x2069|0xfeff|0xfdd0..=0xfdef)
-                || matches!(character as u32 & 0xffff, 0xfffe | 0xffff)
-        })
+    value.len() <= MAX_COMPONENT_BYTES && super::valid_attachment_filename(value)
 }
 
 pub(super) fn valid_trash_path(path: &str) -> bool {
