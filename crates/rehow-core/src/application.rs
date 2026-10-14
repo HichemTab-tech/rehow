@@ -6,8 +6,10 @@
 )]
 
 use crate::{
+    domain::GuideOrigin,
     domain::content::{
         CategoryStatus, bind_category,
+        derived::{DeriveContext, DerivedGuide, derive_guide},
         emission::{
             EmitFailureKind, EmitField, emit_new_category, emit_new_guide,
             emit_new_workspace_manifest,
@@ -33,16 +35,18 @@ use crate::{
         AttachmentRemovalStorageError, AttachmentSourceState, CancellableDocumentUpdateError,
         CategoryCreateStorageError, CategoryRemoveStorageError, DocumentCreateError,
         DocumentRemoveError, DocumentUpdateError, DocumentUpdateRequest, EmptyWorkspaceTarget,
-        ManagedAttachmentCandidate as StorageManagedAttachmentCandidate, MarkdownImportSelection,
-        MultiDocumentUpdateError, WorkspaceInitializeError, WorkspaceInspectError, WorkspaceView,
-        category_inventory_snapshot, discover_managed_attachment_candidates, document_revision,
-        execute_attachment_import, execute_attachment_removal, execute_category_create,
-        execute_category_document_update, execute_category_remove, execute_document_create,
-        execute_document_move, execute_document_remove, execute_document_update,
-        execute_document_update_cancellable, execute_managed_attachment_add,
-        execute_multi_document_update, execute_workspace_initialize, managed_open_file,
+        LoadedGuide, ManagedAttachmentCandidate as StorageManagedAttachmentCandidate,
+        MarkdownImportSelection, MultiDocumentUpdateError, WorkspaceInitializeError,
+        WorkspaceInspectError, WorkspaceView, category_inventory_snapshot,
+        discover_managed_attachment_candidates, document_revision, execute_attachment_import,
+        execute_attachment_removal, execute_category_create, execute_category_document_update,
+        execute_category_remove, execute_document_create, execute_document_move,
+        execute_document_remove, execute_document_update, execute_document_update_cancellable,
+        execute_managed_attachment_add, execute_multi_document_update,
+        execute_workspace_initialize, guide_modified_timestamp, managed_open_file,
         managed_reveal_parent, open_initialized_workspace, preview_attachment_import,
-        preview_attachment_removal, read_managed_regular, refresh_workspace,
+        preview_attachment_removal, read_managed_regular, read_managed_regular_with_modified,
+        refresh_workspace,
     },
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -84,34 +88,21 @@ pub fn read_guide_body(
     if loaded.revision() != expected_revision {
         return Err(GuideBodyReadError::RevisionConflict);
     }
-    let source = read_managed_regular(
+    let (source, modified) = read_managed_regular_with_modified(
         workspace,
         loaded.relative_path(),
         GUIDE_BODY_INPUT_LIMIT,
         Some(expected_revision),
     )
-    .map_err(|error| match error {
-        WorkspaceInspectError::ResourceLimit => GuideBodyReadError::ResourceLimit,
-        WorkspaceInspectError::UnsafeRoot => GuideBodyReadError::UnsafeStorage,
-        WorkspaceInspectError::ChangedDuringRead
-        | WorkspaceInspectError::NotFound
-        | WorkspaceInspectError::NotDirectory => GuideBodyReadError::RevisionConflict,
-        WorkspaceInspectError::PermissionDenied | WorkspaceInspectError::Io => {
-            GuideBodyReadError::Io
-        }
-    })?;
-    let parsed = parse_guide_source(source.into_boxed_slice())
-        .map_err(|_| GuideBodyReadError::InvalidGuide)?;
-    let bound = bind_guide(parsed).map_err(|_| GuideBodyReadError::InvalidGuide)?;
-    if bound.record().id() != &guide_id {
-        return Err(GuideBodyReadError::RevisionConflict);
-    }
-    copy_bytes(bound.record().body()).map_err(|_| GuideBodyReadError::ResourceLimit)
+    .map_err(map_guide_read_error)?;
+    let (guide, _) = bind_current_guide(workspace, loaded, guide_id, source, modified)?;
+    copy_bytes(guide.body()).map_err(|_| GuideBodyReadError::ResourceLimit)
 }
 
 pub struct CurrentGuideSnapshot {
     revision: Revision,
     guide: crate::domain::Guide,
+    origin: GuideOrigin,
 }
 
 impl CurrentGuideSnapshot {
@@ -121,6 +112,12 @@ impl CurrentGuideSnapshot {
 
     pub fn guide(&self) -> &crate::domain::Guide {
         &self.guide
+    }
+
+    /// Whether the current bytes are a managed Guide or a hand-written file
+    /// whose metadata was derived (and is adopted on its first save).
+    pub fn origin(&self) -> GuideOrigin {
+        self.origin
     }
 }
 
@@ -134,13 +131,24 @@ pub fn read_current_guide_snapshot(
         .flat_map(|category| category.guides())
         .find(|guide| guide.guide().id() == &guide_id)
         .ok_or(GuideBodyReadError::NotFound)?;
-    let source = read_managed_regular(
+    let (source, modified) = read_managed_regular_with_modified(
         workspace,
         loaded.relative_path(),
         GUIDE_BODY_INPUT_LIMIT,
         None,
     )
-    .map_err(|error| match error {
+    .map_err(map_guide_read_error)?;
+    let revision = document_revision(loaded.relative_path(), &source);
+    let (guide, origin) = bind_current_guide(workspace, loaded, guide_id, source, modified)?;
+    Ok(CurrentGuideSnapshot {
+        revision,
+        guide,
+        origin,
+    })
+}
+
+fn map_guide_read_error(error: WorkspaceInspectError) -> GuideBodyReadError {
+    match error {
         WorkspaceInspectError::ResourceLimit => GuideBodyReadError::ResourceLimit,
         WorkspaceInspectError::UnsafeRoot => GuideBodyReadError::UnsafeStorage,
         WorkspaceInspectError::ChangedDuringRead
@@ -149,18 +157,37 @@ pub fn read_current_guide_snapshot(
         WorkspaceInspectError::PermissionDenied | WorkspaceInspectError::Io => {
             GuideBodyReadError::Io
         }
-    })?;
-    let revision = document_revision(loaded.relative_path(), &source);
-    let parsed = parse_guide_source(source.into_boxed_slice())
-        .map_err(|_| GuideBodyReadError::InvalidGuide)?;
-    let bound = bind_guide(parsed).map_err(|_| GuideBodyReadError::InvalidGuide)?;
-    if bound.record().id() != &guide_id {
+    }
+}
+
+/// Bind current Guide bytes exactly as the scan does: a managed Guide binds
+/// strictly; a hand-written file yields derived metadata. The id and origin
+/// class must still match the listed Guide.
+fn bind_current_guide(
+    workspace: &WorkspaceView,
+    loaded: &LoadedGuide,
+    guide_id: GuideId,
+    source: Vec<u8>,
+    modified: i64,
+) -> Result<(crate::domain::Guide, GuideOrigin), GuideBodyReadError> {
+    let context = DeriveContext {
+        workspace_id: workspace.manifest().workspace_id(),
+        relative_path: loaded.relative_path(),
+        category_id: *loaded.guide().category_id(),
+        modified_at: guide_modified_timestamp(modified),
+    };
+    let (guide, origin) = match derive_guide(source.into_boxed_slice(), &context) {
+        DerivedGuide::Managed(bound) => ((*bound).into_record(), GuideOrigin::Managed),
+        DerivedGuide::Unadopted(unadopted) => {
+            let origin = GuideOrigin::Unadopted(unadopted.reasons());
+            (unadopted.into_guide(), origin)
+        }
+        DerivedGuide::Rejected(_) => return Err(GuideBodyReadError::InvalidGuide),
+    };
+    if guide.id() != &guide_id {
         return Err(GuideBodyReadError::RevisionConflict);
     }
-    Ok(CurrentGuideSnapshot {
-        revision,
-        guide: bound.into_record(),
-    })
+    Ok((guide, origin))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2939,27 +2966,28 @@ pub fn prepare_external_link_open(
     if loaded.revision() != expected_revision {
         return Err(ExternalLinkOpenError::RevisionConflict);
     }
-    let source = read_managed_regular(
+    let (source, modified) = read_managed_regular_with_modified(
         workspace,
         loaded.relative_path(),
         GUIDE_SOURCE_PREVIEW_LIMIT,
         Some(expected_revision),
     )
     .map_err(map_external_link_storage_error)?;
-    let parsed = parse_guide_source(source.into_boxed_slice())
-        .map_err(|_| ExternalLinkOpenError::LinkNotFound)?;
-    let bound = bind_guide(parsed).map_err(|_| ExternalLinkOpenError::LinkNotFound)?;
-    if bound.record().id() != &guide_id {
-        return Err(ExternalLinkOpenError::RevisionConflict);
-    }
-    let retained_reference = bound
-        .record()
+    let (guide, _) =
+        bind_current_guide(workspace, loaded, guide_id, source, modified).map_err(|error| {
+            match error {
+                GuideBodyReadError::RevisionConflict => ExternalLinkOpenError::RevisionConflict,
+                GuideBodyReadError::ResourceLimit => ExternalLinkOpenError::ResourceLimit,
+                _ => ExternalLinkOpenError::LinkNotFound,
+            }
+        })?;
+    let retained_reference = guide
         .references()
         .unwrap_or_default()
         .iter()
         .any(|reference| reference.url() == destination);
-    let body = std::str::from_utf8(bound.record().body())
-        .map_err(|_| ExternalLinkOpenError::LinkNotFound)?;
+    let body =
+        std::str::from_utf8(guide.body()).map_err(|_| ExternalLinkOpenError::LinkNotFound)?;
     let document = parse_safe_markdown(body).map_err(|_| ExternalLinkOpenError::LinkNotFound)?;
     let retained_body_link = document.events.iter().any(|event| {
         matches!(
@@ -5426,7 +5454,9 @@ mod tests {
         .unwrap();
         fs::set_permissions(&second_path, fs::Permissions::from_mode(0o600)).unwrap();
         let malformed_path = category.join("broken.md");
-        fs::write(&malformed_path, "not Guide frontmatter\n").unwrap();
+        // Plain Markdown is now listed as an unadopted Guide; invalid YAML is
+        // still isolated as a malformed Guide issue.
+        fs::write(&malformed_path, "---\ntitle: [broken\n---\nBody\n").unwrap();
         fs::set_permissions(&malformed_path, fs::Permissions::from_mode(0o600)).unwrap();
 
         refresh_open_workspace(&mut view).unwrap();
@@ -5453,6 +5483,132 @@ mod tests {
             "Added Externally"
         );
         assert_eq!(view.issues().len(), 1);
+    }
+
+    fn tree_fingerprint(root: &Path) -> Vec<(PathBuf, Vec<u8>, i64, i64)> {
+        use std::os::unix::fs::MetadataExt as _;
+        let mut entries = Vec::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(&directory).unwrap() {
+                let path = entry.unwrap().path();
+                let metadata = fs::symlink_metadata(&path).unwrap();
+                if metadata.is_dir() {
+                    pending.push(path.clone());
+                    entries.push((path, Vec::new(), metadata.mtime(), metadata.mtime_nsec()));
+                } else {
+                    let bytes = fs::read(&path).unwrap();
+                    entries.push((path, bytes, metadata.mtime(), metadata.mtime_nsec()));
+                }
+            }
+        }
+        entries.sort();
+        entries
+    }
+
+    const HAND_WRITTEN: &str = "# Deploy the widget\r\n\r\nRun the deploy script.\r\n";
+    const PARTIAL: &str = "---\ntitle: Partial notes\nlayout: post\n---\nRotate the zebra keys.\n";
+
+    #[test]
+    fn unadopted_guides_are_listed_searchable_and_readable_without_writes() {
+        let (workspace, _state, mut view) = fixture("unadopted-list", GUIDE);
+        let category = workspace.path().join("categories/linux-system--b6ba3a5551");
+        fs::write(category.join("My Notes.md"), HAND_WRITTEN).unwrap();
+        fs::write(category.join("partial.md"), PARTIAL).unwrap();
+        let before = tree_fingerprint(workspace.path());
+
+        refresh_open_workspace(&mut view).unwrap();
+        assert!(view.issues().is_empty(), "{:?}", view.issues());
+        let guides = view.categories()[0].guides();
+        assert_eq!(guides.len(), 3);
+        let hand = guides
+            .iter()
+            .find(|guide| guide.relative_path().ends_with("/My Notes.md"))
+            .unwrap();
+        assert!(matches!(
+            hand.origin(),
+            GuideOrigin::Unadopted(reasons) if reasons.no_frontmatter()
+        ));
+        assert_eq!(hand.guide().title(), "Deploy the widget");
+        assert_eq!(hand.guide().summary(), "Run the deploy script.");
+        assert_eq!(hand.effective_status(), GuideStatus::Draft);
+        let partial = guides
+            .iter()
+            .find(|guide| guide.relative_path().ends_with("/partial.md"))
+            .unwrap();
+        assert!(matches!(
+            partial.origin(),
+            GuideOrigin::Unadopted(reasons) if reasons.missing_fields()
+        ));
+        assert_eq!(partial.guide().title(), "Partial notes");
+        let managed = guides
+            .iter()
+            .find(|guide| guide.guide().id() == &GuideId::from_str(GUIDE_ID).unwrap())
+            .unwrap();
+        assert_eq!(managed.origin(), GuideOrigin::Managed);
+
+        let hits = crate::search::search_workspace(&view, "widget", false, 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(&hits[0].guide_id(), hand.guide().id());
+        let hits = crate::search::search_workspace(&view, "zebra", false, 10).unwrap();
+        assert_eq!(&hits[0].guide_id(), partial.guide().id());
+
+        let body = read_guide_body(&view, *hand.guide().id(), hand.revision()).unwrap();
+        assert_eq!(body.as_ref(), HAND_WRITTEN.as_bytes());
+        let snapshot = read_current_guide_snapshot(&view, *partial.guide().id()).unwrap();
+        assert_eq!(snapshot.guide().body(), b"Rotate the zebra keys.\n");
+        assert_eq!(snapshot.revision(), partial.revision());
+        assert!(!snapshot.origin().is_managed());
+        let managed_snapshot =
+            read_current_guide_snapshot(&view, GuideId::from_str(GUIDE_ID).unwrap()).unwrap();
+        assert!(managed_snapshot.origin().is_managed());
+
+        refresh_open_workspace(&mut view).unwrap();
+        assert_eq!(tree_fingerprint(workspace.path()), before);
+    }
+
+    #[test]
+    fn renaming_an_unadopted_guide_changes_its_derived_id_and_duplicates_are_reported() {
+        let (workspace, _state, mut view) = fixture("unadopted-rename", GUIDE);
+        let category = workspace.path().join("categories/linux-system--b6ba3a5551");
+        fs::write(category.join("notes.md"), HAND_WRITTEN).unwrap();
+        refresh_open_workspace(&mut view).unwrap();
+        let find = |view: &WorkspaceView| {
+            view.categories()[0]
+                .guides()
+                .iter()
+                .find(|guide| !guide.origin().is_managed())
+                .map(|guide| *guide.guide().id())
+                .unwrap()
+        };
+        let first = find(&view);
+        refresh_open_workspace(&mut view).unwrap();
+        assert_eq!(find(&view), first);
+        fs::rename(category.join("notes.md"), category.join("renamed.md")).unwrap();
+        refresh_open_workspace(&mut view).unwrap();
+        assert_ne!(find(&view), first);
+
+        fs::write(
+            category.join("copy.md"),
+            format!("---\nid: {GUIDE_ID}\n---\nDuplicate.\n"),
+        )
+        .unwrap();
+        refresh_open_workspace(&mut view).unwrap();
+        assert!(view.issues().iter().any(|issue| {
+            issue.kind() == crate::storage::WorkspaceIssueKind::DuplicateGuideId
+                && issue.relative_path().ends_with("/install--36c5735e10.md")
+        }));
+
+        fs::write(
+            category.join("copy.md"),
+            "---\ncategory_id: 0199a1c2-d334-7d17-bd9c-f8b6ba3a5552\n---\nElsewhere.\n",
+        )
+        .unwrap();
+        refresh_open_workspace(&mut view).unwrap();
+        assert!(view.issues().iter().any(|issue| {
+            issue.kind() == crate::storage::WorkspaceIssueKind::CategoryMismatch
+                && issue.relative_path().ends_with("/copy.md")
+        }));
     }
 
     #[test]

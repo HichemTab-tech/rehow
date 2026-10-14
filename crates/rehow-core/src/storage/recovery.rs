@@ -1693,6 +1693,10 @@ impl AttachmentSourceState {
         self == Self::capture(metadata)
     }
 
+    pub(crate) fn modified_seconds(self) -> i64 {
+        self.modified_seconds
+    }
+
     pub(crate) fn size(self) -> u64 {
         self.size
     }

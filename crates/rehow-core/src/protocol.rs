@@ -1091,7 +1091,6 @@ pub(crate) fn current_timestamp() -> Timestamp {
 }
 /// A whole-second UTC timestamp from Unix seconds, when representable as a
 /// canonical four-digit-year Rehow timestamp.
-#[allow(dead_code, reason = "connected when the scan lists unadopted Guides")]
 pub(crate) fn timestamp_from_unix_seconds(seconds: i64) -> Option<Timestamp> {
     let value = time::OffsetDateTime::from_unix_timestamp(seconds).ok()?;
     (1..=9999)
@@ -1099,7 +1098,6 @@ pub(crate) fn timestamp_from_unix_seconds(seconds: i64) -> Option<Timestamp> {
         .then_some(Timestamp(value))
 }
 impl Timestamp {
-    #[allow(dead_code, reason = "connected when unadopted Guides are adopted")]
     pub(crate) fn whole_seconds(self) -> Self {
         Self(self.0.replace_nanosecond(0).unwrap_or(self.0))
     }
