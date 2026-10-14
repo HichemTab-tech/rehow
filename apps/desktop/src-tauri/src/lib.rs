@@ -1095,7 +1095,17 @@ async fn render_markdown_preview(body: String) -> Result<SafeMarkdownDocument, N
 }
 
 #[tauri::command]
-fn read_open_guide(
+async fn read_open_guide(
+    guide_id: String,
+    app: tauri::AppHandle,
+) -> Result<GuideBodyPayload, String> {
+    run_blocking_command(app, move |app| {
+        read_open_guide_blocking(guide_id, app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn read_open_guide_blocking(
     guide_id: String,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<GuideBodyPayload, String> {
@@ -1111,7 +1121,17 @@ fn read_open_guide(
 }
 
 #[tauri::command]
-fn preview_external_open_guide(
+async fn preview_external_open_guide(
+    guide_id: String,
+    app: tauri::AppHandle,
+) -> Result<GuideBodyPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        preview_external_open_guide_blocking(guide_id, app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn preview_external_open_guide_blocking(
     guide_id: String,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<GuideBodyPayload, NativeCommandError> {
@@ -1253,7 +1273,28 @@ fn attachment_text_preview_message(error: AttachmentTextPreviewError) -> String 
 }
 
 #[tauri::command]
-fn export_open_guide_attachment(
+async fn export_open_guide_attachment(
+    guide_id: String,
+    attachment_id: String,
+    expected_revision: String,
+    workspace_session: String,
+    window: tauri::Window,
+    app: tauri::AppHandle,
+) -> Result<AttachmentExportPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        export_open_guide_attachment_blocking(
+            guide_id,
+            attachment_id,
+            expected_revision,
+            workspace_session,
+            window,
+            app.state::<DesktopState>(),
+        )
+    })
+    .await
+}
+
+fn export_open_guide_attachment_blocking(
     guide_id: String,
     attachment_id: String,
     expected_revision: String,
@@ -1720,7 +1761,18 @@ fn external_link_open_message(error: ExternalLinkOpenError) -> String {
 }
 
 #[tauri::command]
-fn search_open_workspace(
+async fn search_open_workspace(
+    query: String,
+    scope: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<SearchHitPayload>, String> {
+    run_blocking_command(app, move |app| {
+        search_open_workspace_blocking(query, scope, app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn search_open_workspace_blocking(
     query: String,
     scope: String,
     state: tauri::State<'_, DesktopState>,
@@ -1747,7 +1799,14 @@ fn search_open_workspace(
 }
 
 #[tauri::command]
-fn git_status_open_workspace(
+async fn git_status_open_workspace(app: tauri::AppHandle) -> Result<GitStatusPayload, String> {
+    run_blocking_command(app, move |app| {
+        git_status_open_workspace_blocking(app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn git_status_open_workspace_blocking(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<GitStatusPayload, String> {
     let global_identity = match state.global_git_identity.status() {
@@ -1854,7 +1913,16 @@ fn empty_git_payload(
 }
 
 #[tauri::command]
-fn git_initialize_plan_open_workspace(
+async fn git_initialize_plan_open_workspace(
+    app: tauri::AppHandle,
+) -> Result<GitInitPlanPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        git_initialize_plan_open_workspace_blocking(app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn git_initialize_plan_open_workspace_blocking(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<GitInitPlanPayload, NativeCommandError> {
     let guard = state.workspace.lock().map_err(|_| {
@@ -1888,7 +1956,22 @@ fn git_initialize_plan_open_workspace(
 }
 
 #[tauri::command]
-fn git_initialize_apply_open_workspace(
+async fn git_initialize_apply_open_workspace(
+    window: tauri::Window,
+    plan_token: PlanToken,
+    app: tauri::AppHandle,
+) -> Result<GitInitResultPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        git_initialize_apply_open_workspace_blocking(
+            window,
+            plan_token,
+            app.state::<DesktopState>(),
+        )
+    })
+    .await
+}
+
+fn git_initialize_apply_open_workspace_blocking(
     window: tauri::Window,
     plan_token: PlanToken,
     state: tauri::State<'_, DesktopState>,
@@ -1988,7 +2071,22 @@ fn git_init_confirmation() -> &'static str {
 }
 
 #[tauri::command]
-fn git_remote_plan_open_workspace(
+async fn git_remote_plan_open_workspace(
+    remote_name: String,
+    remote_url: String,
+    app: tauri::AppHandle,
+) -> Result<GitRemotePlanPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        git_remote_plan_open_workspace_blocking(
+            remote_name,
+            remote_url,
+            app.state::<DesktopState>(),
+        )
+    })
+    .await
+}
+
+fn git_remote_plan_open_workspace_blocking(
     remote_name: String,
     remote_url: String,
     state: tauri::State<'_, DesktopState>,
@@ -2026,7 +2124,18 @@ fn git_remote_plan_open_workspace(
 }
 
 #[tauri::command]
-fn git_remote_apply_open_workspace(
+async fn git_remote_apply_open_workspace(
+    window: tauri::Window,
+    plan_token: PlanToken,
+    app: tauri::AppHandle,
+) -> Result<GitRemoteResultPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        git_remote_apply_open_workspace_blocking(window, plan_token, app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn git_remote_apply_open_workspace_blocking(
     window: tauri::Window,
     plan_token: PlanToken,
     state: tauri::State<'_, DesktopState>,
@@ -2148,7 +2257,18 @@ fn git_remote_confirmation(plan: &GitRemotePlan) -> String {
 }
 
 #[tauri::command]
-fn git_identity_plan_manual_open_workspace(
+async fn git_identity_plan_manual_open_workspace(
+    name: String,
+    email: String,
+    app: tauri::AppHandle,
+) -> Result<GitIdentityPlanPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        git_identity_plan_manual_open_workspace_blocking(name, email, app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn git_identity_plan_manual_open_workspace_blocking(
     name: String,
     email: String,
     state: tauri::State<'_, DesktopState>,
@@ -2180,7 +2300,16 @@ fn git_identity_plan_manual_open_workspace(
 }
 
 #[tauri::command]
-fn git_identity_plan_global_open_workspace(
+async fn git_identity_plan_global_open_workspace(
+    app: tauri::AppHandle,
+) -> Result<GitIdentityPlanPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        git_identity_plan_global_open_workspace_blocking(app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn git_identity_plan_global_open_workspace_blocking(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<GitIdentityPlanPayload, NativeCommandError> {
     let guard = state.workspace.lock().map_err(|_| {
@@ -2225,7 +2354,18 @@ fn store_git_identity_plan(
 }
 
 #[tauri::command]
-fn git_identity_apply_open_workspace(
+async fn git_identity_apply_open_workspace(
+    window: tauri::Window,
+    plan_token: PlanToken,
+    app: tauri::AppHandle,
+) -> Result<GitIdentityResultPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        git_identity_apply_open_workspace_blocking(window, plan_token, app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn git_identity_apply_open_workspace_blocking(
     window: tauri::Window,
     plan_token: PlanToken,
     state: tauri::State<'_, DesktopState>,
@@ -2929,7 +3069,16 @@ async fn git_sync_inspect_open_workspace(
 }
 
 #[tauri::command]
-fn git_sync_cancel_active(
+async fn git_sync_cancel_active(
+    app: tauri::AppHandle,
+) -> Result<GitSyncCancelResultPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        git_sync_cancel_active_blocking(app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn git_sync_cancel_active_blocking(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<GitSyncCancelResultPayload, NativeCommandError> {
     let cancellation_requested =
@@ -3421,7 +3570,17 @@ fn git_sync_message(error: GitSyncError) -> String {
 }
 
 #[tauri::command]
-fn git_clone_plan_selected_workspace(
+async fn git_clone_plan_selected_workspace(
+    remote_url: String,
+    app: tauri::AppHandle,
+) -> Result<GitClonePlanPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        git_clone_plan_selected_workspace_blocking(remote_url, app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn git_clone_plan_selected_workspace_blocking(
     remote_url: String,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<GitClonePlanPayload, NativeCommandError> {
@@ -3818,7 +3977,16 @@ async fn git_clone_complete_selected_workspace(
 }
 
 #[tauri::command]
-fn git_clone_cancel_active(
+async fn git_clone_cancel_active(
+    app: tauri::AppHandle,
+) -> Result<GitCloneCancelResultPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        git_clone_cancel_active_blocking(app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn git_clone_cancel_active_blocking(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<GitCloneCancelResultPayload, NativeCommandError> {
     let cancellation_requested =
@@ -4220,7 +4388,16 @@ fn search_status_scope(scope: &str) -> Option<SearchStatusScope> {
 }
 
 #[tauri::command]
-fn refresh_open_workspace(
+async fn refresh_open_workspace(
+    app: tauri::AppHandle,
+) -> Result<WorkspacePayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        refresh_open_workspace_blocking(app.clone(), app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn refresh_open_workspace_blocking(
     app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<WorkspacePayload, NativeCommandError> {
@@ -4283,7 +4460,24 @@ fn workspace_refresh_message(error: WorkspaceRefreshError) -> String {
 }
 
 #[tauri::command]
-fn save_open_guide_body(
+async fn save_open_guide_body(
+    guide_id: String,
+    expected_revision: String,
+    body: String,
+    app: tauri::AppHandle,
+) -> Result<SaveGuidePayload, String> {
+    run_blocking_command(app, move |app| {
+        save_open_guide_body_blocking(
+            guide_id,
+            expected_revision,
+            body,
+            app.state::<DesktopState>(),
+        )
+    })
+    .await
+}
+
+fn save_open_guide_body_blocking(
     guide_id: String,
     expected_revision: String,
     body: String,
@@ -4329,7 +4523,36 @@ fn save_open_guide_body(
     clippy::too_many_arguments,
     reason = "the Tauri command keeps every bounded Guide detail explicit"
 )]
-fn save_open_guide_details(
+async fn save_open_guide_details(
+    guide_id: String,
+    expected_revision: String,
+    category_id: String,
+    title: String,
+    summary: String,
+    tags: Vec<String>,
+    aliases: Vec<String>,
+    app: tauri::AppHandle,
+) -> Result<SaveGuidePayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        save_open_guide_details_blocking(
+            guide_id,
+            expected_revision,
+            category_id,
+            title,
+            summary,
+            tags,
+            aliases,
+            app.state::<DesktopState>(),
+        )
+    })
+    .await
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the Tauri command keeps every bounded Guide detail explicit"
+)]
+fn save_open_guide_details_blocking(
     guide_id: String,
     expected_revision: String,
     category_id: String,
@@ -4410,7 +4633,24 @@ fn save_open_guide_details(
 }
 
 #[tauri::command]
-fn set_open_guide_archived(
+async fn set_open_guide_archived(
+    guide_id: String,
+    expected_revision: String,
+    archived: bool,
+    app: tauri::AppHandle,
+) -> Result<SaveGuidePayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        set_open_guide_archived_blocking(
+            guide_id,
+            expected_revision,
+            archived,
+            app.state::<DesktopState>(),
+        )
+    })
+    .await
+}
+
+fn set_open_guide_archived_blocking(
     guide_id: String,
     expected_revision: String,
     archived: bool,
@@ -4471,7 +4711,24 @@ fn set_open_guide_archived(
 }
 
 #[tauri::command]
-fn approve_open_guide_tested(
+async fn approve_open_guide_tested(
+    guide_id: String,
+    expected_revision: String,
+    window: tauri::Window,
+    app: tauri::AppHandle,
+) -> Result<SaveGuidePayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        approve_open_guide_tested_blocking(
+            guide_id,
+            expected_revision,
+            window,
+            app.state::<DesktopState>(),
+        )
+    })
+    .await
+}
+
+fn approve_open_guide_tested_blocking(
     guide_id: String,
     expected_revision: String,
     window: tauri::Window,
@@ -4551,7 +4808,24 @@ fn approve_open_guide_tested(
 }
 
 #[tauri::command]
-fn import_open_guide_attachment(
+async fn import_open_guide_attachment(
+    guide_id: String,
+    expected_revision: String,
+    window: tauri::Window,
+    app: tauri::AppHandle,
+) -> Result<SaveGuidePayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        import_open_guide_attachment_blocking(
+            guide_id,
+            expected_revision,
+            window,
+            app.state::<DesktopState>(),
+        )
+    })
+    .await
+}
+
+fn import_open_guide_attachment_blocking(
     guide_id: String,
     expected_revision: String,
     window: tauri::Window,
@@ -4685,7 +4959,26 @@ fn attachment_import_message(error: AttachmentImportError) -> String {
 }
 
 #[tauri::command]
-fn remove_open_guide_attachment(
+async fn remove_open_guide_attachment(
+    guide_id: String,
+    attachment_id: String,
+    expected_revision: String,
+    window: tauri::Window,
+    app: tauri::AppHandle,
+) -> Result<SaveGuidePayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        remove_open_guide_attachment_blocking(
+            guide_id,
+            attachment_id,
+            expected_revision,
+            window,
+            app.state::<DesktopState>(),
+        )
+    })
+    .await
+}
+
+fn remove_open_guide_attachment_blocking(
     guide_id: String,
     attachment_id: String,
     expected_revision: String,
@@ -4821,7 +5114,24 @@ fn attachment_removal_message(error: AttachmentRemovalError) -> String {
 }
 
 #[tauri::command]
-fn remove_open_guide(
+async fn remove_open_guide(
+    guide_id: String,
+    expected_revision: String,
+    window: tauri::Window,
+    app: tauri::AppHandle,
+) -> Result<RemoveGuidePayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        remove_open_guide_blocking(
+            guide_id,
+            expected_revision,
+            window,
+            app.state::<DesktopState>(),
+        )
+    })
+    .await
+}
+
+fn remove_open_guide_blocking(
     guide_id: String,
     expected_revision: String,
     window: tauri::Window,
@@ -5069,7 +5379,17 @@ fn guide_update_code(error: GuideUpdateError) -> &'static str {
 }
 
 #[tauri::command]
-fn initialize_selected_workspace(
+async fn initialize_selected_workspace(
+    name: String,
+    app: tauri::AppHandle,
+) -> Result<WorkspacePayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        initialize_selected_workspace_blocking(name, app.clone(), app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn initialize_selected_workspace_blocking(
     name: String,
     app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
@@ -5169,6 +5489,45 @@ fn native_command_error(code: &'static str, message: String) -> NativeCommandErr
     NativeCommandError { code, message }
 }
 
+const BLOCKING_WORKER_STOPPED_MESSAGE: &str =
+    "The Rehow background worker stopped unexpectedly. Try again.";
+
+/// Error types returned by commands whose work runs on the blocking pool.
+trait BlockingCommandError: Send + 'static {
+    fn worker_stopped() -> Self;
+}
+
+impl BlockingCommandError for String {
+    fn worker_stopped() -> Self {
+        BLOCKING_WORKER_STOPPED_MESSAGE.to_owned()
+    }
+}
+
+impl BlockingCommandError for NativeCommandError {
+    fn worker_stopped() -> Self {
+        native_command_error(
+            "operationUnavailable",
+            BLOCKING_WORKER_STOPPED_MESSAGE.to_owned(),
+        )
+    }
+}
+
+/// Runs a command's filesystem, Git, search, or native-dialog work off the
+/// main (UI) thread. Synchronous Tauri commands run on the main thread, so the
+/// command bodies execute here instead and keep their original lock order,
+/// checks, and payloads. The closure receives the owned `AppHandle` and must
+/// obtain `DesktopState` through it; no lock is held across the `.await`.
+async fn run_blocking_command<T, E, F>(app: tauri::AppHandle, work: F) -> Result<T, E>
+where
+    T: Send + 'static,
+    E: BlockingCommandError,
+    F: FnOnce(tauri::AppHandle) -> Result<T, E> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || work(app))
+        .await
+        .unwrap_or_else(|_| Err(E::worker_stopped()))
+}
+
 fn preferences_error(error: PreferencesError) -> NativeCommandError {
     match error {
         PreferencesError::LocationUnavailable => native_command_error(
@@ -5192,7 +5551,16 @@ fn preferences_error(error: PreferencesError) -> NativeCommandError {
 }
 
 #[tauri::command]
-fn load_desktop_preferences(
+async fn load_desktop_preferences(
+    app: tauri::AppHandle,
+) -> Result<DesktopPreferencesPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        load_desktop_preferences_blocking(app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn load_desktop_preferences_blocking(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<DesktopPreferencesPayload, NativeCommandError> {
     let _guard = state.preferences.lock().map_err(|_| {
@@ -5206,7 +5574,22 @@ fn load_desktop_preferences(
 }
 
 #[tauri::command]
-fn save_desktop_preferences(
+async fn save_desktop_preferences(
+    sync_on_start: bool,
+    sync_interval_minutes: Option<u32>,
+    app: tauri::AppHandle,
+) -> Result<DesktopPreferencesPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        save_desktop_preferences_blocking(
+            app.state::<DesktopState>(),
+            sync_on_start,
+            sync_interval_minutes,
+        )
+    })
+    .await
+}
+
+fn save_desktop_preferences_blocking(
     state: tauri::State<'_, DesktopState>,
     sync_on_start: bool,
     sync_interval_minutes: Option<u32>,
@@ -5277,7 +5660,14 @@ fn mcp_setup_open_workspace(
 }
 
 #[tauri::command]
-fn remember_open_workspace(
+async fn remember_open_workspace(app: tauri::AppHandle) -> Result<(), NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        remember_open_workspace_blocking(app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn remember_open_workspace_blocking(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), NativeCommandError> {
     let selected_path = state
@@ -5308,7 +5698,16 @@ fn remember_open_workspace(
 }
 
 #[tauri::command]
-fn restore_recent_workspace(
+async fn restore_recent_workspace(
+    app: tauri::AppHandle,
+) -> Result<RecentWorkspaceResult, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        restore_recent_workspace_blocking(app.clone(), app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn restore_recent_workspace_blocking(
     app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<RecentWorkspaceResult, NativeCommandError> {
@@ -5442,7 +5841,18 @@ fn workspace_initialization_message(error: WorkspaceInitializationError) -> Stri
 }
 
 #[tauri::command]
-fn create_open_category(
+async fn create_open_category(
+    name: String,
+    summary: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<CreateCategoryPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        create_open_category_blocking(name, summary, app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn create_open_category_blocking(
     name: String,
     summary: Option<String>,
     state: tauri::State<'_, DesktopState>,
@@ -5545,7 +5955,26 @@ fn category_create_message(error: CategoryCreateError) -> String {
 }
 
 #[tauri::command]
-fn save_open_category_details(
+async fn save_open_category_details(
+    category_id: String,
+    expected_revision: String,
+    name: String,
+    summary: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<SaveCategoryPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        save_open_category_details_blocking(
+            category_id,
+            expected_revision,
+            name,
+            summary,
+            app.state::<DesktopState>(),
+        )
+    })
+    .await
+}
+
+fn save_open_category_details_blocking(
     category_id: String,
     expected_revision: String,
     name: String,
@@ -5613,7 +6042,24 @@ fn save_open_category_details(
 }
 
 #[tauri::command]
-fn set_open_category_archived(
+async fn set_open_category_archived(
+    category_id: String,
+    expected_revision: String,
+    archived: bool,
+    app: tauri::AppHandle,
+) -> Result<SaveCategoryPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        set_open_category_archived_blocking(
+            category_id,
+            expected_revision,
+            archived,
+            app.state::<DesktopState>(),
+        )
+    })
+    .await
+}
+
+fn set_open_category_archived_blocking(
     category_id: String,
     expected_revision: String,
     archived: bool,
@@ -5675,7 +6121,17 @@ fn set_open_category_archived(
 }
 
 #[tauri::command]
-fn reorder_open_categories(
+async fn reorder_open_categories(
+    ordered: Vec<CategoryOrderInput>,
+    app: tauri::AppHandle,
+) -> Result<SaveCategoryPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        reorder_open_categories_blocking(ordered, app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn reorder_open_categories_blocking(
     ordered: Vec<CategoryOrderInput>,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<SaveCategoryPayload, NativeCommandError> {
@@ -5810,7 +6266,18 @@ fn category_reorder_message(error: CategoryReorderError) -> String {
 }
 
 #[tauri::command]
-fn remove_open_category(
+async fn remove_open_category(
+    category_id: String,
+    expected_revision: String,
+    app: tauri::AppHandle,
+) -> Result<SaveCategoryPayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        remove_open_category_blocking(category_id, expected_revision, app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn remove_open_category_blocking(
     category_id: String,
     expected_revision: String,
     state: tauri::State<'_, DesktopState>,
@@ -5993,7 +6460,19 @@ fn category_update_message(error: CategoryUpdateError) -> String {
 }
 
 #[tauri::command]
-fn create_open_guide(
+async fn create_open_guide(
+    category_id: String,
+    title: String,
+    summary: String,
+    app: tauri::AppHandle,
+) -> Result<CreateGuidePayload, NativeCommandError> {
+    run_blocking_command(app, move |app| {
+        create_open_guide_blocking(category_id, title, summary, app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn create_open_guide_blocking(
     category_id: String,
     title: String,
     summary: String,
@@ -6348,7 +6827,14 @@ fn markdown_import_error(error: MarkdownImportError) -> NativeCommandError {
 }
 
 #[tauri::command]
-fn cancel_selected_workspace_initialization(
+async fn cancel_selected_workspace_initialization(app: tauri::AppHandle) -> Result<(), String> {
+    run_blocking_command(app, move |app| {
+        cancel_selected_workspace_initialization_blocking(app.state::<DesktopState>())
+    })
+    .await
+}
+
+fn cancel_selected_workspace_initialization_blocking(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     let mut lifecycle = state
