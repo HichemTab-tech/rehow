@@ -132,8 +132,11 @@ function ReaderContent({
     [guide.document],
   );
   const archived = summary.status === "Archived";
+  // Hand-written files must be saved once before Rehow-managed actions apply.
+  const unadopted = guide.origin === "unadopted";
   const canMarkTested =
-    summary.status === "Draft" || summary.status === "Stale";
+    !unadopted && (summary.status === "Draft" || summary.status === "Stale");
+  const managedActions = writable && !unadopted;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -185,14 +188,14 @@ function ReaderContent({
               <FileCode2 /> Open in text editor
             </DropdownMenuItem>
             <DropdownMenuItem
-              disabled={!writable}
+              disabled={!managedActions}
               onSelect={() => void importAttachment()}
             >
               <Paperclip /> Attach a file…
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              disabled={!writable}
+              disabled={!managedActions}
               onSelect={() => void setGuideArchived(!archived)}
             >
               {archived ? <ArchiveRestore /> : <Archive />}
@@ -200,7 +203,7 @@ function ReaderContent({
             </DropdownMenuItem>
             <DropdownMenuItem
               destructive
-              disabled={!writable}
+              disabled={!managedActions}
               onSelect={() => void deleteGuide()}
             >
               <Trash2 /> Delete…
@@ -260,6 +263,19 @@ function ReaderContent({
                 </p>
               ) : null}
             </header>
+
+            {unadopted ? (
+              <Callout
+                tone="info"
+                icon={<FileCode2 />}
+                title="Plain Markdown file"
+              >
+                Rehow found this file and filled in its details for you. Nothing
+                has been changed on disk. When you edit and save it, Rehow adds
+                a small metadata block at the top so it can track tags and
+                status. The filename and your text stay the same.
+              </Callout>
+            ) : null}
 
             {summary.status === "Stale" ? (
               <Callout

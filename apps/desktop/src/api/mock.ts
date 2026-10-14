@@ -220,10 +220,12 @@ function guide(input: {
   references?: GuideBodyPayload["references"];
   attachments?: GuideSummary["attachments"];
   days: number;
+  origin?: "managed" | "unadopted";
 }): StoredGuide {
   const updated = new Date(Date.now() - input.days * 86_400_000).toISOString();
   return {
     id: nextId(),
+    origin: input.origin ?? "managed",
     title: input.title,
     summary: input.summary,
     categoryId: categories[input.category]?.id ?? "",
@@ -246,6 +248,18 @@ function guide(input: {
     attachments: input.attachments ?? [],
   };
 }
+
+guides.push(
+  guide({
+    title: "Rotate nginx logs",
+    summary: "",
+    category: 2,
+    status: "Draft",
+    origin: "unadopted",
+    body: "# Rotate nginx logs\n\nQuick notes I wrote by hand.\n\n```bash\nsudo logrotate -f /etc/logrotate.d/nginx\n```\n",
+    days: 4,
+  }),
+);
 
 if (guides[0] && guides[1]) guides[0].relatedGuideIds = [guides[1].id];
 
@@ -274,6 +288,7 @@ function summary(stored: StoredGuide): GuideSummary {
   const category = categories.find((item) => item.id === stored.categoryId);
   return {
     id: stored.id,
+    origin: stored.origin,
     title: stored.title,
     summary: stored.summary,
     categoryId: stored.categoryId,
@@ -305,6 +320,10 @@ function workspace(): WorkspacePayload {
       {
         kind: "malformedGuide",
         relativePath: "categories/networking--a1b2c3/notes.md",
+        diagnostic: "yamlSyntax",
+        field: null,
+        line: 4,
+        column: 9,
       },
     ],
     issuesTruncated: false,
@@ -437,6 +456,10 @@ const handlers: Record<string, Handler> = {
         message: "This Guide changed on disk.",
       };
     const changed = stored.body !== args["body"];
+    if (stored.origin === "unadopted") {
+      stored.origin = "managed";
+      stored.id = nextId();
+    }
     if (changed) {
       stored.body = String(args["body"]);
       touch(stored);
@@ -445,6 +468,10 @@ const handlers: Record<string, Handler> = {
   },
   save_open_guide_details: (args) => {
     const stored = find(String(args["guideId"]));
+    if (stored.origin === "unadopted") {
+      stored.origin = "managed";
+      stored.id = nextId();
+    }
     stored.title = String(args["title"]);
     stored.summary = String(args["summary"]);
     stored.categoryId = String(args["categoryId"]);

@@ -433,6 +433,10 @@ struct WorkspacePayload {
 struct WorkspaceIssuePayload {
     kind: &'static str,
     relative_path: String,
+    diagnostic: Option<String>,
+    field: Option<&'static str>,
+    line: Option<u32>,
+    column: Option<u32>,
 }
 
 #[derive(Clone, Serialize)]
@@ -624,6 +628,7 @@ struct CategoryPayload {
 #[serde(rename_all = "camelCase")]
 struct GuidePayload {
     id: String,
+    origin: &'static str,
     title: String,
     summary: String,
     category_id: String,
@@ -725,6 +730,7 @@ struct GuideFileOpenPayload {
 #[serde(rename_all = "camelCase")]
 struct GuideBodyPayload {
     id: String,
+    origin: &'static str,
     title: String,
     summary: String,
     category_id: String,
@@ -844,6 +850,7 @@ impl WorkspacePayload {
                 matches.push_str(&guide.aliases().join(" "));
                 guides.push(GuidePayload {
                     id: guide.id().to_string(),
+                    origin: origin_label(loaded_guide.origin()),
                     title: guide.title().to_owned(),
                     summary: guide.summary().to_owned(),
                     category_id: category.id().to_string(),
@@ -878,6 +885,10 @@ impl WorkspacePayload {
             .map(|issue| WorkspaceIssuePayload {
                 kind: workspace_issue_kind(issue.kind()),
                 relative_path: issue.relative_path().to_owned(),
+                diagnostic: issue.diagnostic().map(guide_diagnostic_code),
+                field: issue.field().map(|field| field.key()),
+                line: issue.position().map(|position| position.line()),
+                column: issue.position().map(|position| position.column()),
             })
             .collect::<Vec<_>>();
         Self {
@@ -983,10 +994,29 @@ fn guide_body_payload(
     let guide = loaded.guide();
     let body_bytes = read_guide_body(workspace, *guide.id(), loaded.revision())
         .map_err(guide_body_read_message)?;
-    guide_body_payload_from_parts(guide, loaded.revision(), &body_bytes)
+    guide_body_payload_from_parts(loaded.origin(), guide, loaded.revision(), &body_bytes)
+}
+
+/// Stable camelCase code for a Guide diagnostic, mapped to copy in the UI.
+fn guide_diagnostic_code(code: rehow_core::domain::GuideDiagnosticCode) -> String {
+    let debug = format!("{code:?}");
+    let mut characters = debug.chars();
+    match characters.next() {
+        Some(first) => first.to_ascii_lowercase().to_string() + characters.as_str(),
+        None => String::new(),
+    }
+}
+
+fn origin_label(origin: rehow_core::domain::GuideOrigin) -> &'static str {
+    if origin.is_managed() {
+        "managed"
+    } else {
+        "unadopted"
+    }
 }
 
 fn guide_body_payload_from_parts(
+    origin: rehow_core::domain::GuideOrigin,
     guide: &rehow_core::domain::GuideMetadata,
     revision: Revision,
     body_bytes: &[u8],
@@ -996,6 +1026,7 @@ fn guide_body_payload_from_parts(
     let document = parse_safe_markdown(body).map_err(|error| error.to_string())?;
     Ok(GuideBodyPayload {
         id: guide.id().to_string(),
+        origin: origin_label(origin),
         title: guide.title().to_owned(),
         summary: guide.summary().to_owned(),
         category_id: guide.category_id().to_string(),
@@ -1149,6 +1180,7 @@ fn preview_external_open_guide_blocking(
     let snapshot = read_current_guide_snapshot(&workspace.view, guide_id)
         .map_err(guide_body_read_native_error)?;
     guide_body_payload_from_parts(
+        snapshot.origin(),
         snapshot.guide(),
         snapshot.revision(),
         snapshot.guide().body(),
@@ -4511,9 +4543,11 @@ fn save_open_guide_body_blocking(
         GuideEdit::ReplaceBody(body.into_bytes()),
     )
     .map_err(guide_update_message)?;
+    // Saving a hand-written Guide adopts it under a new managed id.
+    let saved_id = outcome.adopted_id().unwrap_or(guide_id);
     Ok(SaveGuidePayload {
         workspace: workspace.payload(),
-        guide: guide_body_payload(&workspace.view, &guide_id)?,
+        guide: guide_body_payload(&workspace.view, &saved_id)?,
         changed: outcome.changed(),
     })
 }
@@ -4624,9 +4658,10 @@ fn save_open_guide_details_blocking(
         aliases,
     )
     .map_err(|error| native_command_error(guide_update_code(error), guide_update_message(error)))?;
+    let saved_id = outcome.adopted_id().unwrap_or(guide_id);
     Ok(SaveGuidePayload {
         workspace: workspace.payload(),
-        guide: guide_body_payload(&workspace.view, &guide_id)
+        guide: guide_body_payload(&workspace.view, &saved_id)
             .map_err(|message| native_command_error("refreshRequired", message))?,
         changed: outcome.changed(),
     })
@@ -7064,6 +7099,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use super::guide_diagnostic_code;
     use super::{
         APPLICATION_NAME, AttachmentExportPayload, AttachmentRevealPayload,
         AttachmentTextPreviewPayload, CategoryPayload, DesktopState, ExternalLinkOpenPayload,
@@ -7727,6 +7763,7 @@ mod tests {
             }],
             guides: vec![GuidePayload {
                 id: "0199a1d7-7b0d-7d8e-a38d-f936c5735e10".to_owned(),
+                origin: "managed",
                 title: "Test".to_owned(),
                 summary: "Summary".to_owned(),
                 category_id: "0199a1c2-d334-7d17-bd9c-f8b6ba3a5551".to_owned(),
@@ -7761,11 +7798,21 @@ mod tests {
             serde_json::to_value(WorkspaceIssuePayload {
                 kind: workspace_issue_kind(WorkspaceIssueKind::MissingCategoryDescriptor),
                 relative_path: "categories/0199a1c2/category.yaml".to_owned(),
+                diagnostic: Some(guide_diagnostic_code(
+                    rehow_core::domain::GuideDiagnosticCode::YamlSyntax
+                )),
+                field: Some(rehow_core::domain::GuideDiagnosticField::Title.key()),
+                line: Some(3),
+                column: Some(7),
             })
             .unwrap(),
             serde_json::json!({
                 "kind": "missingCategoryDescriptor",
                 "relativePath": "categories/0199a1c2/category.yaml",
+                "diagnostic": "yamlSyntax",
+                "field": "title",
+                "line": 3,
+                "column": 7,
             })
         );
         assert_eq!(json["facts"]["writable"], true);
@@ -7820,6 +7867,7 @@ mod tests {
     fn guide_read_payload_has_revision_source_and_safe_document() {
         let payload = GuideBodyPayload {
             id: "0199a1d7-7b0d-7d8e-a38d-f936c5735e10".to_owned(),
+            origin: "managed",
             title: "Install a Tarball".to_owned(),
             summary: "Install a downloaded archive.".to_owned(),
             category_id: "0199a1c2-d334-7d17-bd9c-f8b6ba3a5551".to_owned(),
@@ -7845,7 +7893,8 @@ mod tests {
             }],
         };
         let json = serde_json::to_value(payload).unwrap();
-        assert_eq!(json.as_object().unwrap().len(), 17);
+        assert_eq!(json.as_object().unwrap().len(), 18);
+        assert_eq!(json["origin"], "managed");
         assert_eq!(json["body"], "<script>no</script>");
         assert_eq!(json["revision"], format!("rev:v1:{}", "11".repeat(32)));
         assert_eq!(json["document"]["version"], 1);

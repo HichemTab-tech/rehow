@@ -532,8 +532,6 @@ function validateDraft(draft: Draft): string | null {
   if (title === "") return "Give the Guide a title.";
   if ([...title].length > 200) return "Keep the title under 200 characters.";
   const summary = draft.summary.trim();
-  if (summary === "")
-    return "Add a one-line summary so the Guide is easy to find.";
   if ([...summary].length > 500)
     return "Keep the summary under 500 characters.";
   if (draft.categoryId === "") return "Choose a Category.";
@@ -556,6 +554,9 @@ export async function saveDraft(options: { keepEditing?: boolean } = {}) {
   const wasTested =
     get().workspace?.guides.find((item) => item.id === guide.id)?.status ===
     "Tested";
+  const adopting = guide.origin === "unadopted";
+  // The file format needs a summary; fall back to the title, as adoption does.
+  const summaryToSave = draft.summary.trim() || draft.title.trim();
   set({ saving: true });
   try {
     let current = guide;
@@ -563,7 +564,7 @@ export async function saveDraft(options: { keepEditing?: boolean } = {}) {
     let changed = false;
     const detailsChanged =
       draft.title.trim() !== current.title ||
-      draft.summary.trim() !== current.summary ||
+      summaryToSave !== current.summary ||
       draft.categoryId !==
         (workspace?.guides.find((item) => item.id === current.id)?.categoryId ??
           current.categoryId) ||
@@ -573,7 +574,7 @@ export async function saveDraft(options: { keepEditing?: boolean } = {}) {
       const result = await api.saveGuideDetails(current.id, current.revision, {
         categoryId: draft.categoryId,
         title: draft.title.trim(),
-        summary: draft.summary.trim(),
+        summary: summaryToSave,
         tags: draft.tags,
         aliases: draft.aliases,
       });
@@ -591,12 +592,15 @@ export async function saveDraft(options: { keepEditing?: boolean } = {}) {
       workspace = result.workspace;
       changed ||= result.changed;
     }
+    // Adopting a hand-written Guide gives it a new, permanent id.
     set({
       guide: current,
+      selectedId: current.id,
       workspace: workspace ?? get().workspace,
       draft: options.keepEditing
         ? {
             ...draft,
+            guideId: current.id,
             title: current.title,
             summary: current.summary,
             tags: [...current.tags],
@@ -607,11 +611,16 @@ export async function saveDraft(options: { keepEditing?: boolean } = {}) {
     });
     clearStoredDraft(draft.guideId);
     if (changed) {
-      toast.success("Saved", {
-        description: wasTested
-          ? "The Guide is now marked Stale until you confirm it works again."
-          : undefined,
-      });
+      toast.success(
+        adopting ? "Saved — Rehow now manages this file" : "Saved",
+        {
+          description: adopting
+            ? "Metadata was added at the top of the file. Its name and content are unchanged."
+            : wasTested
+              ? "The Guide is now marked “Needs retest” until you confirm it works again."
+              : undefined,
+        },
+      );
       void refreshGitStatus();
     }
     return true;

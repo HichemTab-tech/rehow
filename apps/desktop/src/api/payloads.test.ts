@@ -611,6 +611,29 @@ describe("presentation helpers and native payload validators", () => {
     expect(
       isGitCloneCompleteResultPayload({ kind: "completed", workspace: {} }),
     ).toBe(false);
+    const diagnosed = (diagnostic: unknown) =>
+      isGitCloneCompleteResultPayload({
+        kind: "completed",
+        workspace: {
+          ...workspace,
+          issueCount: 1,
+          issues: [
+            {
+              kind: "malformedGuide",
+              relativePath: "categories/net/notes.md",
+              diagnostic,
+              field: "title",
+              line: 3,
+              column: 7,
+            },
+          ],
+          issuesTruncated: false,
+        },
+      });
+    expect(diagnosed("yamlSyntax")).toBe(true);
+    expect(diagnosed("<script>")).toBe(false);
+    expect(diagnosed(42)).toBe(false);
+
     expect(
       isGitCloneCompleteResultPayload({
         kind: "completed",
@@ -633,6 +656,10 @@ describe("presentation helpers and native payload validators", () => {
             {
               kind: "missingCategoryDescriptor",
               relativePath: "categories/0199a1c2/category.yaml",
+              diagnostic: null,
+              field: null,
+              line: null,
+              column: null,
             },
           ],
           issuesTruncated: true,
@@ -649,6 +676,10 @@ describe("presentation helpers and native payload validators", () => {
             {
               kind: "missingCategoryDescriptor",
               relativePath: "categories/0199a1c2/category.yaml",
+              diagnostic: null,
+              field: null,
+              line: null,
+              column: null,
             },
           ],
           issuesTruncated: false,
