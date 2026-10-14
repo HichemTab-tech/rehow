@@ -215,7 +215,7 @@ export function CommandPalette() {
               placeholder="Search Guides or type a command…"
               className="h-12 shrink-0 border-b border-border bg-transparent px-4 text-[15px] outline-none placeholder:text-faint"
             />
-            <Command.List className="min-h-0 overflow-y-auto p-1.5 [&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pt-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:text-faint [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.06em]">
+            <Command.List className="min-h-0 overflow-y-auto overscroll-contain p-1.5 [&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pt-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:text-faint [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.06em]">
               <Command.Empty className="px-4 py-8 text-center text-sm text-muted">
                 No Guides or commands match.
               </Command.Empty>

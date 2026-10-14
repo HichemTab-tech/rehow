@@ -4,8 +4,18 @@ import { cn } from "@/lib/utils";
 export const fieldClass =
   "w-full rounded-md border border-border-strong bg-panel px-2.5 text-sm text-text shadow-[inset_0_1px_1px_rgb(0_0_0/0.03)] outline-none transition-[border-color,box-shadow] duration-100 placeholder:text-faint focus-visible:border-ring focus-visible:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_22%,transparent)] focus-visible:outline-none disabled:opacity-50 aria-invalid:border-danger";
 
-export function Input({ className, ...props }: React.ComponentProps<"input">) {
-  return <input className={cn(fieldClass, "h-8", className)} {...props} />;
+export function Input({
+  className,
+  autoComplete = "off",
+  ...props
+}: React.ComponentProps<"input">) {
+  return (
+    <input
+      autoComplete={autoComplete}
+      className={cn(fieldClass, "h-8", className)}
+      {...props}
+    />
+  );
 }
 
 export function Textarea({

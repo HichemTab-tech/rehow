@@ -1,3 +1,4 @@
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ArrowDownUp,
   FileSearch,
@@ -8,7 +9,7 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { memo, useMemo } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   type GuideSummary,
@@ -206,22 +207,77 @@ export function GuideList({ className }: { className?: string }) {
           }
         />
       ) : (
-        <ul
-          id="guide-list"
-          aria-label="Guides"
-          className="min-h-0 flex-1 overflow-y-auto p-1.5"
-        >
-          {guides.map((guide) => (
-            <GuideRow
-              key={guide.id}
-              guide={guide}
-              hit={hits.get(guide.id)}
-              selected={guide.id === state.selectedId}
-              showCategory={state.categoryFilter === null}
-            />
-          ))}
-        </ul>
+        <VirtualGuideList
+          guides={guides}
+          hits={hits}
+          selectedId={state.selectedId}
+          showCategory={state.categoryFilter === null}
+        />
       )}
+    </div>
+  );
+}
+
+/**
+ * Only the rows near the viewport are rendered, so large Workspaces stay fast.
+ * Rows have variable height; the virtualizer measures each one.
+ */
+function VirtualGuideList({
+  guides,
+  hits,
+  selectedId,
+  showCategory,
+}: {
+  guides: GuideSummary[];
+  hits: Map<string, SearchHitPayload>;
+  selectedId: string | null;
+  showCategory: boolean;
+}) {
+  const scroller = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: guides.length,
+    getScrollElement: () => scroller.current,
+    estimateSize: () => 76,
+    overscan: 8,
+    getItemKey: (index) => guides[index]?.id ?? index,
+  });
+
+  // Keep the selected Guide visible when it changes via keyboard or search.
+  const selectedIndex = guides.findIndex((guide) => guide.id === selectedId);
+  useEffect(() => {
+    if (selectedIndex >= 0)
+      virtualizer.scrollToIndex(selectedIndex, { align: "auto" });
+  }, [selectedIndex, virtualizer]);
+
+  return (
+    <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto p-1.5">
+      <ul
+        id="guide-list"
+        aria-label="Guides"
+        className="relative"
+        style={{ height: virtualizer.getTotalSize() }}
+      >
+        {virtualizer.getVirtualItems().map((item) => {
+          const guide = guides[item.index];
+          if (!guide) return null;
+          return (
+            <li
+              key={item.key}
+              data-index={item.index}
+              ref={virtualizer.measureElement}
+              className="absolute top-0 left-0 w-full"
+              style={{ transform: `translateY(${item.start}px)` }}
+            >
+              <GuideRow
+                guide={guide}
+                hit={hits.get(guide.id)}
+                selected={guide.id === selectedId}
+                showCategory={showCategory}
+              />
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
@@ -267,87 +323,85 @@ const GuideRow = memo(function GuideRow({
     hit.excerptField !== "title" &&
     hit.excerptField !== "summary";
   return (
-    <li className="[contain-intrinsic-size:auto_72px] [content-visibility:auto]">
-      <button
-        type="button"
-        data-guide-row={guide.id}
-        aria-current={selected ? "true" : undefined}
-        onClick={() => void selectGuide(guide.id, { open: true })}
-        onDoubleClick={() => document.getElementById("guide-reader")?.focus()}
-        className={cn(
-          "group flex w-full flex-col gap-1 rounded-lg px-3 py-2.5 text-left outline-offset-[-2px]",
-          selected
-            ? "bg-panel shadow-[0_0_0_1px_var(--border-strong),0_1px_2px_rgb(0_0_0/0.04)]"
-            : "hover:bg-hover",
-        )}
-      >
-        <span className="flex items-start gap-2">
-          <span
-            className={cn(
-              "min-w-0 flex-1 text-[13.5px] leading-5 font-medium",
-              guide.status === "Archived" ? "text-muted" : "text-text",
-            )}
-          >
-            {hit?.excerptField === "title" ? (
-              <Highlighted hit={withOriginalText(hit, guide.title)} />
-            ) : (
-              guide.title
-            )}
-          </span>
-          <span
-            className="mt-1.5 flex shrink-0 items-center"
-            title={statusLabel(guide.status)}
-          >
-            <StatusDot status={guide.status} />
-            <span className="sr-only">{statusLabel(guide.status)}</span>
-          </span>
+    <button
+      type="button"
+      data-guide-row={guide.id}
+      aria-current={selected ? "true" : undefined}
+      onClick={() => void selectGuide(guide.id, { open: true })}
+      onDoubleClick={() => document.getElementById("guide-reader")?.focus()}
+      className={cn(
+        "group flex w-full flex-col gap-1 rounded-lg px-3 py-2.5 text-left outline-offset-[-2px]",
+        selected
+          ? "bg-panel shadow-[0_0_0_1px_var(--border-strong),0_1px_2px_rgb(0_0_0/0.04)]"
+          : "hover:bg-hover",
+      )}
+    >
+      <span className="flex items-start gap-2">
+        <span
+          className={cn(
+            "min-w-0 flex-1 text-[13.5px] leading-5 font-medium",
+            guide.status === "Archived" ? "text-muted" : "text-text",
+          )}
+        >
+          {hit?.excerptField === "title" ? (
+            <Highlighted hit={withOriginalText(hit, guide.title)} />
+          ) : (
+            guide.title
+          )}
         </span>
-        {showExcerpt ? (
-          <span className="line-clamp-2 text-xs leading-[17px] text-muted">
-            <span className="mr-1 font-medium text-faint">
-              {FIELD_LABELS[hit.excerptField]}
-            </span>
-            <Highlighted hit={hit} />
-          </span>
-        ) : guide.summary === "" && hit === undefined ? null : (
-          <span className="line-clamp-2 text-xs leading-[17px] text-muted">
-            {hit?.excerptField === "summary" ? (
-              <Highlighted hit={withOriginalText(hit, guide.summary)} />
-            ) : (
-              guide.summary
-            )}
-          </span>
-        )}
-        <span className="flex min-w-0 items-center gap-1.5 text-2xs text-faint">
-          {showCategory ? (
-            <span className="max-w-[55%] shrink-0 truncate">
-              {guide.category}
-            </span>
-          ) : null}
-          {showCategory && guide.tags.length > 0 ? (
-            <span aria-hidden="true">·</span>
-          ) : null}
-          <span className="min-w-0 truncate">
-            {guide.tags
-              .slice(0, 3)
-              .map((tag) => `#${tag}`)
-              .join(" ")}
-          </span>
-          {guide.attachments.length > 0 ? (
-            <span
-              className="flex items-center gap-0.5"
-              title={plural(guide.attachments.length, "attachment")}
-            >
-              <Paperclip className="size-3" />
-              {guide.attachments.length}
-            </span>
-          ) : null}
-          <span className="ml-auto shrink-0 tabular-nums">
-            {formatRelative(guide.updatedAt)}
-          </span>
+        <span
+          className="mt-1.5 flex shrink-0 items-center"
+          title={statusLabel(guide.status)}
+        >
+          <StatusDot status={guide.status} />
+          <span className="sr-only">{statusLabel(guide.status)}</span>
         </span>
-      </button>
-    </li>
+      </span>
+      {showExcerpt ? (
+        <span className="line-clamp-2 text-xs leading-[17px] text-muted">
+          <span className="mr-1 font-medium text-faint">
+            {FIELD_LABELS[hit.excerptField]}
+          </span>
+          <Highlighted hit={hit} />
+        </span>
+      ) : guide.summary === "" && hit === undefined ? null : (
+        <span className="line-clamp-2 text-xs leading-[17px] text-muted">
+          {hit?.excerptField === "summary" ? (
+            <Highlighted hit={withOriginalText(hit, guide.summary)} />
+          ) : (
+            guide.summary
+          )}
+        </span>
+      )}
+      <span className="flex min-w-0 items-center gap-1.5 text-2xs text-faint">
+        {showCategory ? (
+          <span className="max-w-[55%] shrink-0 truncate">
+            {guide.category}
+          </span>
+        ) : null}
+        {showCategory && guide.tags.length > 0 ? (
+          <span aria-hidden="true">·</span>
+        ) : null}
+        <span className="min-w-0 truncate">
+          {guide.tags
+            .slice(0, 3)
+            .map((tag) => `#${tag}`)
+            .join(" ")}
+        </span>
+        {guide.attachments.length > 0 ? (
+          <span
+            className="flex items-center gap-0.5"
+            title={plural(guide.attachments.length, "attachment")}
+          >
+            <Paperclip className="size-3" />
+            {guide.attachments.length}
+          </span>
+        ) : null}
+        <span className="ml-auto shrink-0 tabular-nums">
+          {formatRelative(guide.updatedAt)}
+        </span>
+      </span>
+    </button>
   );
 });
 

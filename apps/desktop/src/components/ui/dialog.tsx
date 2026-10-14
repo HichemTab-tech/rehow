@@ -70,7 +70,10 @@ export function DialogBody({
 }: React.ComponentProps<"div">) {
   return (
     <div
-      className={cn("min-h-0 overflow-y-auto px-5 py-2", className)}
+      className={cn(
+        "min-h-0 overflow-y-auto overscroll-contain px-5 py-2",
+        className,
+      )}
       {...props}
     />
   );

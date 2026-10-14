@@ -261,6 +261,24 @@ guides.push(
   }),
 );
 
+// `?many=5000` adds synthetic Guides to exercise large-list performance.
+const many = Number(
+  new URLSearchParams(globalThis.location?.search ?? "").get("many") ?? 0,
+);
+for (let index = 0; index < Math.min(many, 20_000); index++) {
+  guides.push(
+    guide({
+      title: `Synthetic guide ${index + 1}`,
+      summary: `Generated entry number ${index + 1} for scrolling tests.`,
+      category: index % 4,
+      status: index % 7 === 0 ? "Tested" : "Draft",
+      tags: [`tag-${index % 25}`],
+      body: `## Steps\n\nRun \`echo ${index}\`.\n`,
+      days: (index % 300) + 1,
+    }),
+  );
+}
+
 if (guides[0] && guides[1]) guides[0].relatedGuideIds = [guides[1].id];
 
 let opened = false;

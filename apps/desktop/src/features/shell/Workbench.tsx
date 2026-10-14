@@ -63,7 +63,12 @@ export function Workbench() {
       <div className="flex min-h-0 flex-1">
         {showSidebar ? <Sidebar /> : null}
         {compact && sidebarOpen ? <Sidebar overlay /> : null}
-        <main className="flex min-w-0 flex-1" aria-label="Guides">
+        <main
+          id="main"
+          tabIndex={-1}
+          className="flex min-w-0 flex-1 outline-none"
+          aria-label="Guides"
+        >
           {listHidden ? null : (
             <GuideList
               className={cn(narrow ? "w-full" : "w-[340px] shrink-0 border-r")}

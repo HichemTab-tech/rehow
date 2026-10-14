@@ -19,10 +19,10 @@ export function App() {
   return (
     <TooltipProvider delayDuration={500} skipDelayDuration={200}>
       <a
-        href="#guide-list"
+        href="#main"
         className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-panel focus:px-3 focus:py-2 focus:shadow-menu"
       >
-        Skip to Guides
+        Skip to content
       </a>
       {booting ? (
         <div className="h-full" aria-busy="true" />
