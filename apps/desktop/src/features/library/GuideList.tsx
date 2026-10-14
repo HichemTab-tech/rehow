@@ -309,7 +309,7 @@ const GuideRow = memo(function GuideRow({
             </span>
             <Highlighted hit={hit} />
           </span>
-        ) : (
+        ) : guide.summary === "" && hit === undefined ? null : (
           <span className="line-clamp-2 text-xs leading-[17px] text-muted">
             {hit?.excerptField === "summary" ? (
               <Highlighted hit={hit} />
@@ -320,16 +320,19 @@ const GuideRow = memo(function GuideRow({
         )}
         <span className="flex min-w-0 items-center gap-1.5 text-2xs text-faint">
           {showCategory ? (
-            <span className="truncate">{guide.category}</span>
+            <span className="max-w-[55%] shrink-0 truncate">
+              {guide.category}
+            </span>
           ) : null}
           {showCategory && guide.tags.length > 0 ? (
             <span aria-hidden="true">·</span>
           ) : null}
-          {guide.tags.slice(0, 3).map((tag) => (
-            <span key={tag} className="truncate">
-              #{tag}
-            </span>
-          ))}
+          <span className="min-w-0 truncate">
+            {guide.tags
+              .slice(0, 3)
+              .map((tag) => `#${tag}`)
+              .join(" ")}
+          </span>
           {guide.attachments.length > 0 ? (
             <span
               className="flex items-center gap-0.5"
