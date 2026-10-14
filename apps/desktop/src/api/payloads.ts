@@ -2,8 +2,12 @@
 // Every value crossing the Tauri boundary is validated before it reaches UI state.
 import type { SafeMarkdownDocument } from "@rehow/contracts";
 
+/** "unadopted" Guides are hand-written files Rehow lists but hasn't written to yet. */
+export type GuideOrigin = "managed" | "unadopted";
+
 export type GuideSummary = {
   id: string;
+  origin: GuideOrigin;
   title: string;
   summary: string;
   categoryId: string;
@@ -22,6 +26,7 @@ export type GuideSummary = {
 
 export type GuideBodyPayload = {
   id: string;
+  origin: GuideOrigin;
   title: string;
   summary: string;
   categoryId: string;
@@ -86,6 +91,12 @@ export type WorkspaceIssueKind =
 export type WorkspaceIssuePayload = {
   kind: WorkspaceIssueKind;
   relativePath: string;
+  /** Why a Guide file couldn't be read (camelCase core diagnostic code). */
+  diagnostic: string | null;
+  /** The frontmatter key involved, when known. */
+  field: string | null;
+  line: number | null;
+  column: number | null;
 };
 
 export type WorkspacePayload = {
@@ -1009,8 +1020,16 @@ export function isWorkspacePayload(value: unknown): value is WorkspacePayload {
     if (typeof value !== "object" || value === null) return false;
     const issue = value as WorkspaceIssuePayload & Record<string, unknown>;
     return (
-      Object.keys(issue).length === 2 &&
+      Object.keys(issue).length === 6 &&
       WORKSPACE_ISSUE_KINDS.includes(issue.kind) &&
+      (issue.diagnostic === null ||
+        (typeof issue.diagnostic === "string" &&
+          /^[a-z][A-Za-z]{0,63}$/.test(issue.diagnostic))) &&
+      (issue.field === null ||
+        (typeof issue.field === "string" &&
+          /^[a-z_]{1,64}$/.test(issue.field))) &&
+      (issue.line === null || isUint32(issue.line)) &&
+      (issue.column === null || isUint32(issue.column)) &&
       isBoundedText(issue.relativePath, 1, 2_048) &&
       !containsUnsafeDisplayCodePoint(issue.relativePath)
     );
@@ -1056,10 +1075,11 @@ export function isWorkspacePayload(value: unknown): value is WorkspacePayload {
     if (typeof value !== "object" || value === null) return false;
     const guide = value as GuideSummary & Record<string, unknown>;
     return (
-      Object.keys(guide).length === 11 &&
+      Object.keys(guide).length === 12 &&
       isBoundedText(guide.id, 1, 64) &&
+      (guide.origin === "managed" || guide.origin === "unadopted") &&
       isBoundedText(guide.title, 1, 200) &&
-      isBoundedText(guide.summary, 1, 500) &&
+      isBoundedText(guide.summary, 0, 500) &&
       isBoundedText(guide.categoryId, 1, 64) &&
       isBoundedText(guide.category, 1, 200) &&
       ["Tested", "Draft", "Stale", "Archived"].includes(guide.status) &&

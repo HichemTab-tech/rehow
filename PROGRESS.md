@@ -16,7 +16,14 @@ A full product/code review found the desktop UI hard to use: one 8.3k-line `App.
 - CSP now allows inline styles (`style-src 'self' 'unsafe-inline'`) for CodeMirror/Radix/Sonner runtime styles; scripts remain `'self'` only and Markdown still has no raw-HTML path.
 - Tooling: engine check accepts Node >= 26 with a readable message; `pmOnFail: warn`.
 
-Verified: `pnpm check`, desktop Vitest (43 tests), `tsc`, production `vite build`, `cargo clippy -p rehow-desktop -D warnings`, `cargo test -p rehow-desktop`; manual browser review (wide/narrow, light/dark) and a native smoke test against a temporary Workspace (open, read, edit, save to disk). Next: backend search quality, async commands, and relaxed Guide format.
+Verified: `pnpm check`, desktop Vitest (43 tests), `tsc`, production `vite build`, `cargo clippy -p rehow-desktop -D warnings`, `cargo test -p rehow-desktop`; manual browser review (wide/narrow, light/dark) and a native smoke test against a temporary Workspace (open, read, edit, save to disk). Follow-up on the same branch:
+
+- All blocking Tauri commands now run off the UI thread (`run_blocking_command`); native confirmations still open parented to the window (verified with the tested-approval dialog).
+- Search adds bounded typo tolerance (OSA distance 1–2 on title/alias/command/tag/category/heading words), word-start preference and per-term score accumulation; warm p95 ≈ 16 ms on the 5,000-Guide release benchmark. Terms with digits stay exact.
+- Hand-written Markdown (ADR 0063): any safe `*.md` filename in a Category folder is listed; missing frontmatter is derived in memory only; the blank line after `---` is optional; malformed files report a diagnostic code, field and line/column. The first explicit save adopts the file in place (frontmatter added, body bytes and filename kept). The desktop adapter exposes `origin`, issue diagnostics, and follows the adopted id; the UI explains unadopted files and disables managed-only actions until first save.
+- MCP still treats unadopted Guides through its existing strict paths; exposing `origin` and refusing writes explicitly remains open.
+
+Verified: `pnpm check`, Vitest (43), `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -D warnings`, `cargo test --workspace --all-features` (710 passed); native checks of listing hand-written files without writing them (checksum unchanged) and typo search; adoption save verified in core tests and the browser mock (native keyboard-driven save not exercised).
 
 ## Current phase
 

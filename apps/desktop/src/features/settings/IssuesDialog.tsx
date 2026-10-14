@@ -74,6 +74,46 @@ export const ISSUE_TEXT: Record<
   },
 };
 
+/** Plain-language reasons for core Guide diagnostics. Unknown codes fall back. */
+const DIAGNOSTIC_TEXT: Record<string, string> = {
+  fileTooLarge: "The file is too large.",
+  frontmatterTooLarge: "The metadata block at the top is too large.",
+  invalidUtf8: "The file isn't valid UTF-8 text.",
+  unsupportedLineEndings: "The metadata block mixes line endings.",
+  misplacedByteOrderMark: "There's a stray byte-order mark inside the file.",
+  missingFrontmatter: "The metadata block at the top is missing.",
+  missingClosingDelimiter: "The metadata block has no closing --- line.",
+  yamlSyntax: "The metadata block isn't valid YAML.",
+  unsupportedYamlFeature:
+    "The metadata uses a YAML feature Rehow doesn't allow (anchors, tags or several documents).",
+  invalidUnicode: "The metadata contains a character Rehow doesn't allow.",
+  frontmatterNotMapping: "The metadata block isn't a list of key: value pairs.",
+  nonStringKey: "A metadata key isn't plain text.",
+  duplicateKey: "A metadata key appears twice.",
+  missingRequiredField: "A required field is missing.",
+  invalidFieldType: "A field has the wrong kind of value.",
+  invalidFieldValue: "A field has a value Rehow can't accept.",
+  duplicateFieldValue: "A list field repeats the same value.",
+  resourceLimit: "The metadata is too complex to read safely.",
+};
+
+function diagnosticLine(issue: {
+  diagnostic: string | null;
+  field: string | null;
+  line: number | null;
+  column: number | null;
+}) {
+  if (issue.diagnostic === null) return null;
+  const reason =
+    DIAGNOSTIC_TEXT[issue.diagnostic] ?? "The file couldn't be read.";
+  const where =
+    issue.line !== null
+      ? ` Line ${issue.line}${issue.column !== null ? `, column ${issue.column}` : ""}.`
+      : "";
+  const field = issue.field !== null ? ` Field: ${issue.field}.` : "";
+  return `${reason}${field}${where}`;
+}
+
 export function IssuesDialog() {
   const open = useApp((state) => state.dialog === "issues");
   const workspace = useApp((state) => state.workspace);
@@ -101,6 +141,11 @@ export function IssuesDialog() {
                     <p className="font-mono text-xs break-all text-muted">
                       {issue.relativePath}
                     </p>
+                    {diagnosticLine(issue) ? (
+                      <p className="text-xs font-medium text-text">
+                        {diagnosticLine(issue)}
+                      </p>
+                    ) : null}
                     <p className="text-xs text-muted">{text.fix}</p>
                   </div>
                 </li>

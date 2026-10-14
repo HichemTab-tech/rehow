@@ -8,6 +8,7 @@ import {
   Eye,
   FileCode2,
   Heading2,
+  Info,
   Italic,
   Link as LinkIcon,
   List,
@@ -276,6 +277,12 @@ export function GuideEditor() {
               </label>
               <Select
                 id="draft-category"
+                disabled={guide.origin === "unadopted"}
+                title={
+                  guide.origin === "unadopted"
+                    ? "Save this Guide once before moving it to another Category."
+                    : undefined
+                }
                 value={draft.categoryId}
                 onChange={(event) =>
                   updateDraft({ categoryId: event.target.value })
@@ -315,6 +322,13 @@ export function GuideEditor() {
               />
             </div>
           </div>
+          {guide.origin === "unadopted" ? (
+            <p className="mt-3 flex items-center gap-1.5 text-xs text-info">
+              <Info className="size-3.5" />
+              Saving adds Rehow metadata to the top of this file. The filename
+              and your text stay the same.
+            </p>
+          ) : null}
           {wasTested && dirty ? (
             <p className="mt-3 flex items-center gap-1.5 text-xs text-warning">
               <AlertTriangle className="size-3.5" />

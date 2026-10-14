@@ -15,6 +15,7 @@ function guide(
 ): GuideSummary {
   return {
     id,
+    origin: "managed",
     title: id,
     summary: "",
     categoryId: "linux",
@@ -228,6 +229,7 @@ describe("visibleGuides", () => {
 describe("draftIsDirty", () => {
   const body: GuideBodyPayload = {
     id: "launcher",
+    origin: "managed",
     title: "Create a launcher",
     summary: "Desktop entry",
     categoryId: "desktop",
