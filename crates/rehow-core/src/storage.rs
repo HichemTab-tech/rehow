@@ -2333,65 +2333,8 @@ impl MarkdownImportSelection {
 }
 
 fn import_title(filename: &str) -> String {
-    let stem = filename.strip_suffix(".md").unwrap_or(filename);
-    let mut title = String::new();
-    let mut separator = false;
-    let mut length = 0usize;
-    for character in stem.chars() {
-        if character == '-'
-            || character == '_'
-            || character.is_whitespace()
-            || character.is_control()
-            || unsafe_import_title_scalar(character)
-        {
-            separator = !title.is_empty();
-        } else {
-            if separator && length < 200 {
-                title.push(' ');
-                length += 1;
-            }
-            separator = false;
-            if length < 200 {
-                title.push(character);
-                length += 1;
-            }
-        }
-    }
-    while title.ends_with(' ') {
-        title.pop();
-    }
-    if title.is_empty() {
-        "Imported Guide".to_owned()
-    } else {
-        title
-    }
-}
-
-fn unsafe_import_title_scalar(character: char) -> bool {
-    let scalar = character as u32;
-    matches!(
-        scalar,
-        0x00ad
-            | 0x034f
-            | 0x061c
-            | 0x115f..=0x1160
-            | 0x17b4..=0x17b5
-            | 0x180b..=0x180f
-            | 0x200b..=0x200f
-            | 0x202a..=0x202e
-            | 0x2060..=0x206f
-            | 0x3164
-            | 0xfe00..=0xfe0f
-            | 0xfeff
-            | 0xffa0
-            | 0xfff9..=0xfffb
-            | 0x1bca0..=0x1bca3
-            | 0x1d173..=0x1d17a
-            | 0xe0001
-            | 0xe0020..=0xe007f
-            | 0xe0100..=0xe01ef
-            | 0xfdd0..=0xfdef
-    ) || matches!(scalar & 0xffff, 0xfffe | 0xffff)
+    crate::domain::content::derived::humanized_filename_title(filename)
+        .unwrap_or_else(|| "Imported Guide".to_owned())
 }
 
 impl MarkdownImportCandidate {

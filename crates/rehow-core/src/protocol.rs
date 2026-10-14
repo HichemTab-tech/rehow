@@ -1038,6 +1038,17 @@ pub(crate) fn new_guide_id() -> GuideId {
     GuideId(Uuid::now_v7())
 }
 
+/// A deterministic, syntactically valid UUIDv7 Guide id for an unadopted
+/// hand-written Guide: the 48-bit timestamp is zero, the version is 7, the
+/// variant is RFC 4122, and the remaining bits come from `digest`.
+pub(crate) fn derived_guide_id(digest: [u8; 16]) -> GuideId {
+    let mut bytes = digest;
+    bytes[..6].fill(0);
+    bytes[6] = 0x70 | (bytes[6] & 0x0f);
+    bytes[8] = 0x80 | (bytes[8] & 0x3f);
+    GuideId(Uuid::from_bytes(bytes))
+}
+
 pub(crate) fn new_attachment_id() -> AttachmentId {
     AttachmentId(Uuid::now_v7())
 }
@@ -1077,6 +1088,21 @@ pub struct Timestamp(time::OffsetDateTime);
 string_ts!(Timestamp);
 pub(crate) fn current_timestamp() -> Timestamp {
     Timestamp(time::OffsetDateTime::now_utc())
+}
+/// A whole-second UTC timestamp from Unix seconds, when representable as a
+/// canonical four-digit-year Rehow timestamp.
+#[allow(dead_code, reason = "connected when the scan lists unadopted Guides")]
+pub(crate) fn timestamp_from_unix_seconds(seconds: i64) -> Option<Timestamp> {
+    let value = time::OffsetDateTime::from_unix_timestamp(seconds).ok()?;
+    (1..=9999)
+        .contains(&value.year())
+        .then_some(Timestamp(value))
+}
+impl Timestamp {
+    #[allow(dead_code, reason = "connected when unadopted Guides are adopted")]
+    pub(crate) fn whole_seconds(self) -> Self {
+        Self(self.0.replace_nanosecond(0).unwrap_or(self.0))
+    }
 }
 impl FromStr for Timestamp {
     type Err = ValueConstructionError;
