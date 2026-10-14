@@ -18,6 +18,7 @@ fn named_checked_in_accepted_corpus_parses_through_production_entries() {
     }
     for source in [
         include_bytes!("fixtures/accepted/guide-bom-lf-final-newline.md").as_slice(),
+        include_bytes!("fixtures/accepted/guide-close-at-eof-newline.md").as_slice(),
         include_bytes!("fixtures/accepted/guide-lf.md").as_slice(),
     ] {
         assert!(parse_guide_source(Box::<[u8]>::from(source)).is_ok());
@@ -167,10 +168,6 @@ fn guide_envelope_failures_are_distinct() {
             b"---\nkey: value\n".as_slice(),
             ParseFailureKind::MissingGuideClosingDelimiter,
         ),
-        (
-            b"---\nkey: value\n---\n".as_slice(),
-            ParseFailureKind::MissingGuideSeparator,
-        ),
     ] {
         let error = match parse_guide_source(bytes.to_vec().into_boxed_slice()) {
             Err(e) => e,
@@ -255,7 +252,10 @@ fn scanner_selects_global_source_and_envelope_precedence() {
             b"---\na: b\n",
             ParseFailureKind::MissingGuideClosingDelimiter,
         ),
-        (b"---\na: b\n---\n", ParseFailureKind::MissingGuideSeparator),
+        (
+            b"---\na: b\n---\r\nbody\n",
+            ParseFailureKind::MixedYamlLineEndings,
+        ),
     ];
     for (source, expected) in cases {
         let error = match parse_guide_source(source.to_vec().into_boxed_slice()) {
@@ -358,4 +358,66 @@ fn frontmatter_and_guide_byte_caps_report_exact_facts() {
     assert_eq!(facts.scope(), ParseLimitScope::GuideBytes);
     assert_eq!(facts.limit(), MAX_GUIDE_BYTES as u64);
     assert_eq!(facts.observed_at_least(), (MAX_GUIDE_BYTES + 1) as u64);
+}
+
+#[test]
+fn guide_separator_blank_line_is_optional_and_layout_is_exact() {
+    for (source, separator_len, body) in [
+        (
+            b"---\na: b\n---\n\nbody\n".as_slice(),
+            1,
+            b"body\n".as_slice(),
+        ),
+        (
+            b"---\na: b\n---\nbody\n".as_slice(),
+            0,
+            b"body\n".as_slice(),
+        ),
+        (b"---\na: b\n---\n".as_slice(), 0, b"".as_slice()),
+        (b"---\na: b\n---".as_slice(), 0, b"".as_slice()),
+        (
+            b"---\r\na: b\r\n---\r\n# T\r\n".as_slice(),
+            0,
+            b"# T\r\n".as_slice(),
+        ),
+        (
+            b"---\r\na: b\r\n---\r\n\r\n# T".as_slice(),
+            2,
+            b"# T".as_slice(),
+        ),
+        (
+            b"\xef\xbb\xbf---\na: b\n---\n# T\n".as_slice(),
+            0,
+            b"# T\n".as_slice(),
+        ),
+        (
+            b"---\na: b\n---\n\n\nbody\n".as_slice(),
+            1,
+            b"\nbody\n".as_slice(),
+        ),
+    ] {
+        let parsed = parse_guide_source(source.to_vec().into_boxed_slice()).unwrap();
+        assert_eq!(parsed.envelope().separator_line().len(), separator_len);
+        assert_eq!(parsed.body_bytes(), body);
+        let envelope = parsed.envelope();
+        assert_eq!(
+            envelope.separator_line().end(),
+            envelope.body_file_range().start()
+        );
+        assert_eq!(
+            envelope.body_file_range().end().get() as usize,
+            source.len()
+        );
+    }
+    for source in [
+        b"---\na: b\n---x\n".as_slice(),
+        b"---\na: b\n--- \n".as_slice(),
+        b"---\na: b\n----".as_slice(),
+    ] {
+        let error = match parse_guide_source(source.to_vec().into_boxed_slice()) {
+            Err(error) => error,
+            Ok(_) => panic!("unterminated frontmatter accepted"),
+        };
+        assert_eq!(error.kind(), ParseFailureKind::MissingGuideClosingDelimiter);
+    }
 }
