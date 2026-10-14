@@ -15,5 +15,18 @@
     "indentStyle": "space",
     "lineEnding": "lf"
   },
-  "linter": { "enabled": true, "rules": { "preset": "recommended" } }
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "complexity": {
+        "useLiteralKeys": "off"
+      }
+    }
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  }
 }

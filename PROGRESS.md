@@ -3,6 +3,21 @@
 Last updated: 2026-09-24
 State authority: actual Git/worktree first; this file summarizes verified facts.
 
+## 2026-10-14 — Frontend rebuild (branch `revamp`)
+
+A full product/code review found the desktop UI hard to use: one 8.3k-line `App.tsx` (110 `useState`), a raw textarea editor, non-clickable Categories/Tags, backend jargon in UI copy, and cramped/inconsistent visuals. The frontend was rebuilt on the existing native command surface:
+
+- Typed API client (`src/api/client.ts`) with validated responses; payload validators kept in `src/api/payloads.ts`; dev-only browser mock backend (`src/api/mock.ts`, excluded from production builds).
+- Zustand store (`src/store/app.ts`) owns workflows; feature modules for shell, library, reader, editor, categories, git, settings, palette, welcome.
+- Real Radix/shadcn-style UI kit, Tailwind v4 tokens (light/dark/system), bundled Inter/JetBrains Mono.
+- CodeMirror editor with toolbar, section templates, live preview through the backend safe renderer, unified title/summary/Category/Tag/alias editing, Ctrl+S, local crash-draft recovery, and explicit conflict choices (compare, keep mine, use disk).
+- Clickable Category/Tag/status filters, sorting, command palette (fuzzy Guides + actions), keyboard shortcuts, outline, plain-language Git and issue copy, MCP setup for Claude Code/Claude Desktop/Codex/JSON.
+- New native commands: `render_markdown_preview` (async, same safe parser) and `mcp_setup_open_workspace` (output-only path display).
+- CSP now allows inline styles (`style-src 'self' 'unsafe-inline'`) for CodeMirror/Radix/Sonner runtime styles; scripts remain `'self'` only and Markdown still has no raw-HTML path.
+- Tooling: engine check accepts Node >= 26 with a readable message; `pmOnFail: warn`.
+
+Verified: `pnpm check`, desktop Vitest (43 tests), `tsc`, production `vite build`, `cargo clippy -p rehow-desktop -D warnings`, `cargo test -p rehow-desktop`; manual browser review (wide/narrow, light/dark) and a native smoke test against a temporary Workspace (open, read, edit, save to disk). Next: backend search quality, async commands, and relaxed Guide format.
+
 ## Current phase
 
 Phase 7 correction work now includes the Wayland and folder-picker fixes plus safe Git-author onboarding, state-aware remote actions, and discoverable Codex/ChatGPT MCP setup. The implementation, full automated repository gate, independent security correction review, and signed checkpoint pass. Clean installed-package graphical qualification remains open.

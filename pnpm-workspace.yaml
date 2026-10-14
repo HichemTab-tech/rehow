@@ -3,4 +3,4 @@ packages:
   - "packages/*"
 
 engineStrict: true
-pmOnFail: error
+pmOnFail: warn
