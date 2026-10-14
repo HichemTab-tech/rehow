@@ -327,8 +327,13 @@ describe("presentation helpers and native payload validators", () => {
       identity: "configured" as const,
       globalIdentity: "available" as const,
       failure: null,
+      sandbox: "bubblewrap" as const,
     };
     expect(isGitStatusPayload(status)).toBe(true);
+    expect(isGitStatusPayload({ ...status, sandbox: "unsandboxed" })).toBe(
+      true,
+    );
+    expect(isGitStatusPayload({ ...status, sandbox: "chroot" })).toBe(false);
     expect(isGitStatusPayload({ ...status, unexpected: true })).toBe(false);
     expect(isGitStatusPayload({ ...status, remoteCount: -1 })).toBe(false);
     const recovery = {

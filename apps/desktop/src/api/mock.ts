@@ -300,6 +300,7 @@ const gitStatus: GitStatusPayload = {
   identity: "configured",
   globalIdentity: "available",
   failure: null,
+  sandbox: "bubblewrap",
 };
 
 function summary(stored: StoredGuide): GuideSummary {

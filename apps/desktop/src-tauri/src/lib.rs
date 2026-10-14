@@ -466,6 +466,8 @@ struct GitStatusPayload {
     identity: Option<&'static str>,
     global_identity: &'static str,
     failure: Option<&'static str>,
+    /// "bubblewrap" or "unsandboxed"; without a sandbox only status works.
+    sandbox: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -1900,6 +1902,7 @@ fn git_status_open_workspace_blocking(
                     identity: Some(repository.identity().as_str()),
                     global_identity,
                     failure: None,
+                    sandbox: Some(status.sandbox().as_str()),
                 }),
             }
         }
@@ -1941,6 +1944,7 @@ fn empty_git_payload(
         identity: None,
         global_identity,
         failure: None,
+        sandbox: None,
     }
 }
 
@@ -7305,7 +7309,8 @@ mod tests {
         ))
         .unwrap();
         let object = value.as_object().unwrap();
-        assert_eq!(object.len(), 16);
+        assert_eq!(object.len(), 17);
+        assert_eq!(object["sandbox"], serde_json::Value::Null);
         assert_eq!(object["kind"], "unsafe");
         assert_eq!(object["divergenceKnown"], false);
         assert_eq!(object["remotes"], serde_json::json!([]));
