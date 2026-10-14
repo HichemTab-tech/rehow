@@ -169,6 +169,9 @@ pub struct GitSshTransportResources {
     agent: File,
     proxy: File,
     ssh_client: File,
+    /// Read-only mounts exposing the client's loader/libraries (for example
+    /// `/nix/store`); empty for `/usr` clients.
+    ssh_client_mounts: &'static [&'static str],
     known_hosts: File,
     system_known_hosts: File,
 }
@@ -209,8 +212,13 @@ impl GitSshTransportResources {
             .ok_or(GitSshTransportError::ProxyUnavailable)?
             .try_clone()
             .map_err(|_| GitSshTransportError::Io)?;
-        let ssh_client = capture_system_ssh_client(Path::new("/usr/bin/ssh"))
+        let ssh_path = super::toolchain::discover_executable("ssh")
+            .ok_or(GitSshTransportError::SshUnavailable)?
+            .path;
+        let ssh_client_mounts = super::toolchain::sandbox_toolchain_mounts(&ssh_path)
             .ok_or(GitSshTransportError::SshUnavailable)?;
+        let ssh_client =
+            capture_system_ssh_client(&ssh_path).ok_or(GitSshTransportError::SshUnavailable)?;
         let mut combined = Vec::new();
         for source in &host_keys._sources {
             let extra = source
@@ -236,6 +244,7 @@ impl GitSshTransportResources {
             agent,
             proxy,
             ssh_client,
+            ssh_client_mounts,
             known_hosts,
             system_known_hosts,
         })
@@ -247,6 +256,7 @@ impl GitSshTransportResources {
         let ssh_client_fd = self.ssh_client.as_raw_fd();
         let known_hosts_fd = self.known_hosts.as_raw_fd();
         let system_known_hosts_fd = self.system_known_hosts.as_raw_fd();
+        command.args(self.ssh_client_mounts);
         command
             .args(["--dir", "/run/rehow-agent", "--ro-bind-fd"])
             .arg(agent_fd.to_string())

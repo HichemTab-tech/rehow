@@ -28,19 +28,19 @@ use rehow_core::{
         GitGlobalIdentityStatus, GitHttpsCredentialResourceError, GitHttpsCredentialResources,
         GitHttpsCredentialStatus, GitIdentityError, GitIdentityPlan, GitInitError, GitInitPlan,
         GitReadError, GitRemoteAuthentication, GitRemoteError, GitRemotePlan, GitRemoteTransport,
-        GitRepositoryStatus, GitSshTransportError, GitSshTransportResources, GitSyncAncestry,
-        GitSyncClassification, GitSyncError, apply_git_clone_repository_finalization,
-        apply_git_clone_validation_with_authentication, apply_git_commit, apply_git_identity,
-        apply_git_initialize, apply_git_push_with_authentication, apply_git_remote_connect,
-        apply_git_sync_fast_forward, apply_git_sync_inspection_with_authentication,
-        cancel_git_commit_plan, capture_git_global_identity_provenance,
-        capture_git_https_credential_backing_provenance, capture_git_https_credential_provenance,
-        capture_git_https_credential_proxy_provenance, capture_git_ssh_agent_provenance,
-        capture_git_ssh_host_keys_provenance, capture_git_ssh_proxy_provenance,
-        classify_git_sync_ancestry_with_authentication, git_commit_recovery_required,
-        git_sync_recovery_required, plan_git_clone, plan_git_commit,
-        plan_git_identity_import_global, plan_git_identity_set, plan_git_initialize,
-        plan_git_remote_connect, plan_git_sync, read_git_status,
+        GitRepositoryStatus, GitSandbox, GitSshTransportError, GitSshTransportResources,
+        GitSyncAncestry, GitSyncClassification, GitSyncError,
+        apply_git_clone_repository_finalization, apply_git_clone_validation_with_authentication,
+        apply_git_commit, apply_git_identity, apply_git_initialize,
+        apply_git_push_with_authentication, apply_git_remote_connect, apply_git_sync_fast_forward,
+        apply_git_sync_inspection_with_authentication, cancel_git_commit_plan,
+        capture_git_global_identity_provenance, capture_git_https_credential_backing_provenance,
+        capture_git_https_credential_provenance, capture_git_https_credential_proxy_provenance,
+        capture_git_ssh_agent_provenance, capture_git_ssh_host_keys_provenance,
+        capture_git_ssh_proxy_provenance, classify_git_sync_ancestry_with_authentication,
+        git_commit_recovery_required, git_sync_recovery_required, inspect_git_environment,
+        plan_git_clone, plan_git_commit, plan_git_identity_import_global, plan_git_identity_set,
+        plan_git_initialize, plan_git_remote_connect, plan_git_sync, read_git_status,
         resume_pending_git_commit_publication, resume_pending_git_sync_publication,
     },
     markdown::{SafeMarkdownDocument, parse_safe_markdown},
@@ -2958,8 +2958,13 @@ fn git_commit_message(error: GitCommitPlanError) -> String {
                 .to_owned()
         }
         GitCommitPlanError::UnsupportedRepository => {
-            "This repository or filesystem cannot provide the isolated, durable commit operation Rehow requires."
-                .to_owned()
+            if inspect_git_environment().sandbox() == GitSandbox::Unsandboxed {
+                "Commits need the Bubblewrap sandbox (bwrap), which is missing or cannot create namespaces on this system. Install bubblewrap and try again."
+                    .to_owned()
+            } else {
+                "This repository or filesystem cannot provide the isolated, durable commit operation Rehow requires."
+                    .to_owned()
+            }
         }
         GitCommitPlanError::OperationInProgress => {
             "An interrupted Git commit needs recovery before another commit can start.".to_owned()
@@ -3559,7 +3564,8 @@ fn git_sync_message(error: GitSyncError) -> String {
             "Git is unavailable at the trusted system location.".to_owned()
         }
         GitSyncError::SandboxUnavailable => {
-            "The required local Git sandbox is unavailable.".to_owned()
+            "Git sync needs the Bubblewrap sandbox (bwrap), which is missing or cannot create namespaces on this system. Install bubblewrap and try again; Git status still works without it."
+                .to_owned()
         }
         GitSyncError::RemoteUnavailable => {
             "The configured upstream could not be reached or authenticated.".to_owned()
@@ -4158,7 +4164,8 @@ fn git_clone_apply_message(error: GitCloneApplyError) -> String {
             "The trusted system Git executable is unavailable.".to_owned()
         }
         GitCloneApplyError::SandboxUnavailable => {
-            "The required Bubblewrap clone sandbox is unavailable.".to_owned()
+            "Cloning needs the Bubblewrap sandbox (bwrap), which is missing or cannot create namespaces on this system. Install bubblewrap and try again."
+                .to_owned()
         }
         GitCloneApplyError::RemoteUnavailable => {
             "The remote could not be reached. Check the address, network, and access.".to_owned()

@@ -12,6 +12,7 @@ mod ssh_proxy;
     reason = "sealed SSH resources connect to product Git commands in the next gate"
 )]
 mod ssh_sandbox;
+mod toolchain;
 
 pub use credential_proxy::run_git_credential_proxy;
 pub use https_credentials::{
@@ -27,6 +28,7 @@ pub use ssh_sandbox::{
     GitSshProxyProvenance, GitSshProxyStatus, GitSshTransportError, GitSshTransportResources,
     capture_git_ssh_proxy_provenance,
 };
+pub use toolchain::{GitEnvironment, GitExecutableSource, GitSandbox, inspect_git_environment};
 
 use crate::storage::recovery::{
     GitCommitIntent, GitCommitIntentBranchRepresentation, GitCommitIntentError,
@@ -552,8 +554,9 @@ fn inspect_ssh_agent_parents(
         let metadata = fs::symlink_metadata(path).ok()?;
         let mode = metadata.permissions().mode();
         let owner_safe = metadata.uid() == effective_user && mode & 0o022 == 0;
-        let root_safe =
-            metadata.uid() == 0 && (mode & 0o022 == 0 || (mode & 0o1000 != 0 && mode & 0o002 != 0));
+        // Root-owned sticky directories (`/tmp`, a group-writable
+        // `/nix/store`) prevent other users from replacing entries.
+        let root_safe = metadata.uid() == 0 && (mode & 0o022 == 0 || mode & 0o1000 != 0);
         if metadata.file_type().is_symlink() || !metadata.is_dir() || (!owner_safe && !root_safe) {
             return None;
         }
@@ -575,11 +578,25 @@ pub struct GitStatus {
     available: bool,
     version: Option<String>,
     repository: GitRepositoryStatus,
+    executable_source: Option<GitExecutableSource>,
+    sandbox: GitSandbox,
 }
 
 impl GitStatus {
     pub fn available(&self) -> bool {
         self.available
+    }
+
+    /// Fixed trusted directory family the Git executable was resolved from.
+    pub fn executable_source(&self) -> Option<GitExecutableSource> {
+        self.executable_source
+    }
+
+    /// Whether repository commands run inside Bubblewrap. `Unsandboxed` means
+    /// only read-only status is available; commit, sync, push, and clone
+    /// require Bubblewrap.
+    pub fn sandbox(&self) -> GitSandbox {
+        self.sandbox
     }
 
     pub fn version(&self) -> Option<&str> {
@@ -1570,10 +1587,9 @@ pub(crate) fn discover_git_clone_remote_head(
     if !authentication.supports(plan.transport) {
         return Err(GitCloneDiscoveryError::UnsupportedTransport);
     }
-    let executable =
-        trusted_executable("/usr/bin/git").ok_or(GitCloneDiscoveryError::GitUnavailable)?;
+    let executable = trusted_git().ok_or(GitCloneDiscoveryError::GitUnavailable)?;
     let sandbox =
-        trusted_executable("/usr/bin/bwrap").ok_or(GitCloneDiscoveryError::SandboxUnavailable)?;
+        trusted_sandbox_for(&executable).ok_or(GitCloneDiscoveryError::SandboxUnavailable)?;
     let command = clone_discovery_command_with_transport(
         &executable,
         &sandbox,
@@ -1603,8 +1619,8 @@ fn discover_git_sync_remote_head(
     if !authentication.supports(plan.transport) {
         return Err(GitSyncError::UnsupportedTransport);
     }
-    let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
-    let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
+    let executable = trusted_git().ok_or(GitSyncError::GitUnavailable)?;
+    let sandbox = trusted_sandbox_for(&executable).ok_or(GitSyncError::SandboxUnavailable)?;
     let output = run_clone_command_for_transport_with_missing_ref(
         sync_discovery_command(
             &executable,
@@ -1683,8 +1699,8 @@ fn fetch_git_sync_remote(
     if !authentication.supports(plan.transport) {
         return Err(GitSyncError::UnsupportedTransport);
     }
-    let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
-    let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
+    let executable = trusted_git().ok_or(GitSyncError::GitUnavailable)?;
+    let sandbox = trusted_sandbox_for(&executable).ok_or(GitSyncError::SandboxUnavailable)?;
     let output = run_clone_command_for_transport(
         clone_fetch_command_with_transport(
             &executable,
@@ -1728,10 +1744,9 @@ pub(crate) fn fetch_git_clone_remote(
     if !authentication.supports(plan.transport) {
         return Err(GitCloneDiscoveryError::UnsupportedTransport);
     }
-    let executable =
-        trusted_executable("/usr/bin/git").ok_or(GitCloneDiscoveryError::GitUnavailable)?;
+    let executable = trusted_git().ok_or(GitCloneDiscoveryError::GitUnavailable)?;
     let sandbox =
-        trusted_executable("/usr/bin/bwrap").ok_or(GitCloneDiscoveryError::SandboxUnavailable)?;
+        trusted_sandbox_for(&executable).ok_or(GitCloneDiscoveryError::SandboxUnavailable)?;
     let command = clone_fetch_command_with_transport(
         &executable,
         &sandbox,
@@ -1784,10 +1799,9 @@ pub(crate) fn inspect_fetched_git_clone_tree(
     remote_head: &GitRemoteHead,
     cancelled: &AtomicBool,
 ) -> Result<GitCloneTree, GitCloneInspectError> {
-    let executable =
-        trusted_executable("/usr/bin/git").ok_or(GitCloneInspectError::GitUnavailable)?;
+    let executable = trusted_git().ok_or(GitCloneInspectError::GitUnavailable)?;
     let sandbox =
-        trusted_executable("/usr/bin/bwrap").ok_or(GitCloneInspectError::SandboxUnavailable)?;
+        trusted_sandbox_for(&executable).ok_or(GitCloneInspectError::SandboxUnavailable)?;
     let ref_output = run_clone_command(
         clone_read_command(
             &executable,
@@ -2709,8 +2723,8 @@ fn execute_exact_git_push(
     if !authentication.supports(plan.transport) {
         return Err(GitSyncError::UnsupportedTransport);
     }
-    let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
-    let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
+    let executable = trusted_git().ok_or(GitSyncError::GitUnavailable)?;
+    let sandbox = trusted_sandbox_for(&executable).ok_or(GitSyncError::SandboxUnavailable)?;
     let capability = workspace
         .git_repository_capability()
         .map_err(map_git_capability_to_sync)?;
@@ -3288,8 +3302,8 @@ fn verify_git_sync_candidate_objects(
     if validate_object_id(commit_id) != Some(object_format) {
         return Err(GitSyncError::Unsafe);
     }
-    let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
-    let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
+    let executable = trusted_git().ok_or(GitSyncError::GitUnavailable)?;
+    let sandbox = trusted_sandbox_for(&executable).ok_or(GitSyncError::SandboxUnavailable)?;
     let commit = run_git_commit_read(
         &executable,
         &sandbox,
@@ -3504,8 +3518,8 @@ fn deepen_git_sync_remote(
     if !authentication.supports(inspection.plan.transport) {
         return Err(GitSyncError::UnsupportedTransport);
     }
-    let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
-    let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
+    let executable = trusted_git().ok_or(GitSyncError::GitUnavailable)?;
+    let sandbox = trusted_sandbox_for(&executable).ok_or(GitSyncError::SandboxUnavailable)?;
     let before = inspection
         .staging
         .git_state(CLONE_STAGING_FILE_LIMIT)
@@ -3551,8 +3565,8 @@ fn read_remote_sync_history(
     inspection: &GitSyncInspection,
     cancelled: &AtomicBool,
 ) -> Result<GitSyncHistory, GitSyncError> {
-    let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
-    let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
+    let executable = trusted_git().ok_or(GitSyncError::GitUnavailable)?;
+    let sandbox = trusted_sandbox_for(&executable).ok_or(GitSyncError::SandboxUnavailable)?;
     let head = inspection.remote_head.object_id();
     let state_before = inspection
         .staging
@@ -3617,8 +3631,8 @@ fn read_local_sync_history(
     workspace: &WorkspaceView,
     plan: &GitSyncPlan,
 ) -> Result<GitSyncHistory, GitSyncError> {
-    let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
-    let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitSyncError::SandboxUnavailable)?;
+    let executable = trusted_git().ok_or(GitSyncError::GitUnavailable)?;
+    let sandbox = trusted_sandbox_for(&executable).ok_or(GitSyncError::SandboxUnavailable)?;
     let capability = workspace
         .git_repository_capability()
         .map_err(map_git_capability_to_sync)?;
@@ -3799,7 +3813,8 @@ fn inspect_git_sync_repository(
     {
         return Err(GitSyncError::PlanStale);
     }
-    let executable = trusted_executable("/usr/bin/git").ok_or(GitSyncError::GitUnavailable)?;
+    let executable = trusted_git().ok_or(GitSyncError::GitUnavailable)?;
+    trusted_sandbox_for(&executable).ok_or(GitSyncError::SandboxUnavailable)?;
     let config_output = run_git(
         &executable,
         None,
@@ -4383,10 +4398,9 @@ pub(crate) fn validate_fetched_git_clone(
     tree: GitCloneTree,
     cancelled: &AtomicBool,
 ) -> Result<ValidatedGitClone, GitCloneContentError> {
-    let executable =
-        trusted_executable("/usr/bin/git").ok_or(GitCloneContentError::GitUnavailable)?;
+    let executable = trusted_git().ok_or(GitCloneContentError::GitUnavailable)?;
     let sandbox =
-        trusted_executable("/usr/bin/bwrap").ok_or(GitCloneContentError::SandboxUnavailable)?;
+        trusted_sandbox_for(&executable).ok_or(GitCloneContentError::SandboxUnavailable)?;
     stream_clone_tree(
         clone_batch_read_command(
             &executable,
@@ -4813,7 +4827,7 @@ fn remote_discovery_command(
     transport: GitRemoteTransport,
     authentication: GitRemoteAuthentication<'_>,
 ) -> Command {
-    let mut command = Command::new(sandbox);
+    let mut command = bubblewrap_command(sandbox, executable);
     command
         .env_clear()
         .env("LANG", "C")
@@ -4956,7 +4970,7 @@ fn git_push_command(
     let config_descriptor = config.as_raw_fd();
     let config_descriptor_text = config_descriptor.to_string();
     let refspec = format!("{local_commit}:{remote_ref}");
-    let mut command = Command::new(sandbox);
+    let mut command = bubblewrap_command(sandbox, executable);
     command
         .env_clear()
         .env("LANG", "C")
@@ -5206,7 +5220,7 @@ fn remote_fetch_command(
 ) -> Command {
     let refspec = format!("{object_id}:refs/rehow/clone/head");
     let depth = format!("--depth={depth}");
-    let mut command = Command::new(sandbox);
+    let mut command = bubblewrap_command(sandbox, executable);
     command
         .env_clear()
         .env("LANG", "C")
@@ -5365,7 +5379,7 @@ fn clone_read_command(
     staging_git_descriptor: i32,
     git_arguments: &[&str],
 ) -> Command {
-    let mut command = Command::new(sandbox);
+    let mut command = bubblewrap_command(sandbox, executable);
     command
         .env_clear()
         .env("LANG", "C")
@@ -5435,11 +5449,11 @@ fn prepare_clone_index(
     staging: &GitCloneStaging,
     object_id: &str,
 ) -> Result<String, GitCloneMaterializeError> {
-    let executable = trusted_executable("/usr/bin/git").ok_or(GitCloneMaterializeError::Io)?;
-    let sandbox = trusted_executable("/usr/bin/bwrap").ok_or(GitCloneMaterializeError::Io)?;
+    let executable = trusted_git().ok_or(GitCloneMaterializeError::Io)?;
+    let sandbox = trusted_sandbox_for(&executable).ok_or(GitCloneMaterializeError::Io)?;
     let staging_name = format!("rehow-index-{}", new_operation_id());
     let sandbox_index = format!("/repo.git/{staging_name}");
-    let mut command = Command::new(sandbox);
+    let mut command = bubblewrap_command(&sandbox, &executable);
     command
         .env_clear()
         .env("LANG", "C")
@@ -7085,7 +7099,7 @@ fn validate_git_config(bytes: &[u8]) -> Result<Vec<String>, GitRemoteError> {
     if bytes.len() > MAX_GIT_CONFIG_BYTES {
         return Err(GitRemoteError::TooLarge);
     }
-    let executable = trusted_executable("/usr/bin/git").ok_or(GitRemoteError::GitUnavailable)?;
+    let executable = trusted_git().ok_or(GitRemoteError::GitUnavailable)?;
     // A memory file gives Git a held, immutable-for-this-call input without
     // creating a pathname or writing repository state during planning.
     // SAFETY: static name is valid and a successful call returns an owned fd.
@@ -7254,12 +7268,21 @@ fn fill_random(bytes: &mut [u8]) -> Result<(), std::io::Error> {
 }
 
 pub fn read_git_status(workspace: &WorkspaceView) -> Result<GitStatus, GitReadError> {
-    let Some(executable) = trusted_executable("/usr/bin/git") else {
+    let Some(git) = toolchain::discover_executable("git") else {
         return Ok(GitStatus {
             available: false,
             version: None,
             repository: GitRepositoryStatus::NotRepository,
+            executable_source: None,
+            sandbox: GitSandbox::Unsandboxed,
         });
+    };
+    let executable = git.path;
+    let sandbox = trusted_sandbox_for(&executable);
+    let sandbox_state = if sandbox.is_some() {
+        GitSandbox::Bubblewrap
+    } else {
+        GitSandbox::Unsandboxed
     };
     let version_output = run_git(&executable, None, &["version"])?;
     let version = parse_version(&version_output.stdout)?;
@@ -7275,16 +7298,21 @@ pub fn read_git_status(workspace: &WorkspaceView) -> Result<GitStatus, GitReadEr
                     fs::write(path, "/tmp/hostile-object-store\n").unwrap();
                 }
             });
-            let Some(sandbox) = trusted_executable("/usr/bin/bwrap") else {
-                return Ok(GitStatus {
-                    available: true,
-                    version: Some(version),
-                    repository: GitRepositoryStatus::Unsafe,
-                });
+            // Without a usable Bubblewrap, the read-only status commands run
+            // directly against a private synthetic Git directory that mirrors
+            // the sandbox view (no local config, masked `objects/info`).
+            let synthetic = match sandbox {
+                Some(_) => None,
+                None => Some(SyntheticGitDirectory::create(&capability)?),
             };
-            let status = run_git(
+            let target = match (&sandbox, &synthetic) {
+                (Some(sandbox), _) => GitRepositoryRun::Bubblewrap(sandbox, &capability),
+                (None, Some(synthetic)) => GitRepositoryRun::Unsandboxed(synthetic, &capability),
+                (None, None) => return Err(GitReadError::Spawn),
+            };
+            let status = run_git_repository(
                 &executable,
-                Some((&sandbox, &capability)),
+                &target,
                 &[
                     "status",
                     "--porcelain=v2",
@@ -7314,9 +7342,9 @@ pub fn read_git_status(workspace: &WorkspaceView) -> Result<GitStatus, GitReadEr
             let (mut parsed, upstream_ref) = parse_status(&status.stdout, &config_bytes)?;
             if let Some(upstream_ref) = upstream_ref {
                 let range = format!("HEAD...{upstream_ref}");
-                if let Ok(output) = run_git(
+                if let Ok(output) = run_git_repository(
                     &executable,
-                    Some((&sandbox, &capability)),
+                    &target,
                     &["rev-list", "--left-right", "--count", &range, "--"],
                 ) && let Ok((ahead, behind)) = parse_divergence(&output.stdout)
                 {
@@ -7332,35 +7360,120 @@ pub fn read_git_status(workspace: &WorkspaceView) -> Result<GitStatus, GitReadEr
         available: true,
         version: Some(version),
         repository,
+        executable_source: Some(git.source),
+        sandbox: sandbox_state,
     })
 }
 
-fn trusted_executable(candidate: &str) -> Option<PathBuf> {
-    let candidate = Path::new(candidate);
-    let Ok(metadata) = fs::metadata(candidate) else {
+/// The trusted Git executable's canonical path, resolved only from fixed
+/// trusted directories (see `toolchain`).
+fn trusted_git() -> Option<PathBuf> {
+    toolchain::discover_executable("git").map(|git| git.path)
+}
+
+/// The trusted Bubblewrap executable when it exists, can expose `git` inside
+/// its fixed system view, and can actually create the required namespaces.
+fn trusted_sandbox_for(git: &Path) -> Option<PathBuf> {
+    if toolchain::test_sandbox_disabled() {
         return None;
-    };
-    if metadata.is_file() && metadata.uid() == 0 && metadata.permissions().mode() & 0o111 != 0 {
-        Some(candidate.to_owned())
+    }
+    toolchain::sandbox_toolchain_mounts(git)?;
+    let sandbox = toolchain::discover_executable("bwrap")?.path;
+    if toolchain::sandbox_probe_cached(&sandbox, git) {
+        return Some(sandbox);
+    }
+    if probe_bubblewrap(&sandbox, git) {
+        toolchain::record_sandbox_probe(&sandbox, git);
+        Some(sandbox)
     } else {
         None
     }
+}
+
+/// Starts Bubblewrap with the base Git view and runs `git --version`, proving
+/// that unprivileged namespaces are available (they are not inside most
+/// Flatpak or container sandboxes).
+fn probe_bubblewrap(sandbox: &Path, executable: &Path) -> bool {
+    let mut command = bubblewrap_command(sandbox, executable);
+    command
+        .env_clear()
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .args([
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-all",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib64",
+            "/lib64",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--chdir",
+            "/tmp",
+            "--",
+        ])
+        .arg(executable)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    run_bounded_git_command(command, PROCESS_TIMEOUT, 4096).is_ok()
+}
+
+/// Bubblewrap command whose fixed view also exposes the executable's
+/// toolchain (for example `/nix/store`) read-only.
+fn bubblewrap_command(sandbox: &Path, executable: &Path) -> Command {
+    let mut command = Command::new(sandbox);
+    if let Some(mounts) = toolchain::sandbox_toolchain_mounts(executable) {
+        command.args(mounts);
+    }
+    command
 }
 
 struct ProcessOutput {
     stdout: Vec<u8>,
 }
 
-fn run_git(
-    executable: &Path,
-    repository: Option<(&Path, &crate::storage::GitRepositoryCapability)>,
-    arguments: &[&str],
-) -> Result<ProcessOutput, GitReadError> {
-    let mut command = if let Some((sandbox, _)) = repository {
-        Command::new(sandbox)
-    } else {
-        Command::new(executable)
-    };
+/// Global options shared by every confined read-only status command.
+const STATUS_HARDENING_ARGUMENTS: [&str; 16] = [
+    "--no-pager",
+    "--literal-pathspecs",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.untrackedCache=false",
+    "-c",
+    "core.alternateRefsCommand=",
+    "-c",
+    "diff.external=",
+    "-c",
+    "color.ui=false",
+    "-c",
+    "status.submoduleSummary=false",
+];
+
+/// Additional options for the unsandboxed fallback: no transport may run even
+/// if a lazy fetch were attempted.
+const UNSANDBOXED_HARDENING_ARGUMENTS: [&str; 4] =
+    ["-c", "protocol.allow=never", "-c", "credential.helper="];
+
+fn apply_status_environment(command: &mut Command) {
     command
         .env_clear()
         .env("LANG", "C")
@@ -7375,6 +7488,162 @@ fn run_git(
         .env("GIT_EDITOR", "false")
         .env("GIT_ASKPASS", "false")
         .env("SSH_ASKPASS", "false");
+}
+
+enum GitRepositoryRun<'a> {
+    Bubblewrap(&'a Path, &'a crate::storage::GitRepositoryCapability),
+    Unsandboxed(
+        &'a SyntheticGitDirectory,
+        &'a crate::storage::GitRepositoryCapability,
+    ),
+}
+
+fn run_git_repository(
+    executable: &Path,
+    target: &GitRepositoryRun<'_>,
+    arguments: &[&str],
+) -> Result<ProcessOutput, GitReadError> {
+    match target {
+        GitRepositoryRun::Bubblewrap(sandbox, capability) => {
+            run_git(executable, Some((sandbox, capability)), arguments)
+        }
+        GitRepositoryRun::Unsandboxed(synthetic, capability) => run_bounded_git_command(
+            unsandboxed_status_command(executable, synthetic.path(), capability, arguments),
+            PROCESS_TIMEOUT,
+            OUTPUT_LIMIT,
+        ),
+    }
+}
+
+/// Direct (no Bubblewrap) read-only repository command. The environment and
+/// global options are the sandboxed status hardening plus a transport ban;
+/// `GIT_DIR` is a private synthetic directory without any local config.
+fn unsandboxed_status_command(
+    executable: &Path,
+    git_dir: &Path,
+    repository: &crate::storage::GitRepositoryCapability,
+    arguments: &[&str],
+) -> Command {
+    let mut command = Command::new(executable);
+    apply_status_environment(&mut command);
+    command
+        .env("GIT_DIR", git_dir)
+        .env("GIT_WORK_TREE", repository.work_tree_path())
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .current_dir(repository.work_tree_path())
+        .args(STATUS_HARDENING_ARGUMENTS)
+        .args(UNSANDBOXED_HARDENING_ARGUMENTS)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+/// Owner-private temporary Git directory mirroring the Bubblewrap status view:
+/// `objects` exposes only loose-object fan-out and `pack` from the retained
+/// object descriptor (an empty private `objects/info` masks alternates and
+/// commit-graph files), `refs`/index/packed-refs/shallow point at the retained
+/// descriptors, `HEAD` is a bounded copy, and there is no `config`.
+struct SyntheticGitDirectory {
+    path: PathBuf,
+}
+
+const SYNTHETIC_HEAD_LIMIT: u64 = 4096;
+
+impl SyntheticGitDirectory {
+    fn create(repository: &crate::storage::GitRepositoryCapability) -> Result<Self, GitReadError> {
+        let template = env::temp_dir().join("rehow-git-status-XXXXXX");
+        let template =
+            CString::new(template.as_os_str().as_bytes()).map_err(|_| GitReadError::Spawn)?;
+        let mut template = template.into_bytes_with_nul();
+        // SAFETY: `template` is a writable NUL-terminated buffer ending in
+        // `XXXXXX`; mkdtemp creates a new 0700 directory atomically.
+        let created = unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) };
+        if created.is_null() {
+            return Err(GitReadError::Spawn);
+        }
+        template.pop();
+        let directory = Self {
+            path: PathBuf::from(
+                <std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(template),
+            ),
+        };
+        directory.populate(repository)?;
+        Ok(directory)
+    }
+
+    fn populate(
+        &self,
+        repository: &crate::storage::GitRepositoryCapability,
+    ) -> Result<(), GitReadError> {
+        let failed = |_| GitReadError::Spawn;
+        let objects = self.path.join("objects");
+        std::os::unix::fs::DirBuilderExt::mode(&mut fs::DirBuilder::new(), 0o700)
+            .create(&objects)
+            .map_err(failed)?;
+        std::os::unix::fs::DirBuilderExt::mode(&mut fs::DirBuilder::new(), 0o700)
+            .create(objects.join("info"))
+            .map_err(failed)?;
+        let source = Path::new(repository.objects_path());
+        std::os::unix::fs::symlink(source.join("pack"), objects.join("pack")).map_err(failed)?;
+        for byte in 0_u8..=255 {
+            let name = format!("{byte:02x}");
+            std::os::unix::fs::symlink(source.join(&name), objects.join(&name)).map_err(failed)?;
+        }
+        std::os::unix::fs::symlink(repository.refs_path(), self.path.join("refs"))
+            .map_err(failed)?;
+        let mut head = Vec::new();
+        File::open(repository.head_path())
+            .map_err(failed)?
+            .take(SYNTHETIC_HEAD_LIMIT + 1)
+            .read_to_end(&mut head)
+            .map_err(failed)?;
+        if head.len() as u64 > SYNTHETIC_HEAD_LIMIT {
+            return Err(GitReadError::InvalidOutput);
+        }
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(self.path.join("HEAD"))
+            .and_then(|mut file| file.write_all(&head))
+            .map_err(failed)?;
+        for (source, name) in [
+            (repository.index_path(), "index"),
+            (repository.packed_refs_path(), "packed-refs"),
+            (repository.shallow_path(), "shallow"),
+        ] {
+            if let Some(source) = source {
+                std::os::unix::fs::symlink(source, self.path.join(name)).map_err(failed)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for SyntheticGitDirectory {
+    fn drop(&mut self) {
+        // `remove_dir_all` never follows the descriptor symlinks it removes.
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn run_git(
+    executable: &Path,
+    repository: Option<(&Path, &crate::storage::GitRepositoryCapability)>,
+    arguments: &[&str],
+) -> Result<ProcessOutput, GitReadError> {
+    let mut command = if let Some((sandbox, _)) = repository {
+        bubblewrap_command(sandbox, executable)
+    } else {
+        Command::new(executable)
+    };
+    apply_status_environment(&mut command);
     if let Some((_, repository)) = repository {
         command.args([
             "--die-with-parent",
@@ -7429,27 +7698,10 @@ fn run_git(
                 command.args(["--ro-bind", source, destination]);
             }
         }
-        command.args(["--", "/usr/bin/git"]);
+        command.arg("--").arg(executable);
     }
     command
-        .args([
-            "--no-pager",
-            "--literal-pathspecs",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.untrackedCache=false",
-            "-c",
-            "core.alternateRefsCommand=",
-            "-c",
-            "diff.external=",
-            "-c",
-            "color.ui=false",
-            "-c",
-            "status.submoduleSummary=false",
-        ])
+        .args(STATUS_HARDENING_ARGUMENTS)
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -7488,7 +7740,7 @@ fn run_git_commit_read_with_input(
     let mut synthetic_config = create_git_format_config(object_format)?;
     let config_descriptor = synthetic_config.as_raw_fd();
     let config_descriptor_text = config_descriptor.to_string();
-    let mut command = Command::new(sandbox);
+    let mut command = bubblewrap_command(sandbox, executable);
     command
         .env_clear()
         .env("LANG", "C")
@@ -8056,8 +8308,7 @@ fn inspect_git_commit_repository(
     let repository = capability
         .read_commit_repository_snapshot()
         .map_err(map_git_commit_snapshot_error)?;
-    let executable =
-        trusted_executable("/usr/bin/git").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+    let executable = trusted_git().ok_or(GitCommitPlanError::UnsupportedRepository)?;
     let config_output = run_git(
         &executable,
         None,
@@ -8105,8 +8356,8 @@ fn inspect_git_commit_repository(
         _ => return Err(GitCommitPlanError::UnsupportedIndex),
     };
     let (head_tree_object_id, tree) = if let Some(parent) = branch.expected_object_id.as_deref() {
-        let sandbox = trusted_executable("/usr/bin/bwrap")
-            .ok_or(GitCommitPlanError::UnsupportedRepository)?;
+        let sandbox =
+            trusted_sandbox_for(&executable).ok_or(GitCommitPlanError::UnsupportedRepository)?;
         let tree_expression = format!("{parent}^{{tree}}");
         let tree_output = run_git_commit_read(
             &executable,
@@ -8245,9 +8496,8 @@ fn prepare_git_commit_staging(
         preflight.repository.index.as_ref(),
     ) {
         (Some(_), Some(expected_tree), Some(_)) => {
-            let executable = trusted_executable("/usr/bin/git")
-                .ok_or(GitCommitPlanError::UnsupportedRepository)?;
-            let sandbox = trusted_executable("/usr/bin/bwrap")
+            let executable = trusted_git().ok_or(GitCommitPlanError::UnsupportedRepository)?;
+            let sandbox = trusted_sandbox_for(&executable)
                 .ok_or(GitCommitPlanError::UnsupportedRepository)?;
             let actual_tree = run_git_commit_staging_write_tree(
                 &executable,
@@ -8291,10 +8541,9 @@ fn construct_git_commit_candidate(
         return Err(GitCommitPlanError::ResourceLimit);
     }
     materialize_current_git_commit_workspace(workspace, preflight, &prepared.staging)?;
-    let executable =
-        trusted_executable("/usr/bin/git").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+    let executable = trusted_git().ok_or(GitCommitPlanError::UnsupportedRepository)?;
     let sandbox =
-        trusted_executable("/usr/bin/bwrap").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+        trusted_sandbox_for(&executable).ok_or(GitCommitPlanError::UnsupportedRepository)?;
     hash_current_git_commit_blobs(
         &executable,
         &sandbox,
@@ -8368,10 +8617,9 @@ pub fn plan_git_commit(
     ensure_git_commit_plan_time(started)?;
     let candidate = construct_git_commit_candidate(workspace, &preflight, prepared, &message)?;
     ensure_git_commit_plan_time(started)?;
-    let executable =
-        trusted_executable("/usr/bin/git").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+    let executable = trusted_git().ok_or(GitCommitPlanError::UnsupportedRepository)?;
     let sandbox =
-        trusted_executable("/usr/bin/bwrap").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+        trusted_sandbox_for(&executable).ok_or(GitCommitPlanError::UnsupportedRepository)?;
     let unrelated_changes = count_unrelated_git_commit_changes(
         &executable,
         &sandbox,
@@ -8556,10 +8804,9 @@ fn prepare_git_commit_pack(
             staging_snapshot: plan.staging_snapshot,
         });
     }
-    let executable =
-        trusted_executable("/usr/bin/git").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+    let executable = trusted_git().ok_or(GitCommitPlanError::UnsupportedRepository)?;
     let sandbox =
-        trusted_executable("/usr/bin/bwrap").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+        trusted_sandbox_for(&executable).ok_or(GitCommitPlanError::UnsupportedRepository)?;
     let mut input = Vec::new();
     input
         .try_reserve_exact(object_ids.len().saturating_mul(object_id_hex_len + 1))
@@ -8633,10 +8880,9 @@ fn prepare_git_commit_candidate_index(
     {
         return Err(GitCommitPlanError::PlanStale);
     }
-    let executable =
-        trusted_executable("/usr/bin/git").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+    let executable = trusted_git().ok_or(GitCommitPlanError::UnsupportedRepository)?;
     let sandbox =
-        trusted_executable("/usr/bin/bwrap").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+        trusted_sandbox_for(&executable).ok_or(GitCommitPlanError::UnsupportedRepository)?;
     let mut command = git_commit_staging_write_command(
         &executable,
         &sandbox,
@@ -9435,10 +9681,9 @@ fn verify_completed_git_commit_publication(
         .ok_or(GitCommitPlanError::UnsafeRepository)?;
     let object_format =
         validate_object_id(expected_commit).ok_or(GitCommitPlanError::UnsafeRepository)?;
-    let executable =
-        trusted_executable("/usr/bin/git").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+    let executable = trusted_git().ok_or(GitCommitPlanError::UnsupportedRepository)?;
     let sandbox =
-        trusted_executable("/usr/bin/bwrap").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+        trusted_sandbox_for(&executable).ok_or(GitCommitPlanError::UnsupportedRepository)?;
     let commit = run_git_commit_read(
         &executable,
         &sandbox,
@@ -10010,7 +10255,7 @@ fn count_unrelated_git_commit_changes(
         create_git_format_config(object_format).map_err(map_git_commit_read_error)?;
     let config_descriptor = synthetic_config.as_raw_fd();
     let config_descriptor_text = config_descriptor.to_string();
-    let mut command = Command::new(sandbox);
+    let mut command = bubblewrap_command(sandbox, executable);
     command
         .env_clear()
         .env("LANG", "C")
@@ -10242,7 +10487,7 @@ fn git_commit_staging_write_command(
     arguments: &[&str],
 ) -> Command {
     let descriptor = staging.git_descriptor();
-    let mut command = Command::new(sandbox);
+    let mut command = bubblewrap_command(sandbox, executable);
     command
         .env_clear()
         .env("LANG", "C")
@@ -10349,7 +10594,7 @@ fn hash_current_git_commit_blobs(
 ) -> Result<(), GitCommitPlanError> {
     let git_descriptor = staging.git_descriptor();
     let candidate_descriptor = staging.candidate_descriptor();
-    let mut command = Command::new(sandbox);
+    let mut command = bubblewrap_command(sandbox, executable);
     command
         .env_clear()
         .env("LANG", "C")
@@ -11071,10 +11316,9 @@ fn validate_prior_git_commit_workspace(
         entries.push(entry);
     }
 
-    let executable =
-        trusted_executable("/usr/bin/git").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+    let executable = trusted_git().ok_or(GitCommitPlanError::UnsupportedRepository)?;
     let sandbox =
-        trusted_executable("/usr/bin/bwrap").ok_or(GitCommitPlanError::UnsupportedRepository)?;
+        trusted_sandbox_for(&executable).ok_or(GitCommitPlanError::UnsupportedRepository)?;
     stream_prior_git_commit_blobs(
         git_commit_staging_read_command(
             &executable,
@@ -11128,7 +11372,7 @@ fn git_commit_staging_read_command(
     arguments: &[&str],
 ) -> Command {
     let descriptor = staging.git_descriptor();
-    let mut command = Command::new(sandbox);
+    let mut command = bubblewrap_command(sandbox, executable);
     command
         .env_clear()
         .env("LANG", "C")
@@ -11671,7 +11915,7 @@ fn git_commit_pack_only_read_command(
     let config_path = format!("{}/config", staging.git_path());
     let head_path = format!("{}/HEAD", staging.git_path());
     let refs_path = format!("{}/refs", staging.git_path());
-    let mut command = Command::new(sandbox);
+    let mut command = bubblewrap_command(sandbox, executable);
     command
         .env_clear()
         .env("LANG", "C")
@@ -11841,7 +12085,7 @@ fn git_commit_object_stream_command(
     let config = create_git_format_config(object_format).map_err(map_git_commit_read_error)?;
     let config_descriptor = config.as_raw_fd();
     let config_descriptor_text = config_descriptor.to_string();
-    let mut command = Command::new(sandbox);
+    let mut command = bubblewrap_command(sandbox, executable);
     command
         .env_clear()
         .env("LANG", "C")
@@ -13575,8 +13819,8 @@ mod tests {
         fixture_git(&parented, &["commit", "-qm", "fixture"]);
         let workspace = open_workspace(&parented);
         let capability = workspace.git_repository_capability().unwrap();
-        let sandbox = trusted_executable("/usr/bin/bwrap").unwrap();
-        let executable = trusted_executable("/usr/bin/git").unwrap();
+        let executable = trusted_git().unwrap();
+        let sandbox = trusted_sandbox_for(&executable).unwrap();
         let parent = fs::read_to_string(parented.0.join(".git/refs/heads/main")).unwrap();
         let listing = run_git_commit_read(
             &executable,
@@ -13831,8 +14075,8 @@ mod tests {
             candidate.git_timestamp.as_bytes()
         ));
         assert_eq!(candidate.prepared.prior_managed.files.len(), 1);
-        let executable = trusted_executable("/usr/bin/git").unwrap();
-        let sandbox = trusted_executable("/usr/bin/bwrap").unwrap();
+        let executable = trusted_git().unwrap();
+        let sandbox = trusted_sandbox_for(&executable).unwrap();
         let mut command = git_commit_staging_read_command(
             &executable,
             &sandbox,
@@ -18919,6 +19163,31 @@ mod tests {
 
     #[test]
     fn reads_bounded_status_without_running_repository_programs() {
+        assert_bounded_status_runs_no_repository_programs(false);
+    }
+
+    #[test]
+    fn unsandboxed_status_runs_no_repository_programs() {
+        assert_bounded_status_runs_no_repository_programs(true);
+    }
+
+    struct SandboxDisabled;
+
+    impl SandboxDisabled {
+        fn new() -> Self {
+            toolchain::set_test_sandbox_disabled(true);
+            Self
+        }
+    }
+
+    impl Drop for SandboxDisabled {
+        fn drop(&mut self) {
+            toolchain::set_test_sandbox_disabled(false);
+        }
+    }
+
+    fn assert_bounded_status_runs_no_repository_programs(unsandboxed: bool) {
+        let _sandbox = unsandboxed.then(SandboxDisabled::new);
         let temp = Temp::new();
         Command::new("/usr/bin/git")
             .args(["init", "-q"])
@@ -19008,6 +19277,15 @@ mod tests {
         };
         assert!(status.available());
         assert!(status.version().is_some());
+        assert!(status.executable_source().is_some());
+        assert_eq!(
+            status.sandbox(),
+            if unsandboxed {
+                GitSandbox::Unsandboxed
+            } else {
+                GitSandbox::Bubblewrap
+            }
+        );
         assert_eq!(repository.branch(), Some("master"));
         assert_eq!(repository.upstream(), Some("origin/master"));
         assert!(repository.divergence_known());
@@ -19077,6 +19355,206 @@ mod tests {
             read_git_status(&workspace).unwrap().repository(),
             GitRepositoryStatus::Unsafe
         ));
+    }
+
+    #[test]
+    fn unsandboxed_status_matches_sandboxed_status_and_hides_post_check_alternates() {
+        let temp = Temp::new();
+        let _workspace = initialized_workspace(&temp);
+        fixture_git(&temp, &["add", "--", "rehow.yaml"]);
+        fixture_git(
+            &temp,
+            &[
+                "-c",
+                "user.name=Rehow",
+                "-c",
+                "user.email=rehow@example.invalid",
+                "commit",
+                "-qm",
+                "base",
+            ],
+        );
+        fixture_git(&temp, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        fixture_git(
+            &temp,
+            &["config", "remote.origin.url", "https://example.invalid/r"],
+        );
+        fixture_git(&temp, &["config", "branch.main.remote", "origin"]);
+        fixture_git(&temp, &["config", "branch.main.merge", "refs/heads/main"]);
+        fs::write(temp.0.join("note.txt"), "untracked\n").unwrap();
+        fixture_git(&temp, &["add", "--", "note.txt"]);
+        fixture_git(
+            &temp,
+            &[
+                "-c",
+                "user.name=Rehow",
+                "-c",
+                "user.email=rehow@example.invalid",
+                "commit",
+                "-qm",
+                "ahead",
+            ],
+        );
+        fs::write(temp.0.join("note.txt"), "changed\n").unwrap();
+        fs::write(temp.0.join("other.txt"), "untracked\n").unwrap();
+
+        let sandboxed = read_git_status(&open_workspace(&temp)).unwrap();
+        assert_eq!(sandboxed.sandbox(), GitSandbox::Bubblewrap);
+        let unsandboxed = {
+            let _sandbox = SandboxDisabled::new();
+            read_git_status(&open_workspace(&temp)).unwrap()
+        };
+        assert_eq!(unsandboxed.sandbox(), GitSandbox::Unsandboxed);
+        assert_eq!(unsandboxed.repository(), sandboxed.repository());
+        let GitRepositoryStatus::Ready(repository) = unsandboxed.repository() else {
+            panic!("unsandboxed status should be ready");
+        };
+        assert_eq!(repository.branch(), Some("main"));
+        assert!(repository.divergence_known());
+        assert_eq!((repository.ahead(), repository.behind()), (1, 0));
+        assert_eq!(repository.changed(), 1);
+        assert_eq!(repository.untracked(), 1);
+
+        let alternates = temp.0.join(".git/objects/info/alternates");
+        POST_CHECK_ALTERNATES.with_borrow_mut(|path| *path = Some(alternates.clone()));
+        let after_race = {
+            let _sandbox = SandboxDisabled::new();
+            read_git_status(&open_workspace(&temp)).unwrap()
+        };
+        assert!(alternates.exists());
+        assert_eq!(after_race.repository(), sandboxed.repository());
+    }
+
+    #[test]
+    fn unsandboxed_status_command_keeps_the_hardened_environment() {
+        let temp = Temp::new();
+        let _workspace = initialized_workspace(&temp);
+        let workspace = open_workspace(&temp);
+        let capability = workspace.git_repository_capability().unwrap();
+        let synthetic = SyntheticGitDirectory::create(&capability).unwrap();
+        let command = unsandboxed_status_command(
+            Path::new("/usr/bin/git"),
+            synthetic.path(),
+            &capability,
+            &["status", "--porcelain=v2"],
+        );
+        assert_eq!(command.get_program(), "/usr/bin/git");
+        let environment = command_environment(&command);
+        for (key, value) in [
+            ("LANG", "C"),
+            ("LC_ALL", "C"),
+            ("PATH", "/usr/bin:/bin"),
+            ("HOME", "/dev/null"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_TERMINAL_PROMPT", "0"),
+            ("GIT_OPTIONAL_LOCKS", "0"),
+            ("GIT_PAGER", "cat"),
+            ("GIT_EDITOR", "false"),
+            ("GIT_ASKPASS", "false"),
+            ("SSH_ASKPASS", "false"),
+            ("GIT_NO_LAZY_FETCH", "1"),
+            ("GIT_WORK_TREE", capability.work_tree_path()),
+        ] {
+            assert_eq!(environment[key].as_deref(), Some(value), "{key}");
+        }
+        assert_eq!(environment["GIT_DIR"].as_deref(), synthetic.path().to_str());
+        // The environment is cleared first, so only the allowlist above exists.
+        assert_eq!(environment.len(), 15);
+        let arguments = command_arguments(&command);
+        for required in [
+            "--no-pager",
+            "--literal-pathspecs",
+            "core.hooksPath=/dev/null",
+            "core.fsmonitor=false",
+            "core.untrackedCache=false",
+            "core.alternateRefsCommand=",
+            "diff.external=",
+            "protocol.allow=never",
+            "credential.helper=",
+        ] {
+            assert!(
+                arguments.iter().any(|argument| argument == required),
+                "{required}"
+            );
+        }
+        assert_eq!(
+            &arguments[arguments.len() - 2..],
+            &["status".to_owned(), "--porcelain=v2".to_owned()]
+        );
+
+        // The synthetic directory has no config, an empty private
+        // `objects/info`, and is removed without touching the repository.
+        let path = synthetic.path().to_owned();
+        assert!(!path.join("config").exists());
+        assert!(path.join("HEAD").is_file());
+        assert!(
+            !fs::symlink_metadata(path.join("HEAD"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read_dir(path.join("objects/info")).unwrap().count(), 0);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        drop(synthetic);
+        assert!(!path.exists());
+        assert!(temp.0.join(".git/objects").is_dir());
+        assert!(temp.0.join(".git/HEAD").is_file());
+    }
+
+    #[test]
+    fn status_reports_git_unavailable_when_no_trusted_root_has_git() {
+        let temp = Temp::new();
+        let workspace = workspace(&temp);
+        let empty = temp.0.join("empty-root");
+        fs::create_dir(&empty).unwrap();
+        toolchain::set_test_search_roots(Some(vec![toolchain::SearchRoot {
+            directory: empty,
+            source: GitExecutableSource::UsrBin,
+        }]));
+        let status = read_git_status(&workspace);
+        toolchain::set_test_search_roots(None);
+        let status = status.unwrap();
+        assert!(!status.available());
+        assert_eq!(status.executable_source(), None);
+        assert_eq!(status.sandbox(), GitSandbox::Unsandboxed);
+        assert_eq!(trusted_git(), Some(PathBuf::from("/usr/bin/git")));
+    }
+
+    #[test]
+    fn sandbox_required_operations_fail_closed_without_bubblewrap() {
+        let _sandbox = SandboxDisabled::new();
+        let executable = trusted_git().unwrap();
+        assert_eq!(trusted_sandbox_for(&executable), None);
+        let environment = inspect_git_environment();
+        assert!(environment.git_available());
+        assert_eq!(environment.sandbox(), GitSandbox::Unsandboxed);
+    }
+
+    #[test]
+    fn existing_system_paths_keep_the_historical_executables() {
+        let executable = trusted_git().unwrap();
+        assert_eq!(executable, Path::new("/usr/bin/git"));
+        assert_eq!(
+            trusted_sandbox_for(&executable),
+            Some(PathBuf::from("/usr/bin/bwrap"))
+        );
+        let environment = inspect_git_environment();
+        assert_eq!(environment.git_source(), Some(GitExecutableSource::UsrBin));
+        assert_eq!(environment.sandbox(), GitSandbox::Bubblewrap);
+        let command = bubblewrap_command(Path::new("/usr/bin/bwrap"), &executable);
+        assert_eq!(command.get_args().count(), 0);
+        let nix = bubblewrap_command(
+            Path::new("/usr/bin/bwrap"),
+            Path::new("/nix/store/abc-git/bin/git"),
+        );
+        assert_eq!(
+            command_arguments(&nix),
+            ["--ro-bind", "/nix/store", "/nix/store"]
+        );
     }
 
     #[test]

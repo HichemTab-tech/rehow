@@ -557,7 +557,10 @@ struct FileIdentity {
 /// inode. It does not invoke a helper or read credential protocol data.
 pub fn capture_git_https_credential_provenance() -> GitHttpsCredentialProvenance {
     let effective_user = unsafe { libc::geteuid() };
-    let git = Path::new("/usr/bin/git");
+    let Some(git) = super::trusted_git() else {
+        return unavailable(GitHttpsCredentialStatus::Unsafe);
+    };
+    let git = git.as_path();
     let _git_capability = match capture_helper_executable_result(git, 0, effective_user) {
         FileCapture::Trusted(executable) => executable,
         FileCapture::Missing | FileCapture::Unsafe => {
@@ -617,7 +620,7 @@ pub fn capture_git_https_credential_provenance() -> GitHttpsCredentialProvenance
 /// source paths are exposed through `Debug`.
 pub fn capture_git_global_identity_provenance() -> GitGlobalIdentityProvenance {
     let effective_user = unsafe { libc::geteuid() };
-    let Some(git) = super::trusted_executable("/usr/bin/git") else {
+    let Some(git) = super::trusted_git() else {
         return unavailable_global_identity(GitGlobalIdentityStatus::Unsafe);
     };
     let home = env::var_os("HOME");
