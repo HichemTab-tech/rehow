@@ -289,7 +289,7 @@ const GuideRow = memo(function GuideRow({
             )}
           >
             {hit?.excerptField === "title" ? (
-              <Highlighted hit={hit} />
+              <Highlighted hit={withOriginalText(hit, guide.title)} />
             ) : (
               guide.title
             )}
@@ -312,7 +312,7 @@ const GuideRow = memo(function GuideRow({
         ) : guide.summary === "" && hit === undefined ? null : (
           <span className="line-clamp-2 text-xs leading-[17px] text-muted">
             {hit?.excerptField === "summary" ? (
-              <Highlighted hit={hit} />
+              <Highlighted hit={withOriginalText(hit, guide.summary)} />
             ) : (
               guide.summary
             )}
@@ -350,6 +350,20 @@ const GuideRow = memo(function GuideRow({
     </li>
   );
 });
+
+/**
+ * Search excerpts are normalized (lowercased). When the excerpt is the whole
+ * title, show the original casing with the same highlight ranges.
+ */
+function withOriginalText(
+  hit: SearchHitPayload,
+  original: string,
+): SearchHitPayload {
+  const same = Array.from(hit.excerpt).length === Array.from(original).length;
+  return same && hit.excerpt === original.normalize("NFKC").toLocaleLowerCase()
+    ? { ...hit, excerpt: original }
+    : hit;
+}
 
 function Highlighted({ hit }: { hit: SearchHitPayload }) {
   return (
