@@ -3,11 +3,15 @@
     reason = "Phase 1D-A binding is connected to storage/application in Phase 1E"
 )]
 
+pub(crate) mod diagnostic;
 pub(crate) mod emission;
 pub(crate) mod guide;
 pub(crate) mod mutation;
 pub(crate) mod verification;
 
+pub use diagnostic::{
+    GuideDiagnostic, GuideDiagnosticCode, GuideDiagnosticField, GuideDiagnosticPosition,
+};
 pub use guide::{
     Applicability, ArchiveMetadata, Attachment, Guide, GuideMetadata, GuideReference, GuideStatus,
     RestorableGuideStatus, VerificationMetadata,
