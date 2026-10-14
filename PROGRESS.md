@@ -25,6 +25,18 @@ Verified: `pnpm check`, desktop Vitest (43 tests), `tsc`, production `vite build
 
 Verified: `pnpm check`, Vitest (43), `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -D warnings`, `cargo test --workspace --all-features` (710 passed); native checks of listing hand-written files without writing them (checksum unchanged) and typo search; adoption save verified in core tests and the browser mock (native keyboard-driven save not exercised).
 
+### 2026-10-14 (continued)
+
+- MCP exposes `origin` on every Guide summary and refuses all Guide mutations on unadopted files with `INVALID_GUIDE` ("open and save it once in the Rehow app first"); MCP never adopts.
+- Git executables are discovered only in fixed trusted directories (incl. NixOS profiles and Flatpak `/app/bin`, never `PATH`) with ownership/permission checks (ADR 0064). Without usable bubblewrap, only read-only status runs unsandboxed with the same hardening; commit/sync/push/clone report that bubblewrap is required. Status payload carries `sandbox`; the Source control panel explains the limitation.
+- Guide list is virtualized (≈18 rows rendered for 5,009 Guides); interface guideline fixes applied (skip link target, non-translatable code, contained dialog scrolling, autocomplete defaults).
+- Removed 111 blanket `dead_code` allows: ~23 dead items deleted, ~86 test-only items moved behind `cfg(test)`, remaining field-level cases use `expect(dead_code, reason)` so they surface when production starts reading them.
+- README and installation docs describe the rebuilt experience, hand-written Markdown, and the bubblewrap requirement.
+
+Verified at `5246283`: `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -D warnings`, `cargo test --workspace --all-features` (727 passed), `pnpm check`, Vitest (43).
+
+Open: split the largest Rust files (`git.rs`, `rehow-mcp/src/server.rs`, `storage.rs`, `application.rs`, desktop `lib.rs`); native keyboard-driven verification of first-save adoption; generated TypeScript types for Tauri payloads (still hand-mirrored and validated).
+
 ## Current phase
 
 Phase 7 correction work now includes the Wayland and folder-picker fixes plus safe Git-author onboarding, state-aware remote actions, and discoverable Codex/ChatGPT MCP setup. The implementation, full automated repository gate, independent security correction review, and signed checkpoint pass. Clean installed-package graphical qualification remains open.
