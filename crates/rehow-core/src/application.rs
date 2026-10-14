@@ -11,8 +11,8 @@ use crate::{
         CategoryStatus, bind_category,
         derived::{DeriveContext, DerivedGuide, derive_guide},
         emission::{
-            EmitFailureKind, EmitField, emit_new_category, emit_new_guide,
-            emit_new_workspace_manifest,
+            AdoptionFailure, AdoptionInput, EmitFailureKind, EmitField, emit_adopted_guide,
+            emit_new_category, emit_new_guide, emit_new_workspace_manifest,
         },
         guide::{BoundGuide, bind_guide},
         mutation::{
@@ -1555,6 +1555,7 @@ pub struct GuideRemoveOutcome;
 pub struct GuideUpdateOutcome {
     revision: Revision,
     changed: bool,
+    adopted_id: Option<GuideId>,
 }
 
 impl GuideUpdateOutcome {
@@ -1564,6 +1565,12 @@ impl GuideUpdateOutcome {
 
     pub fn changed(self) -> bool {
         self.changed
+    }
+
+    /// When this save adopted a hand-written Guide, its new managed id. The
+    /// derived id used to address the unadopted Guide is no longer listed.
+    pub fn adopted_id(self) -> Option<GuideId> {
+        self.adopted_id
     }
 }
 
@@ -1627,6 +1634,11 @@ pub fn confirm_and_approve_guide_tested<W: HasWindowHandle + HasDisplayHandle + 
     if loaded.revision() != expected_revision {
         return Err(GuideUpdateError::RevisionConflict);
     }
+    // Derived metadata is never trusted as tested: a hand-written Guide must
+    // be adopted by an explicit save before it can be confirmed.
+    if !loaded.origin().is_managed() {
+        return Err(GuideUpdateError::NotReady);
+    }
     if loaded.effective_status() == crate::domain::GuideStatus::Archived {
         return Err(GuideUpdateError::InvalidEdit);
     }
@@ -1654,6 +1666,7 @@ pub fn confirm_and_approve_guide_tested<W: HasWindowHandle + HasDisplayHandle + 
         return Ok(GuideUpdateOutcome {
             revision: expected_revision,
             changed: false,
+            adopted_id: None,
         });
     }
     approve_guide_tested_with_context(
@@ -1680,6 +1693,9 @@ pub fn validate_guide_tested_approval(
         .ok_or(GuideUpdateError::NotFound)?;
     if loaded.revision() != expected_revision {
         return Err(GuideUpdateError::RevisionConflict.into());
+    }
+    if !loaded.origin().is_managed() {
+        return Err(GuideUpdateError::NotReady.into());
     }
     if loaded.effective_status() == crate::domain::GuideStatus::Archived {
         return Err(GuideUpdateError::InvalidEdit.into());
@@ -1802,6 +1818,9 @@ where
     if loaded.1.revision() != expected_revision {
         return Err(GuideUpdateError::RevisionConflict.into());
     }
+    if !loaded.1.origin().is_managed() {
+        return Err(GuideUpdateError::NotReady.into());
+    }
     let relative_path = loaded.1.relative_path().to_owned();
     let category_id = *loaded.0.category().id();
     let stamp = MutationStamp::from_trusted_time(at);
@@ -1846,6 +1865,7 @@ where
     Ok(GuideUpdateOutcome {
         revision: outcome.revision(),
         changed: outcome.changed(),
+        adopted_id: None,
     })
 }
 
@@ -4139,6 +4159,7 @@ pub fn update_guide_details(
     Ok(GuideUpdateOutcome {
         revision: outcome.revision(),
         changed: true,
+        adopted_id: None,
     })
 }
 
@@ -4246,6 +4267,7 @@ pub fn change_guide_category_at_revision(
     Ok(GuideUpdateOutcome {
         revision: outcome.revision(),
         changed: outcome.changed(),
+        adopted_id: None,
     })
 }
 
@@ -4271,7 +4293,30 @@ pub(crate) fn update_guide_with_context(
     }
     let relative_path = loaded.1.relative_path().to_owned();
     let category_id = *loaded.0.category().id();
+    let unadopted = !loaded.1.origin().is_managed();
     let stamp = MutationStamp::from_trusted_time(at);
+
+    // An unadopted hand-written Guide is adopted by this explicit save: the
+    // modification time comes from the exact revision being replaced.
+    let modified_at = if unadopted {
+        let (_, modified) = read_managed_regular_with_modified(
+            workspace,
+            &relative_path,
+            GUIDE_BODY_INPUT_LIMIT,
+            Some(expected_revision),
+        )
+        .map_err(|error| match map_guide_read_error(error) {
+            GuideBodyReadError::ResourceLimit => GuideUpdateError::ResourceLimit,
+            GuideBodyReadError::UnsafeStorage => GuideUpdateError::UnsafeStorage,
+            GuideBodyReadError::Io => GuideUpdateError::Io,
+            _ => GuideUpdateError::RevisionConflict,
+        })?;
+        Some(guide_modified_timestamp(modified))
+    } else {
+        None
+    };
+    let workspace_id = *workspace.manifest().workspace_id();
+    let mut adopted_id = None;
 
     let result = execute_document_update(
         workspace,
@@ -4282,97 +4327,34 @@ pub(crate) fn update_guide_with_context(
         operation_id,
         at,
         |bytes| {
-            let parsed =
-                parse_guide_source(copy_bytes(bytes)?).map_err(|_| PlanError::InvalidGuide)?;
-            let bound = bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
-            if bound.record().id() != &guide_id || bound.record().category_id() != &category_id {
+            let bound = match modified_at {
+                None => {
+                    let parsed = parse_guide_source(copy_bytes(bytes)?)
+                        .map_err(|_| PlanError::InvalidGuide)?;
+                    bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?
+                }
+                Some(modified_at) => {
+                    let adopted = adopt_guide(
+                        bytes,
+                        &DeriveContext {
+                            workspace_id: &workspace_id,
+                            relative_path: &relative_path,
+                            category_id,
+                            modified_at,
+                        },
+                        guide_id,
+                        &at,
+                    )?;
+                    adopted_id = Some(*adopted.record().id());
+                    adopted
+                }
+            };
+            if (adopted_id.is_none() && bound.record().id() != &guide_id)
+                || bound.record().category_id() != &category_id
+            {
                 return Err(PlanError::InvalidGuide);
             }
-            match edit {
-                GuideEdit::SetMetadata { title, summary } => {
-                    let title_candidate =
-                        apply_guide_mutation(&bound, GuideMutation::SetTitle(title), &stamp)?;
-                    let parsed =
-                        parse_guide_source(title_candidate).map_err(|_| PlanError::InvalidGuide)?;
-                    let rebound = bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
-                    apply_guide_mutation(&rebound, GuideMutation::SetSummary(summary), &stamp)
-                }
-                GuideEdit::SetDetails {
-                    title,
-                    summary,
-                    tags,
-                    aliases,
-                } => {
-                    let mut candidate_bytes = copy_bytes(bound.source_bytes())?;
-                    for mutation in [
-                        GuideMutation::SetTitle(title),
-                        GuideMutation::SetSummary(summary),
-                        GuideMutation::ReplaceTags(tags),
-                        GuideMutation::ReplaceAliases(aliases),
-                    ] {
-                        let parsed = parse_guide_source(candidate_bytes)
-                            .map_err(|_| PlanError::InvalidGuide)?;
-                        let candidate_bound =
-                            bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
-                        candidate_bytes = apply_guide_mutation(&candidate_bound, mutation, &stamp)?;
-                    }
-                    Ok(candidate_bytes)
-                }
-                GuideEdit::ReplaceTags(values) => {
-                    apply_guide_mutation(&bound, GuideMutation::ReplaceTags(values), &stamp)
-                }
-                GuideEdit::ReplaceAliases(values) => {
-                    apply_guide_mutation(&bound, GuideMutation::ReplaceAliases(values), &stamp)
-                }
-                GuideEdit::SetContent {
-                    title,
-                    summary,
-                    tags,
-                    aliases,
-                    body,
-                } => {
-                    let mut candidate_bytes = copy_bytes(bound.source_bytes())?;
-                    for mutation in [
-                        GuideMutation::SetTitle(title),
-                        GuideMutation::SetSummary(summary),
-                        GuideMutation::ReplaceTags(tags),
-                        GuideMutation::ReplaceAliases(aliases),
-                        GuideMutation::ReplaceBody(body),
-                    ] {
-                        let parsed = parse_guide_source(candidate_bytes)
-                            .map_err(|_| PlanError::InvalidGuide)?;
-                        let candidate_bound =
-                            bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
-                        candidate_bytes = apply_guide_mutation(&candidate_bound, mutation, &stamp)?;
-                    }
-                    Ok(candidate_bytes)
-                }
-                GuideEdit::SetTitle(value) => {
-                    apply_guide_mutation(&bound, GuideMutation::SetTitle(value), &stamp)
-                }
-                GuideEdit::SetSummary(value) => {
-                    apply_guide_mutation(&bound, GuideMutation::SetSummary(value), &stamp)
-                }
-                GuideEdit::ReplaceBody(value) => {
-                    apply_guide_mutation(&bound, GuideMutation::ReplaceBody(value), &stamp)
-                }
-                GuideEdit::UpdateAttachmentTitle {
-                    attachment_id,
-                    title,
-                } => apply_guide_mutation(
-                    &bound,
-                    GuideMutation::UpdateAttachmentTitle {
-                        attachment_id,
-                        title,
-                    },
-                    &stamp,
-                ),
-                GuideEdit::MarkStale => {
-                    apply_guide_mutation(&bound, GuideMutation::MarkStale, &stamp)
-                }
-                GuideEdit::Archive => apply_guide_mutation(&bound, GuideMutation::Archive, &stamp),
-                GuideEdit::Restore => apply_guide_mutation(&bound, GuideMutation::Restore, &stamp),
-            }
+            apply_guide_edit(&bound, edit, &stamp)
         },
     )
     .map_err(map_update_error)?;
@@ -4385,7 +4367,129 @@ pub(crate) fn update_guide_with_context(
     Ok(GuideUpdateOutcome {
         revision: result.revision(),
         changed: result.changed(),
+        adopted_id,
     })
+}
+
+/// Re-derive the current bytes of an unadopted Guide and produce its adopted,
+/// strictly bound form. The derived id must still identify the listed Guide;
+/// the adopted id is the file's own `id` or a freshly minted UUIDv7.
+fn adopt_guide(
+    bytes: &[u8],
+    context: &DeriveContext<'_>,
+    guide_id: GuideId,
+    now: &Timestamp,
+) -> Result<BoundGuide, PlanError> {
+    let DerivedGuide::Unadopted(unadopted) = derive_guide(copy_bytes(bytes)?, context) else {
+        return Err(PlanError::InvalidGuide);
+    };
+    if unadopted.guide().id() != &guide_id {
+        return Err(PlanError::InvalidGuide);
+    }
+    let fresh_id = new_guide_id();
+    let now = now.whole_seconds();
+    emit_adopted_guide(
+        &unadopted,
+        bytes,
+        &AdoptionInput {
+            fresh_id: &fresh_id,
+            modified_at: &context.modified_at,
+            now: &now,
+        },
+    )
+    .map_err(|error| match error {
+        AdoptionFailure::Unsupported => PlanError::UnsafeRoundTrip,
+        AdoptionFailure::Mismatch => PlanError::InvalidGuide,
+        AdoptionFailure::ResourceLimit => PlanError::ResourceLimit,
+    })
+}
+
+fn apply_guide_edit(
+    bound: &BoundGuide,
+    edit: GuideEdit,
+    stamp: &MutationStamp,
+) -> Result<Box<[u8]>, PlanError> {
+    match edit {
+        GuideEdit::SetMetadata { title, summary } => {
+            let title_candidate =
+                apply_guide_mutation(bound, GuideMutation::SetTitle(title), stamp)?;
+            let parsed =
+                parse_guide_source(title_candidate).map_err(|_| PlanError::InvalidGuide)?;
+            let rebound = bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
+            apply_guide_mutation(&rebound, GuideMutation::SetSummary(summary), stamp)
+        }
+        GuideEdit::SetDetails {
+            title,
+            summary,
+            tags,
+            aliases,
+        } => {
+            let mut candidate_bytes = copy_bytes(bound.source_bytes())?;
+            for mutation in [
+                GuideMutation::SetTitle(title),
+                GuideMutation::SetSummary(summary),
+                GuideMutation::ReplaceTags(tags),
+                GuideMutation::ReplaceAliases(aliases),
+            ] {
+                let parsed =
+                    parse_guide_source(candidate_bytes).map_err(|_| PlanError::InvalidGuide)?;
+                let candidate_bound = bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
+                candidate_bytes = apply_guide_mutation(&candidate_bound, mutation, stamp)?;
+            }
+            Ok(candidate_bytes)
+        }
+        GuideEdit::ReplaceTags(values) => {
+            apply_guide_mutation(bound, GuideMutation::ReplaceTags(values), stamp)
+        }
+        GuideEdit::ReplaceAliases(values) => {
+            apply_guide_mutation(bound, GuideMutation::ReplaceAliases(values), stamp)
+        }
+        GuideEdit::SetContent {
+            title,
+            summary,
+            tags,
+            aliases,
+            body,
+        } => {
+            let mut candidate_bytes = copy_bytes(bound.source_bytes())?;
+            for mutation in [
+                GuideMutation::SetTitle(title),
+                GuideMutation::SetSummary(summary),
+                GuideMutation::ReplaceTags(tags),
+                GuideMutation::ReplaceAliases(aliases),
+                GuideMutation::ReplaceBody(body),
+            ] {
+                let parsed =
+                    parse_guide_source(candidate_bytes).map_err(|_| PlanError::InvalidGuide)?;
+                let candidate_bound = bind_guide(parsed).map_err(|_| PlanError::InvalidGuide)?;
+                candidate_bytes = apply_guide_mutation(&candidate_bound, mutation, stamp)?;
+            }
+            Ok(candidate_bytes)
+        }
+        GuideEdit::SetTitle(value) => {
+            apply_guide_mutation(bound, GuideMutation::SetTitle(value), stamp)
+        }
+        GuideEdit::SetSummary(value) => {
+            apply_guide_mutation(bound, GuideMutation::SetSummary(value), stamp)
+        }
+        GuideEdit::ReplaceBody(value) => {
+            apply_guide_mutation(bound, GuideMutation::ReplaceBody(value), stamp)
+        }
+        GuideEdit::UpdateAttachmentTitle {
+            attachment_id,
+            title,
+        } => apply_guide_mutation(
+            bound,
+            GuideMutation::UpdateAttachmentTitle {
+                attachment_id,
+                title,
+            },
+            stamp,
+        ),
+        GuideEdit::MarkStale => apply_guide_mutation(bound, GuideMutation::MarkStale, stamp),
+        GuideEdit::Archive => apply_guide_mutation(bound, GuideMutation::Archive, stamp),
+        GuideEdit::Restore => apply_guide_mutation(bound, GuideMutation::Restore, stamp),
+    }
 }
 
 fn apply_guide_mutation(
@@ -5609,6 +5713,260 @@ mod tests {
             issue.kind() == crate::storage::WorkspaceIssueKind::CategoryMismatch
                 && issue.relative_path().ends_with("/copy.md")
         }));
+    }
+
+    fn unadopted_fixture(
+        label: &str,
+        filename: &str,
+        source: &[u8],
+    ) -> (TestDirectory, TestDirectory, Box<WorkspaceView>, PathBuf) {
+        let (workspace, state, mut view) = fixture(label, GUIDE);
+        let path = workspace
+            .path()
+            .join("categories/linux-system--b6ba3a5551")
+            .join(filename);
+        fs::write(&path, source).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        refresh_open_workspace(&mut view).unwrap();
+        (workspace, state, view, path)
+    }
+
+    fn unadopted_guide(view: &WorkspaceView) -> (GuideId, Revision) {
+        let guide = view.categories()[0]
+            .guides()
+            .iter()
+            .find(|guide| !guide.origin().is_managed())
+            .expect("unadopted Guide");
+        (*guide.guide().id(), guide.revision())
+    }
+
+    #[test]
+    fn explicit_save_adopts_a_hand_written_guide_preserving_body_bytes() {
+        let original = b"\xef\xbb\xbf# Deploy the widget\r\n\r\nRun the deploy script.\r\n\r\n";
+        let (_workspace, state, mut view, path) =
+            unadopted_fixture("adopt-body", "My Notes.md", original);
+        let (derived_id, revision) = unadopted_guide(&view);
+        let outcome = update_guide_with_context(
+            &mut view,
+            state.path(),
+            None,
+            derived_id,
+            revision,
+            operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e30"),
+            at(),
+            GuideEdit::SetTitle("Deploy the widget safely".to_owned()),
+        )
+        .unwrap();
+        assert!(outcome.changed());
+        let adopted_id = outcome.adopted_id().expect("adopted id");
+        assert_ne!(adopted_id, derived_id);
+        assert!(!adopted_id.to_string().starts_with("00000000-0000-7"));
+
+        let bytes = fs::read(&path).unwrap();
+        assert!(bytes.starts_with(b"\xef\xbb\xbf---\nschema_version: 1\n"));
+        assert!(bytes.ends_with(&original[3..]));
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.contains(&format!("id: \"{adopted_id}\"")));
+        assert!(text.contains("title: \"Deploy the widget safely\""));
+        assert!(text.contains("summary: \"Run the deploy script.\""));
+        assert!(text.contains("status: draft"));
+        assert!(!text.contains(&derived_id.to_string()));
+
+        let listed = view.categories()[0]
+            .guides()
+            .iter()
+            .find(|guide| guide.guide().id() == &adopted_id)
+            .unwrap();
+        assert!(listed.origin().is_managed());
+        assert_eq!(
+            listed.relative_path(),
+            "categories/linux-system--b6ba3a5551/My Notes.md"
+        );
+        assert_eq!(listed.effective_status(), GuideStatus::Draft);
+        assert!(view.issues().is_empty());
+        assert_eq!(
+            read_guide_body(&view, adopted_id, listed.revision())
+                .unwrap()
+                .as_ref(),
+            &original[3..]
+        );
+    }
+
+    #[test]
+    fn explicit_save_adopts_partial_frontmatter_and_applies_the_edit() {
+        let original = b"---\ntitle: Partial notes\nlayout: post # keep\n---\nOld body\n";
+        let (_workspace, state, mut view, path) =
+            unadopted_fixture("adopt-partial", "partial.md", original);
+        let (derived_id, revision) = unadopted_guide(&view);
+        let outcome = update_guide_with_context(
+            &mut view,
+            state.path(),
+            None,
+            derived_id,
+            revision,
+            operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e31"),
+            at(),
+            GuideEdit::ReplaceBody(b"New body\n".to_vec()),
+        )
+        .unwrap();
+        let adopted_id = outcome.adopted_id().unwrap();
+        let text = String::from_utf8(fs::read(&path).unwrap()).unwrap();
+        assert!(
+            text.starts_with("---\ntitle: Partial notes\nlayout: post # keep\nschema_version: 1\n")
+        );
+        assert!(text.ends_with("---\nNew body\n"));
+        assert_eq!(text.matches("title:").count(), 1);
+        assert!(text.contains(&format!("id: \"{adopted_id}\"")));
+        assert!(
+            view.categories()[0]
+                .guides()
+                .iter()
+                .any(|guide| guide.guide().id() == &adopted_id && guide.origin().is_managed())
+        );
+    }
+
+    #[test]
+    fn adoption_is_revision_checked_refuses_unsafe_frontmatter_and_never_marks_tested() {
+        let (_workspace, state, mut view, path) =
+            unadopted_fixture("adopt-conflict", "notes.md", b"# Notes\n\nText.\n");
+        let (derived_id, revision) = unadopted_guide(&view);
+        fs::write(&path, b"# Notes\n\nChanged externally.\n").unwrap();
+        assert_eq!(
+            update_guide_with_context(
+                &mut view,
+                state.path(),
+                None,
+                derived_id,
+                revision,
+                operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e32"),
+                at(),
+                GuideEdit::SetTitle("Mine".to_owned()),
+            ),
+            Err(GuideUpdateError::RevisionConflict)
+        );
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"# Notes\n\nChanged externally.\n"
+        );
+
+        refresh_open_workspace(&mut view).unwrap();
+        let (derived_id, revision) = unadopted_guide(&view);
+        assert_eq!(
+            validate_guide_tested_approval(&view, derived_id, revision),
+            Err(GuideTestedApprovalError::Update(GuideUpdateError::NotReady))
+        );
+        assert_eq!(
+            approve_guide_tested_with_context(
+                &mut view,
+                state.path(),
+                None,
+                derived_id,
+                revision,
+                operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e33"),
+                at(),
+            ),
+            Err(GuideUpdateError::NotReady)
+        );
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"# Notes\n\nChanged externally.\n"
+        );
+
+        fs::write(&path, b"---\n{title: Flow}\n---\nBody\n").unwrap();
+        refresh_open_workspace(&mut view).unwrap();
+        let (derived_id, revision) = unadopted_guide(&view);
+        assert_eq!(
+            update_guide_with_context(
+                &mut view,
+                state.path(),
+                None,
+                derived_id,
+                revision,
+                operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e34"),
+                at(),
+                GuideEdit::SetTitle("Mine".to_owned()),
+            ),
+            Err(GuideUpdateError::UnsafeRoundTrip)
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"---\n{title: Flow}\n---\nBody\n");
+
+        fs::write(&path, b"---\nstatus: tested\n---\nBody\n").unwrap();
+        refresh_open_workspace(&mut view).unwrap();
+        assert!(
+            view.categories()[0]
+                .guides()
+                .iter()
+                .all(|guide| guide.origin().is_managed())
+        );
+        assert!(view.issues().iter().any(|issue| {
+            issue.relative_path().ends_with("/notes.md")
+                && issue.kind() == crate::storage::WorkspaceIssueKind::MalformedGuide
+                && issue.field() == Some(crate::domain::GuideDiagnosticField::LastVerifiedAt)
+        }));
+    }
+
+    #[test]
+    fn interrupted_adoption_recovers_to_exactly_one_state() {
+        for fault in [
+            crate::storage::WorkspaceFault::BeforeLiveRename,
+            crate::storage::WorkspaceFault::AfterLiveRenameBeforeSync,
+        ] {
+            let original = b"# Recover me\r\n\r\nBody text.\r\n";
+            let (_workspace, state, mut view, path) =
+                unadopted_fixture("adopt-recover", "recover.md", original);
+            let (derived_id, revision) = unadopted_guide(&view);
+            crate::storage::set_workspace_fault(fault);
+            assert!(
+                update_guide_with_context(
+                    &mut view,
+                    state.path(),
+                    None,
+                    derived_id,
+                    revision,
+                    operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e35"),
+                    at(),
+                    GuideEdit::SetTitle("Recovered".to_owned()),
+                )
+                .is_err()
+            );
+            let bytes = fs::read(&path).unwrap();
+            assert!(
+                bytes == original || bytes.ends_with(b"---\n\n# Recover me\r\n\r\nBody text.\r\n")
+            );
+
+            // The next mutation replays or rolls back the journal before
+            // planning; afterwards the Guide is either still unadopted or
+            // adopted exactly once, and its body bytes are intact.
+            let _ = refresh_open_workspace(&mut view);
+            let current = view.categories()[0]
+                .guides()
+                .iter()
+                .find(|guide| guide.relative_path().ends_with("/recover.md"))
+                .map(|guide| (*guide.guide().id(), guide.revision(), guide.origin()))
+                .unwrap();
+            let outcome = update_guide_with_context(
+                &mut view,
+                state.path(),
+                None,
+                current.0,
+                current.1,
+                operation("0199a1d7-7b0d-7d8e-a38d-f936c5735e36"),
+                at(),
+                GuideEdit::SetTitle("Recovered".to_owned()),
+            )
+            .unwrap();
+            let text = String::from_utf8(fs::read(&path).unwrap()).unwrap();
+            assert_eq!(text.matches("schema_version:").count(), 1);
+            assert!(text.contains("title: \"Recovered\""));
+            assert!(text.ends_with("---\n\n# Recover me\r\n\r\nBody text.\r\n"));
+            assert_eq!(outcome.adopted_id().is_some(), !current.2.is_managed());
+            assert!(
+                view.categories()[0]
+                    .guides()
+                    .iter()
+                    .all(|guide| guide.origin().is_managed())
+            );
+        }
     }
 
     #[test]

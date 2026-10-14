@@ -80,6 +80,11 @@ pub(crate) fn parse_guide_source(source: Box<[u8]>) -> Result<ParsedGuideSource,
     Ok(ParsedGuideSource::new(source, envelope, artifact))
 }
 
+/// Scan only the Guide envelope (delimiters, separator, byte policy).
+pub(crate) fn scan_guide_envelope(source: &[u8]) -> Result<GuideEnvelope, ParseFailure> {
+    source::scan_guide(source)
+}
+
 fn parse_artifact(
     yaml: &[u8],
     file_base: FileByteOffset,
