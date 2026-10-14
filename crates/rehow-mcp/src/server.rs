@@ -84,8 +84,9 @@ use rehow_core::{
         invalid_git_commit_message_error, invalid_guide_aliases_error,
         invalid_guide_category_error, invalid_guide_create_summary_error,
         invalid_guide_create_title_error, invalid_guide_lifecycle_error, invalid_guide_tags_error,
-        invalid_guide_update_error, new_request_id, workspace_broad_required_error,
-        workspace_git_write_required_error, workspace_write_required_error,
+        invalid_guide_update_error, new_request_id, unadopted_guide_error,
+        workspace_broad_required_error, workspace_git_write_required_error,
+        workspace_write_required_error,
     },
     search::{MAX_SEARCH_RESULTS, SearchError, normalize_search_text, search_workspace_filtered},
     storage::{
@@ -1301,6 +1302,17 @@ struct GuideSummaryOutput {
     revision: String,
     updated_at: String,
     attachment_count: usize,
+    origin: GuideOriginOutput,
+}
+
+/// Whether a Guide is a Rehow-managed file or a hand-written Markdown file that
+/// Rehow lists with derived metadata but has not adopted (ADR 0063). MCP never
+/// adopts files and refuses every mutation of an unadopted Guide.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum GuideOriginOutput {
+    Managed,
+    Unadopted,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -1987,7 +1999,23 @@ fn guide_summary(category: &LoadedCategory, loaded: &LoadedGuide) -> GuideSummar
         revision: loaded.revision().to_string(),
         updated_at: guide.updated_at().to_string(),
         attachment_count: guide.attachments().map_or(0, <[_]>::len),
+        origin: if loaded.origin().is_managed() {
+            GuideOriginOutput::Managed
+        } else {
+            GuideOriginOutput::Unadopted
+        },
     }
+}
+
+/// Refuse a mutation of an unadopted hand-written Guide before any write
+/// reaches the core (ADR 0063). Adoption is reserved for an explicit save in
+/// the native app, so MCP never adopts, rewrites, or moves such a file.
+fn unadopted_guide_refusal(
+    request_id: rehow_core::protocol::RequestId,
+    loaded: &LoadedGuide,
+) -> Option<ErrorDto> {
+    (!loaded.origin().is_managed())
+        .then(|| unadopted_guide_error(request_id, loaded.relative_path(), *loaded.guide().id()))
 }
 
 fn attachment_output(value: &rehow_core::domain::Attachment) -> AttachmentOutput {
@@ -2565,6 +2593,9 @@ fn guide_lifecycle(
     let Some((_, current)) = find_guide(&view, &guide_id) else {
         return structured_tool_error(guide_not_found_error(request_id, guide_id));
     };
+    if let Some(error) = unadopted_guide_refusal(request_id, current) {
+        return structured_tool_error(error);
+    }
     if current.revision() != expected_revision {
         return structured_tool_error(guide_revision_conflict_error(
             request_id,
@@ -2714,6 +2745,9 @@ fn guide_collection_update(
     let Some((_, current)) = find_guide(&view, &guide_id) else {
         return structured_tool_error(guide_not_found_error(request_id, guide_id));
     };
+    if let Some(error) = unadopted_guide_refusal(request_id, current) {
+        return structured_tool_error(error);
+    }
     if current.revision() != expected_revision {
         return structured_tool_error(guide_revision_conflict_error(
             request_id,
@@ -2825,6 +2859,9 @@ fn attachment_title_update(
     let Some((_, current)) = find_guide(&view, &guide_id) else {
         return structured_tool_error(guide_not_found_error(request_id, guide_id));
     };
+    if let Some(error) = unadopted_guide_refusal(request_id, current) {
+        return structured_tool_error(error);
+    }
     if current.revision() != expected_revision {
         return structured_tool_error(guide_revision_conflict_error(
             request_id,
@@ -2953,6 +2990,12 @@ fn attachment_candidates_list(
         .map_err(|_| McpError::invalid_params("invalid Guide ID", None))?;
     let workspace = server.workspace(&input.workspace_handle)?;
     let view = McpServer::read_view(workspace)?;
+    if find_guide(&view, &guide_id).is_some_and(|(_, loaded)| !loaded.origin().is_managed()) {
+        return Err(McpError::invalid_params(
+            "This Guide is a plain Markdown file Rehow hasn't adopted yet. Open and save it once in the Rehow app first.",
+            None,
+        ));
+    }
     let discovery =
         list_managed_attachment_candidates(&view, guide_id).map_err(|error| match error {
             ManagedAttachmentDiscoveryError::GuideNotFound => {
@@ -3056,6 +3099,14 @@ fn attachment_metadata_add(
         .expected_revision
         .parse::<Revision>()
         .map_err(|_| McpError::invalid_params("invalid Guide revision", None))?;
+    {
+        let view = McpServer::read_view(workspace)?;
+        if let Some(error) = find_guide(&view, &guide_id)
+            .and_then(|(_, loaded)| unadopted_guide_refusal(request_id, loaded))
+        {
+            return structured_tool_error(error);
+        }
+    }
     if input.candidate_token.len() > 128 {
         return structured_tool_error(attachment_add_plan_stale_error(request_id));
     }
@@ -3081,6 +3132,11 @@ fn attachment_metadata_add(
         .view
         .write()
         .map_err(|_| McpError::internal_error("Workspace view unavailable", None))?;
+    if let Some(error) = find_guide(&view, &guide_id)
+        .and_then(|(_, loaded)| unadopted_guide_refusal(request_id, loaded))
+    {
+        return structured_tool_error(error);
+    }
     let outcome = match add_managed_attachment_metadata(
         &mut view,
         &recovery.state_home.bridge_path,
@@ -3214,6 +3270,9 @@ fn guide_category_update(
     let Some((_, current)) = find_guide(&view, &guide_id) else {
         return structured_tool_error(guide_not_found_error(request_id, guide_id));
     };
+    if let Some(error) = unadopted_guide_refusal(request_id, current) {
+        return structured_tool_error(error);
+    }
     if current.revision() != expected_revision {
         return structured_tool_error(guide_revision_conflict_error(
             request_id,
@@ -4518,6 +4577,9 @@ async fn attachment_remove_plan(
         let Some((_, guide)) = find_guide(&view, &guide_id) else {
             return structured_tool_error(guide_not_found_error(request_id, guide_id));
         };
+        if let Some(error) = unadopted_guide_refusal(request_id, guide) {
+            return structured_tool_error(error);
+        }
         if guide.revision() != expected_revision {
             return structured_tool_error(guide_revision_conflict_error(
                 request_id,
@@ -4773,7 +4835,8 @@ fn apply_attachment_remove_plan_blocking(
     let Some((_, guide)) = find_guide(&view, &plan.guide_id) else {
         return AttachmentRemoveBlockingOutcome::Stale;
     };
-    if guide.revision() != plan.expected_revision
+    if !guide.origin().is_managed()
+        || guide.revision() != plan.expected_revision
         || guide
             .guide()
             .attachments()
@@ -7158,6 +7221,9 @@ fn guide_tested_plan(
     let Some((category, guide)) = find_guide(&view, &guide_id) else {
         return structured_tool_error(guide_not_found_error(request_id, guide_id));
     };
+    if let Some(error) = unadopted_guide_refusal(request_id, guide) {
+        return structured_tool_error(error);
+    }
     if guide.revision() != expected_revision {
         return structured_tool_error(guide_revision_conflict_error(
             request_id,
@@ -7326,7 +7392,8 @@ fn apply_guide_tested_plan_blocking(
     if refresh_open_workspace(&mut view).is_err()
         || !view.issues().is_empty()
         || find_guide(&view, &plan.guide_id).is_none_or(|(category, guide)| {
-            category.category().id() != &plan.category_id
+            !guide.origin().is_managed()
+                || category.category().id() != &plan.category_id
                 || guide.revision() != plan.expected_revision
                 || guide.relative_path() != plan.relative_path
         })
@@ -8765,6 +8832,9 @@ impl McpServer {
         let Some((_, current)) = find_guide(&view, &guide_id) else {
             return structured_tool_error(guide_not_found_error(request_id, guide_id));
         };
+        if let Some(error) = unadopted_guide_refusal(request_id, current) {
+            return structured_tool_error(error);
+        }
         if current.revision() != expected_revision {
             return structured_tool_error(guide_revision_conflict_error(
                 request_id,
@@ -14932,6 +15002,247 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn unadopted_guides_are_listed_readable_searchable_and_never_mutated() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let state_root = tempfile::tempdir().unwrap();
+        fixture_workspace(workspace_root.path());
+        fixture_guide(workspace_root.path());
+        fixture_destination_category(workspace_root.path(), "active");
+        let plain_path = workspace_root
+            .path()
+            .join("categories/general/deploy-notes.md");
+        let plain =
+            b"# Deploy Notes\n\nShip the release without downtime.\n\n```sh\nmake deploy\n```\n";
+        fs::write(&plain_path, plain).unwrap();
+        let server = approval_ready_category_server(workspace_root.path(), state_root.path());
+        let handle = server.workspaces[0].handle.clone();
+
+        let listed = server
+            .guides_list(Parameters(GuidesListInput {
+                workspace_handle: handle.clone(),
+                category_id: None,
+                statuses: None,
+                tags: None,
+                cursor: None,
+                limit: None,
+            }))
+            .unwrap()
+            .0;
+        assert_eq!(listed.guides.len(), 2);
+        let managed = listed
+            .guides
+            .iter()
+            .find(|guide| guide.id == "0199a1d7-7b0d-7d8e-a38d-f936c5735e12")
+            .unwrap();
+        assert_eq!(managed.origin, GuideOriginOutput::Managed);
+        let unadopted = listed
+            .guides
+            .iter()
+            .find(|guide| guide.title == "Deploy Notes")
+            .unwrap();
+        assert_eq!(unadopted.origin, GuideOriginOutput::Unadopted);
+        assert_eq!(unadopted.effective_status, "draft");
+        let listed_json = serde_json::to_value(&listed).unwrap();
+        assert!(
+            listed_json["guides"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|guide| guide["origin"] == "unadopted")
+        );
+        let guide_id = unadopted.id.clone();
+        let revision = unadopted.revision.clone();
+
+        let read = server
+            .guide_get(Parameters(GuideGetInput {
+                workspace_handle: handle.clone(),
+                guide_id: guide_id.clone(),
+                include_body: Some(true),
+                max_body_bytes: None,
+            }))
+            .unwrap()
+            .0;
+        assert_eq!(read.guide.origin, GuideOriginOutput::Unadopted);
+        assert_eq!(read.body.as_deref().unwrap().as_bytes(), plain);
+        assert_eq!(read.code_blocks.len(), 1);
+
+        let found = server
+            .guides_search(Parameters(GuidesSearchInput {
+                workspace_handle: handle.clone(),
+                query: "downtime".to_owned(),
+                include_archived: None,
+                category_ids: None,
+                tags: None,
+                cursor: None,
+                limit: None,
+            }))
+            .unwrap()
+            .0;
+        assert_eq!(found.results.len(), 1);
+        assert_eq!(found.results[0].guide.id, guide_id);
+        assert_eq!(found.results[0].guide.origin, GuideOriginOutput::Unadopted);
+
+        let candidates =
+            server.attachment_candidates_list(Parameters(AttachmentCandidatesListInput {
+                workspace_handle: handle.clone(),
+                guide_id: guide_id.clone(),
+                cursor: None,
+                limit: None,
+            }));
+        assert!(candidates.is_err());
+
+        let lifecycle = || GuideLifecycleInput {
+            workspace_handle: handle.clone(),
+            guide_id: guide_id.clone(),
+            expected_revision: revision.clone(),
+        };
+        let attachment_id = "0199a264-ef5f-73b4-a238-a71ba1509898".to_owned();
+        let results = vec![
+            (
+                "guide_update",
+                server.guide_update(Parameters(GuideUpdateInput {
+                    workspace_handle: handle.clone(),
+                    guide_id: guide_id.clone(),
+                    expected_revision: revision.clone(),
+                    title: "Deploy Notes".to_owned(),
+                    summary: "Ship the release without downtime.".to_owned(),
+                    tags: Vec::new(),
+                    aliases: Vec::new(),
+                    body: "Rewritten by MCP.\n".to_owned(),
+                })),
+            ),
+            (
+                "guide_set_tags",
+                server.guide_set_tags(Parameters(GuideTagsInput {
+                    workspace_handle: handle.clone(),
+                    guide_id: guide_id.clone(),
+                    expected_revision: revision.clone(),
+                    tags: vec!["deploy".to_owned()],
+                })),
+            ),
+            (
+                "guide_set_aliases",
+                server.guide_set_aliases(Parameters(GuideAliasesInput {
+                    workspace_handle: handle.clone(),
+                    guide_id: guide_id.clone(),
+                    expected_revision: revision.clone(),
+                    aliases: vec!["release".to_owned()],
+                })),
+            ),
+            (
+                "guide_change_category",
+                server.guide_change_category(Parameters(GuideCategoryInput {
+                    workspace_handle: handle.clone(),
+                    guide_id: guide_id.clone(),
+                    expected_revision: revision.clone(),
+                    category_id: "0199a1d7-7b0d-7d8e-a38d-f936c5735e13".to_owned(),
+                    expected_category_revision: revision.clone(),
+                })),
+            ),
+            (
+                "guide_mark_stale",
+                server.guide_mark_stale(Parameters(lifecycle())),
+            ),
+            (
+                "guide_archive",
+                server.guide_archive(Parameters(lifecycle())),
+            ),
+            (
+                "guide_restore",
+                server.guide_restore(Parameters(lifecycle())),
+            ),
+            (
+                "guide_tested_plan",
+                server.guide_tested_plan(Parameters(GuideTestedPlanInput {
+                    workspace_handle: handle.clone(),
+                    guide_id: guide_id.clone(),
+                    expected_revision: revision.clone(),
+                })),
+            ),
+            (
+                "attachment_metadata_add",
+                server.attachment_metadata_add(Parameters(AttachmentMetadataAddInput {
+                    workspace_handle: handle.clone(),
+                    guide_id: guide_id.clone(),
+                    expected_revision: revision.clone(),
+                    candidate_token: "forged".to_owned(),
+                    title: "Forged".to_owned(),
+                })),
+            ),
+            (
+                "attachment_metadata_update",
+                server.attachment_metadata_update(Parameters(AttachmentTitleUpdateInput {
+                    workspace_handle: handle.clone(),
+                    guide_id: guide_id.clone(),
+                    expected_revision: revision.clone(),
+                    attachment_id: attachment_id.clone(),
+                    title: "Renamed".to_owned(),
+                })),
+            ),
+            (
+                "attachment_remove_plan",
+                server
+                    .attachment_remove_plan(Parameters(AttachmentRemovePlanInput {
+                        workspace_handle: handle.clone(),
+                        guide_id: guide_id.clone(),
+                        expected_revision: revision.clone(),
+                        attachment_id,
+                    }))
+                    .await,
+            ),
+        ];
+        let expected_path = "categories/general/deploy-notes.md";
+        for (tool, result) in results {
+            let result = result.unwrap();
+            assert_eq!(result.is_error, Some(true), "{tool} must refuse");
+            let error = result.structured_content.as_ref().unwrap();
+            assert_eq!(error["code"], "INVALID_GUIDE", "{tool}");
+            assert_eq!(error["retryable"], false, "{tool}");
+            assert_eq!(
+                error["details"]["diagnosticCode"], "missing_required_field",
+                "{tool}"
+            );
+            assert_eq!(error["details"]["relativePath"], expected_path, "{tool}");
+            assert_eq!(error["details"]["guideId"], guide_id.as_str(), "{tool}");
+            assert_eq!(
+                error["message"], "This Guide is a plain Markdown file Rehow hasn't adopted yet.",
+                "{tool}"
+            );
+            assert_eq!(
+                error["recovery"], "Open and save it once in the Rehow app first.",
+                "{tool}"
+            );
+            assert_eq!(fs::read(&plain_path).unwrap(), plain, "{tool} wrote");
+        }
+        assert!(
+            !workspace_root
+                .path()
+                .join("categories/destination/deploy-notes.md")
+                .exists()
+        );
+        assert!(!workspace_root.path().join(".rehow-trash").exists());
+
+        let refreshed = server
+            .guides_list(Parameters(GuidesListInput {
+                workspace_handle: handle,
+                category_id: None,
+                statuses: None,
+                tags: None,
+                cursor: None,
+                limit: None,
+            }))
+            .unwrap()
+            .0;
+        let still = refreshed
+            .guides
+            .iter()
+            .find(|guide| guide.id == guide_id)
+            .unwrap();
+        assert_eq!(still.origin, GuideOriginOutput::Unadopted);
+        assert_eq!(still.revision, revision);
     }
 
     #[test]

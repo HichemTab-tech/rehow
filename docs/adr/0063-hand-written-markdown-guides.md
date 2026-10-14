@@ -1,6 +1,6 @@
 # ADR 0063: Hand-written Markdown Guides
 
-- Status: Accepted; core implemented, desktop/MCP adapters pending
+- Status: Accepted; core, desktop, and MCP adapters implemented (MCP lists/reads/searches unadopted Guides and refuses every mutation of them)
 - Date: 2026-10-14
 
 ## Context

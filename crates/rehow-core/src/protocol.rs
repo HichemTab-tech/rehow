@@ -374,6 +374,23 @@ pub fn guide_revision_conflict_error(
     ))
 }
 
+/// Refusal for any mutation of an unadopted hand-written Guide (ADR 0063).
+///
+/// Returns `INVALID_GUIDE` with `diagnosticCode: missing_required_field`, the
+/// Guide's confined relative path, and its current (derived) ID. When the
+/// relative path cannot be represented as a `SafeRelativePath`, it falls back
+/// to the generic invalid-update error rather than disclosing it.
+pub fn unadopted_guide_error(
+    request_id: RequestId,
+    relative_path: &str,
+    guide_id: GuideId,
+) -> ErrorDto {
+    let Ok(path) = SafeRelativePath::parse_wire(&encode_display(relative_path.as_bytes())) else {
+        return invalid_guide_update_error(request_id);
+    };
+    constructed_error(construction::unadopted_guide(request_id, path, guide_id))
+}
+
 pub fn invalid_guide_update_error(request_id: RequestId) -> ErrorDto {
     constructed_error(construction::invalid_argument(
         request_id,
