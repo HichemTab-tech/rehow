@@ -1076,6 +1076,24 @@ impl From<WorkspaceFolderFacts> for FolderFactsPayload {
     }
 }
 
+/// Renders an unsaved Guide body through the same safe Markdown pipeline used
+/// for saved Guides, so the editor preview never needs a second renderer.
+#[tauri::command]
+async fn render_markdown_preview(body: String) -> Result<SafeMarkdownDocument, NativeCommandError> {
+    if body.len() > GUIDE_BODY_INPUT_LIMIT {
+        return Err(native_command_error(
+            "invalidGuideBody",
+            "Guide content is too large to preview.".to_owned(),
+        ));
+    }
+    parse_safe_markdown(&body).map_err(|_| {
+        native_command_error(
+            "invalidGuideBody",
+            "This content could not be previewed.".to_owned(),
+        )
+    })
+}
+
 #[tauri::command]
 fn read_open_guide(
     guide_id: String,
@@ -5207,6 +5225,57 @@ fn save_desktop_preferences(
     Ok((&preferences).into())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpSetupPayload {
+    workspace_path: String,
+    mcp_binary: String,
+}
+
+/// Output-only facts for copy-paste MCP client setup. The renderer never
+/// supplies a path; it only displays the one the native side already opened.
+#[tauri::command]
+fn mcp_setup_open_workspace(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<McpSetupPayload, NativeCommandError> {
+    let selected_path = state
+        .workspace
+        .lock()
+        .map_err(|_| {
+            native_command_error(
+                "sessionUnavailable",
+                "Workspace session is unavailable.".to_owned(),
+            )
+        })?
+        .as_ref()
+        .map(|workspace| workspace.selected_path.clone())
+        .ok_or_else(|| {
+            native_command_error("workspaceUnavailable", "No Workspace is open.".to_owned())
+        })?;
+    let workspace_path = selected_path.to_str().map(str::to_owned).ok_or_else(|| {
+        native_command_error(
+            "unsupportedPath",
+            "This Workspace path can't be shown as text.".to_owned(),
+        )
+    })?;
+    let installed = std::path::Path::new("/usr/bin/rehow-mcp");
+    let sibling = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("rehow-mcp")))
+        .filter(|candidate| candidate.is_file());
+    let mcp_binary = if installed.is_file() {
+        installed.to_string_lossy().into_owned()
+    } else {
+        sibling
+            .and_then(|path| path.to_str().map(str::to_owned))
+            .unwrap_or_else(|| "rehow-mcp".to_owned())
+    };
+    Ok(McpSetupPayload {
+        workspace_path,
+        mcp_binary,
+    })
+}
+
 #[tauri::command]
 fn remember_open_workspace(
     state: tauri::State<'_, DesktopState>,
@@ -6440,6 +6509,7 @@ pub fn run() {
         .manage(DesktopState::default())
         .invoke_handler(tauri::generate_handler![
             approve_open_guide_tested,
+            render_markdown_preview,
             cancel_selected_workspace_initialization,
             choose_markdown_import_destination,
             apply_markdown_import,
@@ -6457,6 +6527,7 @@ pub fn run() {
             preview_open_guide_attachment_text,
             reveal_open_guide_attachment_parent,
             remember_open_workspace,
+            mcp_setup_open_workspace,
             restore_recent_workspace,
             refresh_open_workspace,
             remove_open_category,
